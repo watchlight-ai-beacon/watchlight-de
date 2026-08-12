@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "watchlight"
+version = "0.0.1"
+description = "Watchlight Developer Edition — govern AI agents in-process, with zero infrastructure."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Watchlight AI" }]
+keywords = ["authorization", "ai-agents", "cedar", "policy", "governance"]
+dependencies = [
+    # The in-process authorization engine: a PyO3 binding over the real
+    # wl-apdp Cedar core. Published from the platform monorepo; during local
+    # development install it editable via
+    #   maturin develop --manifest-path <monorepo>/wl-apdp-py/Cargo.toml
+    "watchlight-engine>=0.1,<0.2",
+]
+
+[project.urls]
+Homepage = "https://watchlight.ai"
+
+[tool.setuptools.packages.find]
+where = ["src"]
