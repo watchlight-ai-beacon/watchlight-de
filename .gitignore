@@ -1,0 +1,46 @@
+# ── Secrets & local config — NEVER commit (repo may become public) ──
+.env
+.env.*
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets/
+**/secrets/
+*_token
+*.token
+credentials.json
+
+# ── Watchlight local runtime artifacts ──
+.watchlight/
+*.audit.jsonl
+audit.jsonl
+
+# ── Python ──
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+*.whl
+.venv/
+venv/
+env/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# ── Vendored wheels / private packages (never commit private source) ──
+vendor/
+wheels/
+
+# ── OS / editor ──
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
