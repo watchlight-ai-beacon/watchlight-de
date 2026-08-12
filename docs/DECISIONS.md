@@ -8,7 +8,19 @@ tracked so nothing silently defaults.
 
 ---
 
-## D1 — How the in-process Cedar engine runs (LOAD-BEARING, OPEN)
+## D1 — How the in-process Cedar engine runs (DECIDED: A — Cedar Python binding)
+
+**Decided 2026-08-12: Option A, validated by spike.** Using `cedarpy` (a PyO3
+binding to the real `cedar-policy` crate, currently 4.8.7 — same Cedar 4.x major
+as the platform's 4.5.1). Spike confirmed in-process, zero-infra evaluation:
+`is_authorized(request, policies, entities)` → `Decision.Allow` with determining-
+policy diagnostics on a matching permit, and **`Decision.Deny` by default** on no
+match (fail-closed, exactly our semantic). This is the real Cedar engine, not a
+reimplementation. Remaining diligence: pin/track the binding version; confirm it
+covers the policy features we use (templates, `when`/`unless`, entity attrs).
+
+<details><summary>Original options (for the record)</summary>
+
 
 The Developer Edition's promise is `pip install watchlight` with **zero
 infrastructure**. The authorization *pipeline* (delegation chain → intent → goal
@@ -26,8 +38,20 @@ learns; a maintained Python binding delivers the zero-infra install while the
 evaluation is still the real Cedar engine. Option B *is* the Level-2
 `docker compose` path (the real service). Needs a spike to confirm the binding's
 feature parity + maintenance story.
+</details>
 
-## D2 — Relationship to the production plugin / "same code as prod" (LOAD-BEARING, OPEN)
+## D2 — Relationship to the production plugin / "same code as prod" (DECIDED: A — depend on the real SDK, staged)
+
+**Decided 2026-08-12: Option A.** `watchlight` depends on the real
+`watchlight-agent-sdk` / plugins as an EXTERNAL package and adds only an
+in-process backend they target — no API drift. Until the SDK is on PyPI, dev
+against it as a **local editable** install pointing at the monorepo checkout (a
+developer-machine convenience, NOT committed; this maybe-public repo never
+vendors private source). DE thereby becomes the forcing function to publish the
+SDK to PyPI.
+
+<details><summary>Original options (for the record)</summary>
+
 
 The hard constraint (vision §2): dev and prod expose the **same** API
 (`create_governed_deep_agent`), so migrating is one env var, never a rewrite.
@@ -44,6 +68,8 @@ committed. **This public repo must never vendor private plugin source.** DE
 becomes the forcing function that also lands the PyPI publish.
 
 ---
+
+</details>
 
 ## D3 — Package + repo naming (LEANING)
 
