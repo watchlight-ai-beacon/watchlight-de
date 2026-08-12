@@ -8,18 +8,42 @@ tracked so nothing silently defaults.
 
 ---
 
-## D1 — How the in-process Cedar engine runs (DECIDED: A — Cedar Python binding)
+## D1 — What the in-process engine binds (DECIDED: bind wl-apdp itself, via PyO3)
 
-**Decided 2026-08-12: Option A, validated by spike.** Using `cedarpy` (a PyO3
-binding to the real `cedar-policy` crate, currently 4.8.7 — same Cedar 4.x major
-as the platform's 4.5.1). Spike confirmed in-process, zero-infra evaluation:
-`is_authorized(request, policies, entities)` → `Decision.Allow` with determining-
-policy diagnostics on a matching permit, and **`Decision.Deny` by default** on no
-match (fail-closed, exactly our semantic). This is the real Cedar engine, not a
-reimplementation. Remaining diligence: pin/track the binding version; confirm it
-covers the policy features we use (templates, `when`/`unless`, entity attrs).
+**Decided 2026-08-12 (corrected).** The DE embeds the **real wl-apdp
+authorization core** as a Python extension — NOT a generic Cedar binding.
 
-<details><summary>Original options (for the record)</summary>
+Why the correction: `cedarpy` binds only the Cedar *language* (leaf policy
+evaluation). But wl-apdp is the whole **pipeline around** Cedar — delegation-chain
+validation, intent, goal, intelligent policy selection, Cedar eval, **M43
+strict-subset scope attenuation**, enforcement-effect taxonomy. Binding only Cedar
+would force a Python reimplementation of that pipeline = divergence from prod (the
+exact thing the vision forbids). Binding wl-apdp runs the *actual production
+engine* in-process; Cedar comes along inside it. "Use Watchlight AI tech."
+
+**Feasibility (verified against the monorepo):**
+- `wl-apdp` already has a **`lib.rs`** exposing `pub mod authz / policy / models /
+  error` → a PyO3 crate can depend on the lib directly (no extraction).
+- `PolicyManager` is **fully in-memory** (`Arc<RwLock<HashMap<String,Policy>>>` +
+  `Arc<RwLock<PolicySet>>`, populated via `add_policy`) — no DB coupling. Postgres
+  is only *loaded into* it at startup.
+- `AuthzService`'s sole DB tie is an **optional** `decisions_chain_pool:
+  Option<PgPool>` (audit-chain writes), set separately → authz runs pool-less.
+
+**Structure (consequence — spans two repos):**
+- A **new PyO3 crate in the MONOREPO** (`wl-apdp-py`, maturin-built) wraps
+  `AuthzService` + `PolicyManager`, loads policies from a local `.cedar`/JSON file
+  instead of Postgres, exposes `authorize(...)` to Python → publishes a wheel
+  (e.g. `watchlight-apdp`). Lives where the source lives (private, maintainable).
+- `watchlight-de` depends on that **published wheel** (external) — never vendors
+  wl-apdp source (consistent with the maybe-public rule + D2).
+
+**Open implementation details (not feasibility blockers):** `AuthzService`
+authorize is async (Tokio) → bridge via an internal `block_on` or `pyo3-asyncio`;
+the exact authorize entrypoint to expose; policy-file load format; maturin
+per-platform wheel build. `cedarpy` is discarded (one layer too low).
+
+<details><summary>Original options — note A was refined from "Cedar binding" to "wl-apdp binding"</summary>
 
 
 The Developer Edition's promise is `pip install watchlight` with **zero
