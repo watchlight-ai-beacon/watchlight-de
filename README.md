@@ -48,12 +48,12 @@ account — is the product.**
 
 ## What runs locally
 
-| Capability | Developer Edition | In production |
+| Capability | Developer Edition (free / open) | Enterprise |
 |---|---|---|
-| Policy engine | in-process Cedar, policies from a local `.cedar` file | a running policy service |
+| Policy engine | in-process Cedar, policies from a local `.cedar` file | a running, scaled policy service |
 | Sub-agent scope attenuation | engine-side strict-subset validation | same, server-side |
-| Content / PII screening | in-process evaluation of the same policy format | a running guardrails service |
-| Audit | local JSONL, greppable, value-free | a signed audit service |
+| Content / PII screening | policy-based, in-process | a running guardrails service |
+| Audit | local JSONL, greppable, value-free | a signed, tamper-evident audit service |
 | Dashboard | `watchlight dev` → `localhost:7000` (policies + execution lineage) | the full operator console |
 
 Everything the Developer Edition removes is **infrastructure**, never a
@@ -71,6 +71,41 @@ rewritten between levels.**
 - **Level 1** — `watchlight dev`. Adds a local dashboard (decisions, denials, scope tree, execution lineage).
 - **Level 2** — `docker compose up`. Real policy service + database; policies still from your local file.
 - **Level 3** — Production. The full governed platform.
+
+---
+
+## Developer Edition vs Enterprise
+
+The Developer Edition is the **real engine** — free, open, and running
+in-process so you can evaluate the entire authorization model on your laptop
+with zero infrastructure. Enterprise is the **same code** pointed at the
+governed control plane; it doesn't replace anything, it adds what a fleet in
+production needs:
+
+- **Signed, tamper-evident lineage & audit** — every decision and lineage event
+  cryptographically signed (KMS-backed), so the trail is court-defensible.
+- **Multi-tenant isolation + roll-up administration** — tenant hierarchy, scoped
+  admins, and a cross-tenant authorization matrix.
+- **Drift & anomaly detection → automatic quarantine** — behavioural,
+  goal-drift, and argument-shape detectors that quarantine a misbehaving agent
+  *before* the next action.
+- **Content / PII guardrails service** and **execution-graph lineage** with the
+  full **operator console**.
+- **SSO / RBAC / enterprise audit**, high availability, support, and SLAs.
+
+**Migrating is one environment variable — never a rewrite.** The tools you
+decorate, the policies you write, and the guarantees you rely on
+(fail-closed, engine-side attenuation, explicit scopes, value-free audit) are
+identical in every mode. Enterprise simply points the same code at a running
+plane.
+
+> The engine ships as a compiled wheel and the Developer Edition is a deliberate
+> *subset* of the platform — the governed control plane (signing, multi-tenant,
+> guardrails, drift, execution-graph) is the enterprise product, never bundled
+> here.
+
+→ **[Talk to us about Enterprise](https://www.watchlight.ai)** when you're ready
+for production.
 
 ---
 
