@@ -35,8 +35,13 @@ quickstart — the worst first impression for a "5-minute DENY line" product.
     transfer keeps ownership with the company and avoids a personal-account
     single point of failure. (The trusted-publisher config travels with the
     project on transfer — no reconfig needed.)
-- ☐ **Publish `watchlight-engine` to PyPI** — release + STRIPPED wheels via
-  `.github/workflows/publish-watchlight-engine.yml` (monorepo). Prereqs are done:
+- ☐ **Publish `watchlight-engine` to PyPI** — release + STRIPPED **wheels ONLY,
+  no sdist** via `.github/workflows/publish-watchlight-engine.yml` (monorepo).
+  ⚠️ **Do NOT publish before the wheels-only fix (#1398) is merged.** The dry-run
+  showed `maturin sdist` vendors the FULL private wl-apdp + wl-lineage Rust source
+  (120 `.rs` files) into the tarball — publishing it would leak the engine source
+  via `pip download --no-binary`. #1398 drops the sdist job + adds a fail-closed
+  "wheels only, never source" gate in the publish step. Prereqs are done:
   ✅ SHA-pinned actions (#1397), ✅ PyPI trusted publisher (account-level), ✅ the
   `pypi` GitHub Environment (restricted to `main`). Run `dry_run:true` to
   validate the wheels, then `dry_run:false` `repository:pypi` for the real
@@ -98,8 +103,17 @@ Audit the **full history**, not just the working tree.
 
 - ☐ `pip install watchlight` (real PyPI) in a fresh venv resolves + imports.
 - ☐ Run `examples/agent.py` → the `ALLOW` / `DENY` lines print with zero infra.
-- ☐ `watchlight-engine` wheel contains only the compiled extension + metadata
-  (no `.rs`), and is the release-stripped build (`nm` shows ~1 symbol, not ~47k).
+- ✅ `watchlight-engine` wheel contains only the compiled extension + metadata
+  (no `.rs`), and is the release-stripped build (`nm` shows 1 symbol —
+  `_PyInit_watchlight_engine` — not ~47k). Verified on the 2026-08-17 dry-run
+  across all 4 completed wheels (Linux x86_64/aarch64, macOS arm64, Windows x64).
+- ☐ Re-confirm on the post-#1398 dry-run that **no sdist** is produced.
+- ℹ️ The wheel's `dist-info/sboms/wl-apdp-py.cyclonedx.json` (maturin auto-SBOM)
+  lists the 222-item dep graph incl. internal crate names (`wl-apdp 0.9.12`,
+  `wl-lineage 0.1.0`) and the CI build path. No source / no secrets — consistent
+  with the accepted `strings`-on-`.so` disclosure posture. Keep (SBOMs are an
+  enterprise-buyer asset); revisit only if the internal version correlation is a
+  concern.
 
 ---
 
