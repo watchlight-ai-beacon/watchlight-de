@@ -15,8 +15,8 @@ is pointing at a running policy service — not a rewrite.
 
 ## Quickstart
 
-> **Status: in active development.** The target experience is below; see
-> [`docs/DECISIONS.md`](docs/DECISIONS.md) for what's being built now.
+> **Status: in active development.** The target experience is below; see the
+> [Developer Edition docs](https://docs.watchlight.ai/de) for the current state.
 
 ```bash
 pip install watchlight
@@ -43,6 +43,34 @@ watchlight: DENY   execute  tool/transfer_funds     no matching policy
 
 **That `DENY` line — in your own terminal, in under five minutes, with no
 account — is the product.**
+
+---
+
+## Already using a framework? Govern it in-process
+
+Bring your existing **LangGraph**, **Pydantic AI**, or **Claude Agent SDK**
+agent under governance with zero infrastructure — the *same* plugin you ship to
+production, wired to the in-process engine:
+
+```bash
+pip install 'watchlight[langgraph]'   # or [pydantic-ai], [claude-agent]
+```
+
+```python
+from watchlight.langgraph import governed_plugin   # .pydantic_ai / .claude_agent
+
+plugin = governed_plugin("watchlight.policy.json")   # in-process, zero infra
+
+async with await plugin.start_run("research-agent") as handle:
+    if not await handle.authorize_action("read", "tool/web_search"):
+        raise PermissionError("denied before it executed")
+    ...  # your tool runs, every action governed + recorded to .watchlight/audit.jsonl
+```
+
+Going to production is one environment variable, not a rewrite — set
+`WATCHLIGHT_APDP_URL` and the identical code authorizes against a running policy
+service. Runnable examples for all three frameworks are in
+[`examples/`](examples/).
 
 ---
 
@@ -130,4 +158,4 @@ ready for production.
 
 ## License
 
-TBD — see [`docs/DECISIONS.md`](docs/DECISIONS.md).
+Apache-2.0.

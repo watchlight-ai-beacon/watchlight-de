@@ -13,7 +13,7 @@ else **before the tool body runs**.
     def web_search(query: str) -> str:
         ...
 
-The engine is the REAL wl-apdp authorization core (Cedar evaluation + the
+The engine is the REAL Watchlight authorization engine (Cedar evaluation + the
 surrounding pipeline) embedded via the ``watchlight-engine`` extension — the
 same authorization model that runs in production, just in-process. Going to
 production is pointing at a running policy service, not a rewrite.
