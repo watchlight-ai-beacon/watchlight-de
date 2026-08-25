@@ -19,8 +19,18 @@ dependencies = [
     "watchlight-engine>=0.1,<0.2",
 ]
 
+[project.optional-dependencies]
+# Govern an existing framework agent in-process. Each extra pulls the published
+# framework plugin (which pulls the Watchlight SDK); the SAME plugin you ship to
+# production, wired here to the in-process engine via
+# `watchlight.<framework>.governed_plugin`.
+langgraph = ["watchlight-langgraph>=0.4"]
+pydantic-ai = ["watchlight-pydantic-ai>=0.3"]
+claude-agent = ["watchlight-claude-agent>=0.2"]
+
 [project.urls]
 Homepage = "https://watchlight.ai"
+Documentation = "https://docs.watchlight.ai/de"
 
 [tool.setuptools.packages.find]
 where = ["src"]
