@@ -44,3 +44,6 @@ wheels/
 .vscode/
 *.swp
 *~
+
+# Internal design notes / release checklist — never in the public product repo
+internal/

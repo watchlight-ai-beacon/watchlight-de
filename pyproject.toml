@@ -12,10 +12,9 @@ license = { text = "Apache-2.0" }
 authors = [{ name = "Watchlight AI" }]
 keywords = ["authorization", "ai-agents", "cedar", "policy", "governance"]
 dependencies = [
-    # The in-process authorization engine: a PyO3 binding over the real
-    # wl-apdp Cedar core. Published from the platform monorepo; during local
-    # development install it editable via
-    #   maturin develop --manifest-path <monorepo>/wl-apdp-py/Cargo.toml
+    # The in-process authorization engine — the real Watchlight policy engine
+    # (Cedar evaluation + the surrounding pipeline), embedded via PyO3 and
+    # published to PyPI as `watchlight-engine`.
     "watchlight-engine>=0.1,<0.2",
 ]
 

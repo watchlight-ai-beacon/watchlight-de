@@ -8,8 +8,8 @@ infrastructure. The seam is one object: a ``GovernanceBackend``.
 - **Production**: the plugin talks to a running policy service over TLS
   (``ApdpClient``).
 - **Developer Edition**: the plugin talks to :func:`in_process_backend` — the
-  real ``watchlight-engine`` (wl-apdp Cedar core) embedded in your process,
-  writing a local, value-free audit trail.
+  real ``watchlight-engine`` (the Watchlight authorization engine, Cedar)
+  embedded in your process, writing a local, value-free audit trail.
 
 Same plugin, same agent code. Going to production is pointing at a policy
 service — not a rewrite.
