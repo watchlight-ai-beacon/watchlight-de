@@ -75,6 +75,10 @@ def _call(tool: str) -> dict:
 
 
 def main() -> None:
+    # Audit to the SAME file `watchlight dev` tails by default, so every decision
+    # this PEP makes shows up live in the console.
+    audit_path = os.path.join(HERE, ".watchlight", "audit.jsonl")
+
     # 1. the MCP server we are putting under governance
     up = ThreadingHTTPServer(("127.0.0.1", UPSTREAM_PORT), _Upstream)
     threading.Thread(target=up.serve_forever, daemon=True).start()
@@ -86,13 +90,14 @@ def main() -> None:
             upstream_url=f"http://127.0.0.1:{UPSTREAM_PORT}/mcp",
             upstream_server="github",
             policy_files=[os.path.join(HERE, "mcp.policy.json")],
-            audit_path=os.path.join(HERE, ".watchlight", "mcp-audit.jsonl"),
+            audit_path=audit_path,
         ),
         daemon=True,
     ).start()
     time.sleep(1.5)  # let both bind
 
-    print("\n── Governed MCP server on http://127.0.0.1:%d/mcp ──\n" % PEP_PORT)
+    print("\n── Governed MCP server on http://127.0.0.1:%d/mcp ──" % PEP_PORT)
+    print("   watch decisions live:  watchlight dev --audit %s\n" % audit_path)
 
     # 3. an ALLOWED tool — policy permits it, so it reaches the server and runs
     allowed = _call("get_file_contents")
