@@ -1,0 +1,27 @@
+name: 💡 Feature request / feedback
+description: An idea, a rough edge, or something you wish the Developer Edition did.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        We read every one. If this is about running a fleet in production —
+        signed audit, drift→quarantine, SSO/RBAC, air-gapped, or engine source
+        access — that's the Enterprise plane: **sales@watchlight.ai**.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The problem or workflow, not just the proposed solution.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help?
+      description: How you'd like it to work.
+  - type: input
+    id: framework
+    attributes:
+      label: Framework / integration (if any)
+      placeholder: LangGraph · Pydantic AI · Claude Agent · MCP · custom

@@ -237,7 +237,7 @@ _PAGE = """<!doctype html>
       <li><b>Drift &amp; anomaly detection → automatic quarantine</b> — stop a misbehaving agent before its next action.</li>
       <li><b>Fleet-wide revocation</b> and one authority model across dev, staging, and prod.</li>
     </ul>
-    <a class="cta" href="https://watchlight.ai" target="_blank" rel="noopener">Explore Enterprise →</a>
+    <a class="cta" href="mailto:sales@watchlight.ai?subject=Watchlight%20Enterprise">Talk to us — sales@watchlight.ai →</a>
   </div>
 </main>
 <footer>Watchlight Developer Edition · the same engine you ship to production, in-process.</footer>

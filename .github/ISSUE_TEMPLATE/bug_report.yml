@@ -1,0 +1,51 @@
+name: 🐛 Bug report
+description: Something didn't work while you were testing the Developer Edition.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for trying Watchlight! A small, runnable repro helps us fix it fast.
+        Please **do not paste secrets, tokens, or private data** — the audit trail
+        is value-free by design, so you should never need to.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what did you get instead?
+      placeholder: I expected `transfer_funds` to be denied, but it ran…
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Ideally the smallest policy + script that shows it. Code blocks render.
+      placeholder: |
+        1. policy: permit(principal, action == Action::"research", resource);
+        2. python examples/governed_research_agent.py
+        3. …
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Package versions
+      description: "Output of: pip show watchlight watchlight-engine watchlight-mcp | grep -E 'Name|Version'"
+      placeholder: watchlight 0.1.0 · watchlight-engine 0.1.2 · watchlight-mcp 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: OS + Python
+      placeholder: macOS 15 (arm64) · Python 3.12
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output / logs
+      description: The decision line(s) or traceback. (Value-free — no argument values.)
+      render: shell
