@@ -74,6 +74,50 @@ service. Runnable examples for all three frameworks are in
 
 ---
 
+## Watch every decision live — `watchlight dev`
+
+A zero-dependency local dashboard that tails your value-free audit trail and
+shows every governance decision as it happens — the ALLOWs, and the DENYs that
+stopped a tool **before** it ran.
+
+```bash
+watchlight dev            # → http://127.0.0.1:7000
+```
+
+Run your governed agent in another terminal and watch the decisions stream in.
+It shows only *this* process — fleet-wide lineage, signed audit, and
+drift→quarantine are the governed control plane (Enterprise).
+
+---
+
+## Govern an MCP server
+
+Put a policy decision point in front of any [MCP](https://modelcontextprotocol.io)
+server (spec `2026-07-28`). Every `tools/call` is authorized in-process **before**
+it reaches the server — a denied call never executes.
+
+```bash
+pip install watchlight-mcp
+```
+
+```python
+import watchlight_mcp
+
+watchlight_mcp.serve(
+    listen_addr="127.0.0.1:9700",
+    upstream_url="http://localhost:3000/mcp",   # the MCP server you're governing
+    upstream_server="github",
+    policy_files=["examples/mcp.policy.json"],
+)
+```
+
+Point your MCP client at `http://127.0.0.1:9700/mcp` instead of the server. A
+self-contained, self-demonstrating example (it fires an allowed and a denied
+call and proves the denied one never ran) is in
+[`examples/governed_mcp_server.py`](examples/governed_mcp_server.py).
+
+---
+
 ## What runs locally
 
 | Capability | Developer Edition (free / open) | Enterprise |

@@ -26,6 +26,13 @@ dependencies = [
 langgraph = ["watchlight-langgraph>=0.4"]
 pydantic-ai = ["watchlight-pydantic-ai>=0.3"]
 claude-agent = ["watchlight-claude-agent>=0.2"]
+# Govern an MCP server: the Watchlight MCP Runtime PEP — a policy enforcement
+# point in front of any MCP (2026-07-28) server. See examples/governed_mcp_server.py.
+mcp = ["watchlight-mcp>=0.1"]
+
+[project.scripts]
+# `watchlight dev` → the local decision dashboard (stdlib-only, zero extra deps).
+watchlight = "watchlight.cli:main"
 
 [project.urls]
 Homepage = "https://watchlight.ai"

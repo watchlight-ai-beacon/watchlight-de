@@ -1,0 +1,6 @@
+{
+  "id": "allow-github-read",
+  "name": "allow-github-read",
+  "description": "Permit only read-oriented GitHub MCP tools; everything else (delete_repository, transfer, admin) is denied by default (fail-closed).",
+  "code": "permit(principal, action, resource) when { context.mcp.tool == \"search_repositories\" || context.mcp.tool == \"get_file_contents\" || context.mcp.tool == \"list_issues\" };"
+}
