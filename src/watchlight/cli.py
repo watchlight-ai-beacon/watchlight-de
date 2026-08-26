@@ -37,11 +37,22 @@ def _read_events(audit_path: pathlib.Path, limit: int = 500) -> list[dict[str, A
     fallbacks. Malformed lines are skipped. Never raises."""
     if not audit_path.exists():
         return []
-    events: list[dict[str, Any]] = []
+    # Read at most the last 256 KB from the END of the file, so a long-running
+    # agent's ever-growing audit trail can't make each 1.5s poll read (and decode)
+    # the whole file — memory/CPU stays bounded regardless of audit size.
+    max_tail = 256 * 1024
     try:
-        lines = audit_path.read_text(encoding="utf-8").splitlines()
+        with audit_path.open("rb") as fh:
+            fh.seek(0, 2)
+            size = fh.tell()
+            fh.seek(max(0, size - max_tail))
+            data = fh.read()
     except OSError:
         return []
+    lines = data.decode("utf-8", errors="replace").splitlines()
+    if size > max_tail and lines:
+        lines = lines[1:]  # drop the first, likely-partial, line
+    events: list[dict[str, Any]] = []
     for line in lines[-limit:]:
         line = line.strip()
         if not line:
@@ -233,17 +244,18 @@ _PAGE = """<!doctype html>
     <h3>Governing more than one agent — or more than one environment?</h3>
     <p>The Developer Edition dashboard shows <em>this one process</em>. A fleet in production needs guarantees a single in-process engine structurally can't provide:</p>
     <ul>
+      <li><b>Sub-agent scope attenuation &amp; delegation</b> — authority that can only narrow, validated end-to-end.</li>
       <li><b>Signed, tamper-evident audit &amp; lineage</b> — court-defensible, KMS-backed.</li>
       <li><b>Drift &amp; anomaly detection → automatic quarantine</b> — stop a misbehaving agent before its next action.</li>
       <li><b>Fleet-wide revocation</b> and one authority model across dev, staging, and prod.</li>
     </ul>
-    <a class="cta" href="https://watchlight.ai" target="_blank" rel="noopener">Explore Enterprise →</a>
+    <a class="cta" href="mailto:sales@watchlight.ai?subject=Watchlight%20Enterprise">Talk to us — sales@watchlight.ai →</a>
   </div>
 </main>
 <footer>Watchlight Developer Edition · the same engine you ship to production, in-process.</footer>
 
 <script>
-function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function esc(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function timefmt(ts){ if(!ts) return ''; const d=new Date(ts); return isNaN(d)? esc(ts) : d.toLocaleTimeString(); }
 async function tick(){
   let data; try { data = await (await fetch('/api/events')).json(); } catch(e){ return; }

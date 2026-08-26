@@ -1,0 +1,10 @@
+[
+  {
+    "name": "allow-research",
+    "code": "permit(principal, action == Action::\"research\", resource);"
+  },
+  {
+    "name": "allow-read",
+    "code": "permit(principal, action == Action::\"read\", resource);"
+  }
+]

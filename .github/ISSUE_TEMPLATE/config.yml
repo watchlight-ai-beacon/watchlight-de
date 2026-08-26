@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 📚 Developer Edition docs
+    url: https://docs.watchlight.ai/de
+    about: Quickstart, policy authoring, and the full guide — check here first.
+  - name: 💬 Talk to us about Enterprise
+    url: mailto:sales@watchlight.ai
+    about: Fleet governance, signed audit, drift→quarantine, SSO/RBAC, air-gapped.

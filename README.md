@@ -2,21 +2,67 @@
 
 **Govern an AI agent in five minutes. One install, zero infrastructure, same API as production.**
 
-Watchlight puts a policy decision point in front of every action your AI agents
-take — authorizing tool calls, attenuating sub-agent authority to a strict
-subset, and recording a tamper-evident, value-free audit trail. The Developer
-Edition runs that *entire* authorization model **in-process**, so you can see it
-work in your own terminal with no server, no database, and no signup.
+**Watchlight is an Agent Runtime Governance Control Plane** — it puts a policy
+decision point in front of every action your AI agents take, authorizing tool
+calls and recording a tamper-evident, value-free audit trail.
 
-The code you write here is the code you ship to production. Going to production
-is pointing at a running policy service — not a rewrite.
+The **Developer Edition** is the free, open front door to it. It runs the *real*
+authorization engine **in-process**, so you can add a governed `ALLOW` / `DENY`
+to your agent on your own laptop — no server, no database, no signup. It's for
+evaluating the model and shipping governed agents; the code you write here is the
+code you run in production — going to production is pointing the same code at the
+running control plane, not a rewrite.
+
+> **For enterprises**, Watchlight provides the wider **Agent Runtime Governance
+> Control Plane**: signed, tamper-evident lineage; multi-tenant isolation;
+> drift & anomaly detection → automatic quarantine; and fleet-wide revocation
+> across every agent and environment. → **[watchlight.ai](https://www.watchlight.ai)**
+
+## How the pieces fit together
+
+```text
+             your code · agents · tools
+  ┌─────────────┬──────────────────┬──────────────┬─────────────┐
+  │ @govern.tool│  LangGraph /     │  MCP client  │  custom app │
+  │ (decorator) │  Pydantic AI /   │  (any tool)  │             │
+  │             │  Claude Agent    │              │             │
+  └──────┬──────┴────────┬─────────┴──────┬───────┴──────┬──────┘
+         │               │                │              │
+     watchlight   watchlight.<fw>   watchlight-mcp    watchlight
+      (govern)   .governed_plugin   (PEP · MCP spec)     SDK
+         └───────────────┴───────┬────────┴──────────────┘
+                                 ▼
+                 ┌───────────────────────────────┐
+                 │  Watchlight engine · Cedar     │   the REAL engine,
+                 │  in-process · zero infra       │   a compiled wheel
+                 └───────────────┬───────────────┘
+                PERMIT ─ forward │ ─ DENY  (blocked before execution)
+                                 ▼
+              value-free audit → .watchlight/audit.jsonl
+                                 ▼
+                 watchlight dev  ·  http://localhost:7000
+
+  Production = the SAME code, pointed at the governed control plane
+  (signed audit · multi-tenant · drift→quarantine · fleet revocation).
+```
+
+| Package | You use it for |
+|---|---|
+| `watchlight` | the `govern` decorator + the `watchlight dev` dashboard |
+| `watchlight[langgraph\|pydantic-ai\|claude-agent]` | govern an existing framework agent |
+| `watchlight-mcp` | govern an MCP server (a policy enforcement point) |
+| `watchlight-engine` | the compiled in-process engine (pulled in automatically) |
+
+Runnable, self-contained examples for every one of these are in
+[`examples/`](examples/) — start with
+[`examples/governed_research_agent.py`](examples/governed_research_agent.py).
 
 ---
 
 ## Quickstart
 
-> **Status: in active development.** The target experience is below; see the
-> [Developer Edition docs](https://docs.watchlight.ai/de) for the current state.
+> The `govern` decorator, `watchlight dev`, and the framework + MCP integrations
+> below all work today. Full guide: [Developer Edition docs](https://docs.watchlight.ai/de).
 
 ```bash
 pip install watchlight
@@ -144,6 +190,10 @@ rewritten between levels.**
 - **Level 2** — `docker compose up`. Real policy service + database; policies still from your local file.
 - **Level 3** — Production. The full governed platform.
 
+> **Deploying to production?** We're glad to help you get there — email
+> **[sales@watchlight.ai](mailto:sales@watchlight.ai?subject=Watchlight%20production%20deployment)**
+> and we'll help you plan the rollout.
+
 ---
 
 ## Developer Edition vs Enterprise
@@ -195,11 +245,19 @@ plane.
 > guardrails, drift, execution-graph) is the enterprise product, never bundled
 > here.
 
-→ **[Talk to us about Enterprise](mailto:enterprise@watchlight.ai)** when you're
+→ **[Talk to us about Enterprise](mailto:sales@watchlight.ai)** when you're
 ready for production.
 
 ---
 
 ## License
 
-Apache-2.0.
+The Developer-Edition SDK, the framework plugins, this repository, and the
+`watchlight dev` dashboard are **Apache-2.0** — use, fork, and ship them freely.
+The authorization **engine** (`watchlight-engine`) and the MCP runtime
+(`watchlight-mcp`) ship as **compiled wheels** under the Watchlight Developer
+Edition license; they are free to use, including in production.
+
+Want the **engine source**, an **air-gapped build**, or to govern a **fleet** in
+production? That's the Enterprise plane — [email
+sales@watchlight.ai](mailto:sales@watchlight.ai?subject=Watchlight%20Enterprise).
