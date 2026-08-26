@@ -21,6 +21,7 @@ watchlight dev                  # → http://127.0.0.1:7000
 | [`agent.py`](agent.py) | **The DENY line** — the smallest governed agent: one allowed tool, one denied. | `watchlight` |
 | [`governed_research_agent.py`](governed_research_agent.py) | **Realistic multi-tool agent** — 5 tools, only `research` + `read` permitted; email / transfer / delete are **blocked before they run**. | `watchlight` |
 | [`context_governance.py`](context_governance.py) | **Fine-grained context gating** — the *same* tool call is allowed or denied by runtime `context`; missing context fails closed. | `watchlight[langgraph]` |
+| [`governed_subagents.py`](governed_subagents.py) | **Sub-agent scope attenuation** — every child gets a *strict subset* of its parent's authority (widening is refused by the real engine); the DE governs the tree up to depth 5, then points to Enterprise. | `watchlight` |
 
 ## Govern an existing framework agent
 

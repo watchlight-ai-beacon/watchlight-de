@@ -33,11 +33,21 @@ import functools
 import json
 import os
 import pathlib
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, Sequence, TypeVar
 
 import watchlight_engine as _engine
 
-__all__ = ["Watchlight", "Denied", "govern"]
+from .attenuation import DE_MAX_DEPTH, AttenuationDenied, DevEditionCeiling, Scope
+
+__all__ = [
+    "Watchlight",
+    "Denied",
+    "govern",
+    "Scope",
+    "AttenuationDenied",
+    "DevEditionCeiling",
+    "DE_MAX_DEPTH",
+]
 
 _F = TypeVar("_F", bound=Callable[..., Any])
 
@@ -93,6 +103,37 @@ class Watchlight:
         for entry in entries:
             self.allow(entry["code"], entry.get("name"))
         return self
+
+    # ── sub-agent scope attenuation ─────────────────────────────────
+
+    def scope(
+        self,
+        *,
+        tools: Sequence[str] | None = None,
+        resources: Sequence[str] | None = None,
+        intents: Sequence[str] | None = None,
+        max_depth: int = DE_MAX_DEPTH,
+        time_budget_seconds: int = 3600,
+    ) -> Scope:
+        """Create a root capability scope for this agent, from which sub-agent
+        scopes are attenuated (strict-subset).
+
+        The Developer Edition governs the tree up to depth
+        :data:`~watchlight.attenuation.DE_MAX_DEPTH` (5); Enterprise removes the
+        ceiling and enforces it server-side. See
+        :class:`~watchlight.attenuation.Scope`.
+        """
+        return Scope(
+            engine=self._engine,
+            audit_path=self._audit_path,
+            agent=self.agent,
+            allowed_tools=tools,
+            allowed_resources=resources,
+            allowed_intents=intents,
+            max_depth=min(int(max_depth), DE_MAX_DEPTH),
+            time_budget_seconds=time_budget_seconds,
+            depth=0,
+        )
 
     # ── governing tools ─────────────────────────────────────────────
 
