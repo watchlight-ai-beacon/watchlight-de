@@ -1,6 +1,22 @@
-# Watchlight — Developer Edition
+<p align="center">
+  <a href="https://www.watchlight.ai">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset=".github/assets/watchlight-logo-white.svg" />
+      <img alt="Watchlight" src=".github/assets/watchlight-logo-dark.svg" width="340" />
+    </picture>
+  </a>
+</p>
 
-**Govern an AI agent in five minutes. One install, zero infrastructure, same API as production.**
+<h1 align="center">Watchlight — Developer Edition</h1>
+
+<p align="center"><b>Govern an AI agent in five minutes. One install, zero infrastructure, same API as production.</b></p>
+
+<p align="center">
+  <a href="https://pypi.org/project/watchlight/"><img alt="PyPI" src="https://img.shields.io/pypi/v/watchlight?color=fbbf24&amp;label=watchlight" /></a>
+  <a href="https://pypi.org/project/watchlight/"><img alt="Python versions" src="https://img.shields.io/pypi/pyversions/watchlight?color=fbbf24" /></a>
+  <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue" /></a>
+  <a href="https://docs.watchlight.ai/de"><img alt="Docs" src="https://img.shields.io/badge/docs-docs.watchlight.ai%2Fde-fbbf24" /></a>
+</p>
 
 **Watchlight is an Agent Runtime Governance Control Plane** — it puts a policy
 decision point in front of every action your AI agents take, authorizing tool
