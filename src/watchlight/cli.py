@@ -233,6 +233,7 @@ _PAGE = """<!doctype html>
     <h3>Governing more than one agent — or more than one environment?</h3>
     <p>The Developer Edition dashboard shows <em>this one process</em>. A fleet in production needs guarantees a single in-process engine structurally can't provide:</p>
     <ul>
+      <li><b>Sub-agent scope attenuation &amp; delegation</b> — authority that can only narrow, validated end-to-end.</li>
       <li><b>Signed, tamper-evident audit &amp; lineage</b> — court-defensible, KMS-backed.</li>
       <li><b>Drift &amp; anomaly detection → automatic quarantine</b> — stop a misbehaving agent before its next action.</li>
       <li><b>Fleet-wide revocation</b> and one authority model across dev, staging, and prod.</li>
