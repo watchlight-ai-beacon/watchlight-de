@@ -1,0 +1,80 @@
+# Publish the `watchlight` umbrella package (Developer Edition) to PyPI.
+#
+# `watchlight` is pure-Python and Apache-2.0 (the OPEN glue: the `govern`
+# decorator, the framework plugin shims, and the `watchlight dev` dashboard). It
+# depends on the compiled `watchlight-engine` wheel but vendors no proprietary
+# source — so unlike the engine, publishing an sdist is fine and expected.
+#
+# Manual trigger, dry-run by default. Trusted publishing (OIDC) — no stored token.
+#
+# ─── OPERATOR PREREQUISITES (one-time) ───
+#   1. Reserve `watchlight` on TestPyPI + PyPI under the `watchlight-ai` PyPI org.
+#   2. Configure a PyPI Trusted Publisher (OIDC) with the GitHub identifiers:
+#        PyPI project name: watchlight
+#        Owner (GitHub):    watchlight-ai-beacon
+#        Repository:        watchlight-de
+#        Workflow name:     publish.yml
+#        Environment:       pypi        (repeat on TestPyPI with environment: testpypi)
+#   3. Create the `pypi` and `testpypi` GitHub Environments (optional reviewer).
+
+name: Publish watchlight (PyPI)
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: "Target index"
+        type: choice
+        options: [testpypi, pypi]
+        default: testpypi
+      dry_run:
+        description: "Build + check dists but SKIP the upload"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build sdist + wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build
+        run: |
+          python -m pip install --upgrade build twine
+          python -m build --outdir dist
+      - name: Check metadata
+        run: python -m twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: "Publish to ${{ inputs.repository }}"
+    needs: [build]
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.repository }}
+    permissions:
+      id-token: write # OIDC — trusted publishing mints a short-lived token
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: Publish (trusted publishing / OIDC)
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
+          repository-url: >-
+            ${{ inputs.repository == 'pypi'
+                && 'https://upload.pypi.org/legacy/'
+                || 'https://test.pypi.org/legacy/' }}
+          print-hash: true
