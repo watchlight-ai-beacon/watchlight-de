@@ -170,6 +170,7 @@ watchlight_mcp.serve(
     upstream_url="http://localhost:3000/mcp",   # the MCP server you're governing
     upstream_server="github",
     policy_files=["examples/mcp.policy.json"],
+    audit_path=".watchlight/audit.jsonl",       # ← the file `watchlight dev` tails
 )
 ```
 
@@ -177,6 +178,23 @@ Point your MCP client at `http://127.0.0.1:9700/mcp` instead of the server. A
 self-contained, self-demonstrating example (it fires an allowed and a denied
 call and proves the denied one never ran) is in
 [`examples/governed_mcp_server.py`](examples/governed_mcp_server.py).
+
+### Watch the MCP decisions live
+
+`watchlight dev` tails `.watchlight/audit.jsonl` — so give the PEP the **same**
+`audit_path` (above) and run the console beside it, from the same directory:
+
+```bash
+# terminal 1 — the governed MCP server, auditing to the file the console tails
+python examples/governed_mcp_server.py
+
+# terminal 2 — the live console
+watchlight dev                # → http://127.0.0.1:7000
+```
+
+Every `tools/call` decision streams in — the tool, the upstream it fronts, and
+the reason a call was denied. (The example prints the exact
+`watchlight dev --audit …` command for its own audit file.)
 
 ---
 

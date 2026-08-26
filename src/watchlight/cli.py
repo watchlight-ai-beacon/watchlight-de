@@ -62,14 +62,20 @@ def _read_events(audit_path: pathlib.Path, limit: int = 500) -> list[dict[str, A
         except (ValueError, TypeError):
             continue
         decision = str(raw.get("decision", "")).strip()
+        # Normalize both shapes so either renders identically: the `govern`
+        # decorator writes {ts, agent, intent, resource, decision:Allow/Deny};
+        # the MCP PEP writes {timestamp, principal, mcp_method, tool, upstream,
+        # decision:permit/deny, reason}.
         events.append(
             {
                 "ts": raw.get("ts") or raw.get("timestamp") or "",
                 "agent": raw.get("agent") or raw.get("agent_id") or raw.get("principal") or "agent",
-                "action": raw.get("intent") or raw.get("action") or "",
+                "action": raw.get("intent") or raw.get("action") or raw.get("mcp_method") or "",
                 "resource": raw.get("resource") or raw.get("tool") or "",
                 "decision": decision,
                 "allowed": decision.lower() in ("allow", "permit"),
+                "reason": str(raw.get("reason", "")).strip(),
+                "via": str(raw.get("upstream", "")).strip(),
             }
         )
     return events
@@ -301,16 +307,27 @@ async function tick(){
   if (data.audit_path) document.getElementById('audit-path').textContent = 'audit · ' + data.audit_path;
   const feed = document.getElementById('feed');
   const evs = (data.events||[]).slice().reverse();  // newest first
-  if (!evs.length){ feed.innerHTML = '<div class="empty">No decisions yet.<br>Run your governed agent — every ALLOW and DENY appears here, live.</div>'; return; }
+  const path = esc(data.audit_path || '.watchlight/audit.jsonl');
+  if (!evs.length){
+    feed.innerHTML =
+      `<div class="empty"><b>No decisions yet.</b> This console tails <span class="mono">${path}</span>.`
+      + `<br><br>Feed it from either side — in another terminal, from this directory:`
+      + `<br>&bull; a governed tool &mdash; <span class="mono">@govern.tool(...)</span> writes it automatically`
+      + `<br>&bull; an MCP server &mdash; <span class="mono">serve(&hellip;, audit_path="${path}")</span>`
+      + `<br><br>Every ALLOW and DENY streams in here, live.</div>`;
+    return;
+  }
   let rows = '';
   for (const e of evs){
     const cls = e.allowed ? 'allow' : 'deny';
     const label = e.allowed ? 'ALLOW' : 'DENY';
+    const via = e.via ? ` <span style="color:var(--muted);font-size:11px">via ${esc(e.via)}</span>` : '';
+    const reason = (!e.allowed && e.reason) ? `<div style="color:var(--muted);font-size:12px;margin-top:2px">${esc(e.reason)}</div>` : '';
     rows += `<tr class="${cls}"><td>${timefmt(e.ts)}</td><td class="mono">${esc(e.agent)}</td>`
-         +  `<td class="mono">${esc(e.action)}</td><td class="mono">${esc(e.resource)}</td>`
+         +  `<td class="mono">${esc(e.action)}</td><td class="mono">${esc(e.resource)}${via}${reason}</td>`
          +  `<td><span class="pill ${cls}">${label}</span></td></tr>`;
   }
-  feed.innerHTML = `<table><thead><tr><th>Time</th><th>Agent</th><th>Intent / action</th><th>Resource</th><th>Decision</th></tr></thead><tbody>${rows}</tbody></table>`;
+  feed.innerHTML = `<table><thead><tr><th>Time</th><th>Agent</th><th>Intent / method</th><th>Resource</th><th>Decision</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 tick(); setInterval(tick, 1500);
 </script>
