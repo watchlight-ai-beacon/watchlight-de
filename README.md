@@ -190,6 +190,10 @@ rewritten between levels.**
 - **Level 2** — `docker compose up`. Real policy service + database; policies still from your local file.
 - **Level 3** — Production. The full governed platform.
 
+> **Deploying to production?** We're glad to help you get there — email
+> **[sales@watchlight.ai](mailto:sales@watchlight.ai?subject=Watchlight%20production%20deployment)**
+> and we'll help you plan the rollout.
+
 ---
 
 ## Developer Edition vs Enterprise
