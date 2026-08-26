@@ -45,6 +45,22 @@ The `*.policy.json` files are plain [Cedar](https://docs.watchlight.ai/de/polici
 policies in the shape the engine loads — a list of `{"name", "code"}` objects.
 Edit them and re-run to see the decisions change.
 
+## Beyond the Developer Edition
+
+These examples show governed allow/deny on your laptop. When you're running a
+*fleet* of agents in production, the [Agent Runtime Governance Control
+Plane](https://www.watchlight.ai) adds the guarantees a single in-process engine
+can't:
+
+- **Sub-agent scope attenuation & delegation** — a spawned sub-agent can only ever
+  *narrow* its parent's authority, and delegated authority is validated end-to-end.
+- **Drift & anomaly detection → automatic quarantine** — a misbehaving agent is
+  stopped *before* its next action, not flagged after.
+- **Signed, tamper-evident audit & lineage** — every decision cryptographically
+  signed, so the trail is court-defensible.
+
+→ **[Talk to us — sales@watchlight.ai](mailto:sales@watchlight.ai?subject=Watchlight%20Enterprise)**
+
 ---
 
 Found a rough edge? [Open an issue](https://github.com/watchlight-ai-beacon/watchlight-de/issues/new/choose) — we read every one.
