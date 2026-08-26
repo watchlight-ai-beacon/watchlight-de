@@ -111,6 +111,14 @@ def _make_handler(audit_path: pathlib.Path):
                 self.end_headers()
                 self.wfile.write(body)
                 return
+            if self.path in ("/favicon.svg", "/favicon.ico"):
+                body = _FAVICON_SVG.encode("utf-8")
+                self.send_response(200)
+                self.send_header("content-type", "image/svg+xml")
+                self.send_header("content-length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             self.send_response(404)
             self.end_headers()
 
@@ -167,12 +175,38 @@ def main(argv: list[str] | None = None) -> int:
 # The dashboard page (self-contained: no external CSS/JS/fonts)
 # --------------------------------------------------------------------------- #
 
+# The Watchlight beacon mark — the same on-brand favicon the docs site uses.
+# Embedded here so the dashboard tab shows the Watchlight icon next to its
+# title with zero external requests (script-free, self-contained).
+_FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
+  <defs>
+    <radialGradient id="beacon" cx="50%" cy="45%" r="55%">
+      <stop offset="0%" stop-color="#fde68a"/>
+      <stop offset="45%" stop-color="#fbbf24"/>
+      <stop offset="100%" stop-color="#d97706"/>
+    </radialGradient>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#111826"/>
+      <stop offset="100%" stop-color="#0a0e17"/>
+    </linearGradient>
+  </defs>
+  <rect width="48" height="48" rx="11" fill="url(#tile)"/>
+  <rect x="0.75" y="0.75" width="46.5" height="46.5" rx="10.25" fill="none" stroke="#20293a" stroke-width="1.5"/>
+  <path d="M7 24 C 14 12.5, 34 12.5, 41 24 C 34 35.5, 14 35.5, 7 24 Z"
+        fill="none" stroke="#f59e0b" stroke-width="2.6" stroke-linejoin="round"/>
+  <circle cx="24" cy="24" r="10.5" fill="#f59e0b" opacity="0.22"/>
+  <circle cx="24" cy="24" r="6.6" fill="url(#beacon)"/>
+  <circle cx="21.4" cy="21.4" r="1.7" fill="#fffaf0"/>
+</svg>
+"""
+
 _PAGE = """<!doctype html>
 <html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Watchlight · dev</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
 <style>
   :root {
     --bg:#0b0f17; --panel:#111827; --panel2:#0f1521; --border:rgba(148,163,184,.14);
