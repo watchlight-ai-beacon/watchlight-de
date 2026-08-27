@@ -29,6 +29,10 @@ claude-agent = ["watchlight-claude-agent>=0.2"]
 # Govern an MCP server: the Watchlight MCP Runtime PEP — a policy enforcement
 # point in front of any MCP (2026-07-28) server. See examples/governed_mcp_server.py.
 mcp = ["watchlight-mcp>=0.1"]
+# Govern a deepagents deep agent: every sub-agent gets a strict-subset of the
+# parent's tools (scope attenuation), up to the DE depth-5 ceiling. Config-only —
+# no deepagents source is touched. See examples/governed_deepagents.py.
+deepagents = ["deepagents>=0.7"]
 
 [project.scripts]
 # `watchlight dev` → the local decision dashboard (stdlib-only, zero extra deps).

@@ -33,6 +33,7 @@ to production is one environment variable (`WATCHLIGHT_APDP_URL`), never a rewri
 | [`governed_langgraph_agent.py`](governed_langgraph_agent.py) | LangGraph | `watchlight[langgraph]` |
 | [`governed_pydantic_ai_agent.py`](governed_pydantic_ai_agent.py) | Pydantic AI | `watchlight[pydantic-ai]` |
 | [`governed_claude_agent.py`](governed_claude_agent.py) | Claude Agent SDK | `watchlight[claude-agent]` |
+| [`governed_deepagents.py`](governed_deepagents.py) | deepagents — **sub-agent scope attenuation**: each sub-agent gets a strict-subset of the parent's tools, to the depth-5 ceiling (runs without an API key) | `watchlight[deepagents]` |
 
 ## Govern an MCP server
 
