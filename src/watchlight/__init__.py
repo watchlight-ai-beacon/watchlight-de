@@ -123,7 +123,7 @@ class Watchlight:
         ceiling and enforces it server-side. See
         :class:`~watchlight.attenuation.Scope`.
         """
-        return Scope(
+        root = Scope(
             engine=self._engine,
             audit_path=self._audit_path,
             agent=self.agent,
@@ -134,6 +134,8 @@ class Watchlight:
             time_budget_seconds=time_budget_seconds,
             depth=0,
         )
+        root._emit_root()  # record the tree's starting authority for `watchlight dev`
+        return root
 
     # ── governing tools ─────────────────────────────────────────────
 
