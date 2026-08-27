@@ -29,18 +29,12 @@ from typing import Any
 # Reading the value-free audit trail
 # --------------------------------------------------------------------------- #
 
-def _read_events(audit_path: pathlib.Path, limit: int = 500) -> list[dict[str, Any]]:
-    """Parse the audit JSONL into normalized decision records (newest last).
-
-    Robust to both the `watchlight.govern` shape ({ts, agent, intent, resource,
-    decision}) and the plugin/in-process shape — fields are looked up with
-    fallbacks. Malformed lines are skipped. Never raises."""
+def _tail_lines(audit_path: pathlib.Path, max_tail: int = 256 * 1024) -> list[str]:
+    """Return the audit file's trailing lines, bounded to the last ``max_tail``
+    bytes so each 1.5s poll stays cheap regardless of how large the trail grows.
+    Never raises."""
     if not audit_path.exists():
         return []
-    # Read at most the last 256 KB from the END of the file, so a long-running
-    # agent's ever-growing audit trail can't make each 1.5s poll read (and decode)
-    # the whole file — memory/CPU stays bounded regardless of audit size.
-    max_tail = 256 * 1024
     try:
         with audit_path.open("rb") as fh:
             fh.seek(0, 2)
@@ -52,8 +46,17 @@ def _read_events(audit_path: pathlib.Path, limit: int = 500) -> list[dict[str, A
     lines = data.decode("utf-8", errors="replace").splitlines()
     if size > max_tail and lines:
         lines = lines[1:]  # drop the first, likely-partial, line
+    return lines
+
+
+def _read_events(audit_path: pathlib.Path, limit: int = 500) -> list[dict[str, Any]]:
+    """Parse the audit JSONL into normalized decision records (newest last).
+
+    Robust to both the `watchlight.govern` shape ({ts, agent, intent, resource,
+    decision}) and the plugin/in-process shape — fields are looked up with
+    fallbacks. Malformed lines are skipped. Never raises."""
     events: list[dict[str, Any]] = []
-    for line in lines[-limit:]:
+    for line in _tail_lines(audit_path)[-limit:]:
         line = line.strip()
         if not line:
             continue
@@ -88,6 +91,41 @@ def _summary(events: list[dict[str, Any]]) -> dict[str, Any]:
     return {"total": len(events), "allowed": allowed, "denied": denied, "agents": agents}
 
 
+def _attenuation(audit_path: pathlib.Path, limit: int = 2000) -> list[dict[str, Any]]:
+    """Extract sub-agent attenuation nodes for the tree view (newest-wins per
+    node). Each node carries its id, parent, depth, and granted tools, so the
+    console can reconstruct the exact tree — including the depth-5 ceiling, which
+    arrives as a denied node whose reason names the upgrade."""
+    nodes: dict[str, dict[str, Any]] = {}
+    for line in _tail_lines(audit_path)[-limit:]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            raw = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        if raw.get("event") != "attenuation":
+            continue
+        nid = raw.get("node_id")
+        if not nid:
+            continue
+        decision = str(raw.get("decision", "")).strip()
+        reason = str(raw.get("reason", "")).strip()
+        nodes[nid] = {
+            "id": nid,
+            "parent": raw.get("parent_id"),
+            "depth": raw.get("depth", 0),
+            "tools": raw.get("tools", []),
+            "allowed": decision.lower() in ("allow", "permit"),
+            "reason": reason,
+            # The ceiling is the one denial whose reason points at the upgrade.
+            "ceiling": (not decision.lower() in ("allow", "permit"))
+            and "watchlight.ai" in reason,
+        }
+    return list(nodes.values())
+
+
 # --------------------------------------------------------------------------- #
 # HTTP server
 # --------------------------------------------------------------------------- #
@@ -101,7 +139,12 @@ def _make_handler(audit_path: pathlib.Path):
             if self.path.startswith("/api/events"):
                 events = _read_events(audit_path)
                 body = json.dumps(
-                    {"summary": _summary(events), "events": events, "audit_path": str(audit_path)}
+                    {
+                        "summary": _summary(events),
+                        "events": events,
+                        "attenuation": _attenuation(audit_path),
+                        "audit_path": str(audit_path),
+                    }
                 ).encode("utf-8")
                 self.send_response(200)
                 self.send_header("content-type", "application/json")
@@ -258,6 +301,15 @@ _PAGE = """<!doctype html>
   .upsell ul { margin:0 0 14px; padding-left:18px; color:var(--muted); }
   .cta { display:inline-block; background:var(--amber); color:#111; font-weight:700; padding:9px 16px; border-radius:10px; }
   footer { text-align:center; color:var(--muted); font-size:12px; padding:24px; }
+  /* Attenuation tree */
+  .attn-row { font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace; padding:2px 0; border-left:2px solid transparent; }
+  .attn-row.allow   { border-left-color:var(--green); }
+  .attn-row.deny    { border-left-color:var(--red); }
+  .attn-row.ceiling { border-left-color:var(--amber); background:rgba(251,191,36,.06); }
+  .attn-depth { color:var(--muted); }
+  .attn-tools { color:var(--text); }
+  .attn-reason { color:var(--amber); font-size:12px; padding:2px 0 10px; max-width:78ch; }
+  #attn-section { margin-top:4px; }
 </style>
 </head>
 <body>
@@ -275,6 +327,11 @@ _PAGE = """<!doctype html>
     <div class="card allow"><div class="n" id="c-allow">0</div><div class="l">Allowed</div></div>
     <div class="card deny"><div class="n" id="c-deny">0</div><div class="l">Denied before exec</div></div>
     <div class="card"><div class="n" id="c-agents">0</div><div class="l">Agents</div></div>
+  </div>
+
+  <div id="attn-section" style="display:none">
+    <h2>Attenuation tree <span class="sub" style="font-weight:400">— authority narrowing per sub-agent (Developer-Edition ceiling: depth 5)</span></h2>
+    <div id="attn"></div>
   </div>
 
   <h2>Decisions</h2>
@@ -328,6 +385,31 @@ async function tick(){
          +  `<td><span class="pill ${cls}">${label}</span></td></tr>`;
   }
   feed.innerHTML = `<table><thead><tr><th>Time</th><th>Agent</th><th>Intent / method</th><th>Resource</th><th>Decision</th></tr></thead><tbody>${rows}</tbody></table>`;
+  renderAttn(data.attenuation);
+}
+function renderAttn(nodes){
+  const box = document.getElementById('attn-section');
+  if (!nodes || !nodes.length){ box.style.display='none'; return; }
+  box.style.display='';
+  const byId = {}, roots = [];
+  nodes.forEach(n => { byId[n.id] = Object.assign({}, n, {children: []}); });
+  nodes.forEach(n => { const nd = byId[n.id]; (n.parent && byId[n.parent] ? byId[n.parent].children : roots).push(nd); });
+  let out = '';
+  function walk(node){
+    const cls = node.ceiling ? 'ceiling' : (node.allowed ? 'allow' : 'deny');
+    const tools = (node.tools && node.tools.length) ? node.tools.join(', ') : '∅';
+    const pad = 12 + (node.depth || 0) * 22;
+    out += `<div class="attn-row ${cls}" style="padding-left:${pad}px">`
+         + `<span class="attn-depth">depth ${node.depth}</span> · `
+         + `<span class="attn-tools">[${esc(tools)}]</span>`
+         + (node.ceiling ? ` <span class="pill deny">CEILING → upgrade</span>`
+                         : (node.allowed ? '' : ` <span class="pill deny">DENY</span>`))
+         + `</div>`;
+    if (node.ceiling && node.reason) out += `<div class="attn-reason" style="padding-left:${pad}px">${esc(node.reason)}</div>`;
+    node.children.sort((a,b) => (a.depth||0) - (b.depth||0)).forEach(walk);
+  }
+  roots.sort((a,b) => (a.depth||0) - (b.depth||0)).forEach(walk);
+  document.getElementById('attn').innerHTML = out;
 }
 tick(); setInterval(tick, 1500);
 </script>
