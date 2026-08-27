@@ -34,7 +34,9 @@ __all__ = ["Scope", "DevEditionCeiling", "AttenuationDenied", "DE_MAX_DEPTH"]
 #: adds server-side enforcement, signed lineage, and fleet-wide revocation).
 DE_MAX_DEPTH = 5
 
-_UPSELL = (
+#: Human-readable message raised when a sub-agent tree reaches the DE depth
+#: ceiling — explains the product boundary and where the cap is lifted.
+_CEILING_NOTICE = (
     "Developer Edition governs sub-agent trees up to depth {cap}; this chain "
     "reached the ceiling at depth {depth}. In production, agents spawn deeper "
     "trees across a fleet — enforced server-side (the agent cannot route around "
@@ -55,7 +57,7 @@ class DevEditionCeiling(RuntimeError):
     def __init__(self, depth: int) -> None:
         self.depth = depth
         self.cap = DE_MAX_DEPTH
-        super().__init__(_UPSELL.format(cap=DE_MAX_DEPTH, depth=depth))
+        super().__init__(_CEILING_NOTICE.format(cap=DE_MAX_DEPTH, depth=depth))
 
 
 class AttenuationDenied(PermissionError):

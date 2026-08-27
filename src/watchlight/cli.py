@@ -294,11 +294,11 @@ _PAGE = """<!doctype html>
   .pill.deny { color:var(--red); background:rgba(248,113,113,.12); }
   .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; color:#cbd5e1; }
   .empty { text-align:center; color:var(--muted); padding:52px 20px; border:1px dashed var(--border); border-radius:14px; }
-  .upsell { margin-top:30px; background:linear-gradient(180deg,rgba(251,191,36,.07),rgba(251,191,36,.02));
+  .enterprise { margin-top:30px; background:linear-gradient(180deg,rgba(251,191,36,.07),rgba(251,191,36,.02));
     border:1px solid rgba(251,191,36,.22); border-radius:16px; padding:20px 22px; }
-  .upsell h3 { margin:0 0 6px; font-size:15px; }
-  .upsell p { margin:0 0 12px; color:var(--muted); }
-  .upsell ul { margin:0 0 14px; padding-left:18px; color:var(--muted); }
+  .enterprise h3 { margin:0 0 6px; font-size:15px; }
+  .enterprise p { margin:0 0 12px; color:var(--muted); }
+  .enterprise ul { margin:0 0 14px; padding-left:18px; color:var(--muted); }
   .cta { display:inline-block; background:var(--amber); color:#111; font-weight:700; padding:9px 16px; border-radius:10px; }
   footer { text-align:center; color:var(--muted); font-size:12px; padding:24px; }
   /* Attenuation tree */
@@ -337,7 +337,7 @@ _PAGE = """<!doctype html>
   <h2>Decisions</h2>
   <div id="feed"></div>
 
-  <div class="upsell">
+  <div class="enterprise">
     <h3>Governing more than one agent — or more than one environment?</h3>
     <p>The Developer Edition dashboard shows <em>this one process</em>. A fleet in production needs guarantees a single in-process engine structurally can't provide:</p>
     <ul>
