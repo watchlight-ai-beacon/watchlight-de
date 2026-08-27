@@ -68,3 +68,30 @@ def test_ceiling_is_recorded_as_a_deny_with_the_upsell(tmp_path):
     assert last["decision"] == "Deny"
     assert last["depth"] == DE_MAX_DEPTH + 1
     assert "sales@watchlight.ai" in last["reason"]
+
+
+def test_records_carry_parent_child_lineage(tmp_path):
+    root = _gov(tmp_path).scope(tools=["read", "write"], intents=["research"])
+    child = root.attenuate(tools=["read"])
+    audit = tmp_path / ".watchlight" / "audit.jsonl"
+    recs = [json.loads(line) for line in audit.read_text().splitlines()]
+    root_rec, child_rec = recs[0], recs[-1]
+    assert "parent_id" not in root_rec  # a root scope is parent-less
+    assert root_rec["node_id"] == root.node_id
+    assert child_rec["parent_id"] == root.node_id  # child links to its parent
+    assert child_rec["node_id"] == child.node_id
+    assert child_rec["tools"] == ["read"]
+
+
+def test_console_reconstructs_the_tree(tmp_path):
+    from watchlight.cli import _attenuation
+
+    root = _gov(tmp_path).scope(tools=["read", "write"])
+    child = root.attenuate(tools=["read"])
+    grandchild = child.attenuate(tools=["read"])
+    nodes = {n["id"]: n for n in _attenuation(tmp_path / ".watchlight" / "audit.jsonl")}
+    assert {root.node_id, child.node_id, grandchild.node_id} <= set(nodes)
+    assert nodes[root.node_id]["parent"] is None
+    assert nodes[child.node_id]["parent"] == root.node_id
+    assert nodes[grandchild.node_id]["parent"] == child.node_id
+    assert nodes[grandchild.node_id]["depth"] == 2

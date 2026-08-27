@@ -23,6 +23,7 @@ from __future__ import annotations
 import datetime
 import json
 import pathlib
+import uuid
 from typing import Any, Sequence
 
 __all__ = ["Scope", "DevEditionCeiling", "AttenuationDenied", "DE_MAX_DEPTH"]
@@ -98,6 +99,7 @@ class Scope:
         max_depth: int,
         time_budget_seconds: int,
         depth: int,
+        parent_id: str | None = None,
     ) -> None:
         self._engine = engine
         self._audit_path = pathlib.Path(audit_path)
@@ -108,6 +110,11 @@ class Scope:
         self.max_depth = int(max_depth)
         self.time_budget_seconds = int(time_budget_seconds)
         self.depth = int(depth)
+        #: A short id for this scope and its parent's — so `watchlight dev` can
+        #: reconstruct the exact attenuation tree (siblings at the same depth stay
+        #: distinct). ``parent_id`` is None for a root scope.
+        self.node_id = uuid.uuid4().hex[:8]
+        self.parent_id = parent_id
 
     # ── the primitive ───────────────────────────────────────────────
 
@@ -127,21 +134,25 @@ class Scope:
         ceiling.
         """
         child_depth = self.depth + 1
+        requested_tools = _norm(tools) if tools is not None else self.allowed_tools
 
         # The Developer-Edition ceiling — a product boundary, checked before the
         # engine. Everything up to here was a real, validated strict subset.
         if child_depth > DE_MAX_DEPTH:
-            self._audit(
+            self._record(
+                node_id=uuid.uuid4().hex[:8],
+                parent_id=self.node_id,
+                tools=requested_tools,
                 resource=f"sub-agent depth {child_depth}",
                 decision="Deny",
-                reason=DevEditionCeiling(child_depth).args[0],
                 depth=child_depth,
+                reason=DevEditionCeiling(child_depth).args[0],
             )
             raise DevEditionCeiling(child_depth)
 
         parent = self._as_dict()
         request = {
-            "allowed_tools": _norm(tools) if tools is not None else self.allowed_tools,
+            "allowed_tools": requested_tools,
             "allowed_resources": _norm(resources) if resources is not None else self.allowed_resources,
             "allowed_intents": _norm(intents) if intents is not None else self.allowed_intents,
             "max_depth": max(0, self.max_depth - 1),
@@ -156,11 +167,14 @@ class Scope:
         if resp.get("decision") != "Allow":
             violations = resp.get("violations") or []
             reason = resp.get("reason") or "requested scope is not a strict subset of the parent"
-            self._audit(
+            self._record(
+                node_id=uuid.uuid4().hex[:8],
+                parent_id=self.node_id,
+                tools=requested_tools,
                 resource=f"sub-agent depth {child_depth}",
                 decision="Deny",
-                reason=reason,
                 depth=child_depth,
+                reason=reason,
             )
             raise AttenuationDenied(violations, reason)
 
@@ -176,11 +190,14 @@ class Scope:
             max_depth=granted.get("max_depth", request["max_depth"]),
             time_budget_seconds=granted.get("time_budget_seconds", request["time_budget_seconds"]),
             depth=granted.get("depth", child_depth),
+            parent_id=self.node_id,
         )
-        self._audit(
-            resource=f"sub-agent depth {child.depth} · tools {child.allowed_tools}",
+        self._record(
+            node_id=child.node_id,
+            parent_id=self.node_id,
+            tools=child.allowed_tools,
+            resource=f"sub-agent depth {child.depth}",
             decision="Allow",
-            reason="",
             depth=child.depth,
         )
         return child
@@ -197,19 +214,46 @@ class Scope:
             "depth": self.depth,
         }
 
-    def _audit(self, *, resource: str, decision: str, reason: str, depth: int) -> None:
-        # Value-free by construction — the scope's dimensions are capability
-        # names, never argument values. Shape is compatible with `watchlight dev`
-        # (ts/agent/intent/resource/decision), plus `depth`/`event` for a tree view.
+    def _emit_root(self) -> None:
+        """Record this scope as the root of an attenuation tree (parent-less), so
+        the console shows the authority the tree starts from."""
+        self._record(
+            node_id=self.node_id,
+            parent_id=None,
+            tools=self.allowed_tools,
+            resource="root scope",
+            decision="Allow",
+            depth=self.depth,
+        )
+
+    def _record(
+        self,
+        *,
+        node_id: str,
+        parent_id: str | None,
+        tools: Sequence[str],
+        resource: str,
+        decision: str,
+        depth: int,
+        reason: str = "",
+    ) -> None:
+        # Value-free by construction — a scope's dimensions are capability NAMES,
+        # never argument values. Shape stays compatible with `watchlight dev`'s
+        # decision table (ts/agent/intent/resource/decision) and adds
+        # node_id/parent_id/tools/depth so it can also draw the attenuation TREE.
         record: dict[str, Any] = {
             "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "agent": self.agent,
             "intent": "attenuate",
+            "event": "attenuation",
+            "node_id": node_id,
             "resource": resource,
             "decision": decision,
             "depth": depth,
-            "event": "attenuation",
+            "tools": list(tools),
         }
+        if parent_id:
+            record["parent_id"] = parent_id
         if reason:
             record["reason"] = reason
         try:
