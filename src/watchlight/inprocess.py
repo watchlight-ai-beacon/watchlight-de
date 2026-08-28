@@ -1,18 +1,17 @@
 """In-process governance backend for Watchlight framework plugins.
 
-The Developer Edition runs the *same* framework plugins you ship to production
+The Developer Edition runs the Watchlight framework plugins
 (``watchlight-langgraph``, ``watchlight-pydantic-ai``, ``watchlight-claude-agent``,
-…) — but against the compiled authorization engine **in-process**, with zero
+…) against the compiled authorization engine **in-process**, with zero
 infrastructure. The seam is one object: a ``GovernanceBackend``.
 
-- **Production**: the plugin talks to a running policy service over TLS
+- **Production**: the plugin talks to a networked policy service over TLS
   (``ApdpClient``).
 - **Developer Edition**: the plugin talks to :func:`in_process_backend` — the
-  real ``watchlight-engine`` (the Watchlight authorization engine, Cedar)
-  embedded in your process, writing a local, value-free audit trail.
+  ``watchlight-engine`` (Cedar) embedded in your process, writing a local,
+  value-free audit trail.
 
-Same plugin, same agent code. Going to production is pointing at a policy
-service — not a rewrite.
+``WATCHLIGHT_APDP_URL`` selects between the two (see :func:`_select_backend_kwargs`).
 
     from watchlight.inprocess import in_process_backend
     from watchlight_langgraph import WatchlightLangGraphPlugin

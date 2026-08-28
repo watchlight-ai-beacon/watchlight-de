@@ -4,15 +4,14 @@ Currently one command:
 
     watchlight dev        # a local dashboard for the in-process audit trail
 
-``watchlight dev`` serves a tiny, dependency-free web page that tails the local
+``watchlight dev`` serves a dependency-free web page that tails the local
 ``.watchlight/audit.jsonl`` and shows every governance decision as it happens —
-the ALLOWs, and (the point) the DENYs that stopped a tool **before** it ran. It
-reads the same value-free audit the engine writes; no argument values, tokens,
-or secrets are ever displayed because they are never in the trail.
+the ALLOWs and the DENYs that stopped a tool **before** it ran. It reads the
+same value-free audit the engine writes; no argument values, tokens, or secrets
+are ever displayed because they are never in the trail.
 
-It is deliberately minimal: the Developer-Edition dashboard shows *your one
-process*. Fleet-wide lineage, signed tamper-evident audit, and drift→quarantine
-live in the governed control plane (Enterprise).
+The dashboard shows a single process. Fleet-wide lineage, signed tamper-evident
+audit, and drift→quarantine are provided by the Enterprise control plane.
 """
 
 from __future__ import annotations
@@ -224,7 +223,7 @@ def main(argv: list[str] | None = None) -> int:
 # The dashboard page (self-contained: no external CSS/JS/fonts)
 # --------------------------------------------------------------------------- #
 
-# The Watchlight beacon mark — the same on-brand favicon the docs site uses.
+# The Watchlight beacon mark — the favicon used by the docs site.
 # Embedded here so the dashboard tab shows the Watchlight icon next to its
 # title with zero external requests (script-free, self-contained).
 _FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
@@ -349,7 +348,7 @@ _PAGE = """<!doctype html>
     <a class="cta" href="mailto:sales@watchlight.ai?subject=Watchlight%20Enterprise">Talk to us — sales@watchlight.ai →</a>
   </div>
 </main>
-<footer>Watchlight Developer Edition · the same engine you ship to production, in-process.</footer>
+<footer>Watchlight Developer Edition · in-process governance.</footer>
 
 <script>
 function esc(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
