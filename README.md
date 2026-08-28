@@ -269,8 +269,8 @@ rewritten between levels.**
 
 - **Level 0** — `pip install watchlight`. In-process engine, audit to stdout.
 - **Level 1** — `watchlight dev`. Adds a local dashboard (decisions, denials, scope tree, execution lineage).
-- **Level 2** — `docker compose up`. Real policy service + database; policies still from your local file.
-- **Level 3** — Production. The full governed platform.
+- **Level 2** — the **self-hosted governed control plane**: a real policy service + database + signed lineage, run on your own infra. The same code points at it via `WATCHLIGHT_APDP_URL` — available to design partners and Enterprise.
+- **Level 3** — the **fully governed platform**: multi-tenant isolation, drift→quarantine, fleet-wide revocation, and the operator console.
 
 > **Deploying to production?** We're glad to help you get there — email
 > **[sales@watchlight.ai](mailto:sales@watchlight.ai?subject=Watchlight%20production%20deployment)**
