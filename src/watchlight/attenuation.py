@@ -1,16 +1,14 @@
-"""Sub-agent scope attenuation — a Developer-Edition taste of the real thing.
+"""Sub-agent scope attenuation for the Developer Edition.
 
 When an agent spawns a sub-agent, the child must receive a **strict subset** of
-the parent's authority — never more. That strict-subset validation is done here
-by the **real** Watchlight engine (``watchlight_engine.attenuate_scope``): a child
-that asks for a tool, intent, or resource the parent does not hold is denied, and
-a valid request comes back **clamped** to what the parent actually has.
+the parent's authority — never more. That strict-subset validation is performed
+by the Watchlight engine (``watchlight_engine.attenuate_scope``): a child that
+asks for a tool, intent, or resource the parent does not hold is denied, and a
+valid request comes back **clamped** to what the parent actually has.
 
 The Developer Edition governs these trees up to **depth 5** (:data:`DE_MAX_DEPTH`).
-Deeper trees — and the server-side enforcement, signed lineage, and fleet-wide
-revocation that make attenuation a *guarantee* rather than a convention — are the
-Enterprise plane. The math you feel here is real; the ceiling is where DE hands
-off.
+Server-side enforcement, signed lineage, and fleet-wide revocation are provided
+by the Enterprise plane.
 
     root = govern.scope(tools=["read", "write", "search"], intents=["research"])
     analyst = root.attenuate(tools=["read", "search"])   # depth 1  (strict subset)

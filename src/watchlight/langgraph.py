@@ -8,11 +8,10 @@
             raise PermissionError("denied before it executed")
         ...  # run the tool
 
-The returned object is an ordinary ``WatchlightLangGraphPlugin`` — the SAME
-plugin you ship to production. In the Developer Edition it is wired to the
+The returned object is a standard ``WatchlightLangGraphPlugin`` wired to the
 in-process engine (local Cedar policies, local value-free audit). Set
-``WATCHLIGHT_APDP_URL`` to a running policy service and the identical code runs
-against production APDP — one environment variable, not a rewrite.
+``WATCHLIGHT_APDP_URL`` to a networked policy service and the same code runs
+against a remote APDP.
 
 Requires the LangGraph extra: ``pip install 'watchlight[langgraph]'``.
 """

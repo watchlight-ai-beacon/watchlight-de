@@ -13,10 +13,10 @@ else **before the tool body runs**.
     def web_search(query: str) -> str:
         ...
 
-The engine is the REAL Watchlight authorization engine (Cedar evaluation + the
+The engine is the Watchlight authorization engine (Cedar evaluation plus the
 surrounding pipeline) embedded via the ``watchlight-engine`` extension — the
-same authorization model that runs in production, just in-process. Going to
-production is pointing at a running policy service, not a rewrite.
+same authorization model that runs in production, in-process. Point it at a
+networked policy service to run the same code against a remote APDP.
 
 Guarantees that are identical to production and MUST NOT be relaxed here:
   * **Fail-closed** — no matching policy denies; an unreachable decision denies.
@@ -55,8 +55,8 @@ _F = TypeVar("_F", bound=Callable[..., Any])
 class Denied(PermissionError):
     """Raised when the policy engine refuses a governed tool call (fail-closed).
 
-    The decorated function's body never runs — the refusal happens *before*
-    the side effect, which is the whole point.
+    The decorated function's body never runs — the refusal happens *before* the
+    side effect.
     """
 
     def __init__(self, tool: str, intent: str, reason: str) -> None:
