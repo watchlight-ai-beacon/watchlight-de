@@ -236,7 +236,7 @@ Everything you write against is **open** and Apache-2.0 — read it, audit it, f
 - the framework plugins — `watchlight-langgraph`, `watchlight-pydantic-ai`, `watchlight-claude-agent`
 - the MCP PEP's transport layer, and every example in this repo
 
-The **decision engine** ships as a **compiled wheel** — `watchlight-engine` (the Cedar authorization pipeline) and the `watchlight-mcp` runtime — both **free to use, including in production**. The engine source is the part Watchlight sells; the code you integrate with is not.
+The **decision engine** ships as a **compiled wheel** — `watchlight-engine` (the Cedar authorization pipeline) and the `watchlight-mcp` runtime — both **free to use, including in production and commercially — for up to 25 governed agents per organization** (a commercial license is needed only above that, or to re-offer the engine itself as a hosted authorization service). The engine source is the part Watchlight sells; the code you integrate with is not.
 
 You don't have to trust a black box to trust the decisions:
 
@@ -338,7 +338,10 @@ The Developer-Edition SDK, the framework plugins, this repository, and the
 `watchlight dev` dashboard are **Apache-2.0** — use, fork, and ship them freely.
 The authorization **engine** (`watchlight-engine`) and the MCP runtime
 (`watchlight-mcp`) ship as **compiled wheels** under the Watchlight Developer
-Edition license; they are free to use, including in production.
+Edition license; they are **free to use, including in production and
+commercially, for up to 25 governed agents per organization** — a commercial
+license is needed only above that, or to re-offer the engine itself as a hosted
+authorization service.
 
 Want the **engine source**, an **air-gapped build**, or to govern a **fleet** in
 production? That's the Enterprise plane — [email

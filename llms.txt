@@ -4,7 +4,7 @@
 
 Watchlight Developer Edition (DE) is the open front door to an **Agent Runtime Governance** platform. You decorate a tool with an *intent*, load a [Cedar](https://www.cedarpolicy.com/) policy, and the engine **allows what a policy permits and refuses everything else — before the tool body runs**. It also confines sub-agents to a strict subset of their parent's authority (scope attenuation), and can sit as a policy enforcement point in front of any MCP server. This file orients coding agents to the real, verified API so generated code is correct on the first try.
 
-- **License:** Apache-2.0 (the `watchlight` package). The compiled engine (`watchlight-engine`) is free for internal development, testing, and evaluation.
+- **License:** Apache-2.0 (the `watchlight` package). The compiled engine (`watchlight-engine`) and MCP runtime (`watchlight-mcp`) are **free to use, including in production and commercially, for up to 25 governed agents per organization** (a commercial license is required above that, or to re-offer the engine itself as a hosted service).
 - **Docs:** https://docs.watchlight.ai/de
 - **Repo:** https://github.com/watchlight-ai-beacon/watchlight-de
 - **Python:** 3.9+ · prebuilt wheels for Linux, macOS, Windows.
