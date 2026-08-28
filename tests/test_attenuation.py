@@ -57,7 +57,7 @@ def test_attenuation_is_audited(tmp_path):
     assert "arguments" not in last
 
 
-def test_ceiling_is_recorded_as_a_deny_with_the_upsell(tmp_path):
+def test_ceiling_is_recorded_as_a_deny_with_the_enterprise_notice(tmp_path):
     s = _gov(tmp_path).scope(tools=["read"], intents=["research"])
     for _ in range(DE_MAX_DEPTH):
         s = s.attenuate(tools=["read"])

@@ -1,0 +1,85 @@
+# Watchlight — Developer Edition
+
+> Govern an AI agent in-process, with zero infrastructure. `pip install watchlight` puts a real, fail-closed authorization decision in front of every tool call, sub-agent spawn, and MCP request — the same authorization engine that runs in the Watchlight control plane, embedded as a compiled wheel with an in-memory policy store. No database, no network, no services. When it says `Deny`, it denies for the same reasons production does.
+
+Watchlight Developer Edition (DE) is the open front door to an **Agent Runtime Governance** platform. You decorate a tool with an *intent*, load a [Cedar](https://www.cedarpolicy.com/) policy, and the engine **allows what a policy permits and refuses everything else — before the tool body runs**. It also confines sub-agents to a strict subset of their parent's authority (scope attenuation), and can sit as a policy enforcement point in front of any MCP server. This file orients coding agents to the real, verified API so generated code is correct on the first try.
+
+- **License:** Apache-2.0 (the `watchlight` package). The compiled engine (`watchlight-engine`) is free for internal development, testing, and evaluation.
+- **Docs:** https://docs.watchlight.ai/de
+- **Repo:** https://github.com/watchlight-ai-beacon/watchlight-de
+- **Python:** 3.9+ · prebuilt wheels for Linux, macOS, Windows.
+
+## Install and import (read this before writing imports)
+
+- `pip install watchlight` → import `watchlight` — the `govern` decorator, `govern.scope(...)` attenuation, and the `watchlight dev` dashboard. Pulls in `watchlight-engine` automatically.
+- `pip install "watchlight[langgraph]"` / `[pydantic-ai]` / `[claude-agent]` / `[deepagents]` → govern an existing framework agent. In DE these import as submodules: `from watchlight.langgraph import governed_plugin` (also `watchlight.pydantic_ai`, `watchlight.claude_agent`).
+- `pip install watchlight-mcp` → import `watchlight_mcp` — the MCP Runtime PEP (`serve` for HTTP, `serve_stdio` for stdio-launched servers).
+- `pip install watchlight-agent-sdk` → **imports as `watchlight_core`** (the lower-level lifecycle SDK: `InProcessClient`, sessions, preflight, local lineage). There is **no** `watchlight-core` package on PyPI — that module ships *inside* `watchlight-agent-sdk`.
+
+## Core API — the `watchlight` package (verified, 0.2.0)
+
+- `from watchlight import govern, Denied` — `govern` is a ready-to-use default governor (starts with **no** policies → fail-closed until you load some).
+- `govern.load("policies.json")` — load a JSON file: a list of `{"name", "code"}` objects, or `{"policies": [...]}`. A missing file loads nothing (still fail-closed).
+- `govern.allow('permit(principal, action == Action::"read", resource);', name="reader")` — add one Cedar policy inline. Chainable.
+- `@govern.tool(intent="research")` — decorate a function. On each call the engine authorizes `(agent, intent, "tool/<function_name>")`; on `Allow` the body runs, otherwise it raises `Denied(tool, intent, reason)` **before the body executes**. The resource is always `tool/<function_name>`.
+- `Watchlight(agent="my-agent", audit_dir=".watchlight")` — construct your own governor instead of the default. `agent` defaults to `$WATCHLIGHT_AGENT` or `"my-agent"`.
+- Every decision is appended, **value-free** (no argument values, ever), to `.watchlight/audit.jsonl`.
+
+## Scope attenuation — confine sub-agents (verified, 0.2.0)
+
+- `scope = govern.scope(tools=[...], resources=[...], intents=[...], max_depth=5, time_budget_seconds=3600)` — the root capability scope.
+- `child = scope.attenuate(tools=[...], intents=[...], resources=[...], time_budget_seconds=...)` — derive a **strict-subset** child. Omitting a dimension inherits the parent's. Every `attenuate` runs the real engine strict-subset validation and is audited (streams into `watchlight dev`).
+- Raises `AttenuationDenied(violations, reason)` if the child requests authority the parent lacks — `violations` names the overreaching dimension(s) (`AllowedTools`, `AllowedIntents`, `MaxDepth`, `TimeBudget`).
+- Raises `DevEditionCeiling(depth)` when a chain would exceed `DE_MAX_DEPTH` (5). This is a product boundary, **not** a policy denial — every level up to it was a real engine-validated subset.
+- Import surface: `from watchlight import Scope, AttenuationDenied, DevEditionCeiling, DE_MAX_DEPTH`.
+
+## Watch decisions live
+
+- `watchlight dev` → serves a local dashboard at `http://127.0.0.1:7000` that tails `.watchlight/audit.jsonl`: ALLOW/DENY feed, the attenuation tree, and MCP decisions. Flags: `--port`, `--host`, `--no-open`.
+
+## Govern an MCP server — the `watchlight-mcp` package
+
+- `import watchlight_mcp`
+- `watchlight_mcp.serve(listen_addr="127.0.0.1:9700", upstream_url="http://localhost:3000/mcp", upstream_server="github", policy_files=[...], audit_path=...)` — front a **Streamable-HTTP** MCP server. Point your MCP client at `http://127.0.0.1:9700/mcp`. Blocks until Ctrl-C.
+- `watchlight_mcp.serve_stdio(upstream_command=["python","-m","mcp_server_git","-r","/repo"], upstream_server="git", agent_id=None, principal_id=None, policy_files=[...], audit_path=...)` — govern a **stdio-launched** MCP server (the common case). Requires `watchlight-mcp >= 0.2.0`. All logs/audit go to stderr because stdout is the protocol wire.
+- Every governed `tools/call` is authorized in-process before it can reach the upstream; a denied call never leaves the PEP.
+
+## Docs (narrative guides on docs.watchlight.ai/de)
+
+- [Overview](https://docs.watchlight.ai/de/): what DE is, the package map, and where it fits the progressive-deployment model.
+- [Quickstart](https://docs.watchlight.ai/de/quickstart): `pip install`, govern a tool, print your first ALLOW/DENY in under five minutes.
+- [Cedar policy syntax](https://docs.watchlight.ai/de/policies): the policy language the engine evaluates, from first principles.
+- [Governed agents (in-process)](https://docs.watchlight.ai/de/governed-agents): govern an agent lifecycle with `InProcessClient` (from `watchlight-agent-sdk` / `watchlight_core`).
+- [Sub-agent scope attenuation](https://docs.watchlight.ai/de/scope-attenuation): strict-subset confinement, the depth-5 ceiling, and the deepagents example.
+- [Govern an MCP server](https://docs.watchlight.ai/de/mcp-server): `serve` (HTTP) and `serve_stdio` (stdio) transports.
+- [Enforcement effects](https://docs.watchlight.ai/de/enforcement-effects): what a policy can do beyond allow/deny.
+- [Field reference](https://docs.watchlight.ai/de/reference): the request/response shape and what is enforced vs advisory.
+- [Developer Edition vs Enterprise](https://docs.watchlight.ai/de/comparison): what the control plane adds and when to reach for it.
+
+## Runnable examples (in the repo)
+
+- [agent.py](https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/examples/agent.py): the smallest governed agent — the DENY line, zero infra.
+- [governed_research_agent.py](https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/examples/governed_research_agent.py): a multi-tool agent governed by intent.
+- [governed_subagents.py](https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/examples/governed_subagents.py): scope attenuation — every child a strict subset of its parent.
+- [governed_deepagents.py](https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/examples/governed_deepagents.py): governing a [deepagents](https://github.com/langchain-ai/deepagents) deep agent via `govern.scope` (runs without an API key).
+- [governed_langgraph_agent.py](https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/examples/governed_langgraph_agent.py) · [governed_pydantic_ai_agent.py](https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/examples/governed_pydantic_ai_agent.py) · [governed_claude_agent.py](https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/examples/governed_claude_agent.py): framework plugins, governed in-process.
+- [governed_mcp_server.py](https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/examples/governed_mcp_server.py): a policy enforcement point in front of an MCP server.
+- [context_governance.py](https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/examples/context_governance.py): policy-based content/PII screening.
+- Policy files live beside them: `watchlight.policy.json`, `research.policy.json`, `framework.policy.json`, `mcp.policy.json`.
+
+## Gotchas for coding agents (get these right)
+
+- **Fail-closed.** No policy = every governed call is denied. You must `govern.load(...)` or `govern.allow(...)` a permit before anything runs.
+- **A `@govern.tool` resource is `tool/<function_name>`.** Write policies against that resource, e.g. `permit(principal, action == Action::"research", resource == Resource::"tool/web_search");` — or leave `resource` unconstrained.
+- **Framework plugins authorize as `Agent::"<uuid>"`, not your run label.** A policy that pins `principal == User::"research-agent"` will NOT match a plugin-governed run and every action is denied. Gate framework-agent policies on the **action/resource**, or on `principal is Agent` — never a hardcoded principal id you can't know in advance. (The low-level `InProcessClient.authorize("research-agent", ...)` DOES use the label you pass — that's the one place a `User::"..."` principal matches.)
+- **`serve()` fronts HTTP MCP servers; `serve_stdio()` fronts stdio ones.** Never pass a `stdio://` string as `upstream_url` to `serve()`: on `watchlight-mcp >= 0.2.1` it is rejected at startup with a clear error; on earlier versions it binds and then fails as a late 502 on the first allowed call. Use `serve_stdio(upstream_command=[...])` for a stdio-launched server.
+- **`watchlight dev` needs a free port (default 7000); `serve()` needs its listen port free.** DE keeps no process registry — you own port hygiene. A stale orphaned server can hold a port and silently produce an empty audit.
+- **Cedar string idioms:** the engine resolves `context.*`, `==`, `is`, `like` (glob), and `set.contains()`. It does **not** have `.startsWith()` / `.contains()` on strings — use `like "prefix*"`. Entity-attribute reads and `in` hierarchy are not part of the DE engine surface; a policy that relies on them silently denies.
+- **Audit is value-free by contract.** Argument *values* never enter `.watchlight/audit.jsonl` — only who, what intent, which resource, and the decision. Don't expect to read tool arguments back out of it.
+
+## Optional
+
+- [Framework plugin overview](https://docs.watchlight.ai/docs/plugins/overview): the full plugin catalog (LangGraph, Pydantic AI, Claude Agent SDK).
+- [Progressive deployment](https://docs.watchlight.ai/docs/platform/progressive-deployment): how DE graduates to the governed control plane with no rewrite.
+- [Ecosystem](https://docs.watchlight.ai/de/ecosystem): where DE sits among the Watchlight components.
+- [watchlight.ai](https://www.watchlight.ai): the platform (signed lineage, drift→quarantine, fleet-wide revocation, operator console).
