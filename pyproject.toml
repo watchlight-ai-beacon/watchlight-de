@@ -11,6 +11,20 @@ requires-python = ">=3.9"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Watchlight AI" }]
 keywords = ["authorization", "ai-agents", "cedar", "policy", "governance"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
     # The in-process authorization engine — the real Watchlight policy engine
     # (Cedar evaluation + the surrounding pipeline), embedded via PyO3 and
