@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "watchlight"
-version = "0.2.0"
+version = "0.3.0"
 description = "Watchlight Developer Edition — govern AI agents in-process, with zero infrastructure."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -47,6 +47,21 @@ mcp = ["watchlight-mcp>=0.1"]
 # parent's tools (scope attenuation), up to the DE depth-5 ceiling. Config-only —
 # no deepagents source is touched. See examples/governed_deepagents.py.
 deepagents = ["deepagents>=0.7"]
+# The lower-level lifecycle SDK — InProcessClient, sessions, preflight, local
+# lineage. NOTE: it installs as the module `watchlight_core` (there is no
+# `watchlight-core` distribution). See docs/developer-edition/governed-agents.
+sdk = ["watchlight-agent-sdk>=0.6"]
+# Everything the DE docs use, in one install: `pip install "watchlight[all]"`.
+# Pulls the SDK, every framework plugin, and the MCP PEP so every example on
+# docs.watchlight.ai/de runs without hunting for the right package.
+all = [
+    "watchlight-agent-sdk>=0.6",
+    "watchlight-langgraph>=0.4",
+    "watchlight-pydantic-ai>=0.3",
+    "watchlight-claude-agent>=0.2",
+    "watchlight-mcp>=0.1",
+    "deepagents>=0.7",
+]
 
 [project.scripts]
 # `watchlight dev` → the local decision dashboard (stdlib-only, zero extra deps).

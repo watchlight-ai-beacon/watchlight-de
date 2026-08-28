@@ -66,8 +66,16 @@ running control plane, not a rewrite.
 |---|---|
 | `watchlight` | the `govern` decorator + the `watchlight dev` dashboard |
 | `watchlight[langgraph\|pydantic-ai\|claude-agent]` | govern an existing framework agent |
+| `watchlight-agent-sdk` | the lifecycle SDK — `InProcessClient`, sessions, preflight, local lineage (**imports as `watchlight_core`**) |
 | `watchlight-mcp` | govern an MCP server (a policy enforcement point) |
 | `watchlight-engine` | the compiled in-process engine (pulled in automatically) |
+| **`watchlight[all]`** | **one install for the whole DE** — SDK + every plugin + the MCP PEP; runs every example in the docs |
+
+> **Just want everything?** `pip install "watchlight[all]"` pulls the SDK, all
+> framework plugins, and the MCP PEP in one go — so every example on
+> [docs.watchlight.ai/de](https://docs.watchlight.ai/de) runs with a single install.
+> Note the SDK's module name is **`watchlight_core`** (there is no `watchlight-core`
+> package on PyPI).
 
 Runnable, self-contained examples for every one of these are in
 [`examples/`](examples/) — start with

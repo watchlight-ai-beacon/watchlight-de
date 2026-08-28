@@ -15,6 +15,7 @@ Watchlight Developer Edition (DE) is the open front door to an **Agent Runtime G
 - `pip install "watchlight[langgraph]"` / `[pydantic-ai]` / `[claude-agent]` / `[deepagents]` → govern an existing framework agent. In DE these import as submodules: `from watchlight.langgraph import governed_plugin` (also `watchlight.pydantic_ai`, `watchlight.claude_agent`).
 - `pip install watchlight-mcp` → import `watchlight_mcp` — the MCP Runtime PEP (`serve`/`serve_background` for HTTP with optional native TLS, `serve_stdio` for stdio-launched servers).
 - `pip install watchlight-agent-sdk` → **imports as `watchlight_core`** (the lower-level lifecycle SDK: `InProcessClient`, sessions, preflight, local lineage). There is **no** `watchlight-core` package on PyPI — that module ships *inside* `watchlight-agent-sdk`.
+- `pip install "watchlight[all]"` → one install for the whole DE: the SDK (`watchlight_core`) + every framework plugin + the MCP PEP (`watchlight_mcp`). Use this to run any example in the docs without resolving individual packages. (Requires `watchlight >= 0.3.0`.)
 
 ## Core API — the `watchlight` package (verified, 0.2.0)
 
