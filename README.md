@@ -220,6 +220,40 @@ and value-free audit are identical in every mode.
 
 ---
 
+## Open source, and the compiled engine
+
+Everything you write against is **open** and Apache-2.0 — read it, audit it, fork it:
+
+- `watchlight` — the `govern` decorator, `govern.scope` attenuation, the CLI, and the `watchlight dev` dashboard
+- the framework plugins — `watchlight-langgraph`, `watchlight-pydantic-ai`, `watchlight-claude-agent`
+- the MCP PEP's transport layer, and every example in this repo
+
+The **decision engine** ships as a **compiled wheel** — `watchlight-engine` (the Cedar authorization pipeline) and the `watchlight-mcp` runtime — both **free to use, including in production**. The engine source is the part Watchlight sells; the code you integrate with is not.
+
+You don't have to trust a black box to trust the decisions:
+
+- **The policy language is open.** Decisions are standard [Cedar](https://www.cedarpolicy.com/) — an open, formally-specified language; the same policy yields the same decision, deterministically.
+- **The integration layer is open.** The SDK, plugins, CLI, and PEP transport are all readable here, so you can see exactly what the engine is asked and what it returns.
+- **Every decision is on disk.** Each `ALLOW`/`DENY` is appended, value-free, to `.watchlight/audit.jsonl` — inspect the engine's behaviour on your own machine, tool by tool.
+
+Want the **engine source** or an **air-gapped build**? That's Enterprise — [email sales@watchlight.ai](mailto:sales@watchlight.ai?subject=Watchlight%20Enterprise).
+
+---
+
+## A note on identity
+
+The Developer Edition authorizes the **principal you assert** — the `agent` you construct the governor with, or the `Watchlight-Agent-Id` a governed MCP request carries. It does **not** cryptographically *prove* the caller: on your own machine, running both sides, that's the right trade — zero setup, no IdP, no signup. **Bind any non-loopback listener behind something that authenticates the caller** (a reverse proxy doing mTLS/OIDC, or the Enterprise plane).
+
+Identity hardens as you grow, **without changing your policies**:
+
+- **Developer Edition** — the principal is **asserted** (cooperative, local-dev).
+- **Next** — an optional **signed session token** binds the principal to a key your process holds, so a prompt-injected sub-agent can't rewrite a header to escalate — still no external infrastructure.
+- **Enterprise** — identity is **attested**: federated (OIDC) and workload (mTLS) identity, cryptographically verified across the fleet.
+
+Only *how strongly the principal is proven* changes between these — the policies you write do not.
+
+---
+
 ## Progressive disclosure
 
 Each level is one environment variable away from the next. **Nothing is
