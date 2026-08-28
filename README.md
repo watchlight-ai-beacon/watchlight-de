@@ -264,55 +264,12 @@ Only *how strongly the principal is proven* changes between these — the polici
 
 ## Developer Edition vs Enterprise
 
-The Developer Edition is the **real engine** — free, open, and running
-in-process so you can evaluate the entire authorization model on your laptop
-with zero infrastructure. Enterprise is the **same code** pointed at the
-governed control plane; it doesn't replace anything, it adds what a fleet in
-production needs:
+The Developer Edition is the real engine, free and in-process; **Enterprise**
+points the *same code* — no rewrite — at the governed control plane, adding
+signed tamper-evident lineage, multi-tenant isolation, drift→quarantine, and
+fleet-wide revocation across every agent and environment.
 
-- **Signed, tamper-evident lineage & audit** — every decision and lineage event
-  cryptographically signed (KMS-backed), so the trail is court-defensible.
-- **Multi-tenant isolation + roll-up administration** — tenant hierarchy, scoped
-  admins, and a cross-tenant authorization matrix.
-- **Drift & anomaly detection → automatic quarantine** — behavioural,
-  goal-drift, and argument-shape detectors that quarantine a misbehaving agent
-  *before* the next action.
-- **Full enforcement-effect taxonomy** — beyond allow/deny: block, terminate,
-  quarantine, sever-subtree, and revoke, enforced at runtime across the plane.
-- **Fleet-wide revocation & cross-environment governance** — revoke authority
-  across every agent at once, and govern dev, staging, and prod under one
-  authority model (including **sovereign / air-gapped deployment**).
-- **Content / PII guardrails service** and **global execution-graph lineage**
-  with the full **operator console**.
-- **SSO / RBAC / enterprise audit**, high availability, support, and SLAs.
-
-### You've outgrown the Developer Edition when…
-
-- Compliance asks *"prove who authorized this in production"* → you need
-  **signed, tamper-evident lineage**.
-- You're governing **more than one agent, or more than one environment** →
-  central policy lifecycle + the **global execution graph**.
-- Security wants a misbehaving agent **stopped before its next action** →
-  **drift/anomaly detection → automatic quarantine**.
-- You need to **revoke authority fleet-wide**, not process-by-process.
-- Procurement needs **SSO, RBAC, HA, SLAs, or sovereign/air-gapped deployment**.
-
-Each of these is a governance guarantee a single in-process engine structurally
-cannot provide — it needs the control plane.
-
-**Migrating is one environment variable — never a rewrite.** The tools you
-decorate, the policies you write, and the guarantees you rely on
-(fail-closed, engine-side attenuation, explicit scopes, value-free audit) are
-identical in every mode. Enterprise simply points the same code at a running
-plane.
-
-> The engine ships as a compiled wheel and the Developer Edition is a deliberate
-> *subset* of the platform — the governed control plane (signing, multi-tenant,
-> guardrails, drift, execution-graph) is the enterprise product, never bundled
-> here.
-
-→ **[Talk to us about Enterprise](mailto:sales@watchlight.ai)** when you're
-ready for production.
+→ **[watchlight.ai](https://www.watchlight.ai)**
 
 ---
 
