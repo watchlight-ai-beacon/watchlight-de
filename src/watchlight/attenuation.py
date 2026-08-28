@@ -9,8 +9,7 @@ a valid request comes back **clamped** to what the parent actually has.
 The Developer Edition governs these trees up to **depth 5** (:data:`DE_MAX_DEPTH`).
 Deeper trees — and the server-side enforcement, signed lineage, and fleet-wide
 revocation that make attenuation a *guarantee* rather than a convention — are the
-Enterprise plane. The math you feel here is real; the ceiling is where DE hands
-off.
+Enterprise plane.
 
     root = govern.scope(tools=["read", "write", "search"], intents=["research"])
     analyst = root.attenuate(tools=["read", "search"])   # depth 1  (strict subset)
