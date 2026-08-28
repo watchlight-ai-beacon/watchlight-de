@@ -95,7 +95,7 @@ def _attenuation(audit_path: pathlib.Path, limit: int = 2000) -> list[dict[str, 
     """Extract sub-agent attenuation nodes for the tree view (newest-wins per
     node). Each node carries its id, parent, depth, and granted tools, so the
     console can reconstruct the exact tree — including the depth-5 ceiling, which
-    arrives as a denied node whose reason names the upgrade."""
+    arrives as a denied node whose reason points to Enterprise."""
     nodes: dict[str, dict[str, Any]] = {}
     for line in _tail_lines(audit_path)[-limit:]:
         line = line.strip()
@@ -119,7 +119,7 @@ def _attenuation(audit_path: pathlib.Path, limit: int = 2000) -> list[dict[str, 
             "tools": raw.get("tools", []),
             "allowed": decision.lower() in ("allow", "permit"),
             "reason": reason,
-            # The ceiling is the one denial whose reason points at the upgrade.
+            # The ceiling is the one denial whose reason points to Enterprise.
             "ceiling": (not decision.lower() in ("allow", "permit"))
             and "watchlight.ai" in reason,
         }
@@ -402,7 +402,7 @@ function renderAttn(nodes){
     out += `<div class="attn-row ${cls}" style="padding-left:${pad}px">`
          + `<span class="attn-depth">depth ${node.depth}</span> · `
          + `<span class="attn-tools">[${esc(tools)}]</span>`
-         + (node.ceiling ? ` <span class="pill deny">CEILING → upgrade</span>`
+         + (node.ceiling ? ` <span class="pill deny">CEILING → Enterprise</span>`
                          : (node.allowed ? '' : ` <span class="pill deny">DENY</span>`))
          + `</div>`;
     if (node.ceiling && node.reason) out += `<div class="attn-reason" style="padding-left:${pad}px">${esc(node.reason)}</div>`;

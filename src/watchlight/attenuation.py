@@ -15,7 +15,7 @@ off.
     root = govern.scope(tools=["read", "write", "search"], intents=["research"])
     analyst = root.attenuate(tools=["read", "search"])   # depth 1  (strict subset)
     reader  = analyst.attenuate(tools=["read"])           # depth 2
-    # ... a sixth level raises DevEditionCeiling → the upgrade moment.
+    # ... a sixth level raises DevEditionCeiling (the Developer-Edition ceiling).
 """
 
 from __future__ import annotations

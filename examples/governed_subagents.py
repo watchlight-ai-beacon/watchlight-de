@@ -38,8 +38,8 @@ def main() -> None:
     except AttenuationDenied as denied:
         print("  ✗ widen denied :", denied.violations, "—", str(denied).split(": ", 1)[-1])
 
-    # Developer Edition governs the tree up to depth 5; going deeper is the
-    # upgrade moment (the attenuations so far were all real).
+    # Developer Edition governs the tree up to depth 5; going deeper raises
+    # DevEditionCeiling (the attenuations so far were all real).
     scope = reader
     try:
         while True:
