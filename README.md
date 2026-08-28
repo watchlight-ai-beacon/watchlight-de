@@ -155,8 +155,9 @@ drift→quarantine are the governed control plane (Enterprise).
 ## Govern an MCP server
 
 Put a policy decision point in front of any [MCP](https://modelcontextprotocol.io)
-server (spec `2026-07-28`). Every `tools/call` is authorized in-process **before**
-it reaches the server — a denied call never executes.
+server (spec `2026-07-28`). Every governed call — `tools/call`, `resources/read`,
+`resources/subscribe`, `prompts/get` — is authorized in-process **before** it
+reaches the server, so a denied call never executes.
 
 ```bash
 pip install watchlight-mcp
@@ -178,6 +179,11 @@ Point your MCP client at `http://127.0.0.1:9700/mcp` instead of the server. A
 self-contained, self-demonstrating example (it fires an allowed and a denied
 call and proves the denied one never ran) is in
 [`examples/governed_mcp_server.py`](examples/governed_mcp_server.py).
+
+For a stdio-launched server use `serve_stdio(...)`; to run non-blocking and
+hot-reload policies use `serve_background(...)`. Pass `tls_cert=`/`tls_key=` to
+terminate HTTPS on the listener, and `upstream_ca=` to trust a private
+`https://` upstream. See the [MCP server guide](https://docs.watchlight.ai/de/mcp-server).
 
 ### Watch the MCP decisions live
 

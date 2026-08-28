@@ -13,7 +13,7 @@ Watchlight Developer Edition (DE) is the open front door to an **Agent Runtime G
 
 - `pip install watchlight` → import `watchlight` — the `govern` decorator, `govern.scope(...)` attenuation, and the `watchlight dev` dashboard. Pulls in `watchlight-engine` automatically.
 - `pip install "watchlight[langgraph]"` / `[pydantic-ai]` / `[claude-agent]` / `[deepagents]` → govern an existing framework agent. In DE these import as submodules: `from watchlight.langgraph import governed_plugin` (also `watchlight.pydantic_ai`, `watchlight.claude_agent`).
-- `pip install watchlight-mcp` → import `watchlight_mcp` — the MCP Runtime PEP (`serve` for HTTP, `serve_stdio` for stdio-launched servers).
+- `pip install watchlight-mcp` → import `watchlight_mcp` — the MCP Runtime PEP (`serve`/`serve_background` for HTTP with optional native TLS, `serve_stdio` for stdio-launched servers).
 - `pip install watchlight-agent-sdk` → **imports as `watchlight_core`** (the lower-level lifecycle SDK: `InProcessClient`, sessions, preflight, local lineage). There is **no** `watchlight-core` package on PyPI — that module ships *inside* `watchlight-agent-sdk`.
 
 ## Core API — the `watchlight` package (verified, 0.2.0)
@@ -40,9 +40,10 @@ Watchlight Developer Edition (DE) is the open front door to an **Agent Runtime G
 ## Govern an MCP server — the `watchlight-mcp` package
 
 - `import watchlight_mcp`
-- `watchlight_mcp.serve(listen_addr="127.0.0.1:9700", upstream_url="http://localhost:3000/mcp", upstream_server="github", policy_files=[...], audit_path=...)` — front a **Streamable-HTTP** MCP server. Point your MCP client at `http://127.0.0.1:9700/mcp`. Blocks until Ctrl-C.
+- `watchlight_mcp.serve(listen_addr="127.0.0.1:9700", upstream_url="http://localhost:3000/mcp", upstream_server="github", policy_files=[...], audit_path=...)` — front a **Streamable-HTTP** MCP server. Point your MCP client at `http://127.0.0.1:9700/mcp`. Blocks until Ctrl-C. Optional native TLS (`watchlight-mcp >= 0.4.0`): `tls_cert=`/`tls_key=` terminate HTTPS on the listener; `upstream_ca=` trusts a private/self-signed `https://` upstream (fails closed without it).
+- `watchlight_mcp.serve_background(...) -> handle` — non-blocking `serve()`; returns a handle with `.reload_policies([files])` (atomic hot-swap; fails closed if the new set doesn't compile), `.stop()`, and `.running`. Same parameters (including TLS) as `serve()`. Requires `watchlight-mcp >= 0.3.0`.
 - `watchlight_mcp.serve_stdio(upstream_command=["python","-m","mcp_server_git","-r","/repo"], upstream_server="git", agent_id=None, principal_id=None, policy_files=[...], audit_path=...)` — govern a **stdio-launched** MCP server (the common case). Requires `watchlight-mcp >= 0.2.0`. All logs/audit go to stderr because stdout is the protocol wire.
-- Every governed `tools/call` is authorized in-process before it can reach the upstream; a denied call never leaves the PEP.
+- The PEP governs the acting methods — `tools/call`, `resources/read`, `resources/subscribe`, `prompts/get` — authorizing each in-process before it can reach the upstream; a denied call never leaves the PEP. The tool/resource/prompt target lands in `context.mcp.tool` / `context.mcp.uri` / `context.mcp.prompt` for policies. Routing headers (`Mcp-Method`/`Mcp-Name`) are optional — the JSON-RPC body is authoritative; a present-but-mismatched header is rejected.
 
 ## Docs (narrative guides on docs.watchlight.ai/de)
 
