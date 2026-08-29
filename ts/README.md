@@ -81,6 +81,33 @@ for await (const msg of query({ prompt, options: { hooks } })) {
 The hook is fail-closed and never throws back to the SDK — a governance error
 denies the call. Every decision is audited.
 
+## LangChain / LangGraph.js
+
+Govern any LangChain `StructuredTool` (which is what LangGraph.js tools are) — the
+tool is authorized before it runs; denied tools throw and never execute.
+
+```ts
+import { tool } from "@langchain/core/tools";
+import { z } from "zod";
+import { govern, governTool } from "@watchlight/sdk";
+
+govern.load("watchlight.policy.json");
+
+const search = governTool(
+  tool(async ({ query }) => webSearch(query), {
+    name: "web_search",
+    schema: z.object({ query: z.string() }),
+  }),
+  { intent: "research" }
+);
+
+// Pass `search` to your LangGraph ToolNode / createReactAgent as usual.
+```
+
+`governTool(tool, { intent })` returns a governed view (the original tool isn't
+mutated); `governTools(tools, { intentFor })` maps an array. Intent defaults to
+the tool's name. Fail-closed. `@langchain/core` is a peer dependency.
+
 ## Value-free audit
 
 `.watchlight/audit.jsonl` records **who / what intent / which tool / the
