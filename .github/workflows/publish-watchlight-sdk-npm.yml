@@ -1,0 +1,78 @@
+# Publish `@watchlight/sdk` (the Developer-Edition govern glue for Node/TS) to
+# npm via **Trusted Publishing** (OIDC) — no long-lived npm token is ever stored.
+#
+# This is the open (Apache-2.0) glue over the compiled @watchlight/engine; its
+# source lives HERE in the public DE repo (the TS twin of the Python `watchlight`
+# package). Because it publishes from this repo, `repository = watchlight-de`
+# matches the building repo, so npm records full, publicly-verifiable
+# **provenance** (unlike the engine, which is compiled from private source).
+#
+# ─── OPERATOR PREREQUISITES (one-time, before the first real publish) ───
+#   1. The `watchlight` npm org already exists (owns @watchlight/*).
+#   2. FIRST publish is manual — npm requires the package to EXIST before a
+#      trusted publisher can attach:
+#         cd ts && npm install && npm run build && npm publish --access public
+#   3. Attach the Trusted Publisher on npmjs.com → @watchlight/sdk → Settings →
+#      Trusted Publisher → GitHub Actions:
+#           Organization or user: watchlight-ai-beacon
+#           Repository:           watchlight-de
+#           Workflow filename:    publish-watchlight-sdk-npm.yml
+#           Environment:          npm
+#   4. Create the `npm` GitHub Environment in THIS repo (Settings → Environments).
+#
+# Action pinning (supply-chain policy): SHA-pinned with human tag in a comment.
+
+name: Publish @watchlight/sdk (npm)
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build + test + pack but SKIP the publish"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: "Publish @watchlight/sdk${{ inputs.dry_run && ' (dry-run)' || '' }}"
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      # npm Trusted Publishing (OIDC) — mints a short-lived token; also enables
+      # provenance, which succeeds here because repository == this repo.
+      id-token: write
+    defaults:
+      run:
+        working-directory: ts
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Upgrade npm (Trusted Publishing needs >= 11.5.1)
+        run: npm install -g npm@latest && npm --version
+
+      - name: Install deps (pulls the published @watchlight/engine)
+        run: npm install
+
+      - name: Build (tsc)
+        run: npm run build
+
+      - name: Test (govern + Claude hooks + graduation conformance)
+        run: node test/govern.test.mjs && node test/claude-agent.test.mjs && node test/graduation.test.mjs
+
+      - name: Pack (show exactly what would ship)
+        run: npm pack --dry-run
+
+      - name: Publish to npm (Trusted Publishing, OIDC + provenance)
+        if: ${{ !inputs.dry_run }}
+        # No NODE_AUTH_TOKEN. Provenance is ON (repository == watchlight-de ==
+        # building repo). `prepublishOnly` rebuilds dist as a guard.
+        run: npm publish --access public

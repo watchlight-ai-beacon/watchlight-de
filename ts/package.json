@@ -1,0 +1,50 @@
+{
+  "name": "@watchlight/sdk",
+  "version": "0.1.0",
+  "description": "Watchlight Developer Edition govern glue for Node/TypeScript — declare intent, govern a tool with a fail-closed in-process policy decision, and get a value-free audit trail. Glue over @watchlight/engine; zero decision logic in JS.",
+  "type": "commonjs",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node test/govern.test.mjs && node test/claude-agent.test.mjs && node test/graduation.test.mjs",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "authorization",
+    "cedar",
+    "policy",
+    "agent",
+    "governance",
+    "watchlight",
+    "ai-agents"
+  ],
+  "dependencies": {
+    "@watchlight/engine": "^0.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/node": "^20.0.0"
+  },
+  "license": "Apache-2.0",
+  "homepage": "https://www.watchlight.ai",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/watchlight-ai-beacon/watchlight-de.git",
+    "directory": "ts"
+  },
+  "bugs": {
+    "url": "https://github.com/watchlight-ai-beacon/watchlight-de/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

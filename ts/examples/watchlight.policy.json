@@ -1,0 +1,6 @@
+[
+  {
+    "name": "allow-research",
+    "code": "permit(principal, action == Action::\"research\", resource);"
+  }
+]
