@@ -23,6 +23,12 @@ import { selectBackend, type GovernanceBackend } from "./backend";
 export { Scope, DE_MAX_DEPTH, AttenuationDenied, DevEditionCeiling } from "./attenuation";
 export { governedHooks } from "./claude-agent";
 export type { GovernedHooksOptions, GovernedHooksResult } from "./claude-agent";
+export { governTool, governTools } from "./langchain";
+export type {
+  LangChainToolLike,
+  GovernToolOptions,
+  GovernToolsOptions,
+} from "./langchain";
 export type { GovernanceBackend, Decision, AuthorizeRequest } from "./backend";
 export { InProcessBackend, NetworkedBackend } from "./backend";
 
