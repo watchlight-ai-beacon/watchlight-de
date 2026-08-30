@@ -196,6 +196,43 @@ drift→quarantine are the governed control plane (Enterprise).
 
 ---
 
+## Test your policies before they gate real actions
+
+A policy is the only thing standing between an agent and a real action, so unit-test
+it like any other code. Golden fixtures assert the expected verdict
+(`Allow` / `Deny` / `NeedsApproval`) for a `(principal, action, resource, context)`;
+a wrong expectation fails the suite. Run it in CI.
+
+```python
+from watchlight import govern
+
+govern.load("watchlight.policy.json")
+report = govern.test([
+    {"name": "under limit allows", "action": "book",
+     "context": {"amount": 200, "limit": 500, "refundable": True}, "expect": "Allow"},
+    {"name": "over limit denies", "action": "book",
+     "context": {"amount": 800, "limit": 500, "refundable": True}, "expect": "Deny"},
+    {"name": "big wire needs a human", "action": "wire",
+     "context": {"amount": 5000}, "expect": "NeedsApproval"},
+])
+assert report["failed"] == 0, report
+```
+
+`govern.test(...)` (Node: `await govern.test([...])`) drives the engine's decision
+core directly, so it **never writes the audit trail** and holds zero decision logic —
+every verdict is the engine's. Set `"approved": true` on a fixture to mint a
+single-use token and assert the human-confirmed `NeedsApproval → Allow` downgrade.
+
+Or from CI, with the CLI — a `suite.json` of `{ policyFile?, policies?, tests: [...] }`,
+exit 1 on any failure:
+
+```bash
+watchlight policy test suite.json          # Python
+npx watchlight policy test suite.json      # Node
+```
+
+---
+
 ## Govern an MCP server
 
 Put a policy decision point in front of any [MCP](https://modelcontextprotocol.io)

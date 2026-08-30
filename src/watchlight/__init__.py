@@ -43,6 +43,7 @@ from typing import Any, Callable, Optional, Sequence, TypeVar, Union
 import watchlight_engine as _engine
 
 from .attenuation import DE_MAX_DEPTH, AttenuationDenied, DevEditionCeiling, Scope
+from .policytest import load_test_suite, run_policy_tests
 
 __all__ = [
     "Watchlight",
@@ -54,6 +55,8 @@ __all__ = [
     "AttenuationDenied",
     "DevEditionCeiling",
     "DE_MAX_DEPTH",
+    "run_policy_tests",
+    "load_test_suite",
 ]
 
 _F = TypeVar("_F", bound=Callable[..., Any])
@@ -94,24 +97,29 @@ _USED_APPROVALS: set[str] = set()
 
 def _mint_approval_token(principal: str, action: str, resource: str, ttl_ms: int) -> str:
     exp = int(time.time() * 1000) + ttl_ms
-    payload = f"{principal} {action} {resource} {exp}".encode()
+    # A per-mint nonce makes every token unique, so two approvals for the same
+    # (principal, action, resource) minted in the same millisecond never collide
+    # — and "single-use" is genuinely per-mint, not per-(challenge, exp).
+    nonce = secrets.token_hex(8)
+    payload = f"{principal} {action} {resource} {exp} {nonce}".encode()
     sig = hmac.new(_APPROVAL_SECRET, payload, hashlib.sha256).hexdigest()
-    return f"{exp}.{sig}"
+    return f"{exp}.{nonce}.{sig}"
 
 
 def _consume_approval_token(token: str, principal: str, action: str, resource: str) -> bool:
     """Verify + consume (single-use). Bound to the exact (principal, action,
     resource); rejects expired, tampered, or reused tokens."""
-    if "." not in token:
+    parts = token.split(".")
+    if len(parts) != 3:
         return False
-    exp_str, _, sig = token.partition(".")
+    exp_str, nonce, sig = parts
     try:
         exp = int(exp_str)
     except ValueError:
         return False
     if int(time.time() * 1000) > exp:
         return False
-    payload = f"{principal} {action} {resource} {exp}".encode()
+    payload = f"{principal} {action} {resource} {exp} {nonce}".encode()
     expected = hmac.new(_APPROVAL_SECRET, payload, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(sig, expected):
         return False
@@ -369,6 +377,28 @@ class Watchlight:
         ``require_approval``) is downgraded to ``Allow`` when a valid single-use
         ``approval`` token (from :meth:`mint_approval`, after a human confirms) is
         supplied. Fail-closed and audited (value-free)."""
+        result, prin, res, decision_id = self._decide(
+            action=action, principal=principal, resource=resource, context=context, approval=approval
+        )
+        self._audit(
+            action, res, result["decision"], result["reason"],
+            principal=prin, decision_id=decision_id, approved=result["approved"],
+        )
+        return result
+
+    def _decide(
+        self,
+        *,
+        action: str,
+        principal: Optional[str] = None,
+        resource: Optional[str] = None,
+        context: Optional[dict] = None,
+        approval: Optional[str] = None,
+    ) -> tuple[dict, str, str, Optional[str]]:
+        """The pure decision core behind :meth:`authorize`: run the engine, apply
+        the approval-token downgrade, and compute the three-state verdict —
+        WITHOUT writing to the audit trail. Used by :meth:`authorize` (which then
+        audits) and by :meth:`test` (which must not pollute the trail)."""
         prin = principal or self.agent
         res = resource or "resource"
         raw = json.loads(
@@ -387,15 +417,35 @@ class Watchlight:
             else:
                 allowed = False
         verdict = "Allow" if allowed else ("NeedsApproval" if needs else "Deny")
-        self._audit(action, res, verdict, reason, principal=prin, decision_id=decision_id, approved=approved)
-        return {
-            "decision": verdict,
-            "allowed": allowed,
-            "needs_approval": needs,
-            "approved": approved,
-            "decision_id": decision_id,
-            "reason": reason,
-        }
+        return (
+            {
+                "decision": verdict,
+                "allowed": allowed,
+                "needs_approval": needs,
+                "approved": approved,
+                "decision_id": decision_id,
+                "reason": reason,
+            },
+            prin,
+            res,
+            decision_id,
+        )
+
+    def test(self, cases: Sequence[dict]) -> dict:
+        """Run policy fixtures against the loaded policies and report which pass —
+        a golden-test harness for CI, so a policy change is verified before it
+        gates a real action. Each case is a dict with ``action`` and ``expect``
+        (``"Allow"`` / ``"Deny"`` / ``"NeedsApproval"``), plus optional
+        ``principal`` / ``resource`` / ``context``; set ``"approved": True`` to
+        mint a valid approval token and assert the human-confirmed downgrade.
+        Does NOT write to the audit trail. A verdict mismatch is a failed result
+        (inspect ``report["failed"]`` and assert on it in your test runner); a
+        malformed fixture missing ``action`` or ``expect`` raises ``ValueError``."""
+        return run_policy_tests(
+            lambda **req: self._decide(**req)[0],
+            lambda **ch: self.mint_approval(**ch),
+            cases,
+        )
 
     def mint_approval(
         self,

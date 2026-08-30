@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -197,6 +198,67 @@ def _cmd_dev(args: argparse.Namespace) -> int:
     return 0
 
 
+# --------------------------------------------------------------------------- #
+# `watchlight policy test` — run golden policy fixtures in CI
+# --------------------------------------------------------------------------- #
+
+def _color(enabled: bool):
+    def wrap(code: str):
+        return (lambda s: f"\x1b[{code}m{s}\x1b[0m") if enabled else (lambda s: s)
+    return wrap("32"), wrap("31"), wrap("2")  # green, red, dim
+
+
+def _print_report(file: str, report: dict) -> None:
+    enabled = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+    green, red, dim = _color(enabled)
+    print(f"watchlight policy test — {file}\n")
+    for r in report["results"]:
+        name, expected, actual = r["name"], r["expected"], r["actual"]
+        if r["ok"]:
+            print(f"  {green('✓')} {name} {dim('→ ' + actual)}")
+        else:
+            why = dim(f"  ({r['reason']})") if r["reason"] else ""
+            verdict = red(f"— expected {expected}, got {actual}")
+            print(f"  {red('✗')} {name} {verdict}{why}")
+    summary = f"{report['passed']} passed, {report['failed']} failed ({report['total']} total)"
+    print("\n" + (red(summary) if report["failed"] else green(summary)))
+
+
+def _cmd_policy_test(args: argparse.Namespace) -> int:
+    # Imported here so `watchlight dev` never pays for loading the engine.
+    from . import Watchlight
+    from .policytest import load_test_suite
+
+    file = pathlib.Path(args.suite)
+    try:
+        suite = load_test_suite(file)
+    except Exception as exc:  # noqa: BLE001 - report and fail the CI step
+        print(f"watchlight: could not read suite '{file}': {exc}", file=sys.stderr)
+        return 2
+
+    # Fresh, policy-free governor (fail-closed); load only what the suite declares.
+    # No audit is written — `test()` uses the engine's decision core directly.
+    gov = Watchlight(agent="policy-test")
+    policy_file = suite.get("policy_file")
+    if policy_file:
+        gov.load(file.parent / policy_file)
+    for policy in suite.get("policies") or []:
+        gov.allow(policy["code"], policy.get("name"))
+
+    tests = suite.get("tests") or []
+    if not tests:
+        print(f"watchlight: suite '{file}' has no tests", file=sys.stderr)
+        return 2
+
+    try:
+        report = gov.test(tests)
+    except ValueError as exc:  # malformed fixture (missing action/expect)
+        print(f"watchlight: {exc}", file=sys.stderr)
+        return 2
+    _print_report(str(file), report)
+    return 1 if report["failed"] else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="watchlight", description="Watchlight Developer Edition.")
     sub = parser.add_subparsers(dest="command")
@@ -212,8 +274,14 @@ def main(argv: list[str] | None = None) -> int:
     dev.add_argument("--no-open", action="store_true", help="do not open a browser")
     dev.set_defaults(func=_cmd_dev)
 
+    policy = sub.add_parser("policy", help="policy tooling")
+    policy_sub = policy.add_subparsers(dest="policy_command")
+    ptest = policy_sub.add_parser("test", help="run policy fixtures (exit 1 on failure)")
+    ptest.add_argument("suite", help="suite JSON: {policyFile?|policies?, tests:[...]}")
+    ptest.set_defaults(func=_cmd_policy_test)
+
     args = parser.parse_args(argv)
-    if not getattr(args, "command", None):
+    if not getattr(args, "command", None) or not getattr(args, "func", None):
         parser.print_help()
         return 0
     return int(args.func(args))
