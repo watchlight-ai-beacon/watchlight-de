@@ -1,0 +1,11 @@
+{
+  "policies": [
+    { "name": "owner-may-pay",
+      "code": "permit(principal == User::\"alice\", action == Action::\"pay\", resource);" }
+  ],
+  "tests": [
+    { "name": "the account owner may pay", "action": "pay", "principal": "User::\"alice\"", "expect": "Allow" },
+    { "name": "a different user may not", "action": "pay", "principal": "User::\"bob\"", "expect": "Deny" },
+    { "name": "an unattributed call may not", "action": "pay", "expect": "Deny" }
+  ]
+}

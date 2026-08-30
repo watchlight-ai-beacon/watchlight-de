@@ -1,0 +1,16 @@
+{
+  "policies": [
+    { "name": "internal-messages-are-free",
+      "code": "permit(principal, action == Action::\"send_message\", resource) when { context.recipient_internal == true };" },
+    { "name": "allowlisted-external-needs-human",
+      "code": "@enforcement_effect(\"require_approval\")\npermit(principal, action == Action::\"send_message\", resource) when { context.recipient_internal == false && [\"partner.example\", \"vendor.example\"].contains(context.recipient_domain) };" }
+  ],
+  "tests": [
+    { "name": "internal recipient allowed", "action": "send_message",
+      "context": { "recipient_internal": true, "recipient_domain": "internal.example" }, "expect": "Allow" },
+    { "name": "allowlisted external holds for a human", "action": "send_message",
+      "context": { "recipient_internal": false, "recipient_domain": "partner.example" }, "expect": "NeedsApproval" },
+    { "name": "unlisted external domain denied", "action": "send_message",
+      "context": { "recipient_internal": false, "recipient_domain": "unknown.example" }, "expect": "Deny" }
+  ]
+}

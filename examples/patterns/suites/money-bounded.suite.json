@@ -1,0 +1,20 @@
+{
+  "policies": [
+    { "name": "within-limit-refundable",
+      "code": "permit(principal, action == Action::\"charge\", resource) when { context.amount <= context.limit && context.refundable };" },
+    { "name": "large-charge-needs-human",
+      "code": "@enforcement_effect(\"require_approval\")\npermit(principal, action == Action::\"charge\", resource) when { context.amount > 1000 };" }
+  ],
+  "tests": [
+    { "name": "under limit + refundable allows", "action": "charge",
+      "context": { "amount": 50, "limit": 200, "refundable": true }, "expect": "Allow" },
+    { "name": "over the per-action limit denies", "action": "charge",
+      "context": { "amount": 500, "limit": 200, "refundable": true }, "expect": "Deny" },
+    { "name": "non-refundable denies", "action": "charge",
+      "context": { "amount": 50, "limit": 200, "refundable": false }, "expect": "Deny" },
+    { "name": "large charge holds for a human", "action": "charge",
+      "context": { "amount": 5000, "limit": 200, "refundable": true }, "expect": "NeedsApproval" },
+    { "name": "large charge proceeds once approved", "action": "charge",
+      "context": { "amount": 5000, "limit": 200, "refundable": true }, "approved": true, "expect": "Allow" }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "policies": [
+    { "name": "internal-export-is-free",
+      "code": "permit(principal, action == Action::\"export\", resource) when { context.destination == \"internal\" };" },
+    { "name": "public-data-may-leave",
+      "code": "permit(principal, action == Action::\"export\", resource) when { context.destination == \"external\" && context.classification == \"public\" };" },
+    { "name": "restricted-never-leaves",
+      "code": "forbid(principal, action == Action::\"export\", resource) when { context.classification == \"restricted\" && context.destination == \"external\" };" }
+  ],
+  "tests": [
+    { "name": "public data to an external destination allowed", "action": "export",
+      "context": { "destination": "external", "classification": "public" }, "expect": "Allow" },
+    { "name": "internal export of public data allowed", "action": "export",
+      "context": { "destination": "internal", "classification": "public" }, "expect": "Allow" },
+    { "name": "restricted data leaving the boundary is denied", "action": "export",
+      "context": { "destination": "external", "classification": "restricted" }, "expect": "Deny" },
+    { "name": "restricted data stays usable internally", "action": "export",
+      "context": { "destination": "internal", "classification": "restricted" }, "expect": "Allow" }
+  ]
+}
