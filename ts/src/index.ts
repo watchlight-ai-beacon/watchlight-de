@@ -19,6 +19,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { Scope, DE_MAX_DEPTH } from "./attenuation";
 import { selectBackend, type GovernanceBackend } from "./backend";
+import { sanitize as sanitizeText, type SanitizeOptions, type SanitizeResult } from "./sanitize";
 
 export { Scope, DE_MAX_DEPTH, AttenuationDenied, DevEditionCeiling } from "./attenuation";
 export { governedHooks } from "./claude-agent";
@@ -29,6 +30,14 @@ export type {
   GovernToolOptions,
   GovernToolsOptions,
 } from "./langchain";
+export { sanitize, SanitizeError, DETECTOR_VERSION } from "./sanitize";
+export type {
+  PiiType,
+  RedactMode,
+  SanitizeOptions,
+  SanitizeReport,
+  SanitizeResult,
+} from "./sanitize";
 export type { GovernanceBackend, Decision, AuthorizeRequest } from "./backend";
 export { InProcessBackend, NetworkedBackend } from "./backend";
 
@@ -199,7 +208,51 @@ export class Watchlight {
     return { allowed: decision === "Allow", decision, reason };
   }
 
+  /**
+   * Strip PII from text before an agent reads it (governed data minimization).
+   * Deterministic, fail-closed. Writes a value-free `sanitization` record to the
+   * audit trail (counts by PII type + mode — never the values) and returns the
+   * redacted text plus the report. Operates on extracted text — extract a
+   * document to text first (never hand the agent a "redacted PDF").
+   */
+  sanitize(
+    content: string,
+    opts: SanitizeOptions & { intent?: string; resource?: string } = {}
+  ): SanitizeResult {
+    const { intent = "read", resource = "document", mode, types } = opts;
+    const result = sanitizeText(content, { mode, types });
+    this._auditSanitize(intent, resource, result);
+    return result;
+  }
+
   // ── internals ─────────────────────────────────────────────────────
+
+  private _auditSanitize(intent: string, resource: string, result: SanitizeResult): void {
+    this._announce();
+    const { report } = result;
+    // eslint-disable-next-line no-console
+    console.log(
+      `watchlight: SANIT ${intent.padEnd(9)} ${resource}     redacted ${report.total} (${report.mode})`
+    );
+    // Value-free: counts by PII type + mode only — never the PII values.
+    const record = {
+      ts: new Date().toISOString(),
+      agent: this.agent,
+      intent,
+      event: "sanitization",
+      resource,
+      mode: report.mode,
+      detector: report.detectorVersion,
+      counts: report.counts,
+      total: report.total,
+    };
+    try {
+      fs.mkdirSync(path.dirname(this._auditPath), { recursive: true });
+      fs.appendFileSync(this._auditPath, JSON.stringify(record) + "\n", "utf8");
+    } catch {
+      // Best-effort in dev mode.
+    }
+  }
 
   private async _authorize(intent: string, resource: string): Promise<[string, string]> {
     const { decision, reason } = await this._backend.authorize({

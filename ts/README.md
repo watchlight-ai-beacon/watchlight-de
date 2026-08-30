@@ -108,6 +108,32 @@ const search = governTool(
 mutated); `governTools(tools, { intentFor })` maps an array. Intent defaults to
 the tool's name. Fail-closed. `@langchain/core` is a peer dependency.
 
+## Strip PII before the agent reads a document
+
+Redact PII from text before it reaches the agent — deterministic, in-process,
+fail-closed. Extract your document to text first (never hand the agent the
+original PDF — its hidden layers leak), then sanitize:
+
+```ts
+import { govern } from "@watchlight/sdk";
+
+const text = await extractPdfText("statement.pdf"); // your extractor
+const { text: safe, report } = govern.sanitize(text, { resource: "statement.pdf" });
+
+// safe → "Card on file: <CREDIT_CARD_1>  SSN: <SSN_1>  ..."
+// report → { mode:"tag", counts:{ CREDIT_CARD:1, SSN:1, ... }, total, ... }  (value-free)
+await agent.read(safe);
+```
+
+The deterministic detector covers structured PII — email, phone, SSN, credit card
+(Luhn-validated), IBAN, IPv4, API keys. Modes: `tag` (consistent `<EMAIL_1>`
+placeholders, default), `mask` (`[EMAIL]`), `hash`. `govern.sanitize` records a
+**value-free** audit entry (counts by type + mode — never the values).
+
+A pure `sanitize(text, opts)` is also exported. Fail-closed: it throws
+`SanitizeError` rather than return partially-redacted text. Names/addresses need
+NER (Enterprise); recall is bounded by the enabled detectors.
+
 ## Value-free audit
 
 `.watchlight/audit.jsonl` records **who / what intent / which tool / the
