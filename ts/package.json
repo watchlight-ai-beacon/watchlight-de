@@ -1,10 +1,13 @@
 {
   "name": "@watchlight/sdk",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Watchlight Developer Edition govern glue for Node/TypeScript — declare intent, govern a tool with a fail-closed in-process policy decision, and get a value-free audit trail. Glue over @watchlight/engine; zero decision logic in JS.",
   "type": "commonjs",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "watchlight": "./dist/cli.js"
+  },
   "files": [
     "dist",
     "LICENSE",
@@ -15,7 +18,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && for t in govern claude-agent graduation langchain sanitize action-gate; do node test/$t.test.mjs || exit 1; done",
+    "test": "npm run build && for t in govern claude-agent graduation langchain sanitize action-gate policytest; do node test/$t.test.mjs || exit 1; done",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
