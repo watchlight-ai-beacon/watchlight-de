@@ -16,6 +16,7 @@ Watchlight Developer Edition (DE) is the open front door to an **Agent Runtime G
 - `pip install watchlight-mcp` → import `watchlight_mcp` — the MCP Runtime PEP (`serve`/`serve_background` for HTTP with optional native TLS, `serve_stdio` for stdio-launched servers).
 - `pip install watchlight-agent-sdk` → **imports as `watchlight_core`** (the lower-level lifecycle SDK: `InProcessClient`, sessions, preflight, local lineage). There is **no** `watchlight-core` package on PyPI — that module ships *inside* `watchlight-agent-sdk`.
 - `pip install "watchlight[all]"` → one install for the whole DE: the SDK (`watchlight_core`) + every framework plugin + the MCP PEP (`watchlight_mcp`). Use this to run any example in the docs without resolving individual packages. (Requires `watchlight >= 0.3.0`.)
+- `npm install @watchlight/sdk` → the **TypeScript / Node** lane. `import { govern } from "@watchlight/sdk"` — the same in-process engine (`@watchlight/engine`, compiled to WebAssembly), same API and value-free audit as the Python `watchlight` package, no Python sidecar. See the TypeScript section below.
 
 ## Core API — the `watchlight` package (verified, 0.2.0)
 
@@ -46,10 +47,29 @@ Watchlight Developer Edition (DE) is the open front door to an **Agent Runtime G
 - `watchlight_mcp.serve_stdio(upstream_command=["python","-m","mcp_server_git","-r","/repo"], upstream_server="git", agent_id=None, principal_id=None, policy_files=[...], audit_path=...)` — govern a **stdio-launched** MCP server (the common case). Requires `watchlight-mcp >= 0.2.0`. All logs/audit go to stderr because stdout is the protocol wire.
 - The PEP governs the acting methods — `tools/call`, `resources/read`, `resources/subscribe`, `prompts/get` — authorizing each in-process before it can reach the upstream; a denied call never leaves the PEP. The tool/resource/prompt target lands in `context.mcp.tool` / `context.mcp.uri` / `context.mcp.prompt` for policies. Routing headers (`Mcp-Method`/`Mcp-Name`) are optional — the JSON-RPC body is authoritative; a present-but-mismatched header is rejected.
 
+## Runtime context, per-call principal, and human-in-the-loop (0.4.0 — Python + TS)
+
+- **Runtime context + per-call principal:** bind per-call facts into Cedar and set the acting user. Python `@govern.tool(intent="book", principal=lambda a: f'User::"{a["userId"]}"', context=lambda a: {"amount": a["amount"], "limit": a["limit"]})`; TS `govern.tool(fn, { intent, principal, resource, context })` — each of `principal`/`resource`/`context` is a value or a function of the call args. Policies can then gate on `context.amount <= context.limit` and `principal == User::"..."`. (Only the DE-supported Cedar operators resolve: `context.*`, `==`, `is`, `like`, set `.contains()`.)
+- **Low-level primitive:** Python `govern.authorize(action=, principal=, resource=, context=, approval=)`, TS `govern.authorize({ action, principal?, resource?, context?, approval? })` → `{decision: "Allow"|"Deny"|"NeedsApproval", allowed, needs_approval, approved, decision_id, reason}`. `decision_id` (the engine `request_id`) is also written to the audit line — join it to your own booking/order/record.
+- **Human-in-the-loop:** a permit annotated `@enforcement_effect("require_approval")` yields **NeedsApproval** (not Allow/Deny). Get a human confirmation, then `mint_approval(action=, resource=)` (Python) / `govern.mintApproval({ action, resource })` (TS) → a single-use, TTL, resource-bound token; re-authorize with `approval=token` / `{ approval }` to proceed. `govern.tool(..., on_needs_approval=)` / `{ onNeedsApproval }` runs this inline. Fail-closed: unconfirmed → raises `NeedsApproval` (Python) / throws `NeedsApproval` (TS); the body never runs. DE tokens are local HMAC; Enterprise KMS-signs them into signed lineage.
+
+## Redact PII before an agent reads a document (sanitize, 0.3.0 — Python + TS)
+
+- `govern.sanitize(text, ...)` (Python) / `govern.sanitize(text, {...})` (TS) — deterministic redaction on **extracted text** (extract a PDF/DOCX to text first; never hand the agent the original file — its hidden layers leak). Detects EMAIL, PHONE, SSN, CREDIT_CARD (Luhn-validated), IBAN, IPV4, API_KEY. Modes: `tag` (consistent `<EMAIL_1>`, default), `mask` (`[EMAIL]`), `hash`. Returns the redacted text + a **value-free** report (counts by type + mode — never the values), and writes a value-free `sanitization` audit record. Fail-closed. A pure `sanitize(...)` is also exported. Names/addresses (NER) are Enterprise; recall is bounded by the enabled detectors.
+
+## TypeScript / Node lane — `@watchlight/sdk` (verified, 0.4.0)
+
+- `import { govern, Denied, NeedsApproval } from "@watchlight/sdk";` — same default governor, fail-closed, value-free `.watchlight/audit.jsonl`. `govern.tool(fn, {intent})` is a **higher-order function** (not a decorator) and returns an async function.
+- `govern.allow('permit(...);')` / `govern.load("policies.json")`; `govern.tool(fn, { intent, principal?, resource?, context?, onNeedsApproval? })`; `govern.authorize({...})`; `govern.mintApproval({...})`; `govern.sanitize(text, {...})`.
+- Framework adapters: `governedHooks({ intentFor })` → Claude Agent SDK `hooks` (PreToolUse gate); `governTool(tool, { intent })` / `governTools(tools, { intentFor })` → LangChain / LangGraph.js `StructuredTool` governance. `govern.scope().attenuate()` → strict-subset sub-agent scopes (`DE_MAX_DEPTH` 5).
+- Graduation: set `WATCHLIGHT_APDP_URL` (+ `WATCHLIGHT_PLUGIN_TOKEN`, `WATCHLIGHT_TENANT_ID`) to run the same code against the networked control plane; `govern.mode` → `"in-process"` | `"networked"`.
+- Packages: `@watchlight/sdk` (Apache-2.0 glue) depends on `@watchlight/engine` (the compiled engine). Node ≥ 18. Docs: https://docs.watchlight.ai/de/typescript
+
 ## Docs (narrative guides on docs.watchlight.ai/de)
 
 - [Overview](https://docs.watchlight.ai/de/): what DE is, the package map, and where it fits the progressive-deployment model.
 - [Quickstart](https://docs.watchlight.ai/de/quickstart): `pip install`, govern a tool, print your first ALLOW/DENY in under five minutes.
+- [TypeScript / Node](https://docs.watchlight.ai/de/typescript): `npm install @watchlight/sdk`, govern a tool in-process, runtime context + human-in-the-loop, Claude Agent SDK + LangGraph.js adapters.
 - [Cedar policy syntax](https://docs.watchlight.ai/de/policies): the policy language the engine evaluates, from first principles.
 - [Governed agents (in-process)](https://docs.watchlight.ai/de/governed-agents): govern an agent lifecycle with `InProcessClient` (from `watchlight-agent-sdk` / `watchlight_core`).
 - [Sub-agent scope attenuation](https://docs.watchlight.ai/de/scope-attenuation): strict-subset confinement, the depth-5 ceiling, and the deepagents example.

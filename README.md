@@ -116,6 +116,42 @@ account — is the product.**
 
 ---
 
+## TypeScript / Node
+
+Same governance, in your Node app — no Python sidecar.
+[`@watchlight/sdk`](https://www.npmjs.com/package/@watchlight/sdk) runs the same
+compiled engine in-process (WebAssembly).
+
+```bash
+npm install @watchlight/sdk
+```
+```ts
+import { govern, Denied } from "@watchlight/sdk";
+
+govern.allow('permit(principal, action == Action::"research", resource);');
+const search = govern.tool(webSearch, { intent: "research" });
+
+await search(query);   // ALLOW → runs; else throws Denied — before the call fires
+```
+
+It mirrors the Python package feature-for-feature:
+
+- **Runtime context, per-user, human-in-the-loop:**
+  `govern.tool(fn, { intent, principal?, resource?, context?, onNeedsApproval? })`
+  — runtime facts into Cedar `context.*`, per-call `principal`, and a three-state
+  `Allow` / `Deny` / **`NeedsApproval`** verdict with a single-use approval token.
+- **Frameworks:** `governedHooks()` for the Claude Agent SDK; `governTool()` for
+  LangChain / LangGraph.js.
+- **Data minimization:** `govern.sanitize(text)` — strip PII before an agent
+  reads a document.
+- **Attenuation & graduation:** `govern.scope().attenuate()`; every decision
+  returns a `decisionId` to join to your records; `WATCHLIGHT_APDP_URL` graduates
+  the *same code* to the control plane.
+
+Full API + runnable examples: [`ts/`](ts/) · npm: `@watchlight/sdk` (glue,
+Apache-2.0) + `@watchlight/engine` (the compiled engine). Docs:
+[docs.watchlight.ai/de/typescript](https://docs.watchlight.ai/de/typescript).
+
 ## Already using a framework? Govern it in-process
 
 Bring your existing **LangGraph**, **Pydantic AI**, or **Claude Agent SDK**
