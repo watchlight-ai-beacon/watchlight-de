@@ -39,6 +39,11 @@ Watchlight Developer Edition (DE) is the open front door to an **Agent Runtime G
 
 - `watchlight dev` → serves a local dashboard at `http://127.0.0.1:7000` that tails `.watchlight/audit.jsonl`: ALLOW/DENY feed, the attenuation tree, and MCP decisions. Flags: `--port`, `--host`, `--no-open`.
 
+## Test policies before they gate real actions
+
+- `govern.test([{ "name": ..., "action": ..., "principal"?: ..., "resource"?: ..., "context"?: {...}, "approved"?: true, "expect": "Allow"|"Deny"|"NeedsApproval" }, ...])` → runs golden fixtures against the loaded policies; returns `{ total, passed, failed, results: [{name, expected, actual, ok, reason}] }`. Drives the engine's decision core directly, so it **never writes the audit trail** and holds zero decision logic. A verdict mismatch is a failed result; a fixture missing `action`/`expect` raises. `"approved": true` mints a single-use token and asserts the human-confirmed `NeedsApproval → Allow` downgrade. (Node: `await govern.test([...])`.) Requires `watchlight >= 0.5.0` / `@watchlight/sdk >= 0.5.0`.
+- `watchlight policy test suite.json` → CLI for CI; `suite.json` is `{ "policyFile"?: "watchlight.policy.json", "policies"?: [{name,code}], "tests": [...] }`. Exit 0 all-pass, 1 on any verdict mismatch, 2 on a malformed suite. Node: `npx watchlight policy test suite.json`.
+
 ## Govern an MCP server — the `watchlight-mcp` package
 
 - `import watchlight_mcp`
