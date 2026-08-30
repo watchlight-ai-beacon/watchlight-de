@@ -24,6 +24,28 @@ export interface AuthorizeRequest {
 export interface Decision {
   decision: string;
   reason: string;
+  /** Per-decision correlation id (the engine's `request_id`) — join to your own
+   *  records. */
+  decisionId?: string;
+  /** True when a matched permit carries the `require_approval` enforcement
+   *  effect: the action is permitted only after a human confirmation. */
+  needsApproval?: boolean;
+}
+
+/** Derive `needsApproval` from a decision's details: a permitting policy result
+ *  annotated `@enforcement_effect("require_approval")`. */
+export function deriveNeedsApproval(details: unknown): boolean {
+  const results = (
+    details as {
+      policy_results?: Array<{ applicable?: boolean; enforcement_effect?: string }>;
+    }
+  )?.policy_results;
+  // Only the policy that actually matched this request (`applicable: true`)
+  // counts — a non-matching require_approval policy elsewhere in the set must not
+  // flag this decision.
+  return Array.isArray(results)
+    ? results.some((r) => r?.applicable === true && r?.enforcement_effect === "require_approval")
+    : false;
 }
 
 export interface GovernanceBackend {
@@ -64,13 +86,18 @@ export class InProcessBackend implements GovernanceBackend {
 
   async authorize(req: AuthorizeRequest): Promise<Decision> {
     const engine = await this._ready();
-    const resp = await engine.authorize({
+    const resp = (await engine.authorize({
       principal: req.principal,
       action: req.action,
       resource: req.resource,
       context: req.context ?? {},
-    });
-    return { decision: (resp.decision as string) ?? "Deny", reason: (resp.reason as string) ?? "" };
+    })) as Record<string, unknown>;
+    return {
+      decision: (resp.decision as string) ?? "Deny",
+      reason: (resp.reason as string) ?? "",
+      decisionId: resp.request_id as string | undefined,
+      needsApproval: deriveNeedsApproval(resp.details),
+    };
   }
 
   engine(): Promise<Engine> {
@@ -122,7 +149,12 @@ export class NetworkedBackend implements GovernanceBackend {
       });
       if (!resp.ok) return { decision: "Deny", reason: `APDP error: ${resp.status}` };
       const data = (await resp.json()) as Record<string, unknown>;
-      return { decision: (data.decision as string) ?? "Deny", reason: (data.reason as string) ?? "" };
+      return {
+        decision: (data.decision as string) ?? "Deny",
+        reason: (data.reason as string) ?? "",
+        decisionId: data.request_id as string | undefined,
+        needsApproval: deriveNeedsApproval(data.details),
+      };
     } catch (e) {
       // Fail-closed: an unreachable control plane denies.
       return { decision: "Deny", reason: `APDP unreachable: ${String(e)}` };

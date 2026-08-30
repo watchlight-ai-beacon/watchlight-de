@@ -108,6 +108,52 @@ const search = governTool(
 mutated); `governTools(tools, { intentFor })` maps an array. Intent defaults to
 the tool's name. Fail-closed. `@langchain/core` is a peer dependency.
 
+## Gate a consequential action — runtime context, per-user, human-in-the-loop
+
+For money-moving (or any high-stakes) tool calls, pass **runtime facts** into the
+policy, attribute the decision to the **acting user**, get a **correlation id**
+back, and route the risky ones to a **human**.
+
+```ts
+import { govern, NeedsApproval } from "@watchlight/sdk";
+
+// principal / resource / context can each be a value or (args) => value
+const book = govern.tool(bookTrip, {
+  intent: "book",
+  principal: (o) => `User::"${o.userId}"`,
+  resource:  (o) => `trip/${o.tripId}`,
+  context:   (o) => ({ amount: o.amount, limit: o.perActionLimit, refundable: o.refundable }),
+  onNeedsApproval: async ({ decisionId }) => askUser(decisionId), // one-tap human confirm
+});
+```
+```
+permit(principal, action == Action::"book", resource)
+when { context.amount <= context.limit && context.refundable };
+```
+
+Or use the low-level primitive directly (any framework):
+
+```ts
+const d = await govern.authorize({
+  principal: `User::"${userId}"`, action: "wire", resource: `acct/${to}`, context: { amount },
+});
+// d.decision → "Allow" | "Deny" | "NeedsApproval"
+// d.decisionId → store next to your booking row for reconstruction
+
+if (d.decision === "NeedsApproval") {
+  await getHumanConfirmation();
+  const token = govern.mintApproval({ action: "wire", resource: `acct/${to}` }); // single-use, TTL, bound
+  await govern.authorize({ principal: `User::"${userId}"`, action: "wire", resource: `acct/${to}`, context: { amount }, approval: token });
+}
+```
+
+- **Three-state verdict** — `NeedsApproval` is surfaced when a matched permit is
+  annotated `@enforcement_effect("require_approval")`.
+- **Correlation id** — every decision returns `decisionId` (also in the audit
+  line), so you can join it to your own records.
+- The audit line now carries `decision_id` + the resolved `principal`, and stays
+  value-free (no context values).
+
 ## Strip PII before the agent reads a document
 
 Redact PII from text before it reaches the agent — deterministic, in-process,
