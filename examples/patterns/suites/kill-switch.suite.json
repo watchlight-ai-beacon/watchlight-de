@@ -1,0 +1,16 @@
+{
+  "policies": [
+    { "name": "agent-may-work",
+      "code": "permit(principal == User::\"assistant\", action, resource);" },
+    { "name": "quarantine-overrides-everything",
+      "code": "forbid(principal, action, resource) when { context.quarantined == true };" }
+  ],
+  "tests": [
+    { "name": "healthy agent may act", "action": "read", "principal": "User::\"assistant\"",
+      "context": { "quarantined": false }, "expect": "Allow" },
+    { "name": "quarantined agent is stopped, whatever the action", "action": "read",
+      "principal": "User::\"assistant\"", "context": { "quarantined": true }, "expect": "Deny" },
+    { "name": "quarantine beats even a broad permit", "action": "charge",
+      "principal": "User::\"assistant\"", "context": { "quarantined": true }, "expect": "Deny" }
+  ]
+}

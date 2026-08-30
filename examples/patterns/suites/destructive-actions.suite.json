@@ -1,0 +1,18 @@
+{
+  "policies": [
+    { "name": "reads-are-free",
+      "code": "permit(principal, action == Action::\"read\", resource);" },
+    { "name": "delete-needs-human",
+      "code": "@enforcement_effect(\"require_approval\")\npermit(principal, action == Action::\"delete\", resource);" },
+    { "name": "protected-is-off-limits",
+      "code": "forbid(principal, action == Action::\"delete\", resource) when { context.protected == true };" }
+  ],
+  "tests": [
+    { "name": "read is allowed", "action": "read", "expect": "Allow" },
+    { "name": "delete holds for a human", "action": "delete",
+      "context": { "protected": false }, "expect": "NeedsApproval" },
+    { "name": "deleting a protected resource is denied outright", "action": "delete",
+      "context": { "protected": true }, "expect": "Deny" },
+    { "name": "an unlisted action is denied (fail-closed)", "action": "drop_table", "expect": "Deny" }
+  ]
+}
