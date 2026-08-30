@@ -235,10 +235,11 @@ npx watchlight policy test suite.json      # Node
 
 ## Govern an MCP server
 
-Put a policy decision point in front of any [MCP](https://modelcontextprotocol.io)
-server (spec `2026-07-28`). Every governed call — `tools/call`, `resources/read`,
-`resources/subscribe`, `prompts/get` — is authorized in-process **before** it
-reaches the server, so a denied call never executes.
+Put a **policy enforcement point (PEP)** in front of any
+[MCP](https://modelcontextprotocol.io) server (spec `2026-07-28`). The MCP PEP
+authorizes every governed call — `tools/call`, `resources/read`,
+`resources/subscribe`, `prompts/get` — in-process **before** it reaches the
+server, so a denied call never executes.
 
 ```bash
 pip install watchlight-mcp
