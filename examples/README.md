@@ -23,6 +23,19 @@ watchlight dev                  # → http://127.0.0.1:7000
 | [`context_governance.py`](context_governance.py) | **Fine-grained context gating** — the *same* tool call is allowed or denied by runtime `context`; missing context fails closed. | `watchlight[langgraph]` |
 | [`governed_subagents.py`](governed_subagents.py) | **Sub-agent scope attenuation** — every child gets a *strict subset* of its parent's authority (widening is refused by the real engine); the DE governs the tree up to depth 5, then points to Enterprise. | `watchlight` |
 
+## Governance patterns — high-stakes recipes
+
+Copy-paste recipes for the decisions people reach for the DE to make — spending
+money, deleting things, messaging the outside world, moving data, spawning
+sub-agents. Each is a *problem shape* (policy + govern-the-tool code + tests), and
+the policy-driven ones ship as runnable suites that
+[`patterns/check.sh`](patterns/check.sh) runs through `watchlight policy test`, so
+the recipes can't drift from the engine.
+
+→ **[`patterns/`](patterns/README.md)** — money-bounded agent, destructive
+actions, external messaging, data egress, kill-switch / quarantine, per-user
+attribution, PII-before-read, sub-agent confinement.
+
 ## Govern an existing framework agent
 
 The *same* plugin you ship to production, wired to the in-process engine. Going
