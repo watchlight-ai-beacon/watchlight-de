@@ -1,0 +1,11 @@
+# Code owners for watchlight-de.
+#
+# Owners are auto-requested for review on any PR that touches matching paths,
+# and — when branch protection requires code-owner review — their approval is
+# required to merge. Entries may be @github-username, @org/team, or a verified
+# account email. NOTE: an email only resolves if it is a verified email on a
+# GitHub account that has write access to this repository; otherwise prefer the
+# @github-username form.
+
+# Default owner for everything in the repo.
+* aldo@watchlight.ai
