@@ -55,6 +55,23 @@ export type {
   PolicyTestSuite,
 } from "./policytest";
 
+// ── caller-facing decision reasons (SECURITY: uniform + non-revealing) ──────
+// The reason surfaced to the caller NEVER explains WHY a request was denied — a
+// specific reason ("no matching policy" vs "forbidden by X" vs "amount exceeds
+// limit") would leak the authorization boundary to an attacker probing it, who
+// could then tune an attack. Every denial returns the SAME opaque reason; the
+// Denied message still names the caller's own request (intent + tool), which is
+// their input, not a leak. Operators reconstruct the true cause from signed
+// lineage / the decisionId (Enterprise), never from this string.
+export const DENY_REASON = "not authorized";
+const APPROVAL_REASON = "approval required";
+
+function reasonForVerdict(verdict: "Allow" | "Deny" | "NeedsApproval"): string {
+  if (verdict === "Deny") return DENY_REASON;
+  if (verdict === "NeedsApproval") return APPROVAL_REASON;
+  return "";
+}
+
 /** Raised when the policy engine refuses a governed tool call (fail-closed). */
 export class Denied extends Error {
   readonly tool: string;
@@ -338,7 +355,7 @@ export class Watchlight {
         }
         throw new NeedsApproval(name, intent, d.decisionId, d.reason);
       }
-      throw new Denied(name, intent, d.reason || "no matching policy");
+      throw new Denied(name, intent, d.reason || DENY_REASON);
     };
   }
 
@@ -433,7 +450,8 @@ export class Watchlight {
         needsApproval,
         approved,
         decisionId: raw.decisionId,
-        reason: raw.reason,
+        // Non-revealing, uniform reason (never the engine's specific one).
+        reason: reasonForVerdict(decision),
       },
       principal,
       resource,
@@ -541,7 +559,7 @@ export class Watchlight {
     this._announce();
     const tag =
       decision === "Allow" ? (extra.approved ? "OK✓" : "ALLOW") : decision === "NeedsApproval" ? "APPRV?" : "DENY";
-    const trailer = decision === "Allow" ? "" : `     ${reason || "no matching policy"}`;
+    const trailer = decision === "Allow" ? "" : `     ${reason || DENY_REASON}`;
     // eslint-disable-next-line no-console
     console.log(`watchlight: ${tag.padEnd(6)} ${intent.padEnd(9)} ${resource}${trailer}`);
     // Value-free audit: argument VALUES never enter the trail — only the

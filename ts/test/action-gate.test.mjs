@@ -79,6 +79,23 @@ async function main() {
   try { await wireNo({ to: "y", amount: 5000 }); } catch (e) { held = e instanceof NeedsApproval; }
   ok("tool: declined hook throws NeedsApproval, body not run", held && wired === 1);
 
+  // ── 4d. deny reason is opaque + uniform (SECURITY) ──
+  // Never disclose WHY: a failed condition and a missing policy must report the
+  // IDENTICAL string, so a caller probing the boundary learns nothing.
+  const overLimit = await g.authorize({ action: "book", resource: 'trip/9', context: { amount: 999, limit: 100 } });
+  const noPolicy = await g.authorize({ action: "delete", resource: 'trip/9' });
+  ok("deny reasons are identical across causes",
+    overLimit.decision === "Deny" && noPolicy.decision === "Deny"
+    && overLimit.reason === "not authorized" && noPolicy.reason === "not authorized",
+    `${overLimit.reason} | ${noPolicy.reason}`);
+  const del = g.tool(function deleteIt() { return "gone"; }, { intent: "delete" });
+  let denyErr = null;
+  try { await del(); } catch (e) { denyErr = e; }
+  ok("Denied surfaces the opaque reason, no cause leaked",
+    denyErr instanceof Denied && denyErr.reason === "not authorized"
+    && !/no matching policy|Policy evaluation completed|forbid|condition/.test(String(denyErr)),
+    String(denyErr));
+
   // ── 5. audit: correlation id + principal, value-free (no context values) ──
   const raw = fs.readFileSync(join(auditDir, "audit.jsonl"), "utf8");
   ok("audit carries decision_id", raw.includes('"decision_id"'));

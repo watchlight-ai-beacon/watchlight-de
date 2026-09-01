@@ -17,12 +17,12 @@ Expected output:
         ↳ ran: top results for 'watchlight developer edition'
     watchlight: ALLOW  read      tool/read_file
         ↳ ran: <contents of notes/plan.md>
-    watchlight: DENY   notify    tool/send_email     Policy evaluation completed
-        ↳ BLOCKED before execution: Policy evaluation completed
-    watchlight: DENY   transfer  tool/transfer_funds     Policy evaluation completed
-        ↳ BLOCKED before execution: Policy evaluation completed
-    watchlight: DENY   delete    tool/delete_records     Policy evaluation completed
-        ↳ BLOCKED before execution: Policy evaluation completed
+    watchlight: DENY   notify    tool/send_email     not authorized
+        ↳ BLOCKED before execution: not authorized
+    watchlight: DENY   transfer  tool/transfer_funds     not authorized
+        ↳ BLOCKED before execution: not authorized
+    watchlight: DENY   delete    tool/delete_records     not authorized
+        ↳ BLOCKED before execution: not authorized
 
     The three dangerous tools never executed — denied before the side effect.
     Audit written to .watchlight/audit.jsonl · run `watchlight dev` to watch live.
@@ -78,7 +78,7 @@ def try_tool(fn, *args):
         result = fn(*args)
         print(f"    ↳ ran: {result}")
     except Denied as denied:
-        print(f"    ↳ BLOCKED before execution: {denied.reason or 'no matching policy'}")
+        print(f"    ↳ BLOCKED before execution: {denied.reason}")
 
 
 def main() -> None:

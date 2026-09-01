@@ -92,6 +92,29 @@ def test_on_needs_approval_hook(tmp_path):
     assert ran["n"] == 1  # declined body never ran
 
 
+def test_deny_reason_is_opaque(tmp_path):
+    """SECURITY: the caller-facing deny reason is uniform and non-revealing. It
+    must never disclose WHY a request was denied — a failed condition and a
+    missing policy report the IDENTICAL string, so a caller probing the
+    authorization boundary learns nothing to tune an attack against."""
+    g = _gov(tmp_path)
+    over_limit = g.authorize(action="book", resource="trip/9", context={"amount": 999, "limit": 100})
+    no_policy = g.authorize(action="delete", resource="trip/9")
+    assert over_limit["decision"] == "Deny" and no_policy["decision"] == "Deny"
+    assert over_limit["reason"] == no_policy["reason"] == "not authorized"
+
+    @g.tool("delete")
+    def delete_it():  # pragma: no cover - body must never run
+        return "gone"
+
+    with pytest.raises(Denied) as ei:
+        delete_it()
+    assert ei.value.reason == "not authorized"
+    # no cause-revealing phrasing leaks through the exception text
+    for leak in ("no matching policy", "Policy evaluation completed", "forbid", "condition"):
+        assert leak not in str(ei.value)
+
+
 def test_sanitize(tmp_path):
     g = _gov(tmp_path)
     s = g.sanitize("email a@b.com card 4111 1111 1111 1111 ssn 123-45-6789", resource="statement.pdf")

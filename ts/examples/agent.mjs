@@ -5,7 +5,7 @@
 //   watchlight: governing 'my-agent' (dev mode, in-process engine)
 //   watchlight: ALLOW research  tool/webSearch
 //   [tool ran] results for: cedar policy language
-//   watchlight: DENY  transfer  tool/transferFunds     no matching policy
+//   watchlight: DENY  transfer  tool/transferFunds     not authorized
 //   denied before it executed: watchlight denied intent 'transfer' on tool/transferFunds: ...
 //
 // Only the `research` intent is permitted by watchlight.policy.json. The
