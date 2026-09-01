@@ -1,8 +1,20 @@
 #!/usr/bin/env python3
 """Fine-grained governance: allow the SAME tool call only in a safe context.
 
-    pip install 'watchlight[langgraph]'    # any extra pulls the SDK
+    pip install watchlight
     python examples/context_governance.py
+
+Runs offline — no API key required.
+
+Expected output:
+
+    Same tool call, governed by runtime context:
+
+      run_query  (tool_class=safe)       -> Allow   ← permitted
+      run_query  (tool_class=dangerous)  -> Deny    ← blocked
+      run_query  (no context)            -> Deny    ← fail-closed
+
+    One policy, three outcomes — the decision follows the context, not the tool name.
 
 Intent-based gating (see governed_research_agent.py) decides *which verbs* an
 agent may use. Sometimes you need finer control: the same action is fine in one

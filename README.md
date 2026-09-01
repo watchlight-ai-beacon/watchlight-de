@@ -90,31 +90,48 @@ Runnable, self-contained examples for every one of these are in
 > The `govern` decorator, `watchlight dev`, and the framework + MCP integrations
 > below all work today. Full guide: [Developer Edition docs](https://docs.watchlight.ai/de).
 
+**Prerequisites:** Python **3.9+**. Prebuilt wheels ship for Linux, macOS, and
+Windows — no Rust toolchain, no build step, no account.
+
 ```bash
 pip install watchlight
 ```
 
+Save this as `agent.py` and run `python agent.py`:
+
 ```python
-from watchlight import govern
+# agent.py — a complete, runnable program (copy, paste, run).
+from watchlight import govern, Denied
+
+# Permit ONLY the "research" intent. Fail-closed: everything else is denied.
+govern.allow('permit(principal, action == Action::"research", resource);')
 
 @govern.tool(intent="research")
 def web_search(query: str) -> str:
-    ...
+    return f"results for: {query}"
 
 @govern.tool(intent="transfer")           # governed, but no policy permits it
 def transfer_funds(to: str, amount: int) -> str:
-    ...
+    return f"sent ${amount} to {to}"      # never runs — denied first
+
+print(web_search("watchlight docs"))      # ALLOW → the body runs
+try:
+    transfer_funds("mallory", 1000)       # DENY → refused before the body runs
+except Denied as e:
+    print(e)
 ```
 
 ```text
 $ python agent.py
 watchlight: governing 'my-agent' (dev mode, in-process engine)
-watchlight: ALLOW  read     tool/web_search
-watchlight: DENY   execute  tool/transfer_funds     no matching policy
+watchlight: ALLOW  research  tool/web_search
+results for: watchlight docs
+watchlight: DENY   transfer  tool/transfer_funds     Policy evaluation completed
+watchlight denied intent 'transfer' on tool/transfer_funds: Policy evaluation completed
 ```
 
 **That `DENY` line — in your own terminal, in under five minutes, with no
-account — is the product.**
+account — is the product.** The `transfer_funds` body never ran.
 
 ---
 
@@ -124,16 +141,43 @@ Same governance, in your Node app — no Python sidecar.
 [`@watchlight/sdk`](https://www.npmjs.com/package/@watchlight/sdk) runs the same
 compiled engine in-process (WebAssembly).
 
+**Prerequisites:** Node **≥ 18**. `@watchlight/sdk` pulls in the compiled engine
+(`@watchlight/engine`) automatically — no native toolchain.
+
 ```bash
 npm install @watchlight/sdk
 ```
+
+Then, in an ES-module / TypeScript file (`await` at top level needs `"type":
+"module"` or a `.mjs` file):
+
 ```ts
+// agent.ts — the same DENY line, in Node.
 import { govern, Denied } from "@watchlight/sdk";
 
+// Permit ONLY the "research" intent. Fail-closed: everything else is denied.
 govern.allow('permit(principal, action == Action::"research", resource);');
-const search = govern.tool(webSearch, { intent: "research" });
 
-await search(query);   // ALLOW → runs; else throws Denied — before the call fires
+async function webSearch(query: string) { return `results for: ${query}`; }
+async function transferFunds(to: string, amount: number) { return `sent $${amount} to ${to}`; } // never runs
+
+const search   = govern.tool(webSearch,     { intent: "research" });
+const transfer = govern.tool(transferFunds, { intent: "transfer" });   // no policy permits it
+
+console.log(await search("watchlight docs"));   // ALLOW → the body runs
+try {
+  await transfer("mallory", 1000);              // DENY → refused before the body runs
+} catch (e) {
+  if (e instanceof Denied) console.log(e.message);
+}
+```
+
+```text
+watchlight: governing 'my-agent' (dev mode, in-process engine)
+watchlight: ALLOW  research  tool/webSearch
+results for: watchlight docs
+watchlight: DENY   transfer  tool/transferFunds     Policy evaluation completed
+watchlight denied intent 'transfer' on tool/transferFunds: Policy evaluation completed
 ```
 
 It mirrors the Python package feature-for-feature:

@@ -6,6 +6,27 @@
     # in another terminal, watch it live:
     watchlight dev
 
+Runs offline — no API key required.
+
+Expected output:
+
+    Research agent — 5 tools, 2 intents permitted (research, read):
+
+    watchlight: governing 'my-agent' (dev mode, in-process engine)
+    watchlight: ALLOW  research  tool/web_search
+        ↳ ran: top results for 'watchlight developer edition'
+    watchlight: ALLOW  read      tool/read_file
+        ↳ ran: <contents of notes/plan.md>
+    watchlight: DENY   notify    tool/send_email     Policy evaluation completed
+        ↳ BLOCKED before execution: Policy evaluation completed
+    watchlight: DENY   transfer  tool/transfer_funds     Policy evaluation completed
+        ↳ BLOCKED before execution: Policy evaluation completed
+    watchlight: DENY   delete    tool/delete_records     Policy evaluation completed
+        ↳ BLOCKED before execution: Policy evaluation completed
+
+    The three dangerous tools never executed — denied before the side effect.
+    Audit written to .watchlight/audit.jsonl · run `watchlight dev` to watch live.
+
 A research assistant has five tools. Its policy (`research.policy.json`) permits
 only the ``research`` and ``read`` intents — so it can search the web and read
 files, but it **cannot** email, move money, or delete records. Those three are

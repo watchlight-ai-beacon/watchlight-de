@@ -18,7 +18,7 @@ Watchlight Developer Edition (DE) is the open front door to an **Agent Runtime G
 - `pip install "watchlight[all]"` → one install for the whole DE: the SDK (`watchlight_core`) + every framework plugin + the MCP PEP (`watchlight_mcp`). Use this to run any example in the docs without resolving individual packages. (Requires `watchlight >= 0.3.0`.)
 - `npm install @watchlight/sdk` → the **TypeScript / Node** lane. `import { govern } from "@watchlight/sdk"` — the same in-process engine (`@watchlight/engine`, compiled to WebAssembly), same API and value-free audit as the Python `watchlight` package, no Python sidecar. See the TypeScript section below.
 
-## Core API — the `watchlight` package (verified, 0.2.0)
+## Core API — the `watchlight` package (verified, 0.5.0)
 
 - `from watchlight import govern, Denied` — `govern` is a ready-to-use default governor (starts with **no** policies → fail-closed until you load some).
 - `govern.load("policies.json")` — load a JSON file: a list of `{"name", "code"}` objects, or `{"policies": [...]}`. A missing file loads nothing (still fail-closed).
@@ -27,7 +27,29 @@ Watchlight Developer Edition (DE) is the open front door to an **Agent Runtime G
 - `Watchlight(agent="my-agent", audit_dir=".watchlight")` — construct your own governor instead of the default. `agent` defaults to `$WATCHLIGHT_AGENT` or `"my-agent"`.
 - Every decision is appended, **value-free** (no argument values, ever), to `.watchlight/audit.jsonl`.
 
-## Scope attenuation — confine sub-agents (verified, 0.2.0)
+**Minimal complete program (this is the whole pattern — load a policy, decorate, then CALL the tool):**
+```python
+from watchlight import govern, Denied
+
+govern.allow('permit(principal, action == Action::"research", resource);')  # without this, EVERYTHING denies
+
+@govern.tool(intent="research")
+def web_search(query: str) -> str:
+    return f"results for: {query}"
+
+@govern.tool(intent="transfer")            # governed, but no policy permits it
+def transfer_funds(to: str, amount: int) -> str:
+    return f"sent ${amount} to {to}"       # never runs — denied first
+
+print(web_search("watchlight docs"))       # ALLOW → the body runs
+try:
+    transfer_funds("mallory", 1000)        # DENY → raises Denied BEFORE the body runs
+except Denied as e:
+    print(e)                               # watchlight denied intent 'transfer' on tool/transfer_funds: ...
+```
+Two mistakes to avoid: (1) decorating a tool WITHOUT loading a policy first — then every call denies (fail-closed by design). (2) defining governed tools but never CALLING them — nothing is authorized and nothing prints. The default-deny `reason` string from the engine is currently `"Policy evaluation completed"` (the `Denied` message names the intent + tool, which is the actionable part).
+
+## Scope attenuation — confine sub-agents (verified, 0.5.0)
 
 - `scope = govern.scope(tools=[...], resources=[...], intents=[...], max_depth=5, time_budget_seconds=3600)` — the root capability scope.
 - `child = scope.attenuate(tools=[...], intents=[...], resources=[...], time_budget_seconds=...)` — derive a **strict-subset** child. Omitting a dimension inherits the parent's. Every `attenuate` runs the real engine strict-subset validation and is audited (streams into `watchlight dev`).
@@ -62,7 +84,7 @@ Watchlight Developer Edition (DE) is the open front door to an **Agent Runtime G
 
 - `govern.sanitize(text, ...)` (Python) / `govern.sanitize(text, {...})` (TS) — deterministic redaction on **extracted text** (extract a PDF/DOCX to text first; never hand the agent the original file — its hidden layers leak). Detects EMAIL, PHONE, SSN, CREDIT_CARD (Luhn-validated), IBAN, IPV4, API_KEY. Modes: `tag` (consistent `<EMAIL_1>`, default), `mask` (`[EMAIL]`), `hash`. Returns the redacted text + a **value-free** report (counts by type + mode — never the values), and writes a value-free `sanitization` audit record. Fail-closed. A pure `sanitize(...)` is also exported. Names/addresses (NER) are Enterprise; recall is bounded by the enabled detectors.
 
-## TypeScript / Node lane — `@watchlight/sdk` (verified, 0.4.0)
+## TypeScript / Node lane — `@watchlight/sdk` (verified, 0.5.0)
 
 - `import { govern, Denied, NeedsApproval } from "@watchlight/sdk";` — same default governor, fail-closed, value-free `.watchlight/audit.jsonl`. `govern.tool(fn, {intent})` is a **higher-order function** (not a decorator) and returns an async function.
 - `govern.allow('permit(...);')` / `govern.load("policies.json")`; `govern.tool(fn, { intent, principal?, resource?, context?, onNeedsApproval? })`; `govern.authorize({...})`; `govern.mintApproval({...})`; `govern.sanitize(text, {...})`.

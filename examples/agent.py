@@ -4,13 +4,15 @@
     pip install watchlight          # (locally: pip install -e . after building the engine)
     python examples/agent.py
 
+Runs offline — no API key required.
+
 Expected output:
 
     watchlight: governing 'my-agent' (dev mode, in-process engine)
-    watchlight: ALLOW research   tool/web_search
+    watchlight: ALLOW  research  tool/web_search
     results for: watchlight docs
-    watchlight: DENY  transfer   tool/transfer_funds     no matching policy
-    (denied before it executed: watchlight denied intent 'transfer' on tool/transfer_funds: ...)
+    watchlight: DENY   transfer  tool/transfer_funds     Policy evaluation completed
+    (denied before it executed: watchlight denied intent 'transfer' on tool/transfer_funds: Policy evaluation completed)
 
 Only the `research` intent is permitted by `watchlight.policy.json`. The
 `transfer_funds` tool is governed but no policy permits it, so the engine

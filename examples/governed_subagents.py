@@ -5,8 +5,27 @@ A sub-agent can only ever *narrow* authority, never widen it — and the Develop
 Edition governs the tree up to depth 5. The strict-subset validation is the real
 Watchlight engine; the depth ceiling is where DE hands off to Enterprise.
 
-    python governed_subagents.py
+    pip install watchlight
+    python examples/governed_subagents.py
     watchlight dev --audit .watchlight/audit.jsonl   # watch the tree stream in
+
+Runs offline — no API key required.
+
+Expected output:
+
+    root            : ['read_file', 'web_search', 'send_email', 'delete']
+    → researcher    : ['read_file', 'web_search'] (depth 1)
+      → reader      : ['read_file'] (depth 2)
+      ✗ widen denied : ['AllowedTools'] — 1 tool(s) not in parent.allowed_tools (e.g. ["delete"])
+        → depth 3
+        → depth 4
+        → depth 5
+
+    ── Developer-Edition ceiling ──
+    Developer Edition governs sub-agent trees up to depth 5; this chain reached the
+    ceiling at depth 6. ... Talk to us: sales@watchlight.ai · https://www.watchlight.ai
+
+    watch the tree live:  watchlight dev --audit .watchlight/audit.jsonl
 """
 import os
 
