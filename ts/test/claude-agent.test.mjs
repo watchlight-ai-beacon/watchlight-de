@@ -55,6 +55,9 @@ async function main() {
   ok("hook never throws back to the SDK", !threw);
   ok("governance error is fail-closed (deny)",
     broken?.hookSpecificOutput?.permissionDecision === "deny", JSON.stringify(broken));
+  ok("governance error reason is opaque (no internal detail leaked)",
+    broken?.hookSpecificOutput?.permissionDecisionReason === "not authorized",
+    broken?.hookSpecificOutput?.permissionDecisionReason);
 
   // Audit: value-free, both decisions recorded, no arg values leaked.
   const raw = fs.readFileSync(join(auditDir, "audit.jsonl"), "utf8");

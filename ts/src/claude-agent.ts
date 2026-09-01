@@ -72,12 +72,18 @@ export function governedHooks(options: GovernedHooksOptions = {}): GovernedHooks
       };
     } catch (e) {
       // Hooks must never throw back to the SDK; a governance error is
-      // fail-closed — deny the tool call rather than let it through.
+      // fail-closed — deny the tool call rather than let it through. The
+      // model-facing reason stays OPAQUE (the same uniform string as any other
+      // denial), so an internal error can't disclose anything to the caller and
+      // can't be told apart from a policy deny. The detail goes to stderr for
+      // the developer, never into the decision surfaced to the agent.
+      // eslint-disable-next-line no-console
+      console.error("watchlight governance error (fail-closed):", e);
       return {
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
           permissionDecision: "deny",
-          permissionDecisionReason: `watchlight governance error (fail-closed): ${String(e)}`,
+          permissionDecisionReason: DENY_REASON,
         },
       };
     }
