@@ -7,13 +7,29 @@ with the real Watchlight engine, in-process, before forwarding it. A denied call
 never reaches the server.
 
     pip install watchlight-mcp
-    python governed_mcp_server.py
+    python examples/governed_mcp_server.py
 
-This script is self-contained: it starts a tiny stand-in MCP server (which
-records which tools actually executed), starts the PEP in front of it, then
-fires one allowed and one denied ``tools/call`` and prints the result — proving
-the denied tool was blocked before it ran. It then keeps serving so you can send
-your own requests (see the curl commands it prints).
+Runs offline — no API key required. This is a self-contained demo: it starts a
+tiny stand-in MCP server (which records which tools actually executed), starts
+the PEP in front of it, then fires one allowed and one denied ``tools/call`` and
+prints the result — proving the denied tool was blocked before it ran. It then
+keeps serving so you can send your own requests; press Ctrl-C to stop.
+
+The PEP also emits structured JSON logs to stdout (observability init, policy
+decisions); the demo lines below are interleaved with them.
+
+Expected output (demo lines, JSON logs omitted):
+
+    ── Governed MCP server on http://127.0.0.1:9700/mcp ──
+       watch decisions live:  watchlight dev --audit .watchlight/audit.jsonl
+
+    ALLOW  get_file_contents  → {'resultType': 'complete', 'content': [{'type': 'text', 'text': 'EXECUTED get_file_contents'}]}
+    DENY   delete_repository  → {'code': -32001, 'message': 'Policy evaluation completed'}
+
+    Tools that actually executed on the server: ['get_file_contents']
+    ✓ delete_repository was blocked before it ran.
+
+    PEP still serving. Point your MCP client at http://127.0.0.1:9700/mcp — Ctrl-C to stop.
 
 Point a real MCP client at http://127.0.0.1:9700/mcp instead of the server.
 """

@@ -4,6 +4,8 @@
     pip install 'watchlight[langgraph]'
     python examples/governed_langgraph_agent.py
 
+Runs offline — no API key required (the tool bodies are stand-ins; see note below).
+
 Expected output:
 
     watchlight: research-agent governed in-process (dev mode, zero infra)

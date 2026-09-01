@@ -7,11 +7,33 @@ can only ever *narrow* what it may do, never widen it. The Developer Edition
 governs the tree up to depth 5. Config-only: no deepagents source is touched.
 
     pip install "watchlight[deepagents]"
-    python governed_deepagents.py
+    python examples/governed_deepagents.py
     watchlight dev --audit .watchlight/audit.jsonl   # watch the sub-agent tree attenuate
 
 Runs **without an API key** — it builds and governs the sub-agent tree offline.
 Set a model key (e.g. ANTHROPIC_API_KEY) to also invoke the deep agent for real.
+
+Expected output (no API key):
+
+    deep agent authority : ['web_search', 'read_file', 'write_file', 'send_email']
+
+      ✓ researcher       tools = ['web_search', 'read_file']  (depth 1)
+      ✓ reporter         tools = ['read_file', 'write_file']  (depth 1)
+      ✗ over_privileged  refused — ['AllowedTools']: cannot exceed the parent
+
+    nesting deeper — each level attenuates from the one above:
+        → depth 1: ['read_file']
+        ...
+        → depth 5: ['read_file']
+
+    ── Developer-Edition ceiling ──
+    Developer Edition governs sub-agent trees up to depth 5; ... sales@watchlight.ai
+
+    set a model key (e.g. ANTHROPIC_API_KEY) to invoke the deep agent for real.
+    wiring is one line:
+      create_deep_agent(tools=..., subagents=<the governed sub-agents above>)
+
+    watch the attenuation tree:  watchlight dev --audit .watchlight/audit.jsonl
 """
 import os
 

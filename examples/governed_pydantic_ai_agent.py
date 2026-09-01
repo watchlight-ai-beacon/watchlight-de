@@ -4,6 +4,9 @@
     pip install 'watchlight[pydantic-ai]'
     python examples/governed_pydantic_ai_agent.py
 
+Runs offline — no API key required (auto_instrument=False; the tool bodies are
+stand-ins, see note below).
+
 Expected output:
 
     watchlight: research-agent governed in-process (dev mode, zero infra)
