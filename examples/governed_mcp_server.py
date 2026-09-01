@@ -24,7 +24,7 @@ Expected output (demo lines, JSON logs omitted):
        watch decisions live:  watchlight dev --audit .watchlight/audit.jsonl
 
     ALLOW  get_file_contents  → {'resultType': 'complete', 'content': [{'type': 'text', 'text': 'EXECUTED get_file_contents'}]}
-    DENY   delete_repository  → {'code': -32001, 'message': 'Policy evaluation completed'}
+    DENY   delete_repository  → {'code': -32001, 'message': 'not authorized'}
 
     Tools that actually executed on the server: ['get_file_contents']
     ✓ delete_repository was blocked before it ran.
