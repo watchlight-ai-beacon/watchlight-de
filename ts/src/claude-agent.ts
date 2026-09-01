@@ -15,7 +15,7 @@
 // never executes — denied before it runs. Fail-closed: a governance error also
 // denies. Every decision lands in the value-free `.watchlight/audit.jsonl`.
 
-import { Watchlight, govern } from "./index";
+import { Watchlight, govern, DENY_REASON } from "./index";
 import type {
   HooksOption,
   HookCallback,
@@ -67,7 +67,7 @@ export function governedHooks(options: GovernedHooksOptions = {}): GovernedHooks
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
           permissionDecision: allowed ? "allow" : "deny",
-          ...(allowed ? {} : { permissionDecisionReason: reason || "no matching policy" }),
+          ...(allowed ? {} : { permissionDecisionReason: reason || DENY_REASON }),
         },
       };
     } catch (e) {

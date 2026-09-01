@@ -21,7 +21,7 @@
 // structurally typed against the tool's public shape, so `@langchain/core` stays
 // a peer you already have installed.
 
-import { Watchlight, govern, Denied } from "./index";
+import { Watchlight, govern, Denied, DENY_REASON } from "./index";
 
 /** The minimal shape of a LangChain `StructuredTool` this adapter needs. */
 export interface LangChainToolLike {
@@ -62,7 +62,7 @@ export function governTool<T extends LangChainToolLike>(tool: T, opts: GovernToo
         return async (input: unknown, config?: unknown): Promise<unknown> => {
           const { allowed, reason } = await governor.check(intent, name);
           if (!allowed) {
-            throw new Denied(name, intent, reason || "no matching policy");
+            throw new Denied(name, intent, reason || DENY_REASON);
           }
           return target.invoke(input, config);
         };

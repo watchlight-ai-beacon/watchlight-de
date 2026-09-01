@@ -11,8 +11,8 @@ Expected output:
     watchlight: governing 'my-agent' (dev mode, in-process engine)
     watchlight: ALLOW  research  tool/web_search
     results for: watchlight docs
-    watchlight: DENY   transfer  tool/transfer_funds     Policy evaluation completed
-    (denied before it executed: watchlight denied intent 'transfer' on tool/transfer_funds: Policy evaluation completed)
+    watchlight: DENY   transfer  tool/transfer_funds     not authorized
+    (denied before it executed: watchlight denied intent 'transfer' on tool/transfer_funds: not authorized)
 
 Only the `research` intent is permitted by `watchlight.policy.json`. The
 `transfer_funds` tool is governed but no policy permits it, so the engine

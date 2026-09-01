@@ -243,6 +243,26 @@ def sanitize(text: str, *, mode: str = "tag", types: Optional[Sequence[str]] = N
         raise SanitizeError(str(exc)) from exc
 
 
+# ── caller-facing decision reasons (SECURITY: uniform + non-revealing) ──────
+# The reason surfaced to the caller NEVER explains WHY a request was denied — a
+# specific reason ("no matching policy" vs "forbidden by X" vs "amount exceeds
+# limit") would leak the authorization boundary to an attacker probing it, who
+# could then tune an attack. Every denial returns the SAME opaque reason; the
+# Denied message still names the caller's own request (intent + tool), which is
+# their input, not a leak. Operators reconstruct the true cause from signed
+# lineage / the decisionId (Enterprise), never from this string.
+DENY_REASON = "not authorized"
+APPROVAL_REASON = "approval required"
+
+
+def _reason_for_verdict(verdict: str) -> str:
+    if verdict == "Deny":
+        return DENY_REASON
+    if verdict == "NeedsApproval":
+        return APPROVAL_REASON
+    return ""
+
+
 class Watchlight:
     """An in-process policy decision point for a single agent.
 
@@ -356,7 +376,7 @@ class Watchlight:
                         if d2["allowed"]:
                             return fn(*args, **kwargs)
                     raise NeedsApproval(name, intent, d.get("decision_id"), d["reason"])
-                raise Denied(name, intent, d["reason"] or "no matching policy")
+                raise Denied(name, intent, d["reason"] or DENY_REASON)
 
             return wrapper  # type: ignore[return-value]
 
@@ -406,7 +426,6 @@ class Watchlight:
                 json.dumps({"principal": prin, "action": action, "resource": res, "context": context or {}})
             )
         )
-        reason = raw.get("reason", "")
         decision_id = raw.get("request_id")
         allowed = raw.get("decision") == "Allow"
         needs = allowed and _needs_approval(raw.get("details"))
@@ -417,6 +436,8 @@ class Watchlight:
             else:
                 allowed = False
         verdict = "Allow" if allowed else ("NeedsApproval" if needs else "Deny")
+        # Non-revealing, uniform reason (never the engine's specific one).
+        reason = _reason_for_verdict(verdict)
         return (
             {
                 "decision": verdict,
@@ -501,7 +522,7 @@ class Watchlight:
             tag = "APPRV?"
         else:
             tag = "DENY"
-        trailer = "" if decision == "Allow" else f"     {reason or 'no matching policy'}"
+        trailer = "" if decision == "Allow" else f"     {reason or DENY_REASON}"
         print(f"watchlight: {tag:6} {intent:9} {resource}{trailer}")
         # Value-free audit: argument VALUES never enter the trail — only the
         # governance decision + correlation id. Mirrors the production contract.

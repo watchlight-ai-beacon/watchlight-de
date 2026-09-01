@@ -97,6 +97,14 @@ Windows — no Rust toolchain, no build step, no account.
 pip install watchlight
 ```
 
+Prefer an isolated environment? Install into a virtual environment instead:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install watchlight
+```
+
 Save this as `agent.py` and run `python agent.py`:
 
 ```python
@@ -126,8 +134,8 @@ $ python agent.py
 watchlight: governing 'my-agent' (dev mode, in-process engine)
 watchlight: ALLOW  research  tool/web_search
 results for: watchlight docs
-watchlight: DENY   transfer  tool/transfer_funds     Policy evaluation completed
-watchlight denied intent 'transfer' on tool/transfer_funds: Policy evaluation completed
+watchlight: DENY   transfer  tool/transfer_funds     not authorized
+watchlight denied intent 'transfer' on tool/transfer_funds: not authorized
 ```
 
 **That `DENY` line — in your own terminal, in under five minutes, with no
@@ -176,8 +184,8 @@ try {
 watchlight: governing 'my-agent' (dev mode, in-process engine)
 watchlight: ALLOW  research  tool/webSearch
 results for: watchlight docs
-watchlight: DENY   transfer  tool/transferFunds     Policy evaluation completed
-watchlight denied intent 'transfer' on tool/transferFunds: Policy evaluation completed
+watchlight: DENY   transfer  tool/transferFunds     not authorized
+watchlight denied intent 'transfer' on tool/transferFunds: not authorized
 ```
 
 It mirrors the Python package feature-for-feature:
@@ -275,6 +283,40 @@ exit 1 on any failure:
 ```bash
 watchlight policy test suite.json          # Python
 npx watchlight policy test suite.json      # Node
+```
+
+---
+
+## Patterns — advanced policies for high-stakes decisions
+
+Past the quickstart, the interesting question is *what to write in the policy*.
+The [**governance patterns**](./examples/patterns/) library is a set of
+copy-paste recipes for the decisions people reach for the Developer Edition to
+govern — spending money, deleting things, messaging the outside world, moving
+data, killing a runaway agent. Each is a *problem shape*: a policy, the code that
+governs the tool, and tests that prove the verdicts. Every policy is run through
+the real engine by [`check.sh`](./examples/patterns/check.sh), so what a pattern
+claims and what the engine does can't drift.
+
+The advanced policy JSON — each a runnable `{ policies, tests }` suite with Cedar
+`context` conditions and `@enforcement_effect` gates — lives under
+[`examples/patterns/suites/`](./examples/patterns/suites/):
+
+| Pattern | The high-stakes question | Policy JSON |
+|---|---|---|
+| [Money-bounded agent](./examples/patterns/money-bounded-agent.md) | Spend *this much*, on *this*, now — or does a human decide? | [`money-bounded.suite.json`](./examples/patterns/suites/money-bounded.suite.json) |
+| [Destructive actions](./examples/patterns/destructive-actions.md) | Delete / drop / deploy: require a human; make some things undeletable. | [`destructive-actions.suite.json`](./examples/patterns/suites/destructive-actions.suite.json) |
+| [External messaging](./examples/patterns/external-messaging.md) | May the agent message *outside* — allowlisted destinations only, with review? | [`external-messaging.suite.json`](./examples/patterns/suites/external-messaging.suite.json) |
+| [Data egress](./examples/patterns/data-egress.md) | May *this classification* of data cross *this boundary*? | [`data-egress.suite.json`](./examples/patterns/suites/data-egress.suite.json) |
+| [Kill-switch / quarantine](./examples/patterns/kill-switch.md) | Stop a suspect agent cold — a hard boundary that beats every grant. | [`kill-switch.suite.json`](./examples/patterns/suites/kill-switch.suite.json) |
+| [Per-user attribution](./examples/patterns/per-user-attribution.md) | Attribute the decision to the acting end-user, and scope policy to them. | [`per-user.suite.json`](./examples/patterns/suites/per-user.suite.json) |
+
+Two more recipes — [PII before read](./examples/patterns/pii-before-read.md) and
+[sub-agent confinement](./examples/patterns/subagent-confinement.md) — round out
+the library. Run every suite at once:
+
+```bash
+examples/patterns/check.sh          # runs each suite through the real engine
 ```
 
 ---

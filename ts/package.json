@@ -1,6 +1,6 @@
 {
   "name": "@watchlight/sdk",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Watchlight Developer Edition govern glue for Node/TypeScript — declare intent, govern a tool with a fail-closed in-process policy decision, and get a value-free audit trail. Glue over @watchlight/engine; zero decision logic in JS.",
   "type": "commonjs",
   "main": "./dist/index.js",

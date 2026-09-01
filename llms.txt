@@ -47,7 +47,7 @@ try:
 except Denied as e:
     print(e)                               # watchlight denied intent 'transfer' on tool/transfer_funds: ...
 ```
-Two mistakes to avoid: (1) decorating a tool WITHOUT loading a policy first — then every call denies (fail-closed by design). (2) defining governed tools but never CALLING them — nothing is authorized and nothing prints. The default-deny `reason` string from the engine is currently `"Policy evaluation completed"` (the `Denied` message names the intent + tool, which is the actionable part).
+Two mistakes to avoid: (1) decorating a tool WITHOUT loading a policy first — then every call denies (fail-closed by design). (2) defining governed tools but never CALLING them — nothing is authorized and nothing prints. The caller-facing deny `reason` is deliberately uniform and non-revealing — every denial reports `"not authorized"`, never *why* (no matching policy vs forbidden vs a failed condition), so a caller probing the boundary learns nothing to tune against it. The `Denied` message still names the intent + tool (the caller's own request, not a leak); operators reconstruct the true cause from the audit trail / decisionId, never from this string.
 
 ## Scope attenuation — confine sub-agents (verified, 0.5.0)
 
