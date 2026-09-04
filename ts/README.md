@@ -250,6 +250,44 @@ A pure `sanitize(text, opts)` is also exported. Fail-closed: it throws
 entry is rejected without echoing it). Recall is bounded by the enabled
 detectors; the report says exactly which ran.
 
+## Screen retrieved content before it reaches the model
+
+Anything an agent reads but did not write — a web page, a search result, a tool
+result — goes back into the model as context; text in it that *looks like an
+instruction* is the classic prompt-injection vector. `govern.screen` catches the
+well-known shapes, deterministically and in-process, and pairs with the `onResult`
+hook so the raw result never reaches the model when you refuse:
+
+```ts
+import { govern, Denied } from "@watchlight/sdk";
+
+const readPage = govern.tool(fetchPage, {
+  intent: "read",
+  resource: (url) => url,
+  onResult: (html, { resource }) => {
+    const { text, report } = govern.screen(html, { resource, mode: "redact" });
+    if (report.flagged) throw new Denied(resource, "read", "not authorized"); // refuse …
+    return text;                                                             // … or hand back the redacted text
+  },
+});
+// report → { counts: { INSTRUCTION_OVERRIDE: 1, HTML_INJECTION: 2 }, total: 3, flagged: true, … }  (value-free)
+```
+
+Seven rule families, each a named counter: `INSTRUCTION_OVERRIDE`, `ROLE_SWITCH`,
+`PROMPT_EXFILTRATION`, `JAILBREAK_MARKER`, `AUTHORITY_IMPERSONATION`,
+`HTML_INJECTION`, and `PROMPT_LEAK` (for the output lane — run it on what the
+model produced). Modes: `report` (default — text untouched, counts only) and
+`redact` (matched spans replaced by `[FAMILY]` markers). Matching ignores case,
+whitespace runs and zero-width characters. `govern.screen` records a
+**value-free** `screening` audit entry (counts per family, mode, `flagged` —
+never the text).
+
+A pure `screen(text, opts)` is also exported. Fail-closed: it throws `ScreenError`
+on invalid input, mode or family rather than returning a "clean" result. It is
+rules, not a classifier — it does not decode leetspeak, homoglyphs or encodings,
+and a document that quotes an attack string verbatim is flagged (the model would
+read it too); treat `flagged` as a signal, not a verdict.
+
 ## Value-free audit
 
 `.watchlight/audit.jsonl` records **who / what intent / which tool / the

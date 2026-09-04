@@ -58,6 +58,8 @@ __all__ = [
     "DETECTOR_VERSION",
     "DEFAULT_PII_TYPES",
     "HEURISTIC_PII_TYPES",
+    "screen",
+    "ScreenError",
     "govern",
     "Scope",
     "AttenuationDenied",
@@ -515,6 +517,228 @@ def _reason_for_verdict(verdict: str) -> str:
     return ""
 
 
+# ── screen: rule-based prompt-injection / output screening (mirrors TS) ─────
+# Screen text BEFORE it (re-)enters the model — a retrieved page, a tool result,
+# a document — and screen what the model PRODUCES before it leaves. Deterministic,
+# in-process, rule-based, fail-closed. Same value-free contract as ``sanitize``:
+# the report carries counts per rule family and never the matched text, offsets,
+# or the input.
+#
+# Honest bound: a RULE-BASED detector for well-known injection phrasings, not an
+# ML classifier. Robust to case, run-on whitespace / line breaks and zero-width
+# characters; does NOT decode leetspeak, homoglyphs, encodings or paraphrase.
+# Text that QUOTES an attack string verbatim is flagged — by design. Treat
+# ``flagged`` as a signal to route, refuse or log, not as a verdict on intent.
+SCREEN_DETECTOR_VERSION = "de-screen-1"
+
+SCREEN_FAMILIES: tuple[str, ...] = (
+    "INSTRUCTION_OVERRIDE",
+    "ROLE_SWITCH",
+    "PROMPT_EXFILTRATION",
+    "JAILBREAK_MARKER",
+    "AUTHORITY_IMPERSONATION",
+    "HTML_INJECTION",
+    "PROMPT_LEAK",
+)
+
+
+class ScreenError(RuntimeError):
+    """Fail-closed: screening could not complete; do NOT treat the content as clean."""
+
+
+# Normalization: zero-width characters removed, every whitespace run collapsed to
+# ONE space, with an index map back to the original so ``redact`` replaces the
+# ORIGINAL span. Both sets are spelled out (not ``\s``) to match the TS twin exactly.
+_ZERO_WIDTH = "\u00ad\u200b-\u200f\u2060-\u2064\ufeff"
+_WHITESPACE = "\t\n\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000"
+_SKIP_RUN = re.compile(f"[{_ZERO_WIDTH}{_WHITESPACE}]+")
+_HAS_WS = re.compile(f"[{_WHITESPACE}]")
+
+
+def _screen_normalize(text: str) -> tuple[str, list[int]]:
+    parts: list[str] = []
+    idx: list[int] = []
+    cursor = 0
+    for m in _SKIP_RUN.finditer(text):
+        s, e = m.span()
+        if s > cursor:
+            parts.append(text[cursor:s])
+            idx.extend(range(cursor, s))
+        ws = _HAS_WS.search(m.group(0))
+        if ws:  # a run with any whitespace → one space; zero-width-only → vanishes
+            parts.append(" ")
+            idx.append(s + ws.start())
+        cursor = e
+    if cursor < len(text):
+        parts.append(text[cursor:])
+        idx.extend(range(cursor, len(text)))
+    return "".join(parts), idx
+
+
+# Rules: case-insensitive alternations of LITERAL tokens joined by single spaces,
+# optional groups and only BOUNDED repetition — never a nested unbounded
+# quantifier — so matching is linear. ``_B``/``_E`` are ASCII word boundaries as
+# lookarounds so Python and JS agree (``\b`` is Unicode-aware here, ASCII in JS).
+_B = "(?<![a-z0-9_])"
+_E = "(?![a-z0-9_])"
+_FILL = "(?:[a-z-]+,? ){0,3}"
+_PROMPT_NOUN = (
+    "(?:system prompt|initial prompt|original prompt|hidden prompt|secret prompt|developer prompt|"
+    "system message|system instructions|initial instructions|original instructions|hidden instructions|"
+    "secret instructions|developer instructions|pre-?prompt|meta-?prompt)"
+)
+_PROMPT_ADJ = "(?:(?:full|entire|complete|exact|whole|original|hidden|secret|internal|verbatim) )?"
+
+_SCREEN_RULES: list[tuple[str, re.Pattern]] = [
+    (fam, re.compile(src, re.IGNORECASE))
+    for fam, src in [
+        # ── INSTRUCTION_OVERRIDE ──
+        ("INSTRUCTION_OVERRIDE",
+         f"{_B}(?:ignore|disregard|forget|override|bypass|discard|do not follow|don't follow|stop following) "
+         "(?:all |any |the |your |my |these |those |all of your |all of the |any of your )?"
+         "(?:previous|prior|above|earlier|preceding|initial|original|system|foregoing|existing) "
+         f"(?:instructions?|prompts?|rules|directions|directives|guidelines|guidance|constraints|context|programming|training|messages?){_E}"),
+        ("INSTRUCTION_OVERRIDE",
+         f"{_B}(?:ignore|disregard|forget|override|bypass|discard) (?:all|any|everything) (?:of )?(?:your |the |my )?"
+         f"(?:instructions|prompts|rules|directions|directives|guidelines|constraints|programming|training|you were told|you have been told|above|before){_E}"),
+        ("INSTRUCTION_OVERRIDE", f"{_B}disregard the above{_E}"),
+        ("INSTRUCTION_OVERRIDE", f"{_B}(?:your |the )?new (?:instructions?|directives?|rules) ?:"),
+        ("INSTRUCTION_OVERRIDE",
+         f"{_B}(?:instead|rather than that|from now on),? (?:you must|you will|you should|you have to|always) (?:only )?(?:do|say|respond|reply|answer|output|write|follow){_E}"),
+        # ── ROLE_SWITCH ──
+        ("ROLE_SWITCH",
+         f"{_B}you are now (?:a |an |the |my )?{_FILL}(?:assistant|ai|bot|chatbot|agent|persona|character|hacker|human|person){_E}"),
+        ("ROLE_SWITCH",
+         f"{_B}(?:act|behave|respond|answer|reply|roleplay|role-play|role play) as (?:a |an |the |if you were |if you are ){_FILL}"
+         f"(?:assistant|ai|bot|chatbot|agent|persona|character|hacker|human|person){_E}"),
+        ("ROLE_SWITCH",
+         f"{_B}pretend (?:to be|you are|you're|that you are|that you're) (?:a |an |the |my )?{_FILL}"
+         f"(?:assistant|ai|bot|chatbot|agent|persona|character|hacker|human|person|unrestricted|unfiltered|uncensored){_E}"),
+        ("ROLE_SWITCH",
+         f"{_B}(?:enter|switch to|activate|enable) (?:the )?{_FILL}(?:persona|character|roleplay|role-play) (?:mode|now){_E}"),
+        # ── PROMPT_EXFILTRATION ──
+        ("PROMPT_EXFILTRATION",
+         f"{_B}(?:reveal|show|print|display|output|repeat|recite|disclose|leak|dump|expose|share|tell|give|send|write|spell|paste|echo|return|summarize|summarise|translate|encode|quote) "
+         "(?:me |us |back |out |it )?(?:all |all of |the full |the entire |the complete |the exact |the whole )?"
+         f"(?:your|the|this) {_PROMPT_ADJ}{_PROMPT_NOUN}{_E}"),
+        ("PROMPT_EXFILTRATION",
+         f"{_B}what (?:is|are|were|was|does|do) (?:your|the) {_PROMPT_ADJ}{_PROMPT_NOUN}(?: say| contain| include)?{_E}"),
+        ("PROMPT_EXFILTRATION",
+         f"{_B}(?:repeat|print|output|show|reveal|display|echo|copy|paste) (?:everything|all the text|the text|all text|all words|everything written|the words|the content|the conversation) "
+         f"(?:above|before this|before your|preceding this|so far){_E}"),
+        ("PROMPT_EXFILTRATION",
+         f"{_B}(?:your|the) {_PROMPT_NOUN} (?:verbatim|word for word|word-for-word|in full|exactly as written){_E}"),
+        # ── JAILBREAK_MARKER ──
+        ("JAILBREAK_MARKER",
+         f"{_B}(?:dan|jailbreak|jailbroken|unrestricted|unfiltered|uncensored|evil|opposite|no[- ]rules|no[- ]filter|anti[- ]?gpt) mode{_E}"),
+        ("JAILBREAK_MARKER", f"{_B}developer mode (?:enabled|output|activated|unlocked|response){_E}"),
+        ("JAILBREAK_MARKER", f"{_B}do anything now{_E}"),
+        ("JAILBREAK_MARKER", f"{_B}you are (?:now )?dan(?: \\d+(?:\\.\\d+)?)?{_E}"),
+        ("JAILBREAK_MARKER",
+         f"{_B}(?:an?|the) (?:unrestricted|unfiltered|uncensored|jailbroken) (?:ai|assistant|model|chatbot|bot|agent|version){_E}"),
+        ("JAILBREAK_MARKER",
+         f"{_B}you (?:are (?:now )?(?:free (?:of|from)|without|not bound by|no longer bound by|not restricted by|not limited by|not subject to|exempt from)|have no|no longer have) "
+         f"(?:all |any |your |the )?(?:restrictions|rules|guidelines|filters|limitations|limits|content polic(?:y|ies)|safety (?:guidelines|rules|filters|measures|training)|ethical (?:guidelines|constraints|considerations)|guardrails|censorship){_E}"),
+        ("JAILBREAK_MARKER",
+         f"{_B}(?:respond|answer|reply|act|operate|behave|write|continue|proceed) (?:without|with no|free of|ignoring|bypassing|regardless of) "
+         f"(?:any |all |your |the )?(?:restrictions|filters|guardrails|limits|limitations|censorship|content polic(?:y|ies)|safety (?:guidelines|rules|filters|measures)|ethical (?:guidelines|constraints|considerations)|moral (?:guidelines|constraints)){_E}"),
+        ("JAILBREAK_MARKER", f"{_B}you (?:are|have been|are now) (?:jailbroken|unrestricted|unfiltered|uncensored){_E}"),
+        # ── AUTHORITY_IMPERSONATION ──
+        ("AUTHORITY_IMPERSONATION",
+         f"{_B}(?:as|i am|i'm|this is|speaking as|on behalf of|message from|note from|instructions? from|directive from|order from) your "
+         f"(?:(?:system|new|lead|senior|chief|head) )?(?:administrator|admin|sysadmin|operator|developer|developers|creator|creators|owner|maintainer|programmer|engineer|supervisor|trainer|security team|safety team){_E}"),
+        ("AUTHORITY_IMPERSONATION",
+         f"{_B}(?:you (?:are|have been|are now) (?:granted|given|authorized with|authorised with)|i (?:hereby )?(?:grant|give) you|granting you) "
+         f"(?:full|elevated|root|admin|administrator|administrative|operator|developer|unrestricted|special|complete) (?:access|privileges|permissions|clearance|authority|rights){_E}"),
+        ("AUTHORITY_IMPERSONATION",
+         f"{_B}(?:system|admin|administrator|operator|root|sudo|maintenance|debug|security|safety) (?:override|override code|command mode|access granted|privileges granted|authorization granted|authorisation granted|mode activated){_E}"),
+        ("AUTHORITY_IMPERSONATION",
+         f"{_B}this (?:message|instruction|request|command) (?:is|comes|was|has been) (?:authori[sz]ed|approved|sanctioned|verified|signed) by (?:your|the) "
+         f"(?:administrator|admin|operator|developers?|creators?|owner|security team|compliance team|safety team){_E}"),
+        # ── HTML_INJECTION ──
+        ("HTML_INJECTION", "</?(?:script|iframe|object|embed|applet|frame|frameset)(?=[ >/])"),
+        ("HTML_INJECTION", "<meta [^<>]{0,200}?http-equiv"),
+        ("HTML_INJECTION",
+         "(?<=[ \"'/<>])on(?:load|error|click|dblclick|mouseover|mouseenter|mouseleave|mousedown|mouseup|focus|blur|input|change|submit|reset|keydown|keyup|keypress|abort|animationstart|animationend|transitionend|toggle|pointerdown|pointerup|touchstart|touchend|wheel|scroll|beforeunload|unload|hashchange|message|resize|select|drag|drop|copy|paste|cut) ?="),
+        ("HTML_INJECTION", f"{_B}(?:javascript|vbscript|livescript):(?=\\S)"),
+        ("HTML_INJECTION", f"{_B}data:text/html"),
+        ("HTML_INJECTION",
+         "style ?= ?[\"']?[^\"'<>]{0,200}?(?:display ?: ?none|visibility ?: ?hidden|font-size ?: ?0(?:px|pt|em|rem|%)?(?![0-9.])|opacity ?: ?0(?:\\.0+)?(?![0-9.])|color ?: ?transparent)"),
+        ("HTML_INJECTION", "<[a-z][a-z0-9]{0,20}[^<>]{0,200}? hidden(?=[ >/=])"),
+        # ── PROMPT_LEAK (output side) ──
+        ("PROMPT_LEAK",
+         f"{_B}my {_PROMPT_ADJ}(?:{_PROMPT_NOUN}|instructions|guidelines|rules|configuration|prompt) "
+         f"(?:is|are|was|were|reads?|says?|states?|begins?|starts?|includes?|tells? me|specif(?:y|ies)|require[s]?){_E}"),
+        ("PROMPT_LEAK",
+         f"{_B}here (?:is|are) my {_PROMPT_ADJ}(?:{_PROMPT_NOUN}|instructions|guidelines|rules|configuration|prompt){_E}"),
+        ("PROMPT_LEAK",
+         f"{_B}(?:system prompt|system message|system instructions|initial prompt|hidden prompt|developer message|developer prompt|pre-?prompt) ?:"),
+        ("PROMPT_LEAK", f"{_B}i (?:was|am|have been|were) (?:instructed|programmed|configured) (?:to|not to|never to|by){_E}"),
+    ]
+]
+
+
+def screen(text: str, *, mode: str = "report", families: Optional[Sequence[str]] = None) -> dict:
+    """Screen ``text`` for prompt-injection / output-leak shapes. Deterministic,
+    fail-closed. Returns ``{"text": ..., "report": {mode, detector_version,
+    counts, total, flagged}}`` — the report is value-free (counts per family,
+    never the matched text). ``mode`` is ``report`` (text untouched, default) or
+    ``redact`` (each match replaced by ``[FAMILY]`` in the ORIGINAL text)."""
+    if not isinstance(text, str):
+        raise ScreenError("input must be a string")
+    if mode not in ("report", "redact"):
+        raise ScreenError(f"unknown mode '{mode}' (expected 'report' or 'redact')")
+    requested = tuple(families) if families is not None else SCREEN_FAMILIES
+    for fam in requested:
+        if fam not in SCREEN_FAMILIES:
+            raise ScreenError(f"unknown family '{fam}'")
+    enabled = set(requested)
+    try:
+        norm, idx = _screen_normalize(text)
+        spans: list[tuple[int, int, str]] = []
+        for fam, pat in _SCREEN_RULES:
+            if fam not in enabled:
+                continue
+            for m in pat.finditer(norm):
+                if m.end() > m.start():
+                    spans.append((m.start(), m.end(), fam))
+        # resolve overlaps: earliest start, then longest; rule order breaks ties
+        spans.sort(key=lambda s: (s[0], -(s[1] - s[0])))
+        kept: list[tuple[int, int, str]] = []
+        last_end = -1
+        for s in spans:
+            if s[0] >= last_end:
+                kept.append(s)
+                last_end = s[1]
+        counts: dict[str, int] = {}
+        for _, _, fam in kept:
+            counts[fam] = counts.get(fam, 0) + 1
+        out = text
+        if mode == "redact" and kept:
+            parts, cursor = [], 0
+            for start, end, fam in kept:
+                o_start, o_end = idx[start], idx[end - 1] + 1
+                parts.append(text[cursor:o_start])
+                parts.append(f"[{fam}]")
+                cursor = o_end
+            parts.append(text[cursor:])
+            out = "".join(parts)
+        return {
+            "text": out,
+            "report": {
+                "mode": mode,
+                "detector_version": SCREEN_DETECTOR_VERSION,
+                "counts": counts,
+                "total": len(kept),
+                "flagged": len(kept) > 0,
+            },
+        }
+    except ScreenError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - fail-closed
+        raise ScreenError(str(exc)) from exc
+
+
 class Watchlight:
     """An in-process policy decision point for a single agent.
 
@@ -799,6 +1023,22 @@ class Watchlight:
         self._audit_sanitize(intent, resource, result)
         return result
 
+    def screen(
+        self,
+        content: str,
+        *,
+        intent: str = "read",
+        resource: str = "content",
+        mode: str = "report",
+        families: Optional[Sequence[str]] = None,
+    ) -> dict:
+        """Screen text for prompt-injection / output-leak shapes before it
+        (re-)enters the model. Fail-closed; writes a value-free ``screening``
+        audit record (counts per family + ``flagged`` — never the text)."""
+        result = screen(content, mode=mode, families=families)
+        self._audit_screen(intent, resource, result)
+        return result
+
     # ── internals ───────────────────────────────────────────────────
 
     def _apply_on_result(self, result: Any, on_result: Callable[[Any, dict], Any], info: dict) -> tuple[Any, bool]:
@@ -932,6 +1172,29 @@ class Watchlight:
         if report.get("decision_id"):
             record["decision_id"] = report["decision_id"]
         self._write_audit(record)
+
+    def _audit_screen(self, intent: str, resource: str, result: dict) -> None:
+        self._announce()
+        report = result["report"]
+        print(
+            f"watchlight: SCREEN {intent:9} {resource}"
+            f"     flagged {report['total']} ({report['mode']})"
+        )
+        # Value-free: counts per rule family + mode + flagged — never the text.
+        self._write_audit(
+            {
+                "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "agent": self.agent,
+                "intent": intent,
+                "event": "screening",
+                "resource": resource,
+                "mode": report["mode"],
+                "detector": report["detector_version"],
+                "counts": report["counts"],
+                "total": report["total"],
+                "flagged": report["flagged"],
+            }
+        )
 
     def _write_audit(self, record: dict) -> None:
         """The single funnel for every audit record this governor produces: the

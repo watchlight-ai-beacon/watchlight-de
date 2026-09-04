@@ -22,6 +22,7 @@ import { Scope, DE_MAX_DEPTH } from "./attenuation";
 import { AuditTrail, type AuditSink } from "./audit";
 import { selectBackend, type GovernanceBackend } from "./backend";
 import { sanitize as sanitizeText, type SanitizeOptions, type SanitizeResult } from "./sanitize";
+import { screen as screenText, type ScreenOptions, type ScreenResult } from "./screen";
 import {
   runPolicyTests,
   type PolicyTestCase,
@@ -47,6 +48,8 @@ export type {
   SanitizeReport,
   SanitizeResult,
 } from "./sanitize";
+export { screen, ScreenError, SCREEN_DETECTOR_VERSION, SCREEN_FAMILIES } from "./screen";
+export type { ScreenFamily, ScreenMode, ScreenOptions, ScreenReport, ScreenResult } from "./screen";
 export type { GovernanceBackend, Decision, AuthorizeRequest } from "./backend";
 export { InProcessBackend, NetworkedBackend } from "./backend";
 export { runPolicyTests, loadTestSuite } from "./policytest";
@@ -575,6 +578,24 @@ export class Watchlight {
     return result;
   }
 
+  /**
+   * Screen text for prompt-injection / output-leak shapes before it (re-)enters
+   * the model — a retrieved page, a tool result, a document — or before model
+   * output leaves. Rule-based, deterministic, fail-closed. Writes a value-free
+   * `screening` record to the audit trail (counts per family + `flagged` — never
+   * the text) and returns the text (untouched in `report` mode, family markers
+   * in `redact` mode) plus the report.
+   */
+  screen(
+    content: string,
+    opts: ScreenOptions & { intent?: string; resource?: string } = {}
+  ): ScreenResult {
+    const { intent = "read", resource = "content", mode, families } = opts;
+    const result = screenText(content, { mode, families });
+    this._auditScreen(intent, resource, result);
+    return result;
+  }
+
   // ── internals ─────────────────────────────────────────────────────
 
   private _auditSanitize(intent: string, resource: string, result: SanitizeResult): void {
@@ -660,6 +681,29 @@ export class Watchlight {
     };
     if (info.decisionId) record.decision_id = info.decisionId;
     if (outcome.withheld) record.withheld = true;
+    this._writeAudit(record);
+  }
+
+  private _auditScreen(intent: string, resource: string, result: ScreenResult): void {
+    this._announce();
+    const { report } = result;
+    // eslint-disable-next-line no-console
+    console.log(
+      `watchlight: SCREEN ${intent.padEnd(9)} ${resource}     flagged ${report.total} (${report.mode})`
+    );
+    // Value-free: counts per rule family + mode + flagged — never the text.
+    const record: Record<string, unknown> = {
+      ts: new Date().toISOString(),
+      agent: this.agent,
+      intent,
+      event: "screening",
+      resource,
+      mode: report.mode,
+      detector: report.detectorVersion,
+      counts: report.counts,
+      total: report.total,
+      flagged: report.flagged,
+    };
     this._writeAudit(record);
   }
 
