@@ -35,17 +35,38 @@ __all__ = ["AuditSink", "AuditTrail"]
 AuditSink = Callable[[dict[str, Any]], Any]
 
 
+def _error_kind(exc: BaseException) -> str:
+    """A safe label for a sink failure: the class name of a *built-in* exception
+    (a plain identifier, <= 64 chars), else the literal ``Error``. A user-defined
+    class name is sink-controlled text — it could be identifier-shaped and still
+    carry record content — so it is never echoed."""
+    cls = type(exc)
+    name = cls.__name__
+    builtin = getattr(cls, "__module__", None) == "builtins"
+    return name if builtin and isinstance(name, str) and len(name) <= 64 and name.isidentifier() else "Error"
+
+
 class AuditTrail:
     """The audit trail shared by a governor and every scope derived from it."""
 
     def __init__(self, path: str | pathlib.Path, sink: Optional[AuditSink] = None) -> None:
         self.path = pathlib.Path(path)
         self._sink = sink
-        self._sink_warned = False
+        # Sanitized error kinds already reported — one warning per kind, so a
+        # "no running loop" condition never silences a later real failure.
+        self._warned_kinds: set[str] = set()
+        # Strong references to in-flight sink tasks: asyncio holds tasks weakly,
+        # and a GC'd task would drop the record silently mid-await.
+        self._tasks: set[asyncio.Future[Any]] = set()
 
     def write(self, record: dict[str, Any]) -> None:
         """Append ``record`` to the local file, then hand the same fields to the sink."""
-        line = json.dumps(record)
+        # The funnel can never raise out of authorize/sanitize/attenuate —
+        # including for a record that fails to serialize.
+        try:
+            line = json.dumps(record)
+        except (TypeError, ValueError):
+            return
         # 1. The file, first — the sink can never influence what lands on disk.
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -82,9 +103,11 @@ class AuditTrail:
             self._warn_once(RuntimeError("async audit sink called outside a running event loop"))
             return
         task = asyncio.ensure_future(awaitable, loop=loop)
+        self._tasks.add(task)
         task.add_done_callback(self._on_done)
 
     def _on_done(self, task: "asyncio.Future[Any]") -> None:
+        self._tasks.discard(task)
         if task.cancelled():
             return
         exc = task.exception()
@@ -92,13 +115,15 @@ class AuditTrail:
             self._warn_once(exc)
 
     def _warn_once(self, exc: BaseException) -> None:
-        if self._sink_warned:
-            return
-        self._sink_warned = True
         # Only the error TYPE is reported — never the record, never a message
-        # that could carry one. The trail is value-free; keep the log that way.
+        # that could carry one. The class name is sink-controlled text, so it is
+        # accepted only when it is a plain identifier; anything else logs `Error`.
+        kind = _error_kind(exc)
+        if kind in self._warned_kinds:
+            return
+        self._warned_kinds.add(kind)
         print(
-            f"watchlight: audit sink failed ({type(exc).__name__}); further sink failures "
+            f"watchlight: audit sink failed ({kind}); further sink failures "
             "are suppressed — the local audit file is still written",
             file=sys.stderr,
         )

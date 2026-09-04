@@ -30,6 +30,22 @@ export type AuditRecord = Readonly<Record<string, unknown>>;
  */
 export type AuditSink = (record: AuditRecord) => void | Promise<void>;
 
+const ERROR_KIND = /^[A-Za-z_$][\w$]{0,63}$/;
+// `err.name` is sink-controlled text (a subclass or `Object.assign` can make it
+// anything, including an identifier-shaped string carrying record content), so
+// only the standard built-in error names are ever echoed.
+const STANDARD_ERRORS = new Set([
+  "Error", "TypeError", "RangeError", "SyntaxError", "ReferenceError",
+  "EvalError", "URIError", "AggregateError",
+]);
+
+/** A safe label for a sink failure: a standard built-in error name, else the
+ *  literal `Error`. Never sink-chosen text. */
+function sanitizeErrorKind(err: unknown): string {
+  const name = err instanceof Error ? err.name : "";
+  return typeof name === "string" && ERROR_KIND.test(name) && STANDARD_ERRORS.has(name) ? name : "Error";
+}
+
 function deepFreeze<T>(value: T): T {
   if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
     Object.freeze(value);
@@ -42,7 +58,9 @@ function deepFreeze<T>(value: T): T {
 export class AuditTrail {
   readonly path: string;
   private readonly _sink?: AuditSink;
-  private _sinkWarned = false;
+  /** Sanitized error kinds already reported — one warning per kind, so a
+   *  "no running loop"-style condition never silences a later real failure. */
+  private readonly _warnedKinds = new Set<string>();
 
   constructor(auditPath: string, sink?: AuditSink) {
     this.path = auditPath;
@@ -51,7 +69,14 @@ export class AuditTrail {
 
   /** Append `record` to the local file, then hand the same fields to the sink. */
   write(record: Record<string, unknown>): void {
-    const line = JSON.stringify(record);
+    // The funnel can never throw out of authorize/sanitize/attenuate — including
+    // for a record that fails to serialize (nothing to write, nothing to send).
+    let line: string;
+    try {
+      line = JSON.stringify(record);
+    } catch {
+      return;
+    }
     // 1. The file, first — the sink can never influence what lands on disk.
     try {
       fs.mkdirSync(path.dirname(this.path), { recursive: true });
@@ -75,11 +100,12 @@ export class AuditTrail {
   }
 
   private _warnOnce(err: unknown): void {
-    if (this._sinkWarned) return;
-    this._sinkWarned = true;
     // Only the error TYPE is reported — never the record, never a message that
-    // could carry one. The trail itself is value-free; keep the log that way too.
-    const kind = err instanceof Error ? err.name : typeof err;
+    // could carry one. `err.name` is sink-controlled text, so it is accepted
+    // only when it looks like an identifier; anything else logs as `Error`.
+    const kind = sanitizeErrorKind(err);
+    if (this._warnedKinds.has(kind)) return;
+    this._warnedKinds.add(kind);
     // eslint-disable-next-line no-console
     console.warn(
       `watchlight: audit sink failed (${kind}); further sink failures are suppressed — ` +

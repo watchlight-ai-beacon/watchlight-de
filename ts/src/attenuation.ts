@@ -8,7 +8,8 @@
 
 import * as crypto from "node:crypto";
 import type { Engine, GrantedScope, RequestedScope } from "@watchlight/engine";
-import type { AuditTrail } from "./audit";
+import * as path from "node:path";
+import { AuditTrail } from "./audit";
 
 /** Developer-Edition sub-agent tree depth ceiling. */
 export const DE_MAX_DEPTH = 5;
@@ -56,8 +57,11 @@ export interface AttenuateOptions {
 interface ScopeInit {
   engine: Engine;
   /** The governor's audit trail (file + optional sink) — shared by every scope
-   *  in the tree, so attenuations report through the same `auditSink`. */
-  audit: AuditTrail;
+   *  in the tree, so attenuations report through the same `auditSink`.
+   *  Preferred; when omitted a file-only trail is built from `auditPath`. */
+  audit?: AuditTrail;
+  /** File-only fallback for callers that construct a Scope directly. */
+  auditPath?: string;
   agent: string;
   allowedTools: string[];
   allowedResources: string[];
@@ -86,7 +90,8 @@ export class Scope {
 
   constructor(init: ScopeInit) {
     this._engine = init.engine;
-    this._audit = init.audit;
+    this._audit =
+      init.audit ?? new AuditTrail(init.auditPath ?? path.join(".watchlight", "audit.jsonl"));
     this.agent = init.agent;
     this.allowedTools = norm(init.allowedTools);
     this.allowedResources = norm(init.allowedResources);

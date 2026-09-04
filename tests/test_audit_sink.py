@@ -168,3 +168,90 @@ def test_slow_async_sink_never_delays_authorize(tmp_path):
     decision, elapsed = asyncio.run(main())  # asyncio.run cancels the pending sink task
     assert decision == "Allow"
     assert elapsed < 2.0
+
+
+def test_spoofed_exception_class_name_never_reaches_the_warning(tmp_path, capsys):
+    """The class name is sink-controlled text: a name carrying record content is
+    replaced by the literal ``Error``."""
+    def sink(rec):
+        # Identifier-shaped, so a pure isidentifier() filter would let it through.
+        leak = type("LEAK_" + rec["intent"] + "_" + rec["resource"].replace("/", "_"), (Exception,), {})
+        raise leak()
+
+    g = _gov(tmp_path, sink=sink)
+    g.authorize(action="research", resource="tool/web_search")
+    err = capsys.readouterr().err
+    assert err.count(WARNING) == 1
+    assert "(Error)" in err
+    assert "LEAK" not in err and "web_search" not in err and "research" not in err
+
+    # A non-identifier spoof (the review probe) is replaced the same way.
+    def sink2(rec):
+        raise type("LEAK_ssn_123", (Exception,), {"__module__": "LEAK.mod " + rec["intent"]})()
+
+    g2 = _gov(tmp_path / "b", sink=sink2)
+    g2.authorize(action="research", resource="tool/web_search")
+    err = capsys.readouterr().err
+    assert "(Error)" in err and "LEAK" not in err and "research" not in err
+
+
+def test_warning_is_once_per_error_kind_not_per_governor(tmp_path, capsys):
+    kinds = iter([ValueError, ValueError, KeyError])
+
+    def sink(rec):
+        raise next(kinds)()
+
+    g = _gov(tmp_path, sink=sink)
+    for _ in range(3):
+        g.authorize(action="research", resource="tool/web_search")
+    err = capsys.readouterr().err
+    assert err.count(WARNING) == 2 and "ValueError" in err and "KeyError" in err
+
+
+def test_no_loop_warning_does_not_silence_a_later_real_failure(tmp_path, capsys):
+    async def async_sink(rec):
+        pass
+
+    trail_holder = {}
+
+    def sink(rec):
+        if not trail_holder:
+            trail_holder["once"] = True
+            return async_sink(rec)  # no loop → RuntimeError kind
+        raise ValueError("real failure")
+
+    g = _gov(tmp_path, sink=sink)
+    g.authorize(action="research", resource="tool/web_search")
+    g.authorize(action="research", resource="tool/web_search")
+    err = capsys.readouterr().err
+    assert "RuntimeError" in err and "ValueError" in err and err.count(WARNING) == 2
+
+
+def test_funnel_never_raises_on_an_unserializable_record(tmp_path):
+    from watchlight._audit import AuditTrail
+
+    seen = []
+    trail = AuditTrail(tmp_path / "audit.jsonl", sink=seen.append)
+    trail.write({"ts": "x", "bad": object()})  # must not raise; nothing to write or send
+    assert not (tmp_path / "audit.jsonl").exists() and seen == []
+
+
+def test_inflight_async_sink_task_is_held_strongly(tmp_path):
+    import gc
+
+    delivered = []
+
+    async def sink(rec):
+        await asyncio.sleep(0.01)
+        delivered.append(rec)
+
+    async def main():
+        g = _gov(tmp_path, sink=sink)
+        g.authorize(action="research", resource="tool/web_search")
+        assert len(g._trail._tasks) == 1
+        gc.collect()
+        await asyncio.sleep(0.05)
+        assert len(g._trail._tasks) == 0
+
+    asyncio.run(main())
+    assert len(delivered) == 1 and delivered[0]["intent"] == "research"
