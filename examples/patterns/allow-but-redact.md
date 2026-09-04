@@ -66,7 +66,7 @@ const readRecord = govern.tool(fetchRecord, {
 from watchlight import govern
 
 def honour_obligations(record, info):
-    for field in (info["obligations"] or {}).get("redact", []):
+    for field in (info.get("obligations") or {}).get("redact", []):
         record.pop(field, None)                      # structural redaction
     record["notes"] = govern.sanitize(record.get("notes", ""), resource=info["resource"],
                                       decision_id=info["decision_id"], types=["SSN"])["text"]

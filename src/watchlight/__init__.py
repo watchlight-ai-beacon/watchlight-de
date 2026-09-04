@@ -1074,9 +1074,10 @@ class Watchlight:
 
         ``on_result(result, info)`` is the egress hook: called AFTER the body
         returns and BEFORE the result is handed back, with ``info = {"intent",
-        "resource", "principal", "decision_id", "obligations"}`` — the
-        ``decision_id`` and the obligations (a dict, or ``None``) of the
-        decision that let the body run. This is where you run ``sanitize``, a
+        "resource", "principal", "decision_id"}`` plus ``"obligations"`` when
+        the decision that let the body run carries any (the key is absent
+        otherwise — read it with ``info.get("obligations")``). This is where
+        you run ``sanitize``, a
         screen, or a second ``authorize`` against the result's classification.
         Return a value to replace the payload; return ``None`` to pass it
         through; raise to withhold it — the exception propagates and the raw
@@ -1101,13 +1102,9 @@ class Watchlight:
                     out = fn(*args, **kwargs)
                     if on_result is None:
                         return out
-                    info = {
-                        "intent": intent,
-                        "resource": res,
-                        "principal": prin,
-                        "decision_id": d.get("decision_id"),
-                        "obligations": d.get("obligations"),
-                    }
+                    info = {"intent": intent, "resource": res, "principal": prin, "decision_id": d.get("decision_id")}
+                    if d.get("obligations"):
+                        info["obligations"] = d["obligations"]  # only when the Allow carries any
                     if inspect.isawaitable(out):
                         return self._apply_on_result_async(out, on_result, info)
                     return self._apply_on_result(out, on_result, info)[0]
