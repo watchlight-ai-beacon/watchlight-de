@@ -20,6 +20,13 @@ import * as path from "node:path";
 import { randomBytes, createHmac, timingSafeEqual } from "node:crypto";
 import { Scope, DE_MAX_DEPTH } from "./attenuation";
 import { AuditTrail, type AuditSink } from "./audit";
+import {
+  ScopeTokenError,
+  normalizeSecret,
+  requireSecret,
+  sameSet,
+  verifyScopeToken,
+} from "./scope-token";
 import { selectBackend, type GovernanceBackend } from "./backend";
 import { sanitize as sanitizeText, type SanitizeOptions, type SanitizeResult } from "./sanitize";
 import { screen as screenText, type ScreenOptions, type ScreenResult } from "./screen";
@@ -32,6 +39,9 @@ import {
 
 export { Scope, DE_MAX_DEPTH, AttenuationDenied, DevEditionCeiling } from "./attenuation";
 export type { AuditRecord, AuditSink } from "./audit";
+export type { ScopeTokenOptions } from "./attenuation";
+export { ScopeTokenError, SCOPE_TOKEN_PREFIX, MAX_TOKEN_LENGTH } from "./scope-token";
+export type { ScopeTokenClaims, ScopeTokenErrorCode } from "./scope-token";
 export { governedHooks, DEFAULT_ON_RESULT_TIMEOUT_MS } from "./claude-agent";
 export type { GovernedHooksOptions, GovernedHooksResult } from "./claude-agent";
 export { governTool, governTools } from "./langchain";
@@ -246,6 +256,12 @@ export interface WatchlightOptions {
   /** Tenant id (`X-Wl-Tenant-Id`) for the networked control plane. Defaults to
    *  `WATCHLIGHT_TENANT_ID`. Ignored in-process. */
   tenantId?: string;
+  /** Shared secret (≥ 16 bytes) for {@link Scope.toToken} /
+   *  {@link Watchlight.scopeFromToken} — lets an attenuated scope cross a process
+   *  boundary with integrity. Defaults to `WATCHLIGHT_TOKEN_SECRET`. When unset,
+   *  minting and verifying scope tokens fail closed; there is no built-in
+   *  default. Never logged or written. */
+  tokenSecret?: string | Uint8Array;
 }
 
 export interface ScopeOptions {
@@ -268,6 +284,7 @@ export class Watchlight {
   private readonly _backend: GovernanceBackend;
   private _policyCount = 0;
   private _announced = false;
+  private readonly _tokenSecret?: Uint8Array;
 
   constructor(opts: WatchlightOptions = {}) {
     this.agent = opts.agent ?? process.env.WATCHLIGHT_AGENT ?? "my-agent";
@@ -280,6 +297,7 @@ export class Watchlight {
       token: opts.token,
       tenantId: opts.tenantId,
     });
+    this._tokenSecret = normalizeSecret(opts.tokenSecret ?? process.env.WATCHLIGHT_TOKEN_SECRET);
   }
 
   /** `"in-process"` (Developer Edition) or `"networked"` (graduated to the
@@ -336,9 +354,58 @@ export class Watchlight {
       maxDepth: Math.min(opts.maxDepth ?? DE_MAX_DEPTH, DE_MAX_DEPTH),
       timeBudgetSeconds: opts.timeBudgetSeconds ?? 3600,
       depth: 0,
+      tokenSecret: this._tokenSecret,
     });
     root.emitRoot();
     return root;
+  }
+
+  /**
+   * Re-establish a scope minted by {@link Scope.toToken} in another process.
+   * Verifies the token's format, HMAC (constant-time), agent binding, `iat`/`exp`
+   * window and lifetime bound, then rebuilds the root grant and replays every
+   * level of the chain through the engine's strict-subset attenuation — exactly
+   * as if `attenuate()` had been called here. The engine, not the token, decides
+   * whether each level is a subset: a widened chain throws
+   * {@link AttenuationDenied} even with a valid signature, and a chain whose
+   * engine-granted result differs from the token's claim is rejected. Throws
+   * {@link ScopeTokenError} when `tokenSecret` is unset (fail-closed) or the
+   * token is malformed, tampered, expired, or bound to a different agent. The
+   * returned scope cannot outlive the token's `exp`.
+   */
+  async scopeFromToken(token: string): Promise<Scope> {
+    const secret = requireSecret(this._tokenSecret);
+    const claims = verifyScopeToken(token, secret, { agent: this.agent });
+    const root = await this.scope({
+      tools: claims.root.tools,
+      resources: claims.root.resources,
+      intents: claims.root.intents,
+      maxDepth: claims.root.max_depth,
+      timeBudgetSeconds: claims.root.time_budget_seconds,
+    });
+    let scope = root;
+    for (const step of claims.chain) {
+      scope = scope.attenuate({
+        tools: step.tools,
+        resources: step.resources,
+        intents: step.intents,
+        timeBudgetSeconds: step.time_budget_seconds,
+      });
+    }
+    // The engine's grant must be exactly what the token claimed for this level.
+    const claimed = claims.chain.length ? claims.chain[claims.chain.length - 1] : claims.root;
+    if (
+      scope.depth !== claims.depth ||
+      !sameSet(scope.allowedTools, claimed.tools) ||
+      !sameSet(scope.allowedResources, claimed.resources) ||
+      !sameSet(scope.allowedIntents, claimed.intents) ||
+      scope.timeBudgetSeconds !== claimed.time_budget_seconds ||
+      (claims.chain.length === 0 && scope.maxDepth !== claims.root.max_depth)
+    ) {
+      throw new ScopeTokenError("mismatch", "engine grant does not match the token's claim");
+    }
+    scope._bindExpiry(claims.exp);
+    return scope;
   }
 
   // ── governing tools ───────────────────────────────────────────────

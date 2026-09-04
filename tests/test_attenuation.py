@@ -95,3 +95,13 @@ def test_console_reconstructs_the_tree(tmp_path):
     assert nodes[child.node_id]["parent"] == root.node_id
     assert nodes[grandchild.node_id]["parent"] == child.node_id
     assert nodes[grandchild.node_id]["depth"] == 2
+
+
+def test_attenuate_with_resources_round_trips_matchers(tmp_path):
+    # The engine's resource dimension is a list of {"matcher": ...} structs; the
+    # Scope API keeps plain strings on both sides of the call.
+    root = _gov(tmp_path).scope(tools=["read"], resources=["docs/*", "crm/*"], intents=["research"])
+    child = root.attenuate(resources=["docs/*"])
+    assert child.allowed_resources == ["docs/*"]
+    with pytest.raises(AttenuationDenied):
+        root.attenuate(resources=["docs/*", "hr/*"])

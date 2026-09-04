@@ -50,4 +50,51 @@ prompt-injected summarizer simply has no `send_email` capability to abuse.
   attenuation **server-side** (an agent can't route around it), removes the depth
   ceiling, and records every spawn and clamp in signed lineage.
 
+**Crossing a process boundary.** A queue worker or scheduler that runs the
+sub-agent's job cannot hold the parent's in-memory `Scope`, and it must not
+re-assert the child's limits from the job payload (the engine can't verify a
+payload). Hand it a **scope token** instead, and let the *receiving* engine
+re-prove the subset:
+
+```ts
+// orchestrator — needs a shared secret (≥ 16 bytes); there is no default
+const govern = new Watchlight({ tokenSecret: process.env.WATCHLIGHT_TOKEN_SECRET });
+const root = await govern.scope({ tools: ["read_file", "web_search", "send_email"], timeBudgetSeconds: 600 });
+const summarizer = root.attenuate({ tools: ["read_file"] });
+queue.push({ job, scope: summarizer.toToken() });     // wls1.<claims>.<hmac>
+
+// worker — same agent identity, same secret, different process
+const scope = await govern.scopeFromToken(msg.scope);  // engine re-runs every attenuation
+scope.attenuate({ tools: ["send_email"] });            // ❌ still throws — not in the chain
+```
+
+```python
+govern = Watchlight(token_secret=os.environ["WATCHLIGHT_TOKEN_SECRET"])
+summarizer = govern.scope(tools=["read_file", "web_search", "send_email"]).attenuate(tools=["read_file"])
+queue.push({"job": job, "scope": summarizer.to_token()})
+
+scope = govern.scope_from_token(msg["scope"])          # worker: engine replays the chain
+```
+
+The token is an HMAC-SHA256 over the canonical scope claims — the root grant and
+the engine-granted scope at every level — bound to the agent identity, with
+`iat`/`exp`, and never longer-lived than the scope it names. `scopeFromToken`
+verifies the signature (constant-time) and time window, rebuilds the root, and
+replays each level through the engine's strict-subset validator; a token whose
+chain requests more than its root allows is refused **by the engine**, even with
+a valid signature. Tampered, expired, oversized, wrong-agent, or unknown-version
+tokens are rejected; with no `tokenSecret` configured, minting and verifying both
+fail closed.
+
+*The honest bound:* a shared secret gives **integrity** across processes within
+one trust domain — it proves the token was minted by a holder of the secret and
+not altered since. It is **not attestation**: it does not prove *which* process
+minted it, and the root grant is rebuilt **from the token**, not from the
+receiver's configuration — so a holder of the secret can mint any scope at all,
+root included. The token adds no authority beyond what the holder could grant
+itself with `scope()`; it gives integrity across processes, not attestation. Keep
+the secret out of job payloads and logs, rotate it like any credential, and treat
+every process holding it as inside the boundary. Independently attestable scopes
+are an Enterprise capability.
+
 Full guide: [Sub-agent scope attenuation](https://docs.watchlight.ai/de/scope-attenuation).
