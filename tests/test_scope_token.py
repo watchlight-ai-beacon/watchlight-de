@@ -317,3 +317,19 @@ def test_trailing_newline_in_token_segment_is_malformed(tmp_path):
     with pytest.raises(ScopeTokenError) as ei:
         g.scope_from_token(f"{v}.{p}.{s}\n")
     assert ei.value.code == "malformed"
+
+
+def test_token_rebuilt_scope_reports_through_the_audit_sink(tmp_path):
+    token = _gov(tmp_path, "src").scope(tools=["read", "search"], time_budget_seconds=600).attenuate(tools=["read"]).to_token()
+    sunk: list[dict] = []
+    g = Watchlight(agent="test-agent", audit_dir=str(tmp_path / "w" / ".watchlight"), audit_sink=sunk.append, token_secret=SECRET)
+    g.scope_from_token(token).attenuate(tools=["read"])
+    sunk_att = [r for r in sunk if r.get("event") == "attenuation"]
+    assert [r["depth"] for r in sunk_att] == [0, 1, 2]  # rebuilt root, replayed level, further attenuation
+    file_att = [
+        r for r in (json.loads(l) for l in (tmp_path / "w" / ".watchlight" / "audit.jsonl").read_text().splitlines())
+        if r.get("event") == "attenuation"
+    ]
+    assert [r["node_id"] for r in file_att] == [r["node_id"] for r in sunk_att]
+    blob = json.dumps(sunk)
+    assert "wls1." not in blob and SECRET not in blob

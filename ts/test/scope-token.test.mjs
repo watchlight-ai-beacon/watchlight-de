@@ -183,6 +183,18 @@ async function main() {
   const tokB = (await gb.scope({ tools: ["read"] })).toToken();
   ok("Uint8Array secret is copied at construction", (await gov().scopeFromToken(tokB)).depth === 0);
 
+  // ── a token-rebuilt scope reports through the governor's audit funnel (file + auditSink) ──
+  const sunk = [];
+  const sinkDir = tmp();
+  const gs = new Watchlight({ agent: "test-agent", auditDir: sinkDir, tokenSecret: SECRET, auditSink: (r) => sunk.push(r) });
+  const rebuilt = await gs.scopeFromToken((await gov().scope({ tools: ["read", "search"], timeBudgetSeconds: 600 })).attenuate({ tools: ["read"] }).toToken());
+  rebuilt.attenuate({ tools: ["read"] });
+  const sunkAtt = sunk.filter((r) => r.event === "attenuation");
+  ok("auditSink receives the rebuilt root + replayed level + further attenuation", sunkAtt.map((r) => r.depth).join(",") === "0,1,2", JSON.stringify(sunkAtt.map((r) => r.depth)));
+  const fileAtt = fs.readFileSync(join(sinkDir, "audit.jsonl"), "utf8").trim().split("\n").map(JSON.parse).filter((r) => r.event === "attenuation");
+  ok("audit.jsonl carries the same attenuation records as the sink", fileAtt.length === sunkAtt.length && fileAtt.every((r, i) => r.node_id === sunkAtt[i].node_id));
+  ok("sink records are value-free (no token, no secret)", !JSON.stringify(sunk).includes("wls1.") && !JSON.stringify(sunk).includes(SECRET));
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 }
