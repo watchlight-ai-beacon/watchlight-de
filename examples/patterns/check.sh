@@ -16,7 +16,8 @@
 #      tokens) — patterns are generic problem shapes, never customer stories.
 #
 # Requires the DE installed:  npm i -g @watchlight/sdk   (or: pip install watchlight
-# for the suites, plus Node >= 18 with the SDK for the scripts). Scripts resolve
+# for the suites, plus Node >= 18 with the SDK for the scripts). Without a
+# `watchlight` on PATH the suites run via `npx -p @watchlight/sdk watchlight`. Scripts resolve
 # the SDK from the global npm root or from an in-repo build (`cd ts && npm run build`).
 # Run from the repo root or anywhere:  examples/patterns/check.sh
 set -euo pipefail
@@ -27,7 +28,8 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if command -v watchlight >/dev/null 2>&1; then
   run() { watchlight policy test "$1"; }
 elif command -v npx >/dev/null 2>&1; then
-  run() { npx --yes watchlight policy test "$1"; }
+  # Pin the package that owns the `watchlight` bin — never the unscoped name.
+  run() { npx --yes -p @watchlight/sdk watchlight policy test "$1"; }
 else
   echo "error: install the DE first — 'pip install watchlight' or 'npm i -g @watchlight/sdk'" >&2
   exit 2

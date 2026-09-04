@@ -63,7 +63,10 @@ try {
   const records = fs.readFileSync(join(auditDir, "audit.jsonl"), "utf8").trim().split("\n").map(JSON.parse)
     .filter((r) => r.event === "attenuation");
   const denies = records.filter((r) => r.decision === "Deny");
-  t.ok("every refusal is an attenuation Deny record", denies.length === 5, `got ${denies.length}`);
+  const ceilingDenies = denies.filter((r) => r.reason === ceiling.message);
+  t.ok("every AttenuationDenied is an attenuation Deny record (4 refusals above)",
+    denies.length - ceilingDenies.length === 4, `got ${denies.length - ceilingDenies.length}`);
+  t.ok("the DevEditionCeiling is recorded once, as its own Deny record", ceilingDenies.length === 1, `got ${ceilingDenies.length}`);
   t.ok("records carry tool names and depth only — no arguments, no prompt text",
     records.every((r) => Array.isArray(r.tools) && typeof r.depth === "number" &&
       Object.keys(r).every((k) => ["ts", "agent", "intent", "event", "node_id", "parent_id", "resource", "decision", "depth", "tools", "reason"].includes(k))));
@@ -88,9 +91,16 @@ try {
   const wrongSecret = new Watchlight({ agent: "orchestrator", auditDir, tokenSecret: "another-secret-0123456789abcdef" });
   t.ok("a token verified with a different secret is refused",
     (await wrongSecret.scopeFromToken(token).then(() => null, (e) => e)) instanceof ScopeTokenError);
+  // Expiry is checked in whole seconds against the wall clock and the public API
+  // takes no injected clock, so mint a 1-second token and poll until the second
+  // boundary passes — the shortest wait the check needs, capped at 1.5 s.
   const shortLived = minted.toToken({ ttlSeconds: 1 });
-  await new Promise((r) => setTimeout(r, 1200));
-  const late = await worker.scopeFromToken(shortLived).then(() => null, (e) => e);
+  let late = null;
+  for (const deadline = Date.now() + 1500; late === null && Date.now() < deadline; ) {
+    const r = await worker.scopeFromToken(shortLived).then(() => null, (e) => e);
+    if (r instanceof ScopeTokenError && r.code === "expired") late = r;
+    else await new Promise((res) => setTimeout(res, 50));
+  }
   t.ok("an expired token is refused with ScopeTokenError", late instanceof ScopeTokenError && late.code === "expired", String(late));
 } finally {
   fs.rmSync(auditDir, { recursive: true, force: true });

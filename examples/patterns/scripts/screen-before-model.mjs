@@ -32,7 +32,8 @@ const auditDir = fs.mkdtempSync(join(os.tmpdir(), "wl-pattern-screen-"));
 try {
   const govern = new Watchlight({ agent: "reader-agent", auditDir });
 
-  t.ok("the script covers every rule family", SCREEN_FAMILIES.every((f) => f in positives), SCREEN_FAMILIES.join(","));
+  t.ok("the script covers every rule family (at least the seven documented)",
+    SCREEN_FAMILIES.length >= 7 && SCREEN_FAMILIES.every((f) => f in positives), SCREEN_FAMILIES.join(","));
   for (const family of SCREEN_FAMILIES) {
     const [sample, trigger] = positives[family];
     const rep = govern.screen(sample, { resource: `page/${family}` });

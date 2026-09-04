@@ -18,8 +18,11 @@ async function exercise(sink) {
     const govern = new Watchlight({ agent: "billing-agent", auditDir, auditSink: sink });
     govern.allow('permit(principal, action == Action::"read", resource);', "reads");
     const allow = await govern.authorize({ action: "read", resource: "doc/42" });
+    if (typeof allow.decisionId !== "string" || allow.decisionId.length === 0) {
+      throw new Error("authorize returned no decisionId — the join key is missing");
+    }
     const deny = await govern.authorize({ action: "transfer", resource: "acct/1", context: { amount: 987654 } });
-    govern.sanitize("SSN 123-45-6789", { resource: "doc/42", decisionId: allow.decisionId ?? "dec-1" });
+    govern.sanitize("SSN 123-45-6789", { resource: "doc/42", decisionId: allow.decisionId });
     const root = await govern.scope({ tools: ["read", "write"] });
     root.attenuate({ tools: ["read"] });
     try { root.attenuate({ tools: ["delete"] }); } catch (e) { if (!(e instanceof AttenuationDenied)) throw e; }
@@ -39,7 +42,7 @@ t.ok("each record carries exactly the fields of its file line",
 t.ok("decision, sanitization and attenuation records all arrive",
   ["decision", "sanitization", "attenuation"].every((k) => received.some((r) => (r.event ?? "decision") === k)));
 t.ok("the sanitization record joins the decision on decision_id",
-  received.find((r) => r.event === "sanitization")?.decision_id === (allow.decisionId ?? "dec-1"));
+  received.find((r) => r.event === "sanitization")?.decision_id === allow.decisionId);
 t.ok("records are value-free — no argument values, no text",
   !JSON.stringify(received).includes("123-45-6789") && !JSON.stringify(received).includes("987654"));
 t.ok("the sink's copy is frozen", received.every((r) => Object.isFrozen(r)));
