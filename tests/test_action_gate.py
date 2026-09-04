@@ -8,7 +8,7 @@ import json
 
 import pytest
 
-from watchlight import Denied, NeedsApproval, Watchlight, sanitize
+from watchlight import DECISION_ID_MAX_LENGTH, Denied, NeedsApproval, SanitizeError, Watchlight, sanitize
 
 FUNDED = 'permit(principal, action == Action::"book", resource) when { context.amount <= context.limit };'
 ALICE = 'permit(principal == User::"alice", action == Action::"pay", resource);'
@@ -124,6 +124,42 @@ def test_sanitize(tmp_path):
     # pure function + fail-closed
     with pytest.raises(Exception):
         sanitize(12345)  # non-string
+
+
+def test_sanitize_correlates_with_decision(tmp_path):
+    """A read governed by authorize, then sanitize(decision_id=...), yields two
+    audit lines that join on the same decision_id."""
+    g = _gov(tmp_path)
+    g.allow('permit(principal, action == Action::"read", resource);', "read")
+    decision = g.authorize(action="read", resource="statement.pdf")
+    assert decision["decision"] == "Allow" and decision["decision_id"]
+    s = g.sanitize("email a@b.com", resource="statement.pdf", decision_id=decision["decision_id"])
+    assert s["report"]["decision_id"] == decision["decision_id"]
+    lines = [json.loads(l) for l in (tmp_path / "audit.jsonl").read_text().splitlines()]
+    auth_line = next(l for l in lines if l.get("decision") == "Allow" and "event" not in l)
+    san_line = next(l for l in lines if l.get("event") == "sanitization")
+    assert auth_line["decision_id"] == san_line["decision_id"] == decision["decision_id"]
+    # existing sanitization fields are untouched; still value-free
+    assert san_line["mode"] == "tag" and san_line["detector"] and san_line["counts"]["EMAIL"] == 1
+    assert "a@b.com" not in json.dumps(lines)
+    # no decision_id on the report or the audit line when none is supplied
+    g.sanitize("x a@b.com", resource="doc")
+    last = json.loads((tmp_path / "audit.jsonl").read_text().splitlines()[-1])
+    assert "decision_id" not in last and "decision_id" not in sanitize("a@b.com")["report"]
+
+
+def test_sanitize_rejects_malformed_decision_id(tmp_path):
+    """decision_id is opaque but bounded: no control characters (audit-line
+    injection), capped length, str only. Fail-closed — nothing is written."""
+    g = Watchlight(agent="doc-agent", audit_dir=str(tmp_path))
+    for bad in ('dec-1\n{"decision": "Allow"}', "dec\x00id", "dec\x7fid", "dec\x85id", "dec\u2028id", "dec\u2029id", "", 42, {},
+                "x" * (DECISION_ID_MAX_LENGTH + 1)):
+        with pytest.raises(SanitizeError):
+            sanitize("a@b.com", decision_id=bad)
+        with pytest.raises(SanitizeError):
+            g.sanitize("a@b.com", decision_id=bad)
+    assert not (tmp_path / "audit.jsonl").exists()
+    assert sanitize("a@b.com", decision_id="x" * DECISION_ID_MAX_LENGTH)["report"]["decision_id"]
 
 
 def test_audit_value_free_with_correlation(tmp_path):

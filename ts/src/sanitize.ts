@@ -36,11 +36,31 @@ export class SanitizeError extends Error {
   }
 }
 
+/** Bounds on a caller-supplied `decisionId`: an opaque correlation token, never
+ *  interpreted. Length-capped and free of control characters so it can be
+ *  written to the audit line without letting the caller inject or bloat it. */
+export const DECISION_ID_MAX_LENGTH = 128;
+// eslint-disable-next-line no-control-regex
+// Also U+2028/U+2029: JSON.stringify emits them raw, and a line-oriented
+// reader would split the audit record in two.
+const DECISION_ID_CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
+
 export interface SanitizeOptions {
   /** Replacement strategy. Default `"tag"` (consistent `<EMAIL_1>` placeholders). */
   mode?: RedactMode;
   /** Restrict to these PII types. Default: all deterministic types. */
   types?: PiiType[];
+  /** Intent label for the `sanitization` audit record. Default `"read"`.
+   *  Used by `Watchlight.sanitize`; the pure `sanitize()` ignores it. */
+  intent?: string;
+  /** Resource label for the `sanitization` audit record. Default `"document"`.
+   *  Used by `Watchlight.sanitize`; the pure `sanitize()` ignores it. */
+  resource?: string;
+  /** Correlation id of the `authorize` decision that governed this read. Echoed
+   *  onto `report.decisionId` and written as `decision_id` on the `sanitization`
+   *  audit record, so the two audit lines join on the same key. Opaque: must be
+   *  1–{@link DECISION_ID_MAX_LENGTH} characters with no control characters. */
+  decisionId?: string;
 }
 
 export interface SanitizeReport {
@@ -50,6 +70,8 @@ export interface SanitizeReport {
   counts: Partial<Record<PiiType, number>>;
   /** Total redactions. */
   total: number;
+  /** The `decisionId` supplied by the caller, if any (validated, never interpreted). */
+  decisionId?: string;
 }
 
 export interface SanitizeResult {
@@ -171,6 +193,20 @@ function replacement(
   return tag;
 }
 
+/** Fail-closed check of a caller-supplied correlation id before it reaches the
+ *  audit line. Accepts `undefined` (no correlation); rejects anything that is
+ *  not a short, control-character-free string. The id is never parsed. */
+function validateDecisionId(id: unknown): string | undefined {
+  if (id === undefined) return undefined;
+  if (typeof id !== "string" || id.length === 0 || id.length > DECISION_ID_MAX_LENGTH) {
+    throw new SanitizeError(`decisionId must be a string of 1-${DECISION_ID_MAX_LENGTH} characters`);
+  }
+  if (DECISION_ID_CONTROL_CHARS.test(id)) {
+    throw new SanitizeError("decisionId must not contain control characters");
+  }
+  return id;
+}
+
 /**
  * Redact PII from `text`. Pure and deterministic. Fail-closed: throws
  * {@link SanitizeError} on any internal error rather than returning partially
@@ -182,6 +218,7 @@ export function sanitize(text: string, opts: SanitizeOptions = {}): SanitizeResu
   if (typeof text !== "string") {
     throw new SanitizeError("input must be a string (extract document text first)");
   }
+  const decisionId = validateDecisionId(opts.decisionId);
   try {
     const spans = detect(text, types);
     const counters = new Map<string, string>();
@@ -199,10 +236,9 @@ export function sanitize(text: string, opts: SanitizeOptions = {}): SanitizeResu
     }
     out += text.slice(cursor);
 
-    return {
-      text: out,
-      report: { mode, detectorVersion: DETECTOR_VERSION, counts, total: spans.length },
-    };
+    const report: SanitizeReport = { mode, detectorVersion: DETECTOR_VERSION, counts, total: spans.length };
+    if (decisionId !== undefined) report.decisionId = decisionId;
+    return { text: out, report };
   } catch (e) {
     throw new SanitizeError(String((e as Error)?.message ?? e));
   }

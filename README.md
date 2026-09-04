@@ -196,8 +196,10 @@ It mirrors the Python package feature-for-feature:
   `Allow` / `Deny` / **`NeedsApproval`** verdict with a single-use approval token.
 - **Frameworks:** `governedHooks()` for the Claude Agent SDK; `governTool()` for
   LangChain / LangGraph.js.
-- **Data minimization:** `govern.sanitize(text)` — strip PII before an agent
-  reads a document.
+- **Data minimization:** `govern.sanitize(text, { resource, decisionId })` —
+  strip PII before an agent reads a document; pass the `decisionId` from
+  `authorize` and the `sanitization` audit line joins the decision on
+  `decision_id`.
 - **Attenuation & graduation:** `govern.scope().attenuate()`; every decision
   returns a `decisionId` to join to your records; `WATCHLIGHT_APDP_URL` graduates
   the *same code* to the control plane.

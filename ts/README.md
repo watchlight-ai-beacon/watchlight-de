@@ -163,11 +163,12 @@ original PDF — its hidden layers leak), then sanitize:
 ```ts
 import { govern } from "@watchlight/sdk";
 
+const { decisionId } = await govern.authorize({ action: "read", resource: "statement.pdf" });
 const text = await extractPdfText("statement.pdf"); // your extractor
-const { text: safe, report } = govern.sanitize(text, { resource: "statement.pdf" });
+const { text: safe, report } = govern.sanitize(text, { resource: "statement.pdf", decisionId });
 
 // safe → "Card on file: <CREDIT_CARD_1>  SSN: <SSN_1>  ..."
-// report → { mode:"tag", counts:{ CREDIT_CARD:1, SSN:1, ... }, total, ... }  (value-free)
+// report → { mode:"tag", counts:{ CREDIT_CARD:1, SSN:1, ... }, total, decisionId }  (value-free)
 await agent.read(safe);
 ```
 
@@ -175,6 +176,13 @@ The deterministic detector covers structured PII — email, phone, SSN, credit c
 (Luhn-validated), IBAN, IPv4, API keys. Modes: `tag` (consistent `<EMAIL_1>`
 placeholders, default), `mask` (`[EMAIL]`), `hash`. `govern.sanitize` records a
 **value-free** audit entry (counts by type + mode — never the values).
+
+`SanitizeOptions` is `{ mode?, types?, intent?, resource?, decisionId? }`. Pass
+the `decisionId` returned by `authorize` and the `sanitization` audit line
+carries the same `decision_id` as the decision that governed the read, so the
+two records join on one key. The id is opaque and validated before it is
+written — 1–128 characters (UTF-16 code units in TypeScript, code points in Python), no control or line-separator characters — otherwise `SanitizeError`
+(fail-closed, nothing is written).
 
 A pure `sanitize(text, opts)` is also exported. Fail-closed: it throws
 `SanitizeError` rather than return partially-redacted text. Names/addresses need
@@ -186,8 +194,12 @@ NER (Enterprise); recall is bounded by the enabled detectors.
 decision** — never argument values. Same contract as the production audit trail.
 
 ```json
-{"ts":"2026-08-29T…Z","agent":"my-agent","intent":"research","resource":"tool/webSearch","decision":"Allow"}
+{"ts":"2026-08-29T…Z","agent":"my-agent","intent":"research","resource":"tool/webSearch","decision":"Allow","decision_id":"…"}
+{"ts":"2026-08-29T…Z","agent":"my-agent","intent":"read","event":"sanitization","resource":"statement.pdf","mode":"tag","detector":"de-rules-1","counts":{"EMAIL":2},"total":2,"decision_id":"…"}
 ```
+
+A `sanitization` line carries `decision_id` only when `govern.sanitize` was given
+the `decisionId` of the `authorize` decision — the two lines then join on it.
 
 ## Graduation to Enterprise
 

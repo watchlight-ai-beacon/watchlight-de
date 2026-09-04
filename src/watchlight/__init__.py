@@ -50,6 +50,8 @@ __all__ = [
     "Denied",
     "NeedsApproval",
     "sanitize",
+    "SanitizeError",
+    "DECISION_ID_MAX_LENGTH",
     "govern",
     "Scope",
     "AttenuationDenied",
@@ -159,6 +161,28 @@ class SanitizeError(RuntimeError):
     """Fail-closed: sanitization could not complete; do NOT use raw content."""
 
 
+# Bounds on a caller-supplied ``decision_id``: an opaque correlation token, never
+# interpreted. Length-capped and free of control characters so it can be written
+# to the audit line without letting the caller inject or bloat it.
+DECISION_ID_MAX_LENGTH = 128
+# U+2028/U+2029 included for parity with the TypeScript lane, whose JSON
+# serializer emits them raw (line-oriented readers would split the record).
+_DECISION_ID_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+
+
+def _validate_decision_id(decision_id: Any) -> Optional[str]:
+    """Fail-closed check of a correlation id before it reaches the audit line.
+    Accepts ``None`` (no correlation); rejects anything that is not a short,
+    control-character-free ``str``. The id is never parsed."""
+    if decision_id is None:
+        return None
+    if not isinstance(decision_id, str) or not 1 <= len(decision_id) <= DECISION_ID_MAX_LENGTH:
+        raise SanitizeError(f"decision_id must be a string of 1-{DECISION_ID_MAX_LENGTH} characters")
+    if _DECISION_ID_CONTROL_CHARS.search(decision_id):
+        raise SanitizeError("decision_id must not contain control characters")
+    return decision_id
+
+
 def _luhn_ok(digits: str) -> bool:
     total, alt = 0, False
     for ch in reversed(digits):
@@ -188,13 +212,23 @@ _DETECTORS: list[tuple[str, re.Pattern, Optional[Callable[[str], bool]]]] = [
 ]
 
 
-def sanitize(text: str, *, mode: str = "tag", types: Optional[Sequence[str]] = None) -> dict:
+def sanitize(
+    text: str,
+    *,
+    mode: str = "tag",
+    types: Optional[Sequence[str]] = None,
+    decision_id: Optional[str] = None,
+) -> dict:
     """Redact PII from ``text``. Deterministic, fail-closed. Returns
     ``{"text": ..., "report": {mode, detector_version, counts, total}}`` where the
     report is value-free (counts by type — never the values). ``mode`` is
-    ``tag`` (consistent ``<EMAIL_1>``), ``mask`` (``[EMAIL]``), or ``hash``."""
+    ``tag`` (consistent ``<EMAIL_1>``), ``mask`` (``[EMAIL]``), or ``hash``.
+    ``decision_id`` — the correlation id of the :meth:`Watchlight.authorize`
+    decision that governed this read — is validated (1-128 code points, no control or line-separator
+    characters) and echoed onto ``report["decision_id"]``."""
     if not isinstance(text, str):
         raise SanitizeError("input must be a string (extract document text first)")
+    decision_id = _validate_decision_id(decision_id)
     enabled = set(types) if types is not None else {d[0] for d in _DETECTORS}
     try:
         spans: list[tuple[int, int, str, str]] = []
@@ -235,10 +269,12 @@ def sanitize(text: str, *, mode: str = "tag", types: Optional[Sequence[str]] = N
             cursor = end
             counts[typ] = counts.get(typ, 0) + 1
         out.append(text[cursor:])
-        return {
-            "text": "".join(out),
-            "report": {"mode": mode, "detector_version": DETECTOR_VERSION, "counts": counts, "total": len(kept)},
+        report: dict[str, Any] = {
+            "mode": mode, "detector_version": DETECTOR_VERSION, "counts": counts, "total": len(kept),
         }
+        if decision_id is not None:
+            report["decision_id"] = decision_id
+        return {"text": "".join(out), "report": report}
     except Exception as exc:  # noqa: BLE001 - fail-closed
         raise SanitizeError(str(exc)) from exc
 
@@ -489,11 +525,16 @@ class Watchlight:
         resource: str = "document",
         mode: str = "tag",
         types: Optional[Sequence[str]] = None,
+        decision_id: Optional[str] = None,
     ) -> dict:
         """Strip PII from text before an agent reads it (governed data
         minimization). Fail-closed; writes a value-free ``sanitization`` audit
-        record. Extract a document to text first (never a "redacted PDF")."""
-        result = sanitize(content, mode=mode, types=types)
+        record. Extract a document to text first (never a "redacted PDF").
+        Pass the ``decision_id`` returned by :meth:`authorize` to join the
+        ``sanitization`` audit line to the decision that governed the read."""
+        # decision_id is validated (bounded, no control chars) inside sanitize()
+        # before it is echoed onto the report and written to the audit line.
+        result = sanitize(content, mode=mode, types=types, decision_id=decision_id)
         self._audit_sanitize(intent, resource, result)
         return result
 
@@ -548,19 +589,21 @@ class Watchlight:
             f"     redacted {report['total']} ({report['mode']})"
         )
         # Value-free: counts by PII type + mode only — never the PII values.
-        self._write_audit(
-            {
-                "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                "agent": self.agent,
-                "intent": intent,
-                "event": "sanitization",
-                "resource": resource,
-                "mode": report["mode"],
-                "detector": report["detector_version"],
-                "counts": report["counts"],
-                "total": report["total"],
-            }
-        )
+        record: dict[str, Any] = {
+            "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "agent": self.agent,
+            "intent": intent,
+            "event": "sanitization",
+            "resource": resource,
+            "mode": report["mode"],
+            "detector": report["detector_version"],
+            "counts": report["counts"],
+            "total": report["total"],
+        }
+        # Same key as the authorize line, so the two records join on decision_id.
+        if report.get("decision_id"):
+            record["decision_id"] = report["decision_id"]
+        self._write_audit(record)
 
     def _write_audit(self, record: dict) -> None:
         try:
