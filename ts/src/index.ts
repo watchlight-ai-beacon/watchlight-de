@@ -37,7 +37,7 @@ export type {
   GovernToolOptions,
   GovernToolsOptions,
 } from "./langchain";
-export { sanitize, SanitizeError, DETECTOR_VERSION } from "./sanitize";
+export { sanitize, SanitizeError, DETECTOR_VERSION, DECISION_ID_MAX_LENGTH } from "./sanitize";
 export type {
   PiiType,
   RedactMode,
@@ -502,12 +502,11 @@ export class Watchlight {
    * redacted text plus the report. Operates on extracted text — extract a
    * document to text first (never hand the agent a "redacted PDF").
    */
-  sanitize(
-    content: string,
-    opts: SanitizeOptions & { intent?: string; resource?: string } = {}
-  ): SanitizeResult {
-    const { intent = "read", resource = "document", mode, types } = opts;
-    const result = sanitizeText(content, { mode, types });
+  sanitize(content: string, opts: SanitizeOptions = {}): SanitizeResult {
+    const { intent = "read", resource = "document", mode, types, decisionId } = opts;
+    // `decisionId` is validated (bounded, no control chars) inside sanitizeText
+    // before it is echoed onto the report and written to the audit line.
+    const result = sanitizeText(content, { mode, types, decisionId });
     this._auditSanitize(intent, resource, result);
     return result;
   }
@@ -522,7 +521,7 @@ export class Watchlight {
       `watchlight: SANIT ${intent.padEnd(9)} ${resource}     redacted ${report.total} (${report.mode})`
     );
     // Value-free: counts by PII type + mode only — never the PII values.
-    const record = {
+    const record: Record<string, unknown> = {
       ts: new Date().toISOString(),
       agent: this.agent,
       intent,
@@ -533,6 +532,8 @@ export class Watchlight {
       counts: report.counts,
       total: report.total,
     };
+    // Same key as the `authorize` line, so the two records join on `decision_id`.
+    if (report.decisionId) record.decision_id = report.decisionId;
     try {
       fs.mkdirSync(path.dirname(this._auditPath), { recursive: true });
       fs.appendFileSync(this._auditPath, JSON.stringify(record) + "\n", "utf8");
