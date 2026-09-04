@@ -41,7 +41,9 @@ export class SanitizeError extends Error {
  *  written to the audit line without letting the caller inject or bloat it. */
 export const DECISION_ID_MAX_LENGTH = 128;
 // eslint-disable-next-line no-control-regex
-const DECISION_ID_CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/;
+// Also U+2028/U+2029: JSON.stringify emits them raw, and a line-oriented
+// reader would split the audit record in two.
+const DECISION_ID_CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
 
 export interface SanitizeOptions {
   /** Replacement strategy. Default `"tag"` (consistent `<EMAIL_1>` placeholders). */

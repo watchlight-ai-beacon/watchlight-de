@@ -181,7 +181,7 @@ placeholders, default), `mask` (`[EMAIL]`), `hash`. `govern.sanitize` records a
 the `decisionId` returned by `authorize` and the `sanitization` audit line
 carries the same `decision_id` as the decision that governed the read, so the
 two records join on one key. The id is opaque and validated before it is
-written — 1–128 characters, no control characters — otherwise `SanitizeError`
+written — 1–128 characters (UTF-16 code units in TypeScript, code points in Python), no control or line-separator characters — otherwise `SanitizeError`
 (fail-closed, nothing is written).
 
 A pure `sanitize(text, opts)` is also exported. Fail-closed: it throws

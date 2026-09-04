@@ -165,7 +165,9 @@ class SanitizeError(RuntimeError):
 # interpreted. Length-capped and free of control characters so it can be written
 # to the audit line without letting the caller inject or bloat it.
 DECISION_ID_MAX_LENGTH = 128
-_DECISION_ID_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+# U+2028/U+2029 included for parity with the TypeScript lane, whose JSON
+# serializer emits them raw (line-oriented readers would split the record).
+_DECISION_ID_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
 
 
 def _validate_decision_id(decision_id: Any) -> Optional[str]:
@@ -222,7 +224,7 @@ def sanitize(
     report is value-free (counts by type — never the values). ``mode`` is
     ``tag`` (consistent ``<EMAIL_1>``), ``mask`` (``[EMAIL]``), or ``hash``.
     ``decision_id`` — the correlation id of the :meth:`Watchlight.authorize`
-    decision that governed this read — is validated (1-128 chars, no control
+    decision that governed this read — is validated (1-128 code points, no control or line-separator
     characters) and echoed onto ``report["decision_id"]``."""
     if not isinstance(text, str):
         raise SanitizeError("input must be a string (extract document text first)")

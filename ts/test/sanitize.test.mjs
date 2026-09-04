@@ -79,6 +79,7 @@ async function main() {
   };
   ok("rejects decisionId with newline (audit-line injection)", rejects("dec-1\n{\"decision\":\"Allow\"}"));
   ok("rejects decisionId with other control chars", rejects("dec\u0000id") && rejects("dec\u007fid") && rejects("dec\u0085id"));
+  ok("rejects decisionId with Unicode line separators", rejects("dec\u2028id") && rejects("dec\u2029id"));
   ok("rejects over-long decisionId", rejects("x".repeat(DECISION_ID_MAX_LENGTH + 1)));
   ok("accepts decisionId at the length bound", !rejects("x".repeat(DECISION_ID_MAX_LENGTH)));
   ok("rejects empty / non-string decisionId", rejects("") && rejects(42) && rejects({}));

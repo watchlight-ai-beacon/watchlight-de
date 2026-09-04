@@ -152,7 +152,7 @@ def test_sanitize_rejects_malformed_decision_id(tmp_path):
     """decision_id is opaque but bounded: no control characters (audit-line
     injection), capped length, str only. Fail-closed — nothing is written."""
     g = Watchlight(agent="doc-agent", audit_dir=str(tmp_path))
-    for bad in ('dec-1\n{"decision": "Allow"}', "dec\x00id", "dec\x7fid", "dec\x85id", "", 42, {},
+    for bad in ('dec-1\n{"decision": "Allow"}', "dec\x00id", "dec\x7fid", "dec\x85id", "dec\u2028id", "dec\u2029id", "", 42, {},
                 "x" * (DECISION_ID_MAX_LENGTH + 1)):
         with pytest.raises(SanitizeError):
             sanitize("a@b.com", decision_id=bad)
