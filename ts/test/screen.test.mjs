@@ -131,6 +131,22 @@ function main() {
   ok("sink record has exactly the file line's fields", !!fileScreening && JSON.stringify(sinkScreening) === JSON.stringify(fileScreening));
   ok("sink screening record is value-free", !/ignore|hacker|alert\(1\)|administrator|secret/i.test(JSON.stringify(seen)));
 
+  // ── decisionId: echoed on the report, written on the screening line, validated fail-closed ──
+  const joinDir = fs.mkdtempSync(join(os.tmpdir(), "wl-scr-join-"));
+  const gj = new Watchlight({ agent: "join-agent", auditDir: joinDir });
+  const rjoin = gj.screen(attack, { resource: "page", decisionId: "dec-7f1c9e" });
+  ok("report echoes decisionId unchanged", rjoin.report.decisionId === "dec-7f1c9e");
+  const joinRec = fs.readFileSync(join(joinDir, "audit.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)).find((r) => r.event === "screening");
+  ok("screening audit line carries decision_id", joinRec?.decision_id === "dec-7f1c9e", JSON.stringify(joinRec));
+  ok("no decisionId → no decisionId on the report and no decision_id on the line",
+    screen("plain").report.decisionId === undefined && !("decision_id" in (fileScreening ?? {})));
+  ok("pure screen echoes decisionId too", screen("plain", { decisionId: "d-1" }).report.decisionId === "d-1");
+  for (const [label, bad] of [["control character", "bad\nid"], ["line separator", "bad\u2028id"], ["empty", ""], ["too long", "x".repeat(129)], ["non-string", 42]]) {
+    let threw = false;
+    try { screen("plain", { decisionId: bad }); } catch (e) { threw = e instanceof ScreenError; }
+    ok(`decisionId ${label} is refused (ScreenError)`, threw);
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);
 }

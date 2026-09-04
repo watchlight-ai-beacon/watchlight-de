@@ -47,8 +47,8 @@ raise to withhold it (fail-closed), and the `egress` audit record joins the
 const readPage = govern.tool(fetchPage, {
   intent: "read",
   resource: (url) => url,
-  onResult: (html, { resource }) => {
-    const { text, report } = govern.screen(html, { resource, mode: "redact" });
+  onResult: (html, { resource, decisionId }) => {
+    const { text, report } = govern.screen(html, { resource, decisionId, mode: "redact" });
     if (report.flagged) throw new Denied("fetchPage", "read", DENY_REASON);
     return text;
   },
@@ -57,7 +57,7 @@ const readPage = govern.tool(fetchPage, {
 
 ```python
 def _screen(html: str, info: dict) -> str:
-    result = govern.screen(html, resource=info["resource"], mode="redact")
+    result = govern.screen(html, resource=info["resource"], decision_id=info["decision_id"], mode="redact")
     if result["report"]["flagged"]:
         raise Denied("fetch_page", "read", DENY_REASON)
     return result["text"]
@@ -89,10 +89,13 @@ for callers that want to refuse rather than redact. Matching ignores case,
 run-on whitespace and line breaks, and zero-width characters.
 
 `govern.screen` writes a **value-free** `screening` record to the audit trail
-(counts per family, mode, `flagged` — never the text), and is **fail-closed**: a
-non-string input, an unknown mode or family, or an empty family list raises
-rather than returning a "clean" result; error messages are fixed strings and
-never echo the caller's values.
+(counts per family, mode, `flagged` — never the text). Pass the `decisionId` /
+`decision_id` of the decision that governed the read and it is written on that
+record too, so the `screening` line joins the decision's line — the hook variant
+above does exactly that. It is **fail-closed**: a non-string input, an unknown
+mode or family, an empty family list, or a malformed correlation id raises rather
+than returning a "clean" result; error messages are fixed strings and never echo
+the caller's values.
 
 **Five things to know.**
 
