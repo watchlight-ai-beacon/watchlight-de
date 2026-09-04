@@ -38,7 +38,7 @@ time (a malformed value rejects the policy) and surfaces them on the result:
 | `@obligate_redact("a, b")` | `redact: ["a","b"]` / `"redact"` | Field names to strip before the result reaches the caller or the model. |
 | `@obligate_max_items("25")` | `maxItems: 25` / `"max_items"` | Upper bound on how many items the caller may act on or return. |
 | `@obligate_log_values("false")` | `logValues: false` / `"log_values"` | Whether the values handled under this decision may be logged. |
-| `@obligate_<name>("raw")` | `extra: { name: "raw" }` / `"extra"` | Any other key, passed through as a raw string for your own code to interpret. |
+| `@obligate_<name>("raw")` | `extra: { name: ["raw"] }` / `"extra"` | Any other key, passed through raw for your own code to interpret — per name, the distinct values the carrying permits declared. |
 
 **Honour it in `onResult`.** The decision that let the body run is the one whose
 obligations apply, so read them where you already govern the result:
@@ -88,7 +88,9 @@ const rows = await exportRows({ limit: d.obligations?.maxItems ?? 0 });   // 0 =
 if (d.obligations?.logValues === false) logger.redactValues();
 ```
 
-**Verdicts** (verified by `check.sh` once the installed engine emits obligations):
+**Verdicts** (verified by `check.sh`; the suite needs an engine that emits
+obligations — `@watchlight/engine` / `watchlight-engine` **0.2.0 or later**; on
+an older engine the two obligation assertions fail rather than pass vacuously):
 
 | action | `record_type` | verdict | obligations |
 |---|---|---|---|
@@ -103,11 +105,16 @@ if (d.obligations?.logValues === false) logger.redactValues();
 - **Only an `Allow` carries obligations.** `Deny` and `NeedsApproval` never do —
   there is nothing to honour until the action may run. An approved
   human-in-the-loop `Allow` carries them like any other.
-- **Several permits, one merge.** When more than one permit carries the Allow,
-  the known keys merge to the strictest reading: `redact` is the union,
-  `maxItems` the minimum, `logValues` the logical AND. `extra` values are raw
-  strings the SDK never interprets, so they are exposed only where every
-  carrying permit agrees and left out where they differ.
+- **Several permits, one merge — always the strictest.** Every carrier of the
+  Allow — the engine's own merged obligations and each determining permit's —
+  is merged to the strictest reading: `redact` is the union, `maxItems` the
+  minimum, `logValues` the logical AND. `extra` values are raw strings the SDK
+  never interprets, so every carrier's value is kept: `extra[name]` is the sorted
+  list of distinct values, and *your* code decides what a disagreement means.
+- **Unreadable means fail-closed.** A known obligation the SDK cannot read (a
+  non-numeric `max_items`, a non-boolean `log_values`, an empty `redact`) is never
+  dropped: `authorize` throws / raises `AuthorizeError` (`"invalid obligations on
+  an Allow decision"`) and a governed tool body does not run.
 - **Value-free, both ways.** Obligations are policy-authored strings echoed as-is;
   nothing is derived from request or result values, and nothing about the
   result enters the audit trail — the `sanitization` and `egress` lines carry

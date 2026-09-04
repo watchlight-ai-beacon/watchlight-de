@@ -75,6 +75,7 @@ export type { GovernanceBackend, Decision, AuthorizeRequest } from "./backend";
 export { InProcessBackend, NetworkedBackend } from "./backend";
 export { runPolicyTests, loadTestSuite } from "./policytest";
 export type { Obligations } from "./backend";
+export { AuthorizeError, OBLIGATIONS_INVALID_MESSAGE, MAX_REDACT_ENTRIES } from "./backend";
 export type {
   ExpectedObligations,
   PolicyTestCase,
@@ -185,7 +186,9 @@ export interface AuthorizeResult {
    *  `@obligate_*` annotations — `redact`, `maxItems`, `logValues`, and raw
    *  `extra` keys (see {@link Obligations}). Present only on an `Allow` (an
    *  approved one included) that carries at least one obligation; never on
-   *  `Deny` or `NeedsApproval`. Honour it in your code or in `onResult`. */
+   *  `Deny` or `NeedsApproval`. Honour it in your code or in `onResult`. An
+   *  Allow whose known obligations cannot be read rejects with
+   *  {@link AuthorizeError} instead of returning. */
   obligations?: Obligations;
 }
 

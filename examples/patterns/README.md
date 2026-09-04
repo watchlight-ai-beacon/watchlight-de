@@ -41,6 +41,10 @@ verdict: `sanitize`, scope attenuation, the audit sink) — and fails if one has
 neither. It then runs every suite and script, and scans the folder for anything
 resembling private data. The scripts need Node >= 18 and resolve the SDK from a
 global `npm i -g @watchlight/sdk` or an in-repo build (`cd ts && npm run build`).
+The [allow-but-redact](./allow-but-redact.md) suite asserts obligations and needs
+an engine that emits them — `@watchlight/engine` / `watchlight-engine`
+**>= 0.2.0** (what the current SDK depends on); on an older engine it fails
+rather than passing vacuously.
 
 ## Contributing a pattern — the one rule
 

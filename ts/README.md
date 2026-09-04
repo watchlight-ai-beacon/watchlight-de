@@ -179,11 +179,14 @@ if (d.decision === "NeedsApproval") {
 - **Obligations** — a permit annotated `@obligate_redact("ssn")`,
   `@obligate_max_items("25")`, `@obligate_log_values("false")`, or any
   `@obligate_<name>("raw")` yields `d.obligations` on an `Allow`:
-  `{ redact?: string[], maxItems?: number, logValues?: boolean, extra?: Record<string,string> }`
-  — constraints your code (or `onResult`) must honour. Several carrying permits
-  merge to the strictest reading (`redact` union, `maxItems` min, `logValues`
-  AND); `Deny` and `NeedsApproval` never carry any. Assert them in `govern.test`
-  with `obligations: { redact: ["ssn"] }`.
+  `{ redact?: string[], maxItems?: number, logValues?: boolean, extra?: Record<string, string[]> }`
+  — constraints your code (or `onResult`) must honour. Every carrier — the
+  engine's merge and each determining permit — merges to the strictest reading
+  (`redact` union, `maxItems` min, `logValues` AND; `extra[name]` lists every
+  distinct value); `Deny` and `NeedsApproval` never carry any; a known
+  obligation the SDK cannot read rejects with `AuthorizeError` instead of being
+  dropped. Assert them in `govern.test` with `obligations: { redact: ["ssn"] }`.
+  Needs `@watchlight/engine` >= 0.2.0.
 - The audit line now carries `decision_id` + the resolved `principal`, and stays
   value-free (no context values).
 

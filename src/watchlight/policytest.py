@@ -45,50 +45,61 @@ def _normalize_verdict(value: Any) -> str:
 _EXPECTED_OBLIGATION_KEYS = {"redact", "maxItems", "max_items", "logValues", "log_values", "extra"}
 
 
+_ABSENT = object()
+
+
 def _one_spelling(o: dict, camel: str, snake: str, where: str) -> Any:
     """Pick one of two spellings of the same key; both given with different
-    values is a contradiction and therefore malformed."""
-    a, b = o.get(camel), o.get(snake)
-    if a is not None and b is not None and a != b:
+    values is a contradiction and therefore malformed. Presence-based: a key
+    set to ``null`` is present (and then ill-typed), exactly as in the TS lane."""
+    a, b = o.get(camel, _ABSENT), o.get(snake, _ABSENT)
+    if a is not _ABSENT and b is not _ABSENT and a != b:
         raise ValueError(f"{where}: '{camel}' and '{snake}' disagree")
-    return a if a is not None else b
+    return a if a is not _ABSENT else b
 
 
 def normalize_expected_obligations(raw: Any, where: str = "fixture") -> dict:
     """Validate and canonicalize a fixture's ``obligations`` expectation into
-    wire spelling (``redact`` / ``max_items`` / ``log_values`` / ``extra``).
-    Strict: an unknown key, an ill-typed value, or a contradiction between the
-    camelCase and snake_case spellings is a malformed suite and raises
-    ``ValueError`` — a typo must never pass as "no expectation". Returns ``{}``
-    for an expectation of "no obligations"."""
+    wire spelling (``redact`` / ``max_items`` / ``log_values`` / ``extra``, the
+    last as ``{name: [values]}``; a single string stands for a one-element list).
+    Strict: an unknown key, an ill-typed or ``null`` value, or a contradiction
+    between the camelCase and snake_case spellings is a malformed suite and
+    raises ``ValueError`` — a typo must never pass as "no expectation". Returns
+    ``{}`` for an expectation of "no obligations"."""
     if not isinstance(raw, dict):
         raise ValueError(f"{where}: 'obligations' must be an object")
     unknown = set(raw) - _EXPECTED_OBLIGATION_KEYS
     if unknown:
         raise ValueError(f"{where}: unknown obligations key '{sorted(unknown)[0]}'")
     out: dict = {}
-    redact = raw.get("redact")
-    if redact is not None:
+    if "redact" in raw:
+        redact = raw["redact"]
         if (not isinstance(redact, list) or not redact
                 or any(not isinstance(v, str) or not v.strip() for v in redact)):
             raise ValueError(f"{where}: 'obligations.redact' must be a non-empty array of non-blank strings")
         out["redact"] = list(dict.fromkeys(v.strip() for v in redact))
     max_items = _one_spelling(raw, "maxItems", "max_items", where)
-    if max_items is not None:
+    if max_items is not _ABSENT:
         if not isinstance(max_items, int) or isinstance(max_items, bool) or max_items < 1:
             raise ValueError(f"{where}: 'obligations.maxItems' must be a positive integer")
         out["max_items"] = max_items
     log_values = _one_spelling(raw, "logValues", "log_values", where)
-    if log_values is not None:
+    if log_values is not _ABSENT:
         if not isinstance(log_values, bool):
             raise ValueError(f"{where}: 'obligations.logValues' must be a boolean")
         out["log_values"] = log_values
-    extra = raw.get("extra")
-    if extra is not None:
-        if not isinstance(extra, dict) or any(not isinstance(v, str) for v in extra.values()):
-            raise ValueError(f"{where}: 'obligations.extra' must be an object of string values")
-        if extra:
-            out["extra"] = dict(extra)
+    if "extra" in raw:
+        extra = raw["extra"]
+        if not isinstance(extra, dict):
+            raise ValueError(f"{where}: 'obligations.extra' must be an object of string or string-list values")
+        clean: dict[str, list[str]] = {}
+        for k, v in extra.items():
+            vs = [v] if isinstance(v, str) else v
+            if not isinstance(vs, list) or not vs or any(not isinstance(x, str) for x in vs):
+                raise ValueError(f"{where}: 'obligations.extra' must be an object of string or string-list values")
+            clean[k] = sorted(set(vs))
+        if clean:
+            out["extra"] = clean
     return out
 
 
@@ -104,7 +115,7 @@ def _canonical_obligations(o: Optional[dict]) -> str:
         if "log_values" in o:
             c["log_values"] = o["log_values"]
         if o.get("extra"):
-            c["extra"] = dict(sorted(o["extra"].items()))
+            c["extra"] = {k: sorted(set(v)) for k, v in sorted(o["extra"].items())}
     return json.dumps(c, sort_keys=True, separators=(",", ":"))
 
 

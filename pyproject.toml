@@ -29,7 +29,7 @@ dependencies = [
     # The in-process authorization engine — the real Watchlight policy engine
     # (Cedar evaluation + the surrounding pipeline), embedded via PyO3 and
     # published to PyPI as `watchlight-engine`.
-    "watchlight-engine>=0.1,<0.2",
+    "watchlight-engine>=0.2,<0.3",
 ]
 
 [project.optional-dependencies]

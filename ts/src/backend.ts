@@ -46,21 +46,38 @@ export interface Decision {
  *   items the caller may act on or return.
  * - `@obligate_log_values("false")` → `logValues: false` — whether the values
  *   handled under this decision may be logged.
- * - any other `@obligate_<name>("raw")` → `extra[name] = "raw"`, uninterpreted.
+ * - any other `@obligate_<name>("raw")` → `extra[name] = ["raw"]`, uninterpreted.
  *
- * When several permits carry the Allow the known keys merge deterministically —
- * `redact` is the union, `maxItems` the minimum, `logValues` the logical AND —
- * so the result is always at least as strict as every contributing policy.
- * `extra` values are uninterpreted and are never merged: a key is exposed when
- * every contributing permit agrees on its value, and dropped when they differ.
- * Every field is omitted when unset; the whole object is omitted when empty.
+ * Every source that carries the Allow — the engine's merged `details.obligations`
+ * and each determining permit's `policy_results[].obligations` — is merged to
+ * the strictest reading: `redact` is the union, `maxItems` the minimum,
+ * `logValues` the logical AND. `extra` values are uninterpreted, so every
+ * carrier's value is kept: `extra[name]` lists the distinct values (sorted),
+ * and your code decides what a disagreement means. Every field is omitted when
+ * unset; the whole object is omitted when empty. A known key the engine emits
+ * in an unreadable form is not dropped — the decision fails closed with
+ * {@link AuthorizeError}.
  */
 export interface Obligations {
   redact?: string[];
   maxItems?: number;
   logValues?: boolean;
-  /** Unknown `@obligate_*` keys, raw and uninterpreted. */
-  extra?: Record<string, string>;
+  /** Unknown `@obligate_*` keys, raw and uninterpreted: every distinct value the
+   *  carrying permits declared for that name, sorted. */
+  extra?: Record<string, string[]>;
+}
+
+/** Fixed, value-free message of {@link AuthorizeError}. */
+export const OBLIGATIONS_INVALID_MESSAGE = "invalid obligations on an Allow decision";
+
+/** Thrown when an `Allow` carries a known obligation (`redact`, `max_items`,
+ *  `log_values`) the SDK cannot read — the constraint cannot be honoured, so
+ *  the decision fails closed instead of silently losing it. */
+export class AuthorizeError extends Error {
+  constructor() {
+    super(OBLIGATIONS_INVALID_MESSAGE);
+    this.name = "AuthorizeError";
+  }
 }
 
 /** Derive `needsApproval` from a decision's details: a permitting policy result
@@ -88,46 +105,63 @@ interface WireObligations {
 }
 
 const MAX_ITEMS_UPPER_BOUND = 4294967295;
+/** Bound on a `redact` list — beyond it the payload is treated as unreadable. */
+export const MAX_REDACT_ENTRIES = 10000;
 
-/** Read one wire obligations object into the SDK shape, keeping only
- *  well-typed values: `redact` a non-empty list of non-blank strings (trimmed,
- *  de-duplicated), `max_items` an integer in 1..=4294967295, `log_values` a
- *  boolean, `extra` a string→string map. Anything else is left out. */
+/** Read one wire obligations object into the SDK shape. A known key that is
+ *  present but unreadable — `redact` not a non-empty list of non-blank strings
+ *  (or longer than {@link MAX_REDACT_ENTRIES}), `max_items` not an integer in
+ *  1..=4294967295, `log_values` not a boolean — throws {@link AuthorizeError}:
+ *  a constraint the SDK cannot read must not be silently dropped. `extra`
+ *  keeps its string values and ignores the rest (it is uninterpreted by
+ *  contract). `undefined` (field absent) reads as no obligations. */
 function readObligations(wire: unknown): Obligations | undefined {
-  if (!wire || typeof wire !== "object" || Array.isArray(wire)) return undefined;
+  if (wire === undefined) return undefined;
+  if (!wire || typeof wire !== "object" || Array.isArray(wire)) throw new AuthorizeError();
   const w = wire as WireObligations;
   const out: Obligations = {};
-  if (Array.isArray(w.redact)) {
+  if (w.redact !== undefined) {
+    if (!Array.isArray(w.redact) || w.redact.length === 0 || w.redact.length > MAX_REDACT_ENTRIES) {
+      throw new AuthorizeError();
+    }
     const seen = new Set<string>();
     for (const v of w.redact) {
-      if (typeof v !== "string") continue;
-      const t = v.trim();
-      if (t) seen.add(t);
+      if (typeof v !== "string" || !v.trim()) throw new AuthorizeError();
+      seen.add(v.trim());
     }
-    if (seen.size) out.redact = [...seen];
+    out.redact = [...seen];
   }
-  if (
-    typeof w.max_items === "number" &&
-    Number.isInteger(w.max_items) &&
-    w.max_items >= 1 &&
-    w.max_items <= MAX_ITEMS_UPPER_BOUND
-  ) {
+  if (w.max_items !== undefined) {
+    if (
+      typeof w.max_items !== "number" ||
+      !Number.isInteger(w.max_items) ||
+      w.max_items < 1 ||
+      w.max_items > MAX_ITEMS_UPPER_BOUND
+    ) {
+      throw new AuthorizeError();
+    }
     out.maxItems = w.max_items;
   }
-  if (typeof w.log_values === "boolean") out.logValues = w.log_values;
+  if (w.log_values !== undefined) {
+    if (typeof w.log_values !== "boolean") throw new AuthorizeError();
+    out.logValues = w.log_values;
+  }
   if (w.extra && typeof w.extra === "object" && !Array.isArray(w.extra)) {
-    const extra: Record<string, string> = {};
+    const extra: Record<string, string[]> = {};
     for (const [k, v] of Object.entries(w.extra as Record<string, unknown>)) {
-      if (typeof v === "string") extra[k] = v;
+      if (typeof v === "string") extra[k] = [v];
+      else if (Array.isArray(v) && v.length && v.every((x) => typeof x === "string")) {
+        extra[k] = [...new Set(v as string[])].sort();
+      }
     }
     if (Object.keys(extra).length) out.extra = extra;
   }
   return Object.keys(out).length ? out : undefined;
 }
 
-/** Merge the obligations of several contributing permits: `redact` union (in
- *  first-seen order), `maxItems` minimum, `logValues` logical AND, `extra`
- *  only where every carrier agrees on the value. */
+/** Merge every carrier's obligations to the strictest reading: `redact` union
+ *  (first-seen order), `maxItems` minimum, `logValues` logical AND, `extra`
+ *  the sorted distinct values per key. */
 function mergeObligations(parts: readonly Obligations[]): Obligations | undefined {
   const out: Obligations = {};
   const redact = new Set<string>();
@@ -140,29 +174,33 @@ function mergeObligations(parts: readonly Obligations[]): Obligations | undefine
     if (p.logValues !== undefined) {
       out.logValues = out.logValues === undefined ? p.logValues : out.logValues && p.logValues;
     }
-    for (const [k, v] of Object.entries(p.extra ?? {})) {
+    for (const [k, vs] of Object.entries(p.extra ?? {})) {
       if (!extraValues.has(k)) extraValues.set(k, new Set());
-      extraValues.get(k)!.add(v);
+      for (const v of vs) extraValues.get(k)!.add(v);
     }
   }
   if (redact.size) out.redact = [...redact];
-  const extra: Record<string, string> = {};
-  for (const [k, vs] of extraValues) if (vs.size === 1) extra[k] = [...vs][0];
-  if (Object.keys(extra).length) out.extra = extra;
+  if (extraValues.size) {
+    const extra: Record<string, string[]> = {};
+    for (const k of [...extraValues.keys()].sort()) extra[k] = [...extraValues.get(k)!].sort();
+    out.extra = extra;
+  }
   return Object.keys(out).length ? out : undefined;
 }
 
 /**
  * Derive the obligations attached to an `Allow` from a decision's details.
  *
- * Source of truth is the engine's merged `details.obligations` (present only on
- * a final Allow). A backend that predates that field, or that emits only the
- * per-policy `details.policy_results[].obligations`, gets the same merge derived
- * here from the permits that determined the decision (`applicable: true`) —
- * exactly as {@link deriveNeedsApproval} reads `enforcement_effect`. `extra` is
- * never merged by the engine, so it is always read from the per-policy results.
- * Returns `undefined` when there is nothing to honour. The caller decides
- * whether the verdict is one that may carry obligations (only an Allow does).
+ * Every carrier is merged to the strictest reading — the engine's own merged
+ * `details.obligations` (present on a final Allow) together with the
+ * `obligations` of every permit that determined the decision
+ * (`policy_results[]` with `applicable: true`, exactly as
+ * {@link deriveNeedsApproval} reads `enforcement_effect`). A backend that emits
+ * only one of the two sources therefore yields the same result as one that
+ * emits both, and a stricter per-policy key is never lost to the engine merge.
+ * Returns `undefined` when there is nothing to honour. Throws
+ * {@link AuthorizeError} when a known key is present but unreadable. Call it
+ * only for a decision that may carry obligations — an Allow.
  */
 export function deriveObligations(details: unknown): Obligations | undefined {
   const d = details as
@@ -170,22 +208,16 @@ export function deriveObligations(details: unknown): Obligations | undefined {
     | null
     | undefined;
   if (!d || typeof d !== "object") return undefined;
+  const parts: Obligations[] = [];
   const results = Array.isArray(d.policy_results) ? d.policy_results : [];
-  const perPolicy: Obligations[] = [];
   for (const r of results) {
     if (r?.applicable !== true) continue;
     const o = readObligations(r.obligations);
-    if (o) perPolicy.push(o);
+    if (o) parts.push(o);
   }
-  const fromPolicies = mergeObligations(perPolicy);
   const merged = readObligations(d.obligations);
-  if (!merged) return fromPolicies;
-  // The engine's merge is authoritative for the known keys; `extra` comes from
-  // the per-policy results because the engine deliberately does not merge it.
-  const out: Obligations = { ...merged };
-  delete out.extra;
-  if (fromPolicies?.extra) out.extra = fromPolicies.extra;
-  return Object.keys(out).length ? out : undefined;
+  if (merged) parts.push(merged);
+  return mergeObligations(parts);
 }
 
 export interface GovernanceBackend {
@@ -237,7 +269,9 @@ export class InProcessBackend implements GovernanceBackend {
       reason: (resp.reason as string) ?? "",
       decisionId: resp.request_id as string | undefined,
       needsApproval: deriveNeedsApproval(resp.details),
-      obligations: deriveObligations(resp.details),
+      // Only an Allow can carry obligations; an unreadable known key throws
+      // AuthorizeError here (fail-closed) rather than being dropped.
+      obligations: resp.decision === "Allow" ? deriveObligations(resp.details) : undefined,
     };
   }
 
@@ -277,6 +311,7 @@ export class NetworkedBackend implements GovernanceBackend {
     const headers: Record<string, string> = { "content-type": "application/json" };
     if (this._token) headers["authorization"] = `Bearer ${this._token}`;
     if (this._tenantId) headers["x-wl-tenant-id"] = this._tenantId;
+    let data: Record<string, unknown>;
     try {
       const resp = await fetch(`${this._base}/authorize`, {
         method: "POST",
@@ -289,18 +324,21 @@ export class NetworkedBackend implements GovernanceBackend {
         }),
       });
       if (!resp.ok) return { decision: "Deny", reason: `APDP error: ${resp.status}` };
-      const data = (await resp.json()) as Record<string, unknown>;
-      return {
-        decision: (data.decision as string) ?? "Deny",
-        reason: (data.reason as string) ?? "",
-        decisionId: data.request_id as string | undefined,
-        needsApproval: deriveNeedsApproval(data.details),
-        obligations: deriveObligations(data.details),
-      };
+      data = (await resp.json()) as Record<string, unknown>;
     } catch (e) {
       // Fail-closed: an unreachable control plane denies.
       return { decision: "Deny", reason: `APDP unreachable: ${String(e)}` };
     }
+    return {
+      decision: (data.decision as string) ?? "Deny",
+      reason: (data.reason as string) ?? "",
+      decisionId: data.request_id as string | undefined,
+      needsApproval: deriveNeedsApproval(data.details),
+      // Only an Allow can carry obligations; an unreadable known key throws
+      // AuthorizeError (fail-closed) rather than being dropped or mapped to a
+      // transport Deny.
+      obligations: data.decision === "Allow" ? deriveObligations(data.details) : undefined,
+    };
   }
 
   engine(): null {

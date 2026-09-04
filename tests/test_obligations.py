@@ -19,7 +19,15 @@ import sys
 
 import pytest
 
-from watchlight import Watchlight, run_policy_tests
+import watchlight_engine
+
+from watchlight import (
+    MAX_REDACT_ENTRIES,
+    OBLIGATIONS_INVALID_MESSAGE,
+    AuthorizeError,
+    Watchlight,
+    run_policy_tests,
+)
 from watchlight import _derive_obligations
 from watchlight.policytest import normalize_expected_obligations
 
@@ -40,9 +48,27 @@ def _wire(o):
     return w
 
 
+def test_fixed_error_message_and_bound_match_the_fixture():
+    assert OBLIGATIONS_INVALID_MESSAGE == FIXTURE["error_message"]
+    assert MAX_REDACT_ENTRIES == FIXTURE["max_redact_entries"]
+    assert str(AuthorizeError()) == OBLIGATIONS_INVALID_MESSAGE
+
+
 @pytest.mark.parametrize("case", FIXTURE["cases"], ids=[c["name"] for c in FIXTURE["cases"]])
 def test_shared_fixture_derivation_is_byte_identical(case):
+    if case.get("error"):
+        with pytest.raises(AuthorizeError, match=f"^{FIXTURE['error_message']}$"):
+            _derive_obligations(case["details"])
+        return
     assert _canon(_wire(_derive_obligations(case["details"]))) == _canon(case["expected"])
+
+
+def test_redact_list_bound_fails_closed():
+    def details(n):
+        return {"policy_results": [{"applicable": True, "obligations": {"redact": [f"f{i}" for i in range(n)]}}]}
+    with pytest.raises(AuthorizeError):
+        _derive_obligations(details(MAX_REDACT_ENTRIES + 1))
+    assert len(_derive_obligations(details(MAX_REDACT_ENTRIES))["redact"]) == MAX_REDACT_ENTRIES
 
 
 class _StubEngine:
@@ -62,6 +88,8 @@ def _stubbed(tmp_path):
     g._engine = _StubEngine({
         "allow": stubs["allow_with_obligations"],
         "deny": stubs["deny_with_stray_obligations"],
+        "denybad": stubs["deny_with_unreadable_obligations"],
+        "allowbad": stubs["allow_with_unreadable_obligations"],
         "hold": stubs["needs_approval_with_obligations"],
     })
     return g
@@ -70,12 +98,36 @@ def _stubbed(tmp_path):
 def test_allow_carries_obligations_and_extra_passes_through(tmp_path):
     a = _stubbed(tmp_path).authorize(action="allow", resource="doc/1")
     assert a["decision"] == "Allow"
-    assert a["obligations"] == {"redact": ["ssn"], "extra": {"ttl": "30"}}
+    assert a["obligations"] == {"redact": ["ssn"], "extra": {"ttl": ["30"]}}
 
 
 def test_deny_never_carries_obligations(tmp_path):
     d = _stubbed(tmp_path).authorize(action="deny", resource="doc/1")
     assert d["decision"] == "Deny" and "obligations" not in d
+    db = _stubbed(tmp_path).authorize(action="denybad", resource="doc/1")
+    assert db["decision"] == "Deny" and "obligations" not in db
+
+
+def test_allow_with_unreadable_known_obligation_fails_closed(tmp_path):
+    g = _stubbed(tmp_path)
+    with pytest.raises(AuthorizeError, match=f"^{OBLIGATIONS_INVALID_MESSAGE}$"):
+        g.authorize(action="allowbad", resource="doc/1")
+
+    ran = []
+
+    @g.tool("allowbad", resource=lambda: "doc/1")
+    def body():
+        ran.append(True)
+        return "ran"
+
+    with pytest.raises(AuthorizeError):
+        body()
+    assert ran == []
+    # Nothing was written as an Allow for that decision.
+    audit = tmp_path / "audit.jsonl"
+    if audit.exists():
+        assert not any(json.loads(l).get("decision") == "Allow" and json.loads(l).get("intent") == "allowbad"
+                       for l in audit.read_text().splitlines())
 
 
 def test_needs_approval_never_carries_obligations_but_the_approved_allow_does(tmp_path):
@@ -109,6 +161,8 @@ def test_govern_test_asserts_obligations_end_to_end(tmp_path):
     report = _stubbed(tmp_path).test([
         {"name": "redact ssn", "action": "allow", "resource": "doc/1", "expect": "Allow",
          "obligations": {"redact": ["ssn"], "extra": {"ttl": "30"}}},
+        {"name": "redact ssn (extra as a list)", "action": "allow", "resource": "doc/1", "expect": "Allow",
+         "obligations": {"redact": ["ssn"], "extra": {"ttl": ["30"]}}},
         {"name": "deny carries none", "action": "deny", "resource": "doc/1", "expect": "Deny"},
         {"name": "hold carries none", "action": "hold", "resource": "doc/1", "expect": "NeedsApproval", "obligations": {}},
         {"name": "approved carries them (camelCase spelling)", "action": "hold", "resource": "doc/1",
@@ -121,7 +175,7 @@ def test_govern_test_asserts_obligations_end_to_end(tmp_path):
 
 # ── run_policy_tests with a pure stub decide ─────────────────────────────
 
-ALLOW_SSN = {"redact": ["ssn", "dob"], "max_items": 8, "log_values": False, "extra": {"ttl": "30"}}
+ALLOW_SSN = {"redact": ["ssn", "dob"], "max_items": 8, "log_values": False, "extra": {"ttl": ["30", "60"]}}
 
 
 def _decide_with(obligations):
@@ -141,15 +195,15 @@ def _run(decide, case):
     return run_policy_tests(decide, _mint, [dict(action="x", **case)])
 
 
-def test_exact_match_passes_and_redact_is_order_insensitive():
+def test_exact_match_passes_and_redact_and_extra_are_order_insensitive():
     r = _run(_decide_with(ALLOW_SSN), {"expect": "Allow", "obligations": {
-        "redact": ["dob", "ssn"], "max_items": 8, "log_values": False, "extra": {"ttl": "30"}}})
+        "redact": ["dob", "ssn"], "max_items": 8, "log_values": False, "extra": {"ttl": ["60", "30", "60"]}}})
     assert r["failed"] == 0, r
 
 
 def test_camel_case_spellings_are_accepted():
     r = _run(_decide_with(ALLOW_SSN), {"expect": "Allow", "obligations": {
-        "redact": ["dob", "ssn"], "maxItems": 8, "logValues": False, "extra": {"ttl": "30"}}})
+        "redact": ["dob", "ssn"], "maxItems": 8, "logValues": False, "extra": {"ttl": ["30", "60"]}}})
     assert r["failed"] == 0, r
 
 
@@ -158,7 +212,8 @@ def test_subset_expectation_fails_exact_match():
     assert r["failed"] == 1 and r["results"][0]["actual"] == "Allow"
 
 
-def test_differing_extra_value_fails():
+def test_partial_extra_value_set_fails():
+    # A single string is a one-element set; the carrier declared two values.
     r = _run(_decide_with(ALLOW_SSN), {"expect": "Allow", "obligations": {
         "redact": ["dob", "ssn"], "max_items": 8, "log_values": False, "extra": {"ttl": "60"}}})
     assert r["failed"] == 1
@@ -194,6 +249,14 @@ def test_expected_but_absent_fails():
     ({"maxItems": 8, "max_items": 3}, "disagree"),
     ({"extra": {"ttl": 30}}, "extra"),
     ({"extra": ["ttl"]}, "extra"),
+    ({"extra": {"ttl": []}}, "extra"),
+    ({"extra": {"ttl": ["30", 60]}}, "extra"),
+    ({"maxItems": None}, "maxItems"),
+    ({"max_items": None}, "maxItems"),
+    ({"log_values": None}, "logValues"),
+    ({"redact": None}, "redact"),
+    ({"extra": None}, "extra"),
+    ({"maxItems": 8, "max_items": None}, "disagree"),
 ])
 def test_malformed_expectation_raises(obligations, match):
     with pytest.raises(ValueError, match=match):
@@ -211,6 +274,8 @@ def test_normalize_expected_obligations_canonicalizes_to_wire_spelling():
     assert normalize_expected_obligations(
         {"redact": [" ssn ", "ssn"], "maxItems": 2, "logValues": True, "extra": {}}, "f"
     ) == {"redact": ["ssn"], "max_items": 2, "log_values": True}
+    assert normalize_expected_obligations({"extra": {"a": "x", "b": ["z", "y", "z"]}}, "f") == {
+        "extra": {"a": ["x"], "b": ["y", "z"]}}
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────
@@ -252,19 +317,47 @@ ANNOTATED = (
 )
 
 
+def _engine_emits_obligations() -> bool:
+    """Probe the RAW engine payload — does the installed engine emit an
+    `obligations` field at all? The skip is decided here, never on the SDK
+    result, so an SDK regression cannot hide behind a skip."""
+    eng = watchlight_engine.PolicyEngine()
+    eng.add_policy(json.dumps({"name": "annotated", "code": ANNOTATED}))
+    raw = json.loads(eng.authorize(json.dumps(
+        {"principal": "p", "action": "read", "resource": "doc/1", "context": {}})))
+    details = raw.get("details") or {}
+    return "obligations" in details or any(
+        isinstance(r, dict) and "obligations" in r for r in details.get("policy_results") or [])
+
+
 def test_live_engine_surfaces_obligate_annotations(tmp_path):
+    if not _engine_emits_obligations():
+        pytest.skip("the installed watchlight_engine emits no obligations field in its raw payload")
     g = Watchlight(agent="oblig-live", audit_dir=str(tmp_path))
     g.allow(ANNOTATED, "annotated")
     r = g.authorize(action="read", resource="doc/1")
     assert r["decision"] == "Allow"
-    if "obligations" not in r:
-        pytest.skip("installed watchlight_engine reports no obligations field")
+    assert "obligations" in r, r
     assert sorted(r["obligations"]["redact"]) == ["dob", "ssn"]
     assert r["obligations"]["max_items"] == 8 and r["obligations"]["log_values"] is False
-    assert r["obligations"]["extra"] == {"retention": "30d"}
+    assert r["obligations"]["extra"] == {"retention": ["30d"]}
     report = g.test([{"action": "read", "expect": "Allow", "obligations": {
         "redact": ["ssn", "dob"], "max_items": 8, "log_values": False, "extra": {"retention": "30d"}}}])
     assert report["failed"] == 0, report["results"]
+    denied = g.authorize(action="write", resource="doc/1")
+    assert denied["decision"] == "Deny" and "obligations" not in denied
+
+
+def test_live_engine_two_carriers_merge_to_the_strictest_reading(tmp_path):
+    if not _engine_emits_obligations():
+        pytest.skip("the installed watchlight_engine emits no obligations field in its raw payload")
+    g = Watchlight(agent="oblig-two", audit_dir=str(tmp_path))
+    g.allow('@obligate_redact("ssn")\n@obligate_max_items("8")\npermit(principal, action == Action::"read", resource);', "a")
+    g.allow('@obligate_redact("dob")\n@obligate_max_items("3")\n@obligate_log_values("true")\npermit(principal, action == Action::"read", resource);', "b")
+    r = g.authorize(action="read", resource="doc/2")
+    assert r["decision"] == "Allow"
+    assert sorted(r["obligations"]["redact"]) == ["dob", "ssn"]
+    assert r["obligations"]["max_items"] == 3 and r["obligations"]["log_values"] is True
 
 
 def test_live_engine_unannotated_permit_carries_none(tmp_path):

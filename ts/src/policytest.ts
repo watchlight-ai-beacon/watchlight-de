@@ -39,12 +39,12 @@ export interface PolicyTestCase {
   /** The verdict this case must produce. Case-insensitive. */
   expect: "Allow" | "Deny" | "NeedsApproval";
   /** The obligations the `Allow` must carry — compared exactly: `redact` as a
-   *  set, `maxItems` and `logValues` by value, `extra` by key and value, and a
-   *  key absent here must be absent on the result. `{}` asserts the Allow
-   *  carries none. The wire spellings `max_items` / `log_values` are accepted
-   *  too, so one suite file serves both SDK lanes. Only meaningful with
-   *  `expect: "Allow"` — a non-empty expectation on any other verdict is a
-   *  malformed fixture. */
+   *  set, `maxItems` and `logValues` by value, `extra` by key with the set of
+   *  values (a single string stands for a one-element set), and a key absent
+   *  here must be absent on the result. `{}` asserts the Allow carries none.
+   *  The wire spellings `max_items` / `log_values` are accepted too, so one
+   *  suite file serves both SDK lanes. Only meaningful with `expect: "Allow"`
+   *  — a non-empty expectation on any other verdict is a malformed fixture. */
   obligations?: ExpectedObligations;
 }
 
@@ -53,7 +53,9 @@ export interface ExpectedObligations {
   redact?: string[];
   maxItems?: number;
   logValues?: boolean;
-  extra?: Record<string, string>;
+  /** Per key, the value(s) every carrying permit declared — one string or a
+   *  list; compared as a set. */
+  extra?: Record<string, string | string[]>;
   /** Wire spelling of `maxItems`, accepted in suite files. */
   max_items?: number;
   /** Wire spelling of `logValues`, accepted in suite files. */
@@ -180,11 +182,17 @@ export function normalizeExpectedObligations(raw: unknown, where: string): Oblig
     out.logValues = logValues;
   }
   if (o.extra !== undefined) {
-    if (!o.extra || typeof o.extra !== "object" || Array.isArray(o.extra) ||
-        Object.values(o.extra as Record<string, unknown>).some((v) => typeof v !== "string")) {
-      throw new Error(`${where}: 'obligations.extra' must be an object of string values`);
+    if (!o.extra || typeof o.extra !== "object" || Array.isArray(o.extra)) {
+      throw new Error(`${where}: 'obligations.extra' must be an object of string or string-list values`);
     }
-    const extra = { ...(o.extra as Record<string, string>) };
+    const extra: Record<string, string[]> = {};
+    for (const [k, v] of Object.entries(o.extra as Record<string, unknown>)) {
+      const vs = typeof v === "string" ? [v] : v;
+      if (!Array.isArray(vs) || vs.length === 0 || vs.some((x) => typeof x !== "string")) {
+        throw new Error(`${where}: 'obligations.extra' must be an object of string or string-list values`);
+      }
+      extra[k] = [...new Set(vs as string[])].sort();
+    }
     if (Object.keys(extra).length) out.extra = extra;
   }
   return out;
@@ -208,7 +216,9 @@ function canonicalObligations(o: Obligations | undefined): string {
   if (o.redact?.length) c.redact = [...new Set(o.redact)].sort();
   if (o.maxItems !== undefined) c.maxItems = o.maxItems;
   if (o.logValues !== undefined) c.logValues = o.logValues;
-  if (o.extra && Object.keys(o.extra).length) c.extra = o.extra;
+  if (o.extra && Object.keys(o.extra).length) {
+    c.extra = Object.fromEntries(Object.entries(o.extra).map(([k, v]) => [k, [...new Set(v)].sort()]));
+  }
   return sortedJson(c);
 }
 

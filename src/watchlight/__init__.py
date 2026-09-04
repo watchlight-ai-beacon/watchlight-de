@@ -69,6 +69,9 @@ __all__ = [
     "MAX_COUNTERS_WINDOW_SECONDS",
     "Denied",
     "NeedsApproval",
+    "AuthorizeError",
+    "OBLIGATIONS_INVALID_MESSAGE",
+    "MAX_REDACT_ENTRIES",
     "sanitize",
     "SanitizeError",
     "DECISION_ID_MAX_LENGTH",
@@ -173,60 +176,85 @@ def _needs_approval(details: Any) -> bool:
 
 # `@obligate_max_items` upper bound, as validated by the engine at policy load.
 _MAX_ITEMS_UPPER_BOUND = 4294967295
+# Bound on a `redact` list — beyond it the payload is treated as unreadable.
+MAX_REDACT_ENTRIES = 10000
+# Fixed, value-free message of :class:`AuthorizeError`.
+OBLIGATIONS_INVALID_MESSAGE = "invalid obligations on an Allow decision"
+
+
+class AuthorizeError(RuntimeError):
+    """An ``Allow`` carries a known obligation (``redact``, ``max_items``,
+    ``log_values``) the SDK cannot read. The constraint cannot be honoured, so
+    the decision fails closed instead of silently losing it."""
+
+    def __init__(self) -> None:
+        super().__init__(OBLIGATIONS_INVALID_MESSAGE)
 
 
 def _read_obligations(wire: Any) -> Optional[dict]:
-    """Read one engine obligations object, keeping only well-typed values:
-    ``redact`` a non-empty list of non-blank strings (trimmed, de-duplicated),
-    ``max_items`` an integer in 1..=4294967295, ``log_values`` a boolean,
-    ``extra`` a str→str map. Anything else is left out; ``None`` when empty."""
-    if not isinstance(wire, dict):
+    """Read one engine obligations object. A known key that is present but
+    unreadable — ``redact`` not a non-empty list of non-blank strings (or longer
+    than :data:`MAX_REDACT_ENTRIES`), ``max_items`` not an integer in
+    1..=4294967295, ``log_values`` not a boolean — raises :class:`AuthorizeError`:
+    a constraint the SDK cannot read must not be silently dropped. ``extra``
+    keeps its string values and ignores the rest (uninterpreted by contract).
+    An absent field reads as no obligations."""
+    if wire is None:
         return None
+    if not isinstance(wire, dict):
+        raise AuthorizeError()
     out: dict = {}
-    redact = wire.get("redact")
-    if isinstance(redact, list):
-        seen: list[str] = []
-        for v in redact:
-            if isinstance(v, str) and v.strip() and v.strip() not in seen:
-                seen.append(v.strip())
-        if seen:
-            out["redact"] = seen
-    max_items = wire.get("max_items")
-    if isinstance(max_items, int) and not isinstance(max_items, bool) and 1 <= max_items <= _MAX_ITEMS_UPPER_BOUND:
+    if "redact" in wire:
+        redact = wire["redact"]
+        if not isinstance(redact, list) or not redact or len(redact) > MAX_REDACT_ENTRIES:
+            raise AuthorizeError()
+        if any(not isinstance(v, str) or not v.strip() for v in redact):
+            raise AuthorizeError()
+        out["redact"] = list(dict.fromkeys(v.strip() for v in redact))
+    if "max_items" in wire:
+        max_items = wire["max_items"]
+        if (not isinstance(max_items, int) or isinstance(max_items, bool)
+                or not 1 <= max_items <= _MAX_ITEMS_UPPER_BOUND):
+            raise AuthorizeError()
         out["max_items"] = max_items
-    log_values = wire.get("log_values")
-    if isinstance(log_values, bool):
-        out["log_values"] = log_values
+    if "log_values" in wire:
+        if not isinstance(wire["log_values"], bool):
+            raise AuthorizeError()
+        out["log_values"] = wire["log_values"]
     extra = wire.get("extra")
     if isinstance(extra, dict):
-        clean = {k: v for k, v in extra.items() if isinstance(k, str) and isinstance(v, str)}
+        clean: dict[str, list[str]] = {}
+        for k, v in extra.items():
+            if not isinstance(k, str):
+                continue
+            if isinstance(v, str):
+                clean[k] = [v]
+            elif isinstance(v, list) and v and all(isinstance(x, str) for x in v):
+                clean[k] = sorted(set(v))
         if clean:
             out["extra"] = clean
     return out or None
 
 
 def _merge_obligations(parts: Sequence[dict]) -> Optional[dict]:
-    """Merge the obligations of several contributing permits: ``redact`` union
-    (first-seen order), ``max_items`` minimum, ``log_values`` logical AND,
-    ``extra`` only where every carrier agrees on the value."""
+    """Merge every carrier's obligations to the strictest reading: ``redact``
+    union (first-seen order), ``max_items`` minimum, ``log_values`` logical
+    AND, ``extra`` the sorted distinct values per key."""
     out: dict = {}
-    redact: list[str] = []
+    redact: dict[str, None] = {}
     extra_values: dict[str, set[str]] = {}
     for part in parts:
-        for r in part.get("redact", []):
-            if r not in redact:
-                redact.append(r)
+        redact.update(dict.fromkeys(part.get("redact", [])))
         if "max_items" in part:
             out["max_items"] = min(out.get("max_items", part["max_items"]), part["max_items"])
         if "log_values" in part:
             out["log_values"] = out.get("log_values", True) and part["log_values"]
-        for k, v in part.get("extra", {}).items():
-            extra_values.setdefault(k, set()).add(v)
+        for k, vs in part.get("extra", {}).items():
+            extra_values.setdefault(k, set()).update(vs)
     if redact:
-        out["redact"] = redact
-    extra = {k: next(iter(vs)) for k, vs in extra_values.items() if len(vs) == 1}
-    if extra:
-        out["extra"] = extra
+        out["redact"] = list(redact)
+    if extra_values:
+        out["extra"] = {k: sorted(extra_values[k]) for k in sorted(extra_values)}
     return out or None
 
 
@@ -235,34 +263,29 @@ def _derive_obligations(details: Any) -> Optional[dict]:
     "log_values", "extra"}`` (wire spelling), or ``None`` when there is nothing
     to honour.
 
-    Source of truth is the engine's merged ``details.obligations`` (present only
-    on a final Allow). A backend that predates that field, or emits only the
-    per-policy ``details.policy_results[].obligations``, gets the same merge
-    derived here from the permits that determined the decision
-    (``applicable: true``) — exactly as :func:`_needs_approval` reads
-    ``enforcement_effect``. ``extra`` is never merged by the engine, so it is
-    always read from the per-policy results. The caller decides whether the
-    verdict may carry obligations (only an Allow does)."""
+    Every carrier is merged to the strictest reading — the engine's own merged
+    ``details.obligations`` (present on a final Allow) together with the
+    ``obligations`` of every permit that determined the decision
+    (``policy_results[]`` with ``applicable: true``, exactly as
+    :func:`_needs_approval` reads ``enforcement_effect``). A backend that emits
+    only one of the two sources therefore yields the same result as one that
+    emits both, and a stricter per-policy key is never lost to the engine merge.
+    Raises :class:`AuthorizeError` when a known key is present but unreadable.
+    Call it only for a decision that may carry obligations — an Allow."""
     if not isinstance(details, dict):
         return None
+    parts: list[dict] = []
     results = details.get("policy_results")
-    per_policy = []
     if isinstance(results, list):
         for r in results:
             if isinstance(r, dict) and r.get("applicable") is True:
                 o = _read_obligations(r.get("obligations"))
                 if o:
-                    per_policy.append(o)
-    from_policies = _merge_obligations(per_policy)
+                    parts.append(o)
     merged = _read_obligations(details.get("obligations"))
-    if not merged:
-        return from_policies
-    # The engine's merge is authoritative for the known keys; `extra` comes from
-    # the per-policy results because the engine deliberately does not merge it.
-    out = {k: v for k, v in merged.items() if k != "extra"}
-    if from_policies and "extra" in from_policies:
-        out["extra"] = from_policies["extra"]
-    return out or None
+    if merged:
+        parts.append(merged)
+    return _merge_obligations(parts)
 
 
 def _resolve(binding: Any, args: tuple, kwargs: dict) -> Optional[str]:
@@ -1107,8 +1130,10 @@ class Watchlight:
         "decision_id", "reason"}`` plus, on an ``Allow`` whose permitting
         policies declare ``@obligate_*`` annotations, ``"obligations"``:
         ``{"redact": [...], "max_items": n, "log_values": bool, "extra": {name:
-        raw}}`` (each key only when set) — constraints the caller must honour
-        when acting on the Allow. Never present on ``Deny`` or ``NeedsApproval``."""
+        [raw, ...]}}`` (each key only when set) — constraints the caller must
+        honour when acting on the Allow. Never present on ``Deny`` or
+        ``NeedsApproval``. An Allow whose known obligations cannot be read raises
+        :class:`AuthorizeError` instead of returning."""
         result, prin, res, decision_id = self._decide(
             action=action, principal=principal, resource=resource, context=context, approval=approval
         )
@@ -1140,6 +1165,9 @@ class Watchlight:
         )
         decision_id = raw.get("request_id")
         allowed = raw.get("decision") == "Allow"
+        # Only an Allow can carry obligations; an unreadable known key raises
+        # AuthorizeError here (fail-closed) rather than being dropped.
+        obligations = _derive_obligations(raw.get("details")) if allowed else None
         needs = allowed and _needs_approval(raw.get("details"))
         approved = False
         if needs:
@@ -1160,10 +1188,8 @@ class Watchlight:
         }
         # Obligations ride only on a final Allow: a NeedsApproval hold or a Deny
         # has nothing to honour, whatever the matched permits declared.
-        if verdict == "Allow":
-            obligations = _derive_obligations(raw.get("details"))
-            if obligations:
-                result["obligations"] = obligations
+        if verdict == "Allow" and obligations:
+            result["obligations"] = obligations
         return result, prin, res, decision_id
 
     def test(self, cases: Sequence[dict]) -> dict:

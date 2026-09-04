@@ -203,9 +203,11 @@ It mirrors the Python package feature-for-feature:
   `@obligate_max_items("25")`, `@obligate_log_values("false")` (or any
   `@obligate_<name>("raw")`) yields `d.obligations` — `{ redact, maxItems,
   logValues, extra }` (Python `result["obligations"]`: `redact` / `max_items` /
-  `log_values` / `extra`) — constraints your code or `onResult` must honour.
-  Only an `Allow` carries them; `Deny` and `NeedsApproval` never do. See the
-  [allow-but-redact pattern](examples/patterns/allow-but-redact.md).
+  `log_values` / `extra`, the last as `{name: [values]}`) — constraints your code
+  or `onResult` must honour. Several carriers merge to the strictest reading;
+  only an `Allow` carries them; `Deny` and `NeedsApproval` never do; an
+  unreadable obligation fails closed (`AuthorizeError`). Needs engine >= 0.2.0.
+  See the [allow-but-redact pattern](examples/patterns/allow-but-redact.md).
 - **Frameworks:** `governedHooks()` for the Claude Agent SDK; `governTool()` for
   LangChain / LangGraph.js.
 - **Data minimization:** `govern.sanitize(text, { resource, decisionId, known? })`

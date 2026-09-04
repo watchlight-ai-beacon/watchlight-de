@@ -1,8 +1,10 @@
 {
-  "_comment": "Shared TS/Python fixture for obligations. Each case is a stubbed engine `details` payload and the exact obligations the SDK must derive from it, in wire spelling (redact / max_items / log_values / extra). `expected` is serialised by both lanes with sorted keys and compared byte-for-byte; `redact` is listed sorted because the merge is a set union. The verdict gate (only an Allow carries obligations) is exercised separately by each lane with a stubbed decision.",
+  "_comment": "Shared TS/Python fixture for obligations. Each case is a stubbed engine `details` payload and either the exact obligations the SDK must derive from it, in wire spelling (redact / max_items / log_values / extra as {name: [sorted values]}), or `error: true` when derivation must fail closed (TS AuthorizeError / Python AuthorizeError, fixed message). `expected` is serialised by both lanes with sorted keys and compared byte-for-byte; `redact` is listed sorted because the merge is a set union. The verdict gate (only an Allow carries obligations) is exercised separately by each lane with `stub_decisions`.",
+  "error_message": "invalid obligations on an Allow decision",
+  "max_redact_entries": 10000,
   "cases": [
     {
-      "name": "engine merge present: known keys from details.obligations, extra from the carrying permit",
+      "name": "engine merge present: known keys and extra from the carrying permit",
       "details": {
         "policy_results": [
           {
@@ -39,12 +41,14 @@
         "max_items": 8,
         "log_values": false,
         "extra": {
-          "ttl": "30"
+          "ttl": [
+            "30"
+          ]
         }
       }
     },
     {
-      "name": "no engine merge: two carrying permits merge (redact union, max_items min, log_values AND, agreeing extra)",
+      "name": "no engine merge: two carrying permits merge (redact union, max_items min, log_values AND, extra per key)",
       "details": {
         "policy_results": [
           {
@@ -95,13 +99,17 @@
         "max_items": 3,
         "log_values": false,
         "extra": {
-          "region": "eu",
-          "ttl": "30"
+          "region": [
+            "eu"
+          ],
+          "ttl": [
+            "30"
+          ]
         }
       }
     },
     {
-      "name": "extra values that disagree between carrying permits are not exposed; known keys still merge",
+      "name": "extra values that disagree between carriers are all surfaced, sorted and de-duplicated",
       "details": {
         "policy_results": [
           {
@@ -116,7 +124,7 @@
                 "ssn"
               ],
               "extra": {
-                "ttl": "30",
+                "ttl": "60",
                 "region": "eu"
               }
             }
@@ -131,8 +139,21 @@
             "obligations": {
               "max_items": 5,
               "extra": {
-                "ttl": "60",
+                "ttl": "30",
                 "region": "eu"
+              }
+            }
+          },
+          {
+            "policy_id": "c",
+            "policy_name": "c",
+            "applicable": true,
+            "decision": "Allow",
+            "reason": "stub",
+            "evaluation_time_ms": 0,
+            "obligations": {
+              "extra": {
+                "ttl": "60"
               }
             }
           }
@@ -144,12 +165,49 @@
         ],
         "max_items": 5,
         "extra": {
-          "region": "eu"
+          "region": [
+            "eu"
+          ],
+          "ttl": [
+            "30",
+            "60"
+          ]
         }
       }
     },
     {
-      "name": "engine merge wins over a per-policy disagreement on known keys",
+      "name": "engine merge and per-policy results merge to the strictest of both, never engine-overrides",
+      "details": {
+        "policy_results": [
+          {
+            "policy_id": "a",
+            "policy_name": "a",
+            "applicable": true,
+            "decision": "Allow",
+            "reason": "stub",
+            "evaluation_time_ms": 0,
+            "obligations": {
+              "max_items": 3,
+              "log_values": false
+            }
+          }
+        ],
+        "obligations": {
+          "redact": [
+            "ssn"
+          ]
+        }
+      },
+      "expected": {
+        "redact": [
+          "ssn"
+        ],
+        "max_items": 3,
+        "log_values": false
+      }
+    },
+    {
+      "name": "a stricter engine merge wins where it is stricter",
       "details": {
         "policy_results": [
           {
@@ -163,7 +221,8 @@
               "redact": [
                 "ssn"
               ],
-              "max_items": 8
+              "max_items": 8,
+              "log_values": true
             }
           }
         ],
@@ -172,7 +231,8 @@
             "ssn",
             "dob"
           ],
-          "max_items": 2
+          "max_items": 2,
+          "log_values": false
         }
       },
       "expected": {
@@ -180,29 +240,29 @@
           "dob",
           "ssn"
         ],
-        "max_items": 2
+        "max_items": 2,
+        "log_values": false
       }
     },
     {
-      "name": "engine merge never carries extra; none on the policy results either",
+      "name": "engine merge alone, no policy results",
       "details": {
         "obligations": {
           "redact": [
             "ssn"
           ],
-          "extra": {
-            "ttl": "30"
-          }
+          "max_items": 4
         }
       },
       "expected": {
         "redact": [
           "ssn"
-        ]
+        ],
+        "max_items": 4
       }
     },
     {
-      "name": "a permit that did not determine the decision contributes nothing without an engine merge",
+      "name": "a permit that did not determine the decision contributes nothing",
       "details": {
         "policy_results": [
           {
@@ -255,7 +315,7 @@
       "expected": null
     },
     {
-      "name": "ill-typed wire values are left out; well-typed neighbours survive",
+      "name": "redact entries are trimmed and de-duplicated; ill-typed extra values are ignored",
       "details": {
         "policy_results": [
           {
@@ -268,18 +328,18 @@
             "obligations": {
               "redact": [
                 " ssn ",
-                "",
-                5,
-                "ssn"
+                "ssn",
+                "dob"
               ],
-              "max_items": 0,
-              "log_values": "false",
               "extra": {
                 "ok": "yes",
                 "bad": 1,
                 "also": [
-                  "x"
-                ]
+                  "x",
+                  "x",
+                  "w"
+                ],
+                "empty": []
               }
             }
           }
@@ -287,45 +347,22 @@
       },
       "expected": {
         "redact": [
+          "dob",
           "ssn"
         ],
         "extra": {
-          "ok": "yes"
+          "also": [
+            "w",
+            "x"
+          ],
+          "ok": [
+            "yes"
+          ]
         }
       }
     },
     {
-      "name": "max_items above the engine's upper bound or non-integer is left out",
-      "details": {
-        "policy_results": [
-          {
-            "policy_id": "a",
-            "policy_name": "a",
-            "applicable": true,
-            "decision": "Allow",
-            "reason": "stub",
-            "evaluation_time_ms": 0,
-            "obligations": {
-              "max_items": 4294967296
-            }
-          },
-          {
-            "policy_id": "b",
-            "policy_name": "b",
-            "applicable": true,
-            "decision": "Allow",
-            "reason": "stub",
-            "evaluation_time_ms": 0,
-            "obligations": {
-              "max_items": 2.5
-            }
-          }
-        ]
-      },
-      "expected": null
-    },
-    {
-      "name": "an empty engine merge object falls back to the policy results",
+      "name": "an empty engine merge object contributes nothing",
       "details": {
         "policy_results": [
           {
@@ -350,6 +387,249 @@
       "name": "no details at all",
       "details": null,
       "expected": null
+    },
+    {
+      "name": "unreadable known key: max_items as a string fails closed",
+      "details": {
+        "policy_results": [
+          {
+            "policy_id": "a",
+            "policy_name": "a",
+            "applicable": true,
+            "decision": "Allow",
+            "reason": "stub",
+            "evaluation_time_ms": 0,
+            "obligations": {
+              "redact": [
+                "ssn"
+              ],
+              "max_items": "8"
+            }
+          }
+        ]
+      },
+      "error": true
+    },
+    {
+      "name": "unreadable known key: max_items zero fails closed",
+      "details": {
+        "obligations": {
+          "max_items": 0
+        }
+      },
+      "error": true
+    },
+    {
+      "name": "unreadable known key: max_items above the engine bound fails closed",
+      "details": {
+        "policy_results": [
+          {
+            "policy_id": "a",
+            "policy_name": "a",
+            "applicable": true,
+            "decision": "Allow",
+            "reason": "stub",
+            "evaluation_time_ms": 0,
+            "obligations": {
+              "max_items": 4294967296
+            }
+          }
+        ]
+      },
+      "error": true
+    },
+    {
+      "name": "unreadable known key: non-integer max_items fails closed",
+      "details": {
+        "policy_results": [
+          {
+            "policy_id": "a",
+            "policy_name": "a",
+            "applicable": true,
+            "decision": "Allow",
+            "reason": "stub",
+            "evaluation_time_ms": 0,
+            "obligations": {
+              "max_items": 2.5
+            }
+          }
+        ]
+      },
+      "error": true
+    },
+    {
+      "name": "unreadable known key: boolean max_items fails closed",
+      "details": {
+        "policy_results": [
+          {
+            "policy_id": "a",
+            "policy_name": "a",
+            "applicable": true,
+            "decision": "Allow",
+            "reason": "stub",
+            "evaluation_time_ms": 0,
+            "obligations": {
+              "max_items": true
+            }
+          }
+        ]
+      },
+      "error": true
+    },
+    {
+      "name": "unreadable known key: log_values as a string fails closed",
+      "details": {
+        "policy_results": [
+          {
+            "policy_id": "a",
+            "policy_name": "a",
+            "applicable": true,
+            "decision": "Allow",
+            "reason": "stub",
+            "evaluation_time_ms": 0,
+            "obligations": {
+              "log_values": "false"
+            }
+          }
+        ]
+      },
+      "error": true
+    },
+    {
+      "name": "unreadable known key: null log_values fails closed",
+      "details": {
+        "obligations": {
+          "log_values": null
+        }
+      },
+      "error": true
+    },
+    {
+      "name": "unreadable known key: empty redact fails closed",
+      "details": {
+        "policy_results": [
+          {
+            "policy_id": "a",
+            "policy_name": "a",
+            "applicable": true,
+            "decision": "Allow",
+            "reason": "stub",
+            "evaluation_time_ms": 0,
+            "obligations": {
+              "redact": []
+            }
+          }
+        ]
+      },
+      "error": true
+    },
+    {
+      "name": "unreadable known key: blank redact entry fails closed",
+      "details": {
+        "policy_results": [
+          {
+            "policy_id": "a",
+            "policy_name": "a",
+            "applicable": true,
+            "decision": "Allow",
+            "reason": "stub",
+            "evaluation_time_ms": 0,
+            "obligations": {
+              "redact": [
+                "ssn",
+                " "
+              ]
+            }
+          }
+        ]
+      },
+      "error": true
+    },
+    {
+      "name": "unreadable known key: non-string redact entry fails closed",
+      "details": {
+        "policy_results": [
+          {
+            "policy_id": "a",
+            "policy_name": "a",
+            "applicable": true,
+            "decision": "Allow",
+            "reason": "stub",
+            "evaluation_time_ms": 0,
+            "obligations": {
+              "redact": [
+                "ssn",
+                5
+              ]
+            }
+          }
+        ]
+      },
+      "error": true
+    },
+    {
+      "name": "unreadable known key: redact not a list fails closed",
+      "details": {
+        "obligations": {
+          "redact": "ssn"
+        }
+      },
+      "error": true
+    },
+    {
+      "name": "unreadable obligations object (an array) on a carrier fails closed",
+      "details": {
+        "policy_results": [
+          {
+            "policy_id": "a",
+            "policy_name": "a",
+            "applicable": true,
+            "decision": "Allow",
+            "reason": "stub",
+            "evaluation_time_ms": 0,
+            "obligations": [
+              "ssn"
+            ]
+          }
+        ]
+      },
+      "error": true
+    },
+    {
+      "name": "a bystander's unreadable obligations are never read",
+      "details": {
+        "policy_results": [
+          {
+            "policy_id": "bystander",
+            "policy_name": "bystander",
+            "applicable": false,
+            "decision": "Allow",
+            "reason": "stub",
+            "evaluation_time_ms": 0,
+            "obligations": {
+              "max_items": "8"
+            }
+          },
+          {
+            "policy_id": "carrier",
+            "policy_name": "carrier",
+            "applicable": true,
+            "decision": "Allow",
+            "reason": "stub",
+            "evaluation_time_ms": 0,
+            "obligations": {
+              "redact": [
+                "ssn"
+              ]
+            }
+          }
+        ]
+      },
+      "expected": {
+        "redact": [
+          "ssn"
+        ]
+      }
     }
   ],
   "stub_decisions": {
@@ -408,6 +688,52 @@
             "ssn"
           ]
         }
+      }
+    },
+    "deny_with_unreadable_obligations": {
+      "decision": "Deny",
+      "reason": "stub",
+      "request_id": "req-deny-2",
+      "details": {
+        "policy_results": [
+          {
+            "policy_id": "x",
+            "policy_name": "x",
+            "applicable": false,
+            "decision": "Deny",
+            "reason": "stub",
+            "evaluation_time_ms": 0,
+            "obligations": {
+              "max_items": "8"
+            }
+          }
+        ],
+        "obligations": {
+          "max_items": "8"
+        }
+      }
+    },
+    "allow_with_unreadable_obligations": {
+      "decision": "Allow",
+      "reason": "stub",
+      "request_id": "req-bad-1",
+      "details": {
+        "policy_results": [
+          {
+            "policy_id": "x",
+            "policy_name": "x",
+            "applicable": true,
+            "decision": "Allow",
+            "reason": "stub",
+            "evaluation_time_ms": 0,
+            "obligations": {
+              "redact": [
+                "ssn"
+              ],
+              "max_items": "8"
+            }
+          }
+        ]
       }
     },
     "needs_approval_with_obligations": {

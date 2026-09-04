@@ -17,8 +17,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 
 const require = createRequire(import.meta.url);
-const { Watchlight, runPolicyTests } = require("../dist/index.js");
-const { deriveObligations } = require("../dist/backend.js");
+const { Watchlight, runPolicyTests, AuthorizeError, OBLIGATIONS_INVALID_MESSAGE, MAX_REDACT_ENTRIES } = require("../dist/index.js");
+const { deriveObligations, InProcessBackend } = require("../dist/backend.js");
 const { normalizeExpectedObligations } = require("../dist/policytest.js");
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -81,10 +81,25 @@ async function main() {
 
   // ── 1. shared fixture: derivation is byte-identical to the expected wire form ──
   console.log("shared fixture (tests/fixtures/obligations.json)");
+  ok("fixed error message matches the fixture", OBLIGATIONS_INVALID_MESSAGE === fixture.error_message && MAX_REDACT_ENTRIES === fixture.max_redact_entries);
   for (const c of fixture.cases) {
+    if (c.error) {
+      let err = null;
+      try { deriveObligations(c.details); } catch (e) { err = e; }
+      ok(c.name, err instanceof AuthorizeError && err.message === fixture.error_message, err ? `unexpected: ${err.name}: ${err.message}` : "did not throw");
+      continue;
+    }
     const got = canon(toWire(deriveObligations(c.details)));
     const want = canon(c.expected);
     ok(c.name, got === want, `\n      want ${want}\n      got  ${got}`);
+  }
+  {
+    const big = { policy_results: [{ applicable: true, obligations: { redact: Array.from({ length: MAX_REDACT_ENTRIES + 1 }, (_, i) => `f${i}`) } }] };
+    let err = null;
+    try { deriveObligations(big); } catch (e) { err = e; }
+    ok("a redact list beyond the bound fails closed", err instanceof AuthorizeError);
+    const atBound = { policy_results: [{ applicable: true, obligations: { redact: Array.from({ length: MAX_REDACT_ENTRIES }, (_, i) => `f${i}`) } }] };
+    ok("a redact list at the bound is read", deriveObligations(atBound).redact.length === MAX_REDACT_ENTRIES);
   }
 
   // ── 2. verdict gate, end to end through the networked backend ──
@@ -93,16 +108,31 @@ async function main() {
   const srv = await stubServer({
     allow: stubs.allow_with_obligations,
     deny: stubs.deny_with_stray_obligations,
+    denybad: stubs.deny_with_unreadable_obligations,
+    allowbad: stubs.allow_with_unreadable_obligations,
     hold: stubs.needs_approval_with_obligations,
   });
   try {
     const g = new Watchlight({ agent: "oblig-agent", auditDir: tmp(), apdpUrl: srv.url });
     const a = await g.authorize({ action: "allow", resource: "doc/1" });
     ok("Allow carries the obligations", a.decision === "Allow" &&
-      canon(toWire(a.obligations)) === canon({ redact: ["ssn"], extra: { ttl: "30" } }), JSON.stringify(a));
-    ok("extra keys pass through untouched", a.obligations.extra.ttl === "30");
+      canon(toWire(a.obligations)) === canon({ redact: ["ssn"], extra: { ttl: ["30"] } }), JSON.stringify(a));
+    ok("extra keys pass through untouched", a.obligations.extra.ttl[0] === "30");
     const d = await g.authorize({ action: "deny", resource: "doc/1" });
     ok("Deny never carries obligations, even if the payload has some", d.decision === "Deny" && d.obligations === undefined, JSON.stringify(d));
+    const db = await g.authorize({ action: "denybad", resource: "doc/1" });
+    ok("a Deny with unreadable obligations is still a plain Deny (nothing to honour)", db.decision === "Deny" && db.obligations === undefined);
+    await throws("an Allow with an unreadable known obligation rejects with AuthorizeError (fail-closed)",
+      () => g.authorize({ action: "allowbad", resource: "doc/1" }), new RegExp(`^${fixture.error_message}$`));
+    {
+      let err = null;
+      try { await g.authorize({ action: "allowbad", resource: "doc/1" }); } catch (e) { err = e; }
+      ok("the error is an AuthorizeError with the fixed message", err instanceof AuthorizeError && err.message === OBLIGATIONS_INVALID_MESSAGE);
+      const body = g.tool(async () => "ran", { intent: "allowbad", resource: () => "doc/1" });
+      let toolErr = null, ran = null;
+      try { ran = await body(); } catch (e) { toolErr = e; }
+      ok("a governed tool never runs its body on that decision", ran === null && toolErr !== null, String(toolErr));
+    }
     const h = await g.authorize({ action: "hold", resource: "doc/1" });
     ok("NeedsApproval never carries obligations", h.decision === "NeedsApproval" && h.obligations === undefined, JSON.stringify(h));
     const token = g.mintApproval({ action: "hold", resource: "doc/1" });
@@ -125,6 +155,7 @@ async function main() {
     // Policy tests through the stub (verdict + obligations expectation).
     const report = await g.test([
       { name: "redact ssn", action: "allow", resource: "doc/1", expect: "Allow", obligations: { redact: ["ssn"], extra: { ttl: "30" } } },
+      { name: "redact ssn (extra as a list)", action: "allow", resource: "doc/1", expect: "Allow", obligations: { redact: ["ssn"], extra: { ttl: ["30"] } } },
       { name: "deny carries none", action: "deny", resource: "doc/1", expect: "Deny" },
       { name: "hold carries none", action: "hold", resource: "doc/1", expect: "NeedsApproval", obligations: {} },
       { name: "approved carries them (wire spelling)", action: "hold", resource: "doc/1", approved: true, expect: "Allow", obligations: { redact: ["ssn"], max_items: 4 } },
@@ -141,17 +172,17 @@ async function main() {
   console.log("policy test expectations");
   const decideWith = (obligations) => async () => ({ decision: "Allow", reason: "", ...(obligations ? { obligations } : {}) });
   const mint = () => "tok";
-  const allowSsn = decideWith({ redact: ["ssn", "dob"], maxItems: 8, logValues: false, extra: { ttl: "30" } });
+  const allowSsn = decideWith({ redact: ["ssn", "dob"], maxItems: 8, logValues: false, extra: { ttl: ["30", "60"] } });
   let r = await runPolicyTests(allowSsn, mint, [{ action: "x", expect: "Allow",
-    obligations: { redact: ["dob", "ssn"], maxItems: 8, logValues: false, extra: { ttl: "30" } } }]);
-  ok("exact match passes (redact order-insensitive)", r.failed === 0, JSON.stringify(r));
+    obligations: { redact: ["dob", "ssn"], maxItems: 8, logValues: false, extra: { ttl: ["60", "30", "60"] } } }]);
+  ok("exact match passes (redact and extra order-insensitive, de-duplicated)", r.failed === 0, JSON.stringify(r));
   r = await runPolicyTests(allowSsn, mint, [{ action: "x", expect: "Allow",
-    obligations: { redact: ["dob", "ssn"], max_items: 8, log_values: false, extra: { ttl: "30" } } }]);
+    obligations: { redact: ["dob", "ssn"], max_items: 8, log_values: false, extra: { ttl: ["30", "60"] } } }]);
   ok("snake_case spellings are accepted", r.failed === 0, JSON.stringify(r));
   r = await runPolicyTests(allowSsn, mint, [{ action: "x", expect: "Allow", obligations: { redact: ["ssn"] } }]);
   ok("a subset expectation fails (exact match, not containment)", r.failed === 1 && r.results[0].actual === "Allow");
   r = await runPolicyTests(allowSsn, mint, [{ action: "x", expect: "Allow", obligations: { redact: ["dob", "ssn"], maxItems: 8, logValues: false, extra: { ttl: "60" } } }]);
-  ok("a differing extra value fails", r.failed === 1);
+  ok("a partial extra value set fails (a string is a one-element set)", r.failed === 1);
   r = await runPolicyTests(allowSsn, mint, [{ action: "x", expect: "Allow" }]);
   ok("no expectation → obligations are not compared", r.failed === 0 && r.results[0].obligations?.maxItems === 8);
   r = await runPolicyTests(allowSsn, mint, [{ action: "x", expect: "Allow", obligations: {} }]);
@@ -175,6 +206,12 @@ async function main() {
     ["contradictory spellings", { maxItems: 8, max_items: 3 }, /disagree/],
     ["a non-string extra value", { extra: { ttl: 30 } }, /extra/],
     ["an array extra", { extra: ["ttl"] }, /extra/],
+    ["an empty extra value list", { extra: { ttl: [] } }, /extra/],
+    ["a non-string entry in an extra value list", { extra: { ttl: ["30", 60] } }, /extra/],
+    ["a null maxItems", { maxItems: null }, /maxItems/],
+    ["a null redact", { redact: null }, /redact/],
+    ["a null extra", { extra: null }, /extra/],
+    ["mixed spellings where one is null", { maxItems: 8, max_items: null }, /disagree/],
   ];
   for (const [label, obligations, re] of malformed) {
     await throws(`malformed expectation throws: ${label}`, () => runPolicyTests(allowSsn, mint, [{ action: "x", expect: "Allow", obligations }]), re);
@@ -186,6 +223,8 @@ async function main() {
   ok("normalizeExpectedObligations canonicalizes to camelCase",
     canon(normalizeExpectedObligations({ redact: [" ssn ", "ssn"], max_items: 2, log_values: true, extra: {} }, "f")) ===
       canon({ redact: ["ssn"], maxItems: 2, logValues: true }));
+  ok("normalizeExpectedObligations lifts a string extra to a sorted set",
+    canon(normalizeExpectedObligations({ extra: { a: "x", b: ["z", "y", "z"] } }, "f")) === canon({ extra: { a: ["x"], b: ["y", "z"] } }));
 
   // ── 4. CLI: a malformed obligations expectation is a malformed suite (exit 2) ──
   console.log("CLI");
@@ -205,23 +244,44 @@ async function main() {
   const r5 = spawnSync(process.execPath, [CLI, "policy", "test", mismatch], { encoding: "utf8", env: { ...process.env, NO_COLOR: "1" } });
   ok("CLI reports an obligations mismatch as a failure (exit 1)", r5.status === 1 && /expected obligations .*"redact"/.test(r5.stdout), `- status ${r5.status}\n${r5.stdout}`);
 
-  // ── 5. live engine: real annotation → real obligations (skips on an older engine) ──
+  // ── 5. live engine: real annotation → real obligations. The skip is decided on
+  //      the RAW engine payload (does the engine emit `obligations` at all?), never
+  //      on the SDK result — so an SDK regression cannot hide behind a skip. ──
   console.log("live engine");
-  const live = new Watchlight({ agent: "oblig-live", auditDir: tmp() });
-  live.allow('@obligate_redact("ssn, dob")\n@obligate_max_items("8")\n@obligate_log_values("false")\n@obligate_retention("30d")\npermit(principal, action == Action::"read", resource);', "annotated");
-  const lr = await live.authorize({ action: "read", resource: "doc/1" });
-  if (lr.decision !== "Allow") {
-    ok("live engine allows the annotated permit", false, JSON.stringify(lr));
-  } else if (lr.obligations === undefined) {
-    skip("live engine surfaces @obligate_* annotations", "installed @watchlight/engine reports no obligations field");
+  const ANNOTATED = '@obligate_redact("ssn, dob")\n@obligate_max_items("8")\n@obligate_log_values("false")\n@obligate_retention("30d")\npermit(principal, action == Action::"read", resource);';
+  const probe = new InProcessBackend();
+  probe.addPolicy({ name: "annotated", code: ANNOTATED });
+  const rawEngine = await probe.engine();
+  const raw = await rawEngine.authorize({ principal: "p", action: "read", resource: "doc/1", context: {} });
+  const rawDetails = raw?.details ?? {};
+  const engineEmits = "obligations" in rawDetails ||
+    (Array.isArray(rawDetails.policy_results) && rawDetails.policy_results.some((r) => r && "obligations" in r));
+  if (!engineEmits) {
+    skip("live engine surfaces @obligate_* annotations", "the installed @watchlight/engine emits no obligations field in its raw payload");
   } else {
-    ok("live engine: redact union", canon([...lr.obligations.redact].sort()) === canon(["dob", "ssn"]), JSON.stringify(lr.obligations));
-    ok("live engine: maxItems", lr.obligations.maxItems === 8);
-    ok("live engine: logValues", lr.obligations.logValues === false);
-    ok("live engine: extra passes through", lr.obligations.extra?.retention === "30d");
+    ok("live engine: raw payload carries the merged details.obligations", rawDetails.obligations && Array.isArray(rawDetails.obligations.redact), JSON.stringify(rawDetails.obligations));
+    const live = new Watchlight({ agent: "oblig-live", auditDir: tmp() });
+    live.allow(ANNOTATED, "annotated");
+    const lr = await live.authorize({ action: "read", resource: "doc/1" });
+    ok("live engine: Allow", lr.decision === "Allow", JSON.stringify(lr));
+    ok("live engine: SDK result carries obligations", lr.obligations !== undefined, JSON.stringify(lr));
+    ok("live engine: redact union", canon([...(lr.obligations?.redact ?? [])].sort()) === canon(["dob", "ssn"]), JSON.stringify(lr.obligations));
+    ok("live engine: maxItems", lr.obligations?.maxItems === 8);
+    ok("live engine: logValues", lr.obligations?.logValues === false);
+    ok("live engine: extra passes through as a value list", canon(lr.obligations?.extra?.retention) === canon(["30d"]), JSON.stringify(lr.obligations?.extra));
     const liveReport = await live.test([{ action: "read", expect: "Allow",
       obligations: { redact: ["ssn", "dob"], maxItems: 8, logValues: false, extra: { retention: "30d" } } }]);
     ok("live engine: govern.test asserts them", liveReport.failed === 0, JSON.stringify(liveReport.results));
+    // Two carrying permits: the SDK's merge agrees with the engine's.
+    const two = new Watchlight({ agent: "oblig-two", auditDir: tmp() });
+    two.allow('@obligate_redact("ssn")\n@obligate_max_items("8")\npermit(principal, action == Action::"read", resource);', "a");
+    two.allow('@obligate_redact("dob")\n@obligate_max_items("3")\n@obligate_log_values("true")\npermit(principal, action == Action::"read", resource);', "b");
+    const tr = await two.authorize({ action: "read", resource: "doc/2" });
+    ok("live engine: two carriers merge to the strictest reading",
+      tr.decision === "Allow" && canon([...(tr.obligations?.redact ?? [])].sort()) === canon(["dob", "ssn"]) && tr.obligations?.maxItems === 3 && tr.obligations?.logValues === true,
+      JSON.stringify(tr.obligations));
+    const denied = await live.authorize({ action: "write", resource: "doc/1" });
+    ok("live engine: a Deny carries none", denied.decision === "Deny" && denied.obligations === undefined);
   }
   const plain = new Watchlight({ agent: "oblig-plain", auditDir: tmp() });
   plain.allow('permit(principal, action == Action::"read", resource);', "plain");
