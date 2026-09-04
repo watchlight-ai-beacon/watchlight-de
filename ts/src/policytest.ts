@@ -19,6 +19,7 @@
 // Or from CI, with the `watchlight` CLI:  npx watchlight policy test suite.json
 
 import * as fs from "node:fs";
+import type { Obligations } from "./backend";
 
 /** A single policy fixture: an input and the verdict it must produce. */
 export interface PolicyTestCase {
@@ -37,6 +38,28 @@ export interface PolicyTestCase {
   approved?: boolean;
   /** The verdict this case must produce. Case-insensitive. */
   expect: "Allow" | "Deny" | "NeedsApproval";
+  /** The obligations the `Allow` must carry — compared exactly: `redact` as a
+   *  set, `maxItems` and `logValues` by value, `extra` by key with the set of
+   *  values (a single string stands for a one-element set), and a key absent
+   *  here must be absent on the result. `{}` asserts the Allow carries none.
+   *  The wire spellings `max_items` / `log_values` are accepted too, so one
+   *  suite file serves both SDK lanes. Only meaningful with `expect: "Allow"`
+   *  — a non-empty expectation on any other verdict is a malformed fixture. */
+  obligations?: ExpectedObligations;
+}
+
+/** The obligations a fixture expects an `Allow` to carry. */
+export interface ExpectedObligations {
+  redact?: string[];
+  maxItems?: number;
+  logValues?: boolean;
+  /** Per key, the value(s) every carrying permit declared — one string or a
+   *  list; compared as a set. */
+  extra?: Record<string, string | string[]>;
+  /** Wire spelling of `maxItems`, accepted in suite files. */
+  max_items?: number;
+  /** Wire spelling of `logValues`, accepted in suite files. */
+  log_values?: boolean;
 }
 
 /** The outcome of one fixture. */
@@ -47,6 +70,10 @@ export interface PolicyTestResult {
   ok: boolean;
   /** Engine reason — surfaced to explain an unexpected verdict. */
   reason: string;
+  /** The obligations the verdict actually carried (an `Allow` only). */
+  obligations?: Obligations;
+  /** The normalized obligations the fixture expected, when it stated any. */
+  expectedObligations?: Obligations;
 }
 
 /** The aggregate report. `failed === 0` means the suite passed. */
@@ -77,7 +104,7 @@ export type DecideFn = (req: {
   resource?: string;
   context?: Record<string, unknown>;
   approval?: string;
-}) => Promise<{ decision: Verdict; reason: string }>;
+}) => Promise<{ decision: Verdict; reason: string; obligations?: Obligations }>;
 
 /** Mints a single-use approval token bound to a challenge — used when a fixture
  *  sets `approved: true` to exercise the human-confirmed path. */
@@ -98,11 +125,110 @@ function normalizeVerdict(v: unknown): Verdict {
   return (v as Verdict) ?? "Deny";
 }
 
+const EXPECTED_OBLIGATION_KEYS = new Set([
+  "redact",
+  "maxItems",
+  "max_items",
+  "logValues",
+  "log_values",
+  "extra",
+]);
+
+/** Pick one of two spellings of the same key; both given with different values
+ *  is a contradiction and therefore malformed. */
+function oneSpelling(o: Record<string, unknown>, camel: string, snake: string, where: string): unknown {
+  const a = o[camel];
+  const b = o[snake];
+  if (a !== undefined && b !== undefined && a !== b) {
+    throw new Error(`${where}: '${camel}' and '${snake}' disagree`);
+  }
+  return a !== undefined ? a : b;
+}
+
+/**
+ * Validate and canonicalize a fixture's `obligations` expectation. Strict: an
+ * unknown key, an ill-typed value, or a contradiction between spellings is a
+ * malformed suite and throws — a typo must never pass as "no expectation".
+ * Returns `{}` for an expectation of "no obligations".
+ */
+export function normalizeExpectedObligations(raw: unknown, where: string): Obligations {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error(`${where}: 'obligations' must be an object`);
+  }
+  const o = raw as Record<string, unknown>;
+  for (const k of Object.keys(o)) {
+    if (!EXPECTED_OBLIGATION_KEYS.has(k)) throw new Error(`${where}: unknown obligations key '${k}'`);
+  }
+  const out: Obligations = {};
+  if (o.redact !== undefined) {
+    if (!Array.isArray(o.redact) || o.redact.length === 0 ||
+        o.redact.some((v) => typeof v !== "string" || !v.trim())) {
+      throw new Error(`${where}: 'obligations.redact' must be a non-empty array of non-blank strings`);
+    }
+    out.redact = [...new Set((o.redact as string[]).map((v) => v.trim()))];
+  }
+  const maxItems = oneSpelling(o, "maxItems", "max_items", where);
+  if (maxItems !== undefined) {
+    if (typeof maxItems !== "number" || !Number.isInteger(maxItems) || maxItems < 1) {
+      throw new Error(`${where}: 'obligations.maxItems' must be a positive integer`);
+    }
+    out.maxItems = maxItems;
+  }
+  const logValues = oneSpelling(o, "logValues", "log_values", where);
+  if (logValues !== undefined) {
+    if (typeof logValues !== "boolean") {
+      throw new Error(`${where}: 'obligations.logValues' must be a boolean`);
+    }
+    out.logValues = logValues;
+  }
+  if (o.extra !== undefined) {
+    if (!o.extra || typeof o.extra !== "object" || Array.isArray(o.extra)) {
+      throw new Error(`${where}: 'obligations.extra' must be an object of string or string-list values`);
+    }
+    const extra: Record<string, string[]> = {};
+    for (const [k, v] of Object.entries(o.extra as Record<string, unknown>)) {
+      const vs = typeof v === "string" ? [v] : v;
+      if (!Array.isArray(vs) || vs.length === 0 || vs.some((x) => typeof x !== "string")) {
+        throw new Error(`${where}: 'obligations.extra' must be an object of string or string-list values`);
+      }
+      extra[k] = [...new Set(vs as string[])].sort();
+    }
+    if (Object.keys(extra).length) out.extra = extra;
+  }
+  return out;
+}
+
+/** JSON with every object's keys sorted, at every depth. */
+function sortedJson(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(sortedJson).join(",")}]`;
+  if (v && typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    return `{${Object.keys(o).sort().map((k) => `${JSON.stringify(k)}:${sortedJson(o[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(v);
+}
+
+/** Canonical, order-independent rendering of an obligations object, for exact
+ *  comparison: `redact` as a sorted set, `extra` with sorted keys. */
+function canonicalObligations(o: Obligations | undefined): string {
+  if (!o) return "{}";
+  const c: Record<string, unknown> = {};
+  if (o.redact?.length) c.redact = [...new Set(o.redact)].sort();
+  if (o.maxItems !== undefined) c.maxItems = o.maxItems;
+  if (o.logValues !== undefined) c.logValues = o.logValues;
+  if (o.extra && Object.keys(o.extra).length) {
+    c.extra = Object.fromEntries(Object.entries(o.extra).map(([k, v]) => [k, [...new Set(v)].sort()]));
+  }
+  return sortedJson(c);
+}
+
 /**
  * Run policy fixtures through a decision function and report pass/fail. A
- * verdict mismatch is recorded as a failed result rather than thrown — inspect
+ * verdict mismatch — or, when the fixture states `obligations`, an obligations
+ * mismatch — is recorded as a failed result rather than thrown — inspect
  * {@link PolicyTestReport.failed}. A fixture missing a required key (`action` or
- * `expect`) is a malformed suite and throws.
+ * `expect`), or carrying an ill-typed `obligations` expectation, is a malformed
+ * suite and throws.
  */
 export async function runPolicyTests(
   decide: DecideFn,
@@ -112,15 +238,19 @@ export async function runPolicyTests(
   const results: PolicyTestResult[] = [];
   let index = 0;
   for (const c of cases) {
+    const where = `fixture ${index} (${c.name ?? "?"})`;
     for (const required of ["action", "expect"] as const) {
       if (c[required] === undefined) {
-        throw new Error(
-          `fixture ${index} (${c.name ?? "?"}): missing required key '${required}'`
-        );
+        throw new Error(`${where}: missing required key '${required}'`);
       }
     }
     index += 1;
     const expected = normalizeVerdict(c.expect);
+    const expectedObligations =
+      c.obligations !== undefined ? normalizeExpectedObligations(c.obligations, where) : undefined;
+    if (expectedObligations && Object.keys(expectedObligations).length && expected !== "Allow") {
+      throw new Error(`${where}: 'obligations' can only be expected on an Allow, not ${expected}`);
+    }
     const approval = c.approved
       ? mint({ action: c.action, principal: c.principal, resource: c.resource })
       : undefined;
@@ -132,13 +262,19 @@ export async function runPolicyTests(
       approval,
     });
     const actual = normalizeVerdict(d.decision);
-    results.push({
+    const obligationsOk =
+      expectedObligations === undefined ||
+      canonicalObligations(expectedObligations) === canonicalObligations(d.obligations);
+    const result: PolicyTestResult = {
       name: c.name ?? `${c.action} on ${c.resource ?? "resource"}`,
       expected,
       actual,
-      ok: actual === expected,
+      ok: actual === expected && obligationsOk,
       reason: d.reason ?? "",
-    });
+    };
+    if (d.obligations) result.obligations = d.obligations;
+    if (expectedObligations !== undefined) result.expectedObligations = expectedObligations;
+    results.push(result);
   }
   const passed = results.filter((r) => r.ok).length;
   return { total: results.length, passed, failed: results.length - passed, results };

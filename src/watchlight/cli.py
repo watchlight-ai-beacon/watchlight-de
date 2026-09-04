@@ -218,7 +218,12 @@ def _print_report(file: str, report: dict) -> None:
             print(f"  {green('✓')} {name} {dim('→ ' + actual)}")
         else:
             why = dim(f"  ({r['reason']})") if r["reason"] else ""
-            verdict = red(f"— expected {expected}, got {actual}")
+            if expected == actual and "expected_obligations" in r:
+                want = json.dumps(r["expected_obligations"], sort_keys=True)
+                got = json.dumps(r.get("obligations") or {}, sort_keys=True)
+                verdict = red(f"— expected obligations {want}, got {got}")
+            else:
+                verdict = red(f"— expected {expected}, got {actual}")
             print(f"  {red('✗')} {name} {verdict}{why}")
     summary = f"{report['passed']} passed, {report['failed']} failed ({report['total']} total)"
     print("\n" + (red(summary) if report["failed"] else green(summary)))

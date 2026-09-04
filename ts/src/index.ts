@@ -28,7 +28,7 @@ import {
   verifyScopeToken,
 } from "./scope-token";
 import { countAuditRecords, type Counters, type CountersOptions } from "./counters";
-import { selectBackend, type GovernanceBackend } from "./backend";
+import { selectBackend, type GovernanceBackend, type Obligations } from "./backend";
 import { sanitize as sanitizeText, type SanitizeOptions, type SanitizeResult } from "./sanitize";
 import { screen as screenText, type ScreenOptions, type ScreenResult } from "./screen";
 import {
@@ -74,7 +74,10 @@ export type { ScreenFamily, ScreenMode, ScreenOptions, ScreenReport, ScreenResul
 export type { GovernanceBackend, Decision, AuthorizeRequest } from "./backend";
 export { InProcessBackend, NetworkedBackend } from "./backend";
 export { runPolicyTests, loadTestSuite } from "./policytest";
+export type { Obligations } from "./backend";
+export { AuthorizeError, OBLIGATIONS_INVALID_MESSAGE, MAX_REDACT_ENTRIES } from "./backend";
 export type {
+  ExpectedObligations,
   PolicyTestCase,
   PolicyTestReport,
   PolicyTestResult,
@@ -179,6 +182,14 @@ export interface AuthorizeResult {
   /** Per-decision correlation id (engine `request_id`) — join to your records. */
   decisionId?: string;
   reason: string;
+  /** Constraints the permitting policies attach to this `Allow` via
+   *  `@obligate_*` annotations — `redact`, `maxItems`, `logValues`, and raw
+   *  `extra` keys (see {@link Obligations}). Present only on an `Allow` (an
+   *  approved one included) that carries at least one obligation; never on
+   *  `Deny` or `NeedsApproval`. Honour it in your code or in `onResult`. An
+   *  Allow whose known obligations cannot be read rejects with
+   *  {@link AuthorizeError} instead of returning. */
+  obligations?: Obligations;
 }
 
 // ── approval tokens (DE: local, single-use, HMAC, TTL) ───────────────
@@ -586,20 +597,19 @@ export class Watchlight {
       : needsApproval
         ? "NeedsApproval"
         : "Deny";
-    return {
-      result: {
-        decision,
-        allowed,
-        needsApproval,
-        approved,
-        decisionId: raw.decisionId,
-        // Non-revealing, uniform reason (never the engine's specific one).
-        reason: reasonForVerdict(decision),
-      },
-      principal,
-      resource,
+    const result: AuthorizeResult = {
+      decision,
+      allowed,
+      needsApproval,
+      approved,
       decisionId: raw.decisionId,
+      // Non-revealing, uniform reason (never the engine's specific one).
+      reason: reasonForVerdict(decision),
     };
+    // Obligations ride only on a final Allow: a NeedsApproval hold or a Deny
+    // has nothing to honour, whatever the matched permits declared.
+    if (decision === "Allow" && raw.obligations) result.obligations = raw.obligations;
+    return { result, principal, resource, decisionId: raw.decisionId };
   }
 
   /**
@@ -608,9 +618,11 @@ export class Watchlight {
    * it gates real actions. Each case asserts the expected verdict
    * (`Allow` / `Deny` / `NeedsApproval`) for a `(principal, action, resource,
    * context)`; set `approved: true` to mint a valid approval token and assert
-   * the human-confirmed downgrade. Does NOT write to the audit trail. A verdict
-   * mismatch is a failed result (inspect `report.failed` and assert on it in
-   * your test runner); a malformed fixture missing `action`/`expect` throws.
+   * the human-confirmed downgrade; set `obligations: { redact, maxItems,
+   * logValues, extra }` to also assert the obligations an `Allow` must carry.
+   * Does NOT write to the audit trail. A verdict mismatch is a failed result
+   * (inspect `report.failed` and assert on it in your test runner); a malformed
+   * fixture — missing `action`/`expect`, or an ill-typed `obligations` — throws.
    */
   async test(cases: readonly PolicyTestCase[]): Promise<PolicyTestReport> {
     return runPolicyTests(
