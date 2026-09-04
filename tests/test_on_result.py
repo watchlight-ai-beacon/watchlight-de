@@ -135,6 +135,26 @@ def test_async_body_and_async_hook(tmp_path):
     assert any(r.get("event") == "egress" and r.get("withheld") is True for r in _records(tmp_path))
 
 
+def test_async_hook_on_sync_body_fails_closed(tmp_path):
+    """An async hook on a synchronous body has no loop to run on. The coroutine
+    object must never be handed back as the "payload": withhold + TypeError."""
+    g = _gov(tmp_path)
+
+    async def hook(result, info):  # pragma: no cover - never awaited by design
+        return "replacement"
+
+    @g.tool("read", on_result=hook)
+    def body():
+        return "RAW-PAYLOAD"
+
+    with pytest.raises(TypeError, match="async tool body"):
+        body()
+    egress = next(r for r in _records(tmp_path) if r.get("event") == "egress")
+    assert egress["replaced"] is False and egress["withheld"] is True
+    raw = (tmp_path / "audit.jsonl").read_text()
+    assert "RAW-PAYLOAD" not in raw and "replacement" not in raw
+
+
 def test_egress_audit_is_value_free(tmp_path):
     g = _gov(tmp_path)
 

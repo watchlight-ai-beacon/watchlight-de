@@ -174,16 +174,20 @@ const readDoc = govern.tool(fetchDocument, {
 });
 ```
 
-- **Return a value** → it replaces the payload. **Return nothing** → passthrough.
-  **Throw** → the error propagates and the raw result is never returned
-  (fail-closed).
-- Writes a **value-free** `egress` audit record — `{ event: "egress", resource,
-  replaced, decision_id }` (plus `withheld: true` when the hook threw) — never
-  the result. It joins the decision record on `decision_id`.
+- **Return a value** → it replaces the payload. **Return `undefined` or `null`**
+  → passthrough (Python: `None`). **Throw** → the error propagates and the raw
+  result is never returned (fail-closed).
+- Writes a **value-free** `egress` audit record — `{ ts, agent, principal,
+  intent, event: "egress", resource, replaced, decision_id }` (plus
+  `withheld: true` when the hook threw or timed out) — never the result. It
+  joins the decision record on `decision_id`.
 - The same option is on `governTool(tool, { onResult })` / `governTools` and on
-  `governedHooks({ onResult })`, which installs a Claude Agent SDK `PostToolUse`
-  hook: a returned value becomes the `updatedToolOutput` the model receives; a
-  throw replaces the output with the opaque `"not authorized"`.
+  `governedHooks({ onResult, onResultTimeoutMs? })`, which installs a Claude
+  Agent SDK `PostToolUse` hook: a returned value becomes the `updatedToolOutput`
+  the model receives; a throw — or outrunning the internal deadline (default
+  8 s; the SDK matcher timeout is set above it) — replaces the output with the
+  opaque `"not authorized"`. The join uses the SDK's `tool_use_id`; without one
+  the egress record carries no `decision_id`.
 
 Pattern: [egress after read](../examples/patterns/egress-after-read.md).
 

@@ -63,6 +63,8 @@ export type HookCallback = (
 export interface HookMatcherEntry {
   matcher?: string;
   hooks: HookCallback[];
+  /** SDK-side timeout, in SECONDS, for all hooks in this matcher. */
+  timeout?: number;
 }
 
 export type HooksOption = Partial<Record<HookEventName, HookMatcherEntry[]>>;

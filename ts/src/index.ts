@@ -29,7 +29,7 @@ import {
 } from "./policytest";
 
 export { Scope, DE_MAX_DEPTH, AttenuationDenied, DevEditionCeiling } from "./attenuation";
-export { governedHooks } from "./claude-agent";
+export { governedHooks, DEFAULT_ON_RESULT_TIMEOUT_MS } from "./claude-agent";
 export type { GovernedHooksOptions, GovernedHooksResult } from "./claude-agent";
 export { governTool, governTools } from "./langchain";
 export type {
@@ -125,10 +125,22 @@ export interface EgressInfo {
 /** A hook run over a governed tool's RESULT — after the body returns, before the
  *  caller (or the model) sees it. This is where you run `sanitize`, `screen`, or
  *  a second `authorize` against the result's classification. Return a value to
- *  REPLACE the payload (e.g. a redacted copy); return `undefined`/`void` to pass
- *  it through unchanged. Throw to WITHHOLD it: the error propagates and the raw
- *  result is never handed back (fail-closed). */
-export type OnResult<R> = (result: R, info: EgressInfo) => R | void | Promise<R | void>;
+ *  REPLACE the payload (e.g. a redacted copy); return `undefined` or `null`
+ *  (Python: `None`) to pass it through unchanged. Throw to WITHHOLD it: the
+ *  error propagates and the raw result is never handed back (fail-closed). */
+export type OnResult<R> = (
+  result: R,
+  info: EgressInfo
+) => R | void | null | Promise<R | void | null>;
+
+/** Thrown (internally) when an egress hook outruns its deadline; the payload is
+ *  withheld. Carries no payload-derived data. */
+class EgressTimeout extends Error {
+  constructor() {
+    super("egress hook deadline exceeded");
+    this.name = "EgressTimeout";
+  }
+}
 
 /** Full result of {@link Watchlight.authorize}. */
 export interface AuthorizeResult {
@@ -582,26 +594,39 @@ export class Watchlight {
   /**
    * Run an egress hook over a governed tool's result and audit the outcome.
    * Shared by {@link tool} and the framework adapters (`governTool`, the Claude
-   * `PostToolUse` hook) so all three behave identically. A `undefined` return
-   * passes the payload through; any other value replaces it. If the hook throws,
-   * the error propagates and NO value is returned — the raw result is withheld
-   * (fail-closed) — after an `egress` record marks the payload as withheld.
-   * The record is value-free: never the result, nor anything derived from it.
-   * @internal — not part of the public API surface.
+   * `PostToolUse` hook) so all three behave identically. An `undefined` or
+   * `null` return passes the payload through; any other value replaces it. If
+   * the hook throws — or outruns `timeoutMs`, when given — the error propagates
+   * and NO value is returned — the raw result is withheld (fail-closed) — after
+   * an `egress` record marks the payload as withheld. A hook that settles after
+   * the deadline is ignored (never audited twice, never released). The record
+   * is value-free: never the result, nor anything derived from it.
+   * @internal
    */
   async _applyOnResult<R>(
     result: R,
     hook: OnResult<R>,
-    info: EgressInfo
+    info: EgressInfo,
+    opts: { timeoutMs?: number } = {}
   ): Promise<{ value: R; replaced: boolean }> {
-    let replacement: R | void;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const attempt = Promise.resolve().then(() => hook(result, info));
+    // A late rejection after the deadline must not surface as an unhandled one.
+    attempt.catch(() => {});
+    const deadline = new Promise<never>((_, reject) => {
+      if (opts.timeoutMs === undefined) return;
+      timer = setTimeout(() => reject(new EgressTimeout()), opts.timeoutMs);
+    });
+    let replacement: R | void | null;
     try {
-      replacement = await hook(result, info);
+      replacement = await Promise.race([attempt, deadline]);
     } catch (e) {
       this._auditEgress(info, { replaced: false, withheld: true });
       throw e;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
     }
-    const replaced = replacement !== undefined;
+    const replaced = replacement !== undefined && replacement !== null;
     this._auditEgress(info, { replaced });
     return { value: replaced ? (replacement as R) : result, replaced };
   }

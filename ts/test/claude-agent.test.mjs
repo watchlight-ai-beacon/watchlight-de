@@ -103,7 +103,41 @@ async function main() {
   ok("throwing onResult withholds the raw output (opaque replacement)",
     post3?.hookSpecificOutput?.updatedToolOutput === "not authorized", JSON.stringify(post3));
 
+  // null → passthrough (parity with Python None): no updatedToolOutput.
+  const { hooks: nh } = governedHooks({ governor, intentFor: (t) => TOOL_INTENTS[t] ?? t, onResult: () => null });
+  await callPre(nh, "WebSearch", "tu-null");
+  const postNull = await callPost(nh, "WebSearch", "kept", "tu-null");
+  ok("null onResult passes through (no updatedToolOutput)", !("updatedToolOutput" in (postNull.hookSpecificOutput ?? {})), JSON.stringify(postNull));
+
+  // Deadline: a hook that outruns onResultTimeoutMs withholds the output.
+  ok("default SDK matcher timeout is 10s (deadline 8s = 80%)", eh.PostToolUse[0].timeout === 10, String(eh.PostToolUse[0].timeout));
+  const { hooks: slow } = governedHooks({
+    governor, intentFor: (t) => TOOL_INTENTS[t] ?? t,
+    onResult: () => new Promise(() => {}),   // never settles (remote classifier hang)
+    onResultTimeoutMs: 50,
+  });
+  ok("explicit deadline sets the SDK matcher timeout above it", slow.PostToolUse[0].timeout === 1, String(slow.PostToolUse[0].timeout));
+  const preSlow = await callPre(slow, "WebSearch", "tu-slow");
+  ok("slow: pre gate allows", preSlow.hookSpecificOutput?.permissionDecision === "allow");
+  const t0 = Date.now();
+  const postSlow = await callPost(slow, "WebSearch", "RAW-SLOW-SECRET", "tu-slow");
+  ok("slow onResult is withheld at the deadline (opaque replacement, no throw)",
+    postSlow?.hookSpecificOutput?.updatedToolOutput === "not authorized" && Date.now() - t0 < 2000, JSON.stringify(postSlow));
+  let rangeErr = null;
+  try { governedHooks({ governor, onResult: () => undefined, onResultTimeoutMs: 0 }); } catch (e) { rangeErr = e; }
+  ok("non-positive onResultTimeoutMs is rejected", rangeErr instanceof RangeError);
+
+  // No tool_use_id → no join: the hook still runs, the egress record carries no decision_id.
+  const preNoId = await callPre(eh, "WebSearch", undefined);
+  ok("no-id: pre gate allows", preNoId.hookSpecificOutput?.permissionDecision === "allow");
+  const postNoId = await callPost(eh, "WebSearch", "SECRET-noid", undefined);
+  ok("no-id: hook still governs the output", postNoId.hookSpecificOutput?.updatedToolOutput === "<redacted>");
+  ok("no-id: info carries no decisionId (no fallback join)", infos.at(-1)?.decisionId === undefined && infos.at(-1)?.resource === "tool/WebSearch");
+
   const recs2 = fs.readFileSync(join(auditDir, "audit.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+  ok("slow: withheld egress record joined to its decision",
+    recs2.some((r) => r.event === "egress" && r.withheld === true && r.decision_id && recs2.some((d) => !d.event && d.decision_id === r.decision_id && d.decision === "Allow")));
+  ok("no-id: egress record present without decision_id", recs2.some((r) => r.event === "egress" && r.replaced === true && !("decision_id" in r)));
   const dec1 = recs2.find((r) => r.decision_id === infos[0].decisionId && !r.event);
   const egr1 = recs2.find((r) => r.event === "egress" && r.decision_id === infos[0].decisionId);
   ok("egress record joined to the decision record by decision_id",
@@ -111,7 +145,7 @@ async function main() {
   ok("passthrough egress record replaced:false", recs2.some((r) => r.event === "egress" && r.decision_id === infos[1]?.decisionId && r.replaced === false && !r.withheld));
   ok("withheld egress record on hook failure", recs2.some((r) => r.event === "egress" && r.withheld === true));
   const raw2 = fs.readFileSync(join(auditDir, "audit.jsonl"), "utf8");
-  ok("egress audit value-free (no raw or replaced payload)", !raw2.includes("SECRET") && !raw2.includes("redacted") && !raw2.includes("screen down"));
+  ok("egress audit value-free (no raw or replaced payload)", !raw2.includes("SECRET") && !raw2.includes("redacted") && !raw2.includes("screen down") && !raw2.includes("SLOW") && !raw2.includes("kept"));
 
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);

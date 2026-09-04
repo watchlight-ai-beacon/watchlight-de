@@ -84,12 +84,21 @@ output the model receives.
 the Claude `PostToolUse` hook):
 
 - **Return a value** → it **replaces** the payload the caller or model receives.
-- **Return nothing** (`undefined` / `None`) → the payload passes through unchanged.
+- **Return nothing** (`undefined` / `null` / `None`) → the payload passes through
+  unchanged.
 - **Throw / raise** → the payload is **withheld**. In `tool()` and `governTool` the
-  error propagates and the raw result is never returned; in the Claude hook,
-  which cannot throw back to the SDK, the model receives the opaque
-  `"not authorized"` string instead of the raw output. Fail-closed: a broken
-  classifier can never leak the result by accident.
+  hook is awaited in-process and the error propagates — the raw result is never
+  returned. In the Claude hook, which cannot throw back to the SDK, the model
+  receives the opaque `"not authorized"` string instead of the raw output.
+- **The bound, stated honestly.** SDK hooks run in parallel on the *original*
+  output, so a hook that merely outran the SDK's own hook timeout would let the
+  raw output through. The Claude adapter therefore races `onResult` against an
+  internal deadline (`onResultTimeoutMs`, default 8 s) and sets the SDK matcher
+  timeout above it (`ceil(ms / 0.8)` seconds); at the deadline the output is
+  withheld and the `egress` record says `withheld: true`. Within that
+  timeout-guarded, in-process boundary a broken or slow classifier fails closed.
+  Python: an async hook requires an async tool body — on a synchronous body it is
+  refused fail-closed (`TypeError`, payload withheld).
 
 **The audit trail.** The call's decision and the hook's disposition join on one
 `decision_id`, and the `egress` line is **value-free** — it never carries the

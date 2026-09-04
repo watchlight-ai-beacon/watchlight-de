@@ -367,7 +367,8 @@ class Watchlight:
         result is never returned (fail-closed). A value-free ``egress`` audit
         record is written, joined to the decision record by ``decision_id``. If
         the body is a coroutine the hook runs once it is awaited (an awaitable
-        hook return is awaited too).
+        hook return is awaited too). An async hook on a *synchronous* body is
+        refused fail-closed: the payload is withheld and ``TypeError`` is raised.
         """
 
         def decorator(fn: _F) -> _F:
@@ -537,6 +538,19 @@ class Watchlight:
         except BaseException:
             self._audit_egress(info, replaced=False, withheld=True)
             raise
+        if inspect.isawaitable(replacement):
+            # An async hook on a synchronous body: there is no loop to await it
+            # on, and handing back the coroutine object as the "payload" would
+            # release nothing and audit a replacement that never happened.
+            # Fail closed: withhold, and say so with a fixed, payload-free message.
+            close = getattr(replacement, "close", None)
+            if callable(close):
+                close()
+            self._audit_egress(info, replaced=False, withheld=True)
+            raise TypeError(
+                "on_result returned an awaitable for a synchronous tool body; "
+                "an async hook requires an async tool body"
+            )
         replaced = replacement is not None
         self._audit_egress(info, replaced=replaced)
         return (replacement if replaced else result), replaced

@@ -19,6 +19,9 @@
 // and before the model sees its output, the hook inspects the result (sanitize,
 // screen, re-authorize on its classification) and may replace it. The `egress`
 // audit record it writes is joined to the PreToolUse decision by `decision_id`.
+// The hook is raced against an internal deadline set BELOW the SDK's own hook
+// timeout: SDK hooks run in parallel on the original output, so a hook that
+// merely outran the SDK timeout would let the raw output through. Ours withholds.
 
 import { Watchlight, govern, DENY_REASON, type OnResult, type EgressInfo } from "./index";
 import type {
@@ -41,6 +44,10 @@ export type {
   HooksOption,
 } from "./claude-agent-types";
 
+/** Default internal deadline for `onResult` (ms). The SDK-side matcher timeout is
+ *  derived from it so the deadline sits at 80% of the SDK's. */
+export const DEFAULT_ON_RESULT_TIMEOUT_MS = 8_000;
+
 export interface GovernedHooksOptions {
   /** The governor to authorize against. Defaults to the shared `govern`. */
   governor?: Watchlight;
@@ -51,11 +58,18 @@ export interface GovernedHooksOptions {
   /** Egress hook (PostToolUse). Awaited over the tool's raw response AFTER the
    *  tool ran and BEFORE the model sees it, with `{ intent, resource, principal,
    *  decisionId }` — the same `decisionId` the PreToolUse gate recorded for this
-   *  call. Return a value to replace the output the model receives
-   *  (`updatedToolOutput`); `void` passes it through. Fail-closed: if the hook
-   *  throws, the model receives the opaque `"not authorized"` string instead of
-   *  the raw output. Writes a value-free `egress` audit record. */
+   *  call (joined by the SDK's `tool_use_id`; without one, no join and no
+   *  `decision_id` on the egress record). Return a value to replace the output
+   *  the model receives (`updatedToolOutput`); `undefined`/`null` passes it
+   *  through. Fail-closed: if the hook throws or outruns
+   *  {@link onResultTimeoutMs}, the model receives the opaque `"not authorized"`
+   *  string instead of the raw output. Writes a value-free `egress` record. */
   onResult?: OnResult<unknown>;
+  /** Internal deadline for `onResult`, in ms (default
+   *  {@link DEFAULT_ON_RESULT_TIMEOUT_MS}). The PostToolUse matcher's SDK
+   *  `timeout` (seconds) is set to `ceil(onResultTimeoutMs / 0.8 / 1000)` so this
+   *  deadline always fires first and withholds the output. */
+  onResultTimeoutMs?: number;
 }
 
 export interface GovernedHooksResult {
@@ -67,6 +81,26 @@ export interface GovernedHooksResult {
 // call that never reports back (SDK abort) must not grow this without bound.
 const PENDING_CAP = 1024;
 
+// Only a standard error NAME ever reaches stderr — never the message or stack,
+// which a hook may have built from the payload it was inspecting.
+const STD_ERROR_NAMES = new Set([
+  "Error",
+  "TypeError",
+  "RangeError",
+  "SyntaxError",
+  "ReferenceError",
+  "EvalError",
+  "URIError",
+  "AggregateError",
+  "AbortError",
+  "TimeoutError",
+  "EgressTimeout",
+]);
+const safeErrorName = (e: unknown): string => {
+  const n = (e as { name?: unknown } | null | undefined)?.name;
+  return typeof n === "string" && STD_ERROR_NAMES.has(n) ? n : "Error";
+};
+
 /**
  * Build Claude Agent SDK hooks that gate every tool call through the in-process
  * Watchlight engine. Fail-closed. The hook never throws back to the SDK — a
@@ -76,12 +110,17 @@ export function governedHooks(options: GovernedHooksOptions = {}): GovernedHooks
   const governor = options.governor ?? govern;
   const intentFor = options.intentFor ?? ((t: string) => t);
   const onResult = options.onResult;
+  const timeoutMs = options.onResultTimeoutMs ?? DEFAULT_ON_RESULT_TIMEOUT_MS;
+  if (!(Number.isFinite(timeoutMs) && timeoutMs > 0)) {
+    throw new RangeError("onResultTimeoutMs must be a positive number of milliseconds");
+  }
 
   // PreToolUse decision → PostToolUse egress correlation, keyed by the SDK's
-  // tool_use_id (falls back to the tool name on SDKs that don't send one).
+  // tool_use_id. No id → no correlation (a name-based fallback would mis-join
+  // concurrent calls of the same tool).
   const pending = new Map<string, EgressInfo>();
-  const pendingKey = (ev: { tool_use_id?: string; tool_name?: string }, toolUseID?: string): string =>
-    ev.tool_use_id ?? toolUseID ?? `tool:${ev.tool_name ?? "unknown"}`;
+  const pendingKey = (ev: { tool_use_id?: string }, toolUseID?: string): string | undefined =>
+    ev.tool_use_id ?? toolUseID;
 
   const preToolUse: HookCallback = async (input, toolUseID): Promise<HookOutput> => {
     const ev = input as PreToolUseHookInput;
@@ -89,12 +128,13 @@ export function governedHooks(options: GovernedHooksOptions = {}): GovernedHooks
     try {
       const intent = intentFor(toolName);
       const { allowed, reason, decisionId } = await governor.check(intent, toolName);
-      if (allowed && onResult) {
+      const key = pendingKey(ev, toolUseID);
+      if (allowed && onResult && key !== undefined) {
         if (pending.size >= PENDING_CAP) {
           const oldest = pending.keys().next().value;
           if (oldest !== undefined) pending.delete(oldest);
         }
-        pending.set(pendingKey(ev, toolUseID), {
+        pending.set(key, {
           intent,
           resource: `tool/${toolName}`,
           principal: governor.agent,
@@ -113,10 +153,10 @@ export function governedHooks(options: GovernedHooksOptions = {}): GovernedHooks
       // fail-closed — deny the tool call rather than let it through. The
       // model-facing reason stays OPAQUE (the same uniform string as any other
       // denial), so an internal error can't disclose anything to the caller and
-      // can't be told apart from a policy deny. The detail goes to stderr for
-      // the developer, never into the decision surfaced to the agent.
+      // can't be told apart from a policy deny. Only the error's standard NAME
+      // goes to stderr for the developer — never its message or stack.
       // eslint-disable-next-line no-console
-      console.error("watchlight governance error (fail-closed):", e);
+      console.error(`watchlight governance error (fail-closed): ${safeErrorName(e)}`);
       return {
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
@@ -134,17 +174,18 @@ export function governedHooks(options: GovernedHooksOptions = {}): GovernedHooks
     const toolName = ev.tool_name ?? "unknown";
     try {
       const key = pendingKey(ev, toolUseID);
-      const info = pending.get(key);
-      pending.delete(key);
+      const info = key !== undefined ? pending.get(key) : undefined;
+      if (key !== undefined) pending.delete(key);
       const egress: EgressInfo = info ?? {
-        // No PreToolUse decision on record for this call (e.g. the SDK sent no
-        // tool_use_id and the fallback key was consumed): the hook still runs,
+        // No PreToolUse decision on record for this call: the hook still runs,
         // and the egress record is written honestly without a decision_id.
         intent: intentFor(toolName),
         resource: `tool/${toolName}`,
         principal: governor.agent,
       };
-      const { value, replaced } = await governor._applyOnResult(ev.tool_response, onResult, egress);
+      const { value, replaced } = await governor._applyOnResult(ev.tool_response, onResult, egress, {
+        timeoutMs,
+      });
       return {
         hookSpecificOutput: {
           hookEventName: "PostToolUse",
@@ -154,9 +195,10 @@ export function governedHooks(options: GovernedHooksOptions = {}): GovernedHooks
     } catch (e) {
       // Fail-closed: the tool already ran, so the only thing left to protect is
       // what the model sees — replace the raw output with the opaque reason.
-      // Nothing about the result or the error reaches the model.
+      // Nothing about the result or the error reaches the model; only the
+      // error's standard name reaches stderr.
       // eslint-disable-next-line no-console
-      console.error("watchlight egress error (fail-closed):", e);
+      console.error(`watchlight egress error (fail-closed): ${safeErrorName(e)}`);
       return {
         hookSpecificOutput: {
           hookEventName: "PostToolUse",
@@ -169,7 +211,9 @@ export function governedHooks(options: GovernedHooksOptions = {}): GovernedHooks
   return {
     hooks: {
       PreToolUse: [{ hooks: [preToolUse] }],
-      PostToolUse: [{ hooks: [postToolUse] }],
+      // SDK timeout (seconds) sits ABOVE our internal deadline so a slow hook is
+      // withheld by us, never released by the SDK's timeout.
+      PostToolUse: [{ hooks: [postToolUse], timeout: Math.ceil(timeoutMs / 0.8 / 1000) }],
     },
   };
 }

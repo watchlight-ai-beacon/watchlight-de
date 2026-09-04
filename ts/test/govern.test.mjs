@@ -88,6 +88,10 @@ async function main() {
   const govPlain = eg.tool(plain, { intent: "read", onResult: () => {} });
   ok("void onResult leaves the payload unchanged", (await govPlain()) === "plain");
 
+  async function nullHook() { return "kept"; }
+  const govNull = eg.tool(nullHook, { intent: "read", onResult: () => null });
+  ok("null onResult passes through like undefined (parity with Python None)", (await govNull()) === "kept");
+
   async function noHook() { return "nohook"; }
   ok("tool without onResult unchanged", (await eg.tool(noHook, { intent: "read" })()) === "nohook");
 
@@ -115,6 +119,7 @@ async function main() {
   ok("withheld egress record on hook failure",
     egRecs.some((r) => r.event === "egress" && r.resource === "tool/leaky" && r.replaced === false && r.withheld === true));
   ok("no egress record without onResult", !egRecs.some((r) => r.event === "egress" && r.resource === "tool/noHook"));
+  ok("null passthrough audited replaced:false", egRecs.some((r) => r.event === "egress" && r.resource === "tool/nullHook" && r.replaced === false && !r.withheld));
   const approvedRec = egRecs.find((r) => r.resource === "acct/1" && r.approved === true);
   ok("approval path: egress joins the APPROVED decision",
     approvedRec && wireSeen[0]?.decisionId === approvedRec.decision_id

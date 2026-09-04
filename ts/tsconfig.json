@@ -4,6 +4,7 @@
     "module": "commonjs",
     "moduleResolution": "node",
     "declaration": true,
+    "stripInternal": true,
     "outDir": "dist",
     "rootDir": "src",
     "strict": true,
