@@ -191,9 +191,14 @@ watchlight denied intent 'transfer' on tool/transferFunds: not authorized
 It mirrors the Python package feature-for-feature:
 
 - **Runtime context, per-user, human-in-the-loop:**
-  `govern.tool(fn, { intent, principal?, resource?, context?, onNeedsApproval? })`
+  `govern.tool(fn, { intent, principal?, resource?, context?, onNeedsApproval?, onResult? })`
   — runtime facts into Cedar `context.*`, per-call `principal`, and a three-state
   `Allow` / `Deny` / **`NeedsApproval`** verdict with a single-use approval token.
+- **Govern what a tool returns:** `onResult(result, { intent, resource, principal,
+  decisionId })` (Python `on_result`) runs after the body and before the caller
+  sees the result — sanitize, screen, or re-authorize on its classification; a
+  returned value replaces the payload, a throw withholds it (fail-closed). Writes
+  a value-free `egress` audit record joined to the decision by `decision_id`.
 - **Frameworks:** `governedHooks()` for the Claude Agent SDK; `governTool()` for
   LangChain / LangGraph.js.
 - **Data minimization:** `govern.sanitize(text)` — strip PII before an agent
@@ -308,6 +313,7 @@ The advanced policy JSON — each a runnable `{ policies, tests }` suite with Ce
 | [Destructive actions](./examples/patterns/destructive-actions.md) | Delete / drop / deploy: require a human; make some things undeletable. | [`destructive-actions.suite.json`](./examples/patterns/suites/destructive-actions.suite.json) |
 | [External messaging](./examples/patterns/external-messaging.md) | May the agent message *outside* — allowlisted destinations only, with review? | [`external-messaging.suite.json`](./examples/patterns/suites/external-messaging.suite.json) |
 | [Data egress](./examples/patterns/data-egress.md) | May *this classification* of data cross *this boundary*? | [`data-egress.suite.json`](./examples/patterns/suites/data-egress.suite.json) |
+| [Egress after read](./examples/patterns/egress-after-read.md) | Govern what a tool *returns* — decide on the result's classification after the fetch. | [`egress-after-read.suite.json`](./examples/patterns/suites/egress-after-read.suite.json) |
 | [Kill-switch / quarantine](./examples/patterns/kill-switch.md) | Stop a suspect agent cold — a hard boundary that beats every grant. | [`kill-switch.suite.json`](./examples/patterns/suites/kill-switch.suite.json) |
 | [Per-user attribution](./examples/patterns/per-user-attribution.md) | Attribute the decision to the acting end-user, and scope policy to them. | [`per-user.suite.json`](./examples/patterns/suites/per-user.suite.json) |
 

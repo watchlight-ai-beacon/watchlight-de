@@ -66,6 +66,53 @@ async function main() {
     && recs.some((r) => r.intent === "transfer" && r.decision === "Deny"));
   ok("audit value-free (no tool args)", !raw.includes("cedar") && !raw.includes("1000"));
 
+  // ── onResult → PostToolUse (egress): govern what the tool RETURNS ──
+  ok("no PostToolUse hook installed without onResult", hooks.PostToolUse === undefined);
+
+  const callPre = (h, toolName, toolUseId) =>
+    h.PreToolUse[0].hooks[0]({ hook_event_name: "PreToolUse", tool_name: toolName, tool_input: {}, tool_use_id: toolUseId }, toolUseId);
+  const callPost = (h, toolName, toolResponse, toolUseId) =>
+    h.PostToolUse[0].hooks[0]({ hook_event_name: "PostToolUse", tool_name: toolName, tool_input: {}, tool_response: toolResponse, tool_use_id: toolUseId }, toolUseId);
+
+  const infos = [];
+  const { hooks: eh } = governedHooks({
+    governor, intentFor: (t) => TOOL_INTENTS[t] ?? t,
+    onResult: (result, info) => { infos.push(info); return typeof result === "string" && result.includes("SECRET") ? "<redacted>" : undefined; },
+  });
+  ok("PostToolUse hook installed with onResult", typeof eh.PostToolUse?.[0]?.hooks?.[0] === "function");
+  ok("PreToolUse still installed", typeof eh.PreToolUse?.[0]?.hooks?.[0] === "function");
+
+  const pre1 = await callPre(eh, "WebSearch", "tu-1");
+  ok("pre gate allows", pre1.hookSpecificOutput?.permissionDecision === "allow");
+  const post1 = await callPost(eh, "WebSearch", "SECRET result", "tu-1");
+  ok("replaced output reaches the model via updatedToolOutput",
+    post1.hookSpecificOutput?.hookEventName === "PostToolUse" && post1.hookSpecificOutput?.updatedToolOutput === "<redacted>", JSON.stringify(post1));
+  ok("onResult info joined to the PreToolUse decision",
+    infos[0]?.intent === "research" && infos[0]?.resource === "tool/WebSearch" && infos[0]?.principal === "claude-agent" && typeof infos[0]?.decisionId === "string",
+    JSON.stringify(infos[0]));
+
+  await callPre(eh, "WebSearch", "tu-2");
+  const post2 = await callPost(eh, "WebSearch", "plain result", "tu-2");
+  ok("void onResult passes through (no updatedToolOutput)", !("updatedToolOutput" in (post2.hookSpecificOutput ?? {})), JSON.stringify(post2));
+
+  const { hooks: th } = governedHooks({ governor, intentFor: (t) => TOOL_INTENTS[t] ?? t, onResult: () => { throw new Error("screen down"); } });
+  await callPre(th, "WebSearch", "tu-3");
+  let postThrew = false, post3;
+  try { post3 = await callPost(th, "WebSearch", "RAW-SECRET", "tu-3"); } catch { postThrew = true; }
+  ok("throwing onResult never throws back to the SDK", !postThrew);
+  ok("throwing onResult withholds the raw output (opaque replacement)",
+    post3?.hookSpecificOutput?.updatedToolOutput === "not authorized", JSON.stringify(post3));
+
+  const recs2 = fs.readFileSync(join(auditDir, "audit.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+  const dec1 = recs2.find((r) => r.decision_id === infos[0].decisionId && !r.event);
+  const egr1 = recs2.find((r) => r.event === "egress" && r.decision_id === infos[0].decisionId);
+  ok("egress record joined to the decision record by decision_id",
+    dec1?.decision === "Allow" && dec1?.resource === "tool/WebSearch" && egr1?.replaced === true, JSON.stringify([dec1, egr1]));
+  ok("passthrough egress record replaced:false", recs2.some((r) => r.event === "egress" && r.decision_id === infos[1]?.decisionId && r.replaced === false && !r.withheld));
+  ok("withheld egress record on hook failure", recs2.some((r) => r.event === "egress" && r.withheld === true));
+  const raw2 = fs.readFileSync(join(auditDir, "audit.jsonl"), "utf8");
+  ok("egress audit value-free (no raw or replaced payload)", !raw2.includes("SECRET") && !raw2.includes("redacted") && !raw2.includes("screen down"));
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);
 }

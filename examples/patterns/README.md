@@ -17,6 +17,7 @@ what a pattern claims and what the engine does can't drift.
 | [Destructive actions](./destructive-actions.md) | Delete / drop / deploy: require a human, and make some things undeletable. |
 | [External messaging](./external-messaging.md) | May the agent message *outside* — and only allowlisted destinations, with review? |
 | [Data egress](./data-egress.md) | May *this classification* of data cross *this boundary*? Keep restricted data in. |
+| [Egress after read](./egress-after-read.md) | Govern what a tool *returns* — decide on the result's classification after the fetch, in the audit trail. |
 | [Kill-switch / quarantine](./kill-switch.md) | Stop a suspect agent cold — a hard boundary that beats every grant. |
 | [Per-user attribution](./per-user-attribution.md) | Attribute the decision to the acting end-user, and scope policy to them. |
 | [PII before read](./pii-before-read.md) | Strip PII from a document *before* the agent ever sees it. |

@@ -1,0 +1,22 @@
+{
+  "policies": [
+    { "name": "reading-is-permitted",
+      "code": "permit(principal, action == Action::\"read\", resource);" },
+    { "name": "safe-classifications-are-released",
+      "code": "permit(principal, action == Action::\"release\", resource) when { context.classification == \"public\" || context.classification == \"internal\" };" },
+    { "name": "restricted-content-is-never-released",
+      "code": "forbid(principal, action == Action::\"release\", resource) when { context.classification == \"restricted\" };" }
+  ],
+  "tests": [
+    { "name": "the read itself is allowed - content is unknown before the fetch", "action": "read",
+      "resource": "doc/42", "expect": "Allow" },
+    { "name": "public content is released to the agent", "action": "release",
+      "resource": "doc/42", "context": { "classification": "public" }, "expect": "Allow" },
+    { "name": "internal content is released to the agent", "action": "release",
+      "resource": "doc/42", "context": { "classification": "internal" }, "expect": "Allow" },
+    { "name": "restricted content is withheld - the forbid boundary", "action": "release",
+      "resource": "doc/42", "context": { "classification": "restricted" }, "expect": "Deny" },
+    { "name": "unclassified content is withheld (fail-closed)", "action": "release",
+      "resource": "doc/42", "context": {}, "expect": "Deny" }
+  ]
+}
