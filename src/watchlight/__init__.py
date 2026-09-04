@@ -32,6 +32,7 @@ import datetime
 import functools
 import hashlib
 import hmac
+import inspect
 import json
 import os
 import pathlib
@@ -380,6 +381,7 @@ class Watchlight:
         resource: Union[str, Callable[..., str], None] = None,
         context: Union[dict, Callable[..., dict], None] = None,
         on_needs_approval: Optional[Callable[[dict], bool]] = None,
+        on_result: Optional[Callable[[Any, dict], Any]] = None,
     ) -> Callable[[_F], _F]:
         """Decorate a function as a governed tool.
 
@@ -390,6 +392,19 @@ class Watchlight:
         called; return ``True`` to proceed after a human confirms. Fail-closed:
         DENY raises :class:`Denied`; unconfirmed approval raises
         :class:`NeedsApproval`; the body never runs in either case.
+
+        ``on_result(result, info)`` is the egress hook: called AFTER the body
+        returns and BEFORE the result is handed back, with ``info = {"intent",
+        "resource", "principal", "decision_id"}`` — the ``decision_id`` of the
+        decision that let the body run. This is where you run ``sanitize``, a
+        screen, or a second ``authorize`` against the result's classification.
+        Return a value to replace the payload; return ``None`` to pass it
+        through; raise to withhold it — the exception propagates and the raw
+        result is never returned (fail-closed). A value-free ``egress`` audit
+        record is written, joined to the decision record by ``decision_id``. If
+        the body is a coroutine the hook runs once it is awaited (an awaitable
+        hook return is awaited too). An async hook on a *synchronous* body is
+        refused fail-closed: the payload is withheld and ``TypeError`` is raised.
         """
 
         def decorator(fn: _F) -> _F:
@@ -400,9 +415,20 @@ class Watchlight:
                 prin = _resolve(principal, args, kwargs) or self.agent
                 res = _resolve(resource, args, kwargs) or f"tool/{name}"
                 ctx = context(*args, **kwargs) if callable(context) else (context or {})
+
+                def run(decision_id: Optional[str]) -> Any:
+                    # Run the body, then the egress hook (if any) over its result.
+                    out = fn(*args, **kwargs)
+                    if on_result is None:
+                        return out
+                    info = {"intent": intent, "resource": res, "principal": prin, "decision_id": decision_id}
+                    if inspect.isawaitable(out):
+                        return self._apply_on_result_async(out, on_result, info)
+                    return self._apply_on_result(out, on_result, info)[0]
+
                 d = self.authorize(action=intent, principal=prin, resource=res, context=ctx)
                 if d["allowed"]:
-                    return fn(*args, **kwargs)
+                    return run(d.get("decision_id"))
                 if d["needs_approval"]:
                     if on_needs_approval is not None and on_needs_approval(d):
                         token = self.mint_approval(action=intent, principal=prin, resource=res)
@@ -410,7 +436,7 @@ class Watchlight:
                             action=intent, principal=prin, resource=res, context=ctx, approval=token
                         )
                         if d2["allowed"]:
-                            return fn(*args, **kwargs)
+                            return run(d2.get("decision_id"))
                     raise NeedsApproval(name, intent, d.get("decision_id"), d["reason"])
                 raise Denied(name, intent, d["reason"] or DENY_REASON)
 
@@ -539,6 +565,73 @@ class Watchlight:
         return result
 
     # ── internals ───────────────────────────────────────────────────
+
+    def _apply_on_result(self, result: Any, on_result: Callable[[Any, dict], Any], info: dict) -> tuple[Any, bool]:
+        """Run an egress hook over a governed tool's result and audit the outcome
+        (shared by every governed wrapper so they behave identically). ``None``
+        passes the payload through; any other value replaces it. If the hook
+        raises, the exception propagates and NO value is returned — the raw
+        result is withheld (fail-closed) — after an ``egress`` record marks the
+        payload as withheld. Value-free: never the result, nor anything derived
+        from it. Internal — not part of the public API."""
+        try:
+            replacement = on_result(result, info)
+        except BaseException:
+            self._audit_egress(info, replaced=False, withheld=True)
+            raise
+        if inspect.isawaitable(replacement):
+            # An async hook on a synchronous body: there is no loop to await it
+            # on, and handing back the coroutine object as the "payload" would
+            # release nothing and audit a replacement that never happened.
+            # Fail closed: withhold, and say so with a fixed, payload-free message.
+            close = getattr(replacement, "close", None)
+            if callable(close):
+                close()
+            self._audit_egress(info, replaced=False, withheld=True)
+            raise TypeError(
+                "on_result returned an awaitable for a synchronous tool body; "
+                "an async hook requires an async tool body"
+            )
+        replaced = replacement is not None
+        self._audit_egress(info, replaced=replaced)
+        return (replacement if replaced else result), replaced
+
+    async def _apply_on_result_async(self, awaitable: Any, on_result: Callable[[Any, dict], Any], info: dict) -> Any:
+        """:meth:`_apply_on_result` for a coroutine body: await the result, run
+        the hook (awaiting its return if awaitable), same fail-closed semantics."""
+        result = await awaitable
+        try:
+            replacement = on_result(result, info)
+            if inspect.isawaitable(replacement):
+                replacement = await replacement
+        except BaseException:
+            self._audit_egress(info, replaced=False, withheld=True)
+            raise
+        replaced = replacement is not None
+        self._audit_egress(info, replaced=replaced)
+        return replacement if replaced else result
+
+    def _audit_egress(self, info: dict, *, replaced: bool, withheld: bool = False) -> None:
+        self._announce()
+        disposition = "withheld" if withheld else ("replaced" if replaced else "passthrough")
+        print(f"watchlight: EGRESS {info['intent']:9} {info['resource']}     {disposition}")
+        # Value-free: the disposition of the payload only — never the payload,
+        # its size, or anything derived from it. `decision_id` joins this line to
+        # the call's decision record.
+        record: dict[str, Any] = {
+            "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "agent": self.agent,
+            "principal": info["principal"],
+            "intent": info["intent"],
+            "event": "egress",
+            "resource": info["resource"],
+            "replaced": replaced,
+        }
+        if info.get("decision_id"):
+            record["decision_id"] = info["decision_id"]
+        if withheld:
+            record["withheld"] = True
+        self._write_audit(record)
 
     def _announce(self) -> None:
         if not self._announced:

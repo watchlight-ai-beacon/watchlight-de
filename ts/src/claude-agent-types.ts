@@ -28,6 +28,18 @@ export interface PreToolUseHookInput extends BaseHookInput {
   hook_event_name: "PreToolUse";
   tool_name: string;
   tool_input: Record<string, unknown>;
+  /** Correlates this call with its PostToolUse event. */
+  tool_use_id?: string;
+}
+
+export interface PostToolUseHookInput extends BaseHookInput {
+  hook_event_name: "PostToolUse";
+  tool_name: string;
+  tool_input: Record<string, unknown>;
+  /** The tool's raw result, as the SDK would hand it to the model. */
+  tool_response: unknown;
+  /** Correlates this event with its PreToolUse call. */
+  tool_use_id?: string;
 }
 
 export interface HookOutput {
@@ -36,14 +48,23 @@ export interface HookOutput {
     hookEventName: HookEventName;
     permissionDecision?: PermissionDecision;
     permissionDecisionReason?: string;
+    /** PostToolUse: replaces the tool output before it is sent to the model. */
+    updatedToolOutput?: unknown;
   };
 }
 
-export type HookCallback = (input: BaseHookInput) => Promise<HookOutput> | HookOutput;
+/** The SDK passes the `tool_use_id` as a second argument as well; hooks written
+ *  against the one-argument form keep working. */
+export type HookCallback = (
+  input: BaseHookInput,
+  toolUseID?: string
+) => Promise<HookOutput> | HookOutput;
 
 export interface HookMatcherEntry {
   matcher?: string;
   hooks: HookCallback[];
+  /** SDK-side timeout, in SECONDS, for all hooks in this matcher. */
+  timeout?: number;
 }
 
 export type HooksOption = Partial<Record<HookEventName, HookMatcherEntry[]>>;

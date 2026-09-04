@@ -29,7 +29,7 @@ import {
 } from "./policytest";
 
 export { Scope, DE_MAX_DEPTH, AttenuationDenied, DevEditionCeiling } from "./attenuation";
-export { governedHooks } from "./claude-agent";
+export { governedHooks, DEFAULT_ON_RESULT_TIMEOUT_MS } from "./claude-agent";
 export type { GovernedHooksOptions, GovernedHooksResult } from "./claude-agent";
 export { governTool, governTools } from "./langchain";
 export type {
@@ -111,6 +111,36 @@ export type Binding<A extends unknown[]> = string | ((...args: A) => string);
 export type ContextBinding<A extends unknown[]> =
   | Record<string, unknown>
   | ((...args: A) => Record<string, unknown>);
+
+/** What a result hook learns about the call whose result it is inspecting.
+ *  `decisionId` is the SAME id written on that call's decision record, so the
+ *  decision line and the `egress` line in the audit trail join on one key. */
+export interface EgressInfo {
+  intent: string;
+  resource: string;
+  principal: string;
+  decisionId?: string;
+}
+
+/** A hook run over a governed tool's RESULT — after the body returns, before the
+ *  caller (or the model) sees it. This is where you run `sanitize`, `screen`, or
+ *  a second `authorize` against the result's classification. Return a value to
+ *  REPLACE the payload (e.g. a redacted copy); return `undefined` or `null`
+ *  (Python: `None`) to pass it through unchanged. Throw to WITHHOLD it: the
+ *  error propagates and the raw result is never handed back (fail-closed). */
+export type OnResult<R> = (
+  result: R,
+  info: EgressInfo
+) => R | void | null | Promise<R | void | null>;
+
+/** Thrown (internally) when an egress hook outruns its deadline; the payload is
+ *  withheld. Carries no payload-derived data. */
+class EgressTimeout extends Error {
+  constructor() {
+    super("egress hook deadline exceeded");
+    this.name = "EgressTimeout";
+  }
+}
 
 /** Full result of {@link Watchlight.authorize}. */
 export interface AuthorizeResult {
@@ -326,6 +356,13 @@ export class Watchlight {
         decisionId?: string;
         reason: string;
       }) => boolean | Promise<boolean>;
+      /** Egress hook. Awaited AFTER the body returns and BEFORE the result is
+       *  handed back, with `{ intent, resource, principal, decisionId }` — the
+       *  `decisionId` of the decision that let the body run. Return a value to
+       *  replace the payload; `void` passes it through; a throw propagates and
+       *  the raw result is withheld (fail-closed). Writes a value-free `egress`
+       *  audit record joined to the decision by `decision_id`. */
+      onResult?: OnResult<Awaited<R>>;
     }
   ): Governed<A, R> {
     const intent = opts.intent;
@@ -335,9 +372,22 @@ export class Watchlight {
       const resource = resolveBinding(opts.resource, args) ?? `tool/${name}`;
       const context =
         typeof opts.context === "function" ? opts.context(...args) : opts.context ?? {};
+      // Run the body, then the egress hook (if any) over its result. `decisionId`
+      // is the id of the decision that authorized THIS run.
+      const run = async (decisionId?: string): Promise<Awaited<R>> => {
+        const out = (await fn(...args)) as Awaited<R>;
+        if (!opts.onResult) return out;
+        const { value } = await this._applyOnResult(out, opts.onResult, {
+          intent,
+          resource,
+          principal,
+          decisionId,
+        });
+        return value;
+      };
 
       const d = await this.authorize({ principal, action: intent, resource, context });
-      if (d.allowed) return (await fn(...args)) as Awaited<R>;
+      if (d.allowed) return run(d.decisionId);
       if (d.needsApproval) {
         if (opts.onNeedsApproval) {
           const ok = await opts.onNeedsApproval({
@@ -350,7 +400,7 @@ export class Watchlight {
           if (ok) {
             const token = this.mintApproval({ principal, action: intent, resource });
             const d2 = await this.authorize({ principal, action: intent, resource, context, approval: token });
-            if (d2.allowed) return (await fn(...args)) as Awaited<R>;
+            if (d2.allowed) return run(d2.decisionId);
           }
         }
         throw new NeedsApproval(name, intent, d.decisionId, d.reason);
@@ -534,6 +584,73 @@ export class Watchlight {
     };
     // Same key as the `authorize` line, so the two records join on `decision_id`.
     if (report.decisionId) record.decision_id = report.decisionId;
+    try {
+      fs.mkdirSync(path.dirname(this._auditPath), { recursive: true });
+      fs.appendFileSync(this._auditPath, JSON.stringify(record) + "\n", "utf8");
+    } catch {
+      // Best-effort in dev mode.
+    }
+  }
+
+  /**
+   * Run an egress hook over a governed tool's result and audit the outcome.
+   * Shared by {@link tool} and the framework adapters (`governTool`, the Claude
+   * `PostToolUse` hook) so all three behave identically. An `undefined` or
+   * `null` return passes the payload through; any other value replaces it. If
+   * the hook throws — or outruns `timeoutMs`, when given — the error propagates
+   * and NO value is returned — the raw result is withheld (fail-closed) — after
+   * an `egress` record marks the payload as withheld. A hook that settles after
+   * the deadline is ignored (never audited twice, never released). The record
+   * is value-free: never the result, nor anything derived from it.
+   * @internal
+   */
+  async _applyOnResult<R>(
+    result: R,
+    hook: OnResult<R>,
+    info: EgressInfo,
+    opts: { timeoutMs?: number } = {}
+  ): Promise<{ value: R; replaced: boolean }> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const attempt = Promise.resolve().then(() => hook(result, info));
+    // A late rejection after the deadline must not surface as an unhandled one.
+    attempt.catch(() => {});
+    const deadline = new Promise<never>((_, reject) => {
+      if (opts.timeoutMs === undefined) return;
+      timer = setTimeout(() => reject(new EgressTimeout()), opts.timeoutMs);
+    });
+    let replacement: R | void | null;
+    try {
+      replacement = await Promise.race([attempt, deadline]);
+    } catch (e) {
+      this._auditEgress(info, { replaced: false, withheld: true });
+      throw e;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+    const replaced = replacement !== undefined && replacement !== null;
+    this._auditEgress(info, { replaced });
+    return { value: replaced ? (replacement as R) : result, replaced };
+  }
+
+  private _auditEgress(info: EgressInfo, outcome: { replaced: boolean; withheld?: boolean }): void {
+    this._announce();
+    const disposition = outcome.withheld ? "withheld" : outcome.replaced ? "replaced" : "passthrough";
+    // eslint-disable-next-line no-console
+    console.log(`watchlight: EGRESS ${info.intent.padEnd(9)} ${info.resource}     ${disposition}`);
+    // Value-free: the disposition of the payload only — never the payload, its
+    // size, or anything derived from it. `decision_id` joins this line to the
+    // call's decision record.
+    const record: Record<string, unknown> = {
+      ts: new Date().toISOString(),
+      agent: this.agent,
+      principal: info.principal,
+      intent: info.intent,
+      event: "egress",
+      resource: info.resource,
+      replaced: outcome.replaced,
+    };
+    if (info.decisionId) record.decision_id = info.decisionId;
+    if (outcome.withheld) record.withheld = true;
     try {
       fs.mkdirSync(path.dirname(this._auditPath), { recursive: true });
       fs.appendFileSync(this._auditPath, JSON.stringify(record) + "\n", "utf8");

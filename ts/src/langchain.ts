@@ -21,7 +21,7 @@
 // structurally typed against the tool's public shape, so `@langchain/core` stays
 // a peer you already have installed.
 
-import { Watchlight, govern, Denied, DENY_REASON } from "./index";
+import { Watchlight, govern, Denied, DENY_REASON, type OnResult } from "./index";
 
 /** The minimal shape of a LangChain `StructuredTool` this adapter needs. */
 export interface LangChainToolLike {
@@ -35,6 +35,12 @@ export interface GovernToolOptions {
   governor?: Watchlight;
   /** Governance intent for this tool. Defaults to the tool's `name`. */
   intent?: string;
+  /** Egress hook, awaited over the tool's result AFTER `invoke` returns and
+   *  BEFORE the agent sees it, with `{ intent, resource, principal, decisionId }`.
+   *  Return a value to replace the result; `void` passes it through; a throw
+   *  propagates and the raw result is withheld (fail-closed). Writes a
+   *  value-free `egress` audit record joined to the decision by `decision_id`. */
+  onResult?: OnResult<unknown>;
 }
 
 export interface GovernToolsOptions {
@@ -42,6 +48,8 @@ export interface GovernToolsOptions {
   /** Map a tool name to a governance intent. Defaults to identity (intent =
    *  tool name). */
   intentFor?: (toolName: string) => string;
+  /** Egress hook applied to every governed tool — see {@link GovernToolOptions.onResult}. */
+  onResult?: OnResult<unknown>;
 }
 
 /**
@@ -60,11 +68,20 @@ export function governTool<T extends LangChainToolLike>(tool: T, opts: GovernToo
     get(target, prop, receiver) {
       if (prop === "invoke") {
         return async (input: unknown, config?: unknown): Promise<unknown> => {
-          const { allowed, reason } = await governor.check(intent, name);
+          const { allowed, reason, decisionId } = await governor.check(intent, name);
           if (!allowed) {
             throw new Denied(name, intent, reason || DENY_REASON);
           }
-          return target.invoke(input, config);
+          const out = await target.invoke(input, config);
+          if (!opts.onResult) return out;
+          // Egress: govern what the tool RETURNS, joined to the call's decision.
+          const { value } = await governor._applyOnResult(out, opts.onResult, {
+            intent,
+            resource: `tool/${name}`,
+            principal: governor.agent,
+            decisionId,
+          });
+          return value;
         };
       }
       // Delegate everything else to the real tool, bound to it so `this` stays
@@ -84,5 +101,7 @@ export function governTools<T extends LangChainToolLike>(
   opts: GovernToolsOptions = {}
 ): T[] {
   const intentFor = opts.intentFor ?? ((n: string) => n);
-  return tools.map((t) => governTool(t, { governor: opts.governor, intent: intentFor(t.name) }));
+  return tools.map((t) =>
+    governTool(t, { governor: opts.governor, intent: intentFor(t.name), onResult: opts.onResult })
+  );
 }

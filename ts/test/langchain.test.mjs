@@ -72,6 +72,40 @@ async function main() {
   ok("decisions audited", raw.includes('"resource":"tool/web_search"') && raw.includes('"decision":"Deny"'));
   ok("audit value-free (no tool args)", !raw.includes("acct-9") && !raw.includes("1000") && !raw.includes("cedar"));
 
+  // ── onResult (egress): govern what the tool RETURNS ──
+  const fetchDoc = mockTool("fetch_doc");
+  const infos = [];
+  const govFetch = governTool(fetchDoc, {
+    governor, intent: "research",
+    onResult: (result, info) => { infos.push(info); return typeof result === "string" ? "[redacted-doc]" : undefined; },
+  });
+  ok("governTool onResult replacement reaches the caller", (await govFetch.invoke({ id: 1 })) === "[redacted-doc]");
+  ok("underlying tool ran once before egress", fetchDoc.ranCount() === 1);
+  ok("onResult info carries intent/resource/principal/decisionId",
+    infos[0]?.intent === "research" && infos[0]?.resource === "tool/fetch_doc" && infos[0]?.principal === "lc-agent" && typeof infos[0]?.decisionId === "string",
+    JSON.stringify(infos[0]));
+
+  const pt = governTool(mockTool("pt_tool"), { governor, intent: "research", onResult: () => undefined });
+  ok("void onResult passes the result through", (await pt.invoke({ a: 1 })) === 'pt_tool:{"a":1}');
+
+  const bad = governTool(mockTool("bad_tool"), { governor, intent: "research", onResult: () => { throw new Error("screen failed"); } });
+  let badErr = null, badOut;
+  try { badOut = await bad.invoke({ q: "SENSITIVE" }); } catch (e) { badErr = e; }
+  ok("throwing onResult fails closed (error propagates, raw never returned)", badErr?.message === "screen failed" && badOut === undefined, String(badErr));
+
+  const [gtool] = governTools([mockTool("web_search")], { governor, intentFor: () => "research", onResult: () => "X" });
+  ok("governTools applies onResult to every tool", (await gtool.invoke({})) === "X");
+
+  const recs = fs.readFileSync(join(auditDir, "audit.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+  const dec = recs.find((r) => r.resource === "tool/fetch_doc" && r.decision === "Allow");
+  const egr = recs.find((r) => r.event === "egress" && r.resource === "tool/fetch_doc");
+  ok("egress record joined to the decision by decision_id",
+    dec && egr && egr.decision_id === dec.decision_id && egr.decision_id === infos[0].decisionId && egr.replaced === true, JSON.stringify([dec, egr]));
+  ok("passthrough egress record replaced:false", recs.some((r) => r.event === "egress" && r.resource === "tool/pt_tool" && r.replaced === false && !r.withheld));
+  ok("withheld egress record on hook failure", recs.some((r) => r.event === "egress" && r.resource === "tool/bad_tool" && r.withheld === true));
+  const raw2 = fs.readFileSync(join(auditDir, "audit.jsonl"), "utf8");
+  ok("egress audit value-free (no raw or replaced payload)", !raw2.includes("redacted-doc") && !raw2.includes("SENSITIVE") && !raw2.includes("screen failed"));
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);
 }
