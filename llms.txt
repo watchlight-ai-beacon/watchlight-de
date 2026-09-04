@@ -120,6 +120,8 @@ Two mistakes to avoid: (1) decorating a tool WITHOUT loading a policy first — 
 ## Runnable examples (in the repo)
 
 - [agent.py](https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/examples/agent.py): the smallest governed agent — the DENY line, zero infra.
+- [showcase/denied-before-execute](https://github.com/watchlight-ai-beacon/watchlight-de/tree/main/examples/showcase/denied-before-execute): governed transfer against a stub bank with a call counter; a `forbid` above a threshold is refused before the body runs and the counter is asserted 0 (Python + TS; `policy.suite.json` doubles as the golden tests).
+- [showcase/human-in-the-loop](https://github.com/watchlight-ai-beacon/watchlight-de/tree/main/examples/showcase/human-in-the-loop): `NeedsApproval` → pending request on disk → separate `approve.py`/`approve.mjs` signs a grant → `resume` runs once with an `approved: true` record joined to the pending one; grant and token replays refused (Python + TS).
 - [governed_research_agent.py](https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/examples/governed_research_agent.py): a multi-tool agent governed by intent.
 - [governed_subagents.py](https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/examples/governed_subagents.py): scope attenuation — every child a strict subset of its parent.
 - [governed_deepagents.py](https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/examples/governed_deepagents.py): governing a [deepagents](https://github.com/langchain-ai/deepagents) deep agent via `govern.scope` (runs without an API key).

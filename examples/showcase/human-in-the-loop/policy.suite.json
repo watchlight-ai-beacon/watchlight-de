@@ -1,0 +1,14 @@
+{
+  "policies": [
+    { "name": "delete-needs-a-human",
+      "code": "@enforcement_effect(\"require_approval\")\npermit(principal, action == Action::\"delete\", resource);" }
+  ],
+  "tests": [
+    { "name": "delete holds for a human", "action": "delete",
+      "resource": "record/rec-42", "expect": "NeedsApproval" },
+    { "name": "delete with a human approval is allowed", "action": "delete",
+      "resource": "record/rec-42", "approved": true, "expect": "Allow" },
+    { "name": "an unlisted action is denied (fail-closed)", "action": "purge",
+      "resource": "record/rec-42", "expect": "Deny" }
+  ]
+}
