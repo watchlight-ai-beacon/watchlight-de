@@ -22,7 +22,9 @@ import datetime
 import json
 import pathlib
 import uuid
-from typing import Any, Sequence
+from typing import Any, Optional, Sequence
+
+from ._audit import AuditTrail
 
 __all__ = ["Scope", "DevEditionCeiling", "AttenuationDenied", "DE_MAX_DEPTH"]
 
@@ -100,9 +102,13 @@ class Scope:
         time_budget_seconds: int,
         depth: int,
         parent_id: str | None = None,
+        audit: Optional[AuditTrail] = None,
     ) -> None:
         self._engine = engine
         self._audit_path = pathlib.Path(audit_path)
+        # The governor's audit trail (file + optional ``audit_sink``) — shared by
+        # every scope in the tree, so attenuations report through the same sink.
+        self._audit = audit if audit is not None else AuditTrail(self._audit_path)
         self.agent = agent
         self.allowed_tools = _norm(allowed_tools)
         self.allowed_resources = _norm(allowed_resources)
@@ -191,6 +197,7 @@ class Scope:
             time_budget_seconds=granted.get("time_budget_seconds", request["time_budget_seconds"]),
             depth=granted.get("depth", child_depth),
             parent_id=self.node_id,
+            audit=self._audit,
         )
         self._record(
             node_id=child.node_id,
@@ -256,13 +263,8 @@ class Scope:
             record["parent_id"] = parent_id
         if reason:
             record["reason"] = reason
-        try:
-            self._audit_path.parent.mkdir(parents=True, exist_ok=True)
-            with self._audit_path.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(record) + "\n")
-        except OSError:
-            # Audit is best-effort in dev mode; never let it break the app.
-            pass
+        # One funnel: the governor's file + optional sink (see watchlight._audit).
+        self._audit.write(record)
 
     def __repr__(self) -> str:
         return (

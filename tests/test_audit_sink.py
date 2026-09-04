@@ -1,0 +1,170 @@
+"""``audit_sink`` (Python), mirroring the TS suite.
+
+Every record kind — decision, approved decision, sanitization, attenuation
+Allow/Deny — reaches the sink with EXACTLY the fields the ``audit.jsonl`` line
+carries; the sink gets its own copy and can't alter the file; a raising sink, a
+failing async sink, and an async sink with no event loop never change a decision
+and are reported once; a slow async sink never delays ``authorize``
+(fire-and-forget). Runs the real ``watchlight_engine``.
+"""
+import asyncio
+import json
+import time
+import warnings
+
+import pytest
+
+pytest.importorskip("watchlight_engine")
+
+from watchlight import AttenuationDenied, DE_MAX_DEPTH, DevEditionCeiling, Watchlight
+
+RESEARCH = 'permit(principal, action == Action::"research", resource);'
+WIRE = '@enforcement_effect("require_approval")\npermit(principal, action == Action::"wire", resource);'
+SAMPLE = "mail a@b.com card 4111 1111 1111 1111"
+WARNING = "audit sink failed"
+
+
+def _gov(tmp_path, sink=None):
+    g = Watchlight(agent="sink-agent", audit_dir=str(tmp_path / ".watchlight"), audit_sink=sink)
+    g.allow(RESEARCH, "research").allow(WIRE, "wire")
+    return g
+
+
+def _lines(tmp_path):
+    text = (tmp_path / ".watchlight" / "audit.jsonl").read_text()
+    return [json.loads(line) for line in text.splitlines()]
+
+
+def _shape(r):
+    """Everything about a record except the per-run ids/timestamps."""
+    return (r.get("event", "decision"), r["intent"], r["resource"], r.get("decision"), r.get("approved", False), r.get("depth"))
+
+
+def _exercise(g):
+    """Drive every audit-producing path once; return the decision outcomes."""
+    allow = g.authorize(action="research", resource="tool/web_search")
+    deny = g.authorize(action="transfer", resource="tool/transfer", context={"amount": 1000})
+    held = g.authorize(action="wire", resource="acct/1")
+    token = g.mint_approval(action="wire", resource="acct/1")
+    approved = g.authorize(action="wire", resource="acct/1", approval=token)
+
+    @g.tool("research")
+    def web_search(q):
+        return f"r:{q}"
+
+    web_search("cedar policies")
+    g.sanitize(SAMPLE, resource="doc.txt")
+    root = g.scope(tools=["read", "write"])
+    child = root.attenuate(tools=["read"])
+    with pytest.raises(AttenuationDenied):
+        root.attenuate(tools=["read", "delete"])
+    s = child
+    for _ in range(child.depth, DE_MAX_DEPTH):
+        s = s.attenuate(tools=["read"])
+    with pytest.raises(DevEditionCeiling):
+        s.attenuate(tools=["read"])
+    return [allow["decision"], deny["decision"], held["decision"], approved["decision"], approved["approved"]]
+
+
+def test_every_record_kind_reaches_the_sink_with_identical_fields(tmp_path):
+    seen = []
+    g = _gov(tmp_path, sink=seen.append)
+    _exercise(g)
+    file = _lines(tmp_path)
+    assert seen == file, "sink must see every file line, same order, same fields"
+    assert any("event" not in r and r["decision"] == "Allow" for r in seen)
+    assert any("event" not in r and r["decision"] == "Deny" for r in seen)
+    assert any(r["decision"] == "NeedsApproval" for r in seen)
+    assert any(r.get("approved") is True and r["decision"] == "Allow" for r in seen)
+    assert any(r.get("event") == "sanitization" and r["counts"]["EMAIL"] == 1 for r in seen)
+    assert any(r.get("event") == "attenuation" and r["decision"] == "Allow" and r["resource"] == "root scope" for r in seen)
+    assert sum(1 for r in seen if r.get("event") == "attenuation" and r["decision"] == "Deny" and r.get("reason")) == 2
+    blob = json.dumps(seen)
+    assert "a@b.com" not in blob and "4111" not in blob and "cedar policies" not in blob  # value-free
+
+
+def test_sink_receives_a_copy_and_cannot_alter_the_file(tmp_path):
+    def sink(rec):
+        rec["decision"] = "Allow"
+        rec["injected"] = True
+        if "counts" in rec:
+            rec["counts"].clear()
+
+    g = _gov(tmp_path, sink=sink)
+    _exercise(g)
+    file = _lines(tmp_path)
+    assert any(r["decision"] == "Deny" for r in file)
+    assert not any("injected" in r for r in file)
+    assert any(r.get("event") == "sanitization" and r["counts"]["EMAIL"] == 1 for r in file)
+
+
+def test_raising_sink_changes_nothing_and_warns_once(tmp_path, capsys):
+    control = _exercise(_gov(tmp_path / "control"))
+    control_shapes = [_shape(r) for r in _lines(tmp_path / "control")]
+    calls = {"n": 0}
+
+    def sink(rec):
+        calls["n"] += 1
+        raise ValueError("sink down: tool/web_search")
+
+    results = _exercise(_gov(tmp_path / "sink", sink=sink))
+    assert results == control
+    assert [_shape(r) for r in _lines(tmp_path / "sink")] == control_shapes
+    assert calls["n"] == len(control_shapes), "the sink is still invoked for every record"
+    err = capsys.readouterr().err
+    assert err.count(WARNING) == 1
+    assert "ValueError" in err
+    assert "web_search" not in err and "sink down" not in err  # error type only, never content
+
+
+def test_failing_async_sink_in_a_running_loop_changes_nothing_and_warns_once(tmp_path, capsys):
+    control = _exercise(_gov(tmp_path / "control"))
+    seen = []
+
+    async def sink(rec):
+        seen.append(rec)
+        raise TypeError("nope")
+
+    async def main():
+        g = _gov(tmp_path / "sink", sink=sink)
+        results = _exercise(g)
+        for _ in range(3):  # let the scheduled sink tasks run and fail
+            await asyncio.sleep(0)
+        return results
+
+    results = asyncio.run(main())
+    assert results == control
+    assert seen == _lines(tmp_path / "sink"), "every record delivered before the failure"
+    err = capsys.readouterr().err
+    assert err.count(WARNING) == 1 and "TypeError" in err
+
+
+def test_async_sink_without_an_event_loop_is_dropped_with_one_warning(tmp_path, capsys):
+    async def sink(rec):  # pragma: no cover — never runs: there is no loop
+        pass
+
+    g = _gov(tmp_path, sink=sink)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        r1 = g.authorize(action="research", resource="tool/web_search")
+        r2 = g.authorize(action="transfer", resource="tool/transfer")
+    assert r1["decision"] == "Allow" and r2["decision"] == "Deny"
+    assert len(_lines(tmp_path)) == 2, "the file is still written"
+    assert not [w for w in caught if "never awaited" in str(w.message)], "coroutine is closed cleanly"
+    err = capsys.readouterr().err
+    assert err.count(WARNING) == 1 and "RuntimeError" in err
+
+
+def test_slow_async_sink_never_delays_authorize(tmp_path):
+    async def sink(rec):
+        await asyncio.sleep(10)
+
+    async def main():
+        g = _gov(tmp_path, sink=sink)
+        t0 = time.monotonic()
+        r = g.authorize(action="research", resource="tool/web_search")
+        return r["decision"], time.monotonic() - t0
+
+    decision, elapsed = asyncio.run(main())  # asyncio.run cancels the pending sink task
+    assert decision == "Allow"
+    assert elapsed < 2.0

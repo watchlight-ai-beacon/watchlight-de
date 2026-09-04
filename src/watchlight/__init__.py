@@ -43,11 +43,13 @@ from typing import Any, Callable, Optional, Sequence, TypeVar, Union
 
 import watchlight_engine as _engine
 
+from ._audit import AuditSink, AuditTrail
 from .attenuation import DE_MAX_DEPTH, AttenuationDenied, DevEditionCeiling, Scope
 from .policytest import load_test_suite, run_policy_tests
 
 __all__ = [
     "Watchlight",
+    "AuditSink",
     "Denied",
     "NeedsApproval",
     "sanitize",
@@ -308,10 +310,27 @@ class Watchlight:
     authorized against them.
     """
 
-    def __init__(self, agent: str | None = None, audit_dir: str | os.PathLike[str] = ".watchlight") -> None:
+    def __init__(
+        self,
+        agent: str | None = None,
+        audit_dir: str | os.PathLike[str] = ".watchlight",
+        audit_sink: Optional[AuditSink] = None,
+    ) -> None:
+        """:param agent: stable agent identity for the audit trail (default
+            ``$WATCHLIGHT_AGENT`` or ``"my-agent"``).
+        :param audit_dir: directory for the audit trail; ``audit.jsonl`` is
+            written inside it.
+        :param audit_sink: additive destination for every audit record —
+            decisions, sanitizations and attenuations (including those of scopes
+            derived via :meth:`scope`). Receives its own copy of exactly the
+            fields the ``audit.jsonl`` line carries; the local file stays on.
+            Fire-and-forget: an awaitable it returns is scheduled on the running
+            event loop (never awaited inline), and an exception or rejection is
+            reported once and never blocks or changes a decision."""
         self._engine = _engine.PolicyEngine()
         self.agent = agent or os.environ.get("WATCHLIGHT_AGENT", "my-agent")
         self._audit_path = pathlib.Path(audit_dir) / "audit.jsonl"
+        self._trail = AuditTrail(self._audit_path, audit_sink)
         self._announced = False
         self._policy_count = 0
 
@@ -360,6 +379,7 @@ class Watchlight:
         root = Scope(
             engine=self._engine,
             audit_path=self._audit_path,
+            audit=self._trail,  # one funnel: attenuations reach the same audit_sink
             agent=self.agent,
             allowed_tools=tools,
             allowed_resources=resources,
@@ -699,13 +719,10 @@ class Watchlight:
         self._write_audit(record)
 
     def _write_audit(self, record: dict) -> None:
-        try:
-            self._audit_path.parent.mkdir(parents=True, exist_ok=True)
-            with self._audit_path.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(record) + "\n")
-        except OSError:
-            # Audit is best-effort in dev mode; never let it break the app.
-            pass
+        """The single funnel for every audit record this governor produces: the
+        local ``audit.jsonl`` append, then the optional ``audit_sink``
+        (fire-and-forget). See :mod:`watchlight._audit`."""
+        self._trail.write(record)
 
 
 # A ready-to-use default governor so `from watchlight import govern` just works.

@@ -22,6 +22,7 @@ what a pattern claims and what the engine does can't drift.
 | [Per-user attribution](./per-user-attribution.md) | Attribute the decision to the acting end-user, and scope policy to them. |
 | [PII before read](./pii-before-read.md) | Strip PII from a document *before* the agent ever sees it. |
 | [Sub-agent confinement](./subagent-confinement.md) | A spawned agent can only ever do *less* than its parent — never more. |
+| [Audit sink](./audit-sink.md) | Ship the value-free trail to a store you already run — Postgres, OTLP, a webhook — without touching a decision. |
 
 ## Run them
 

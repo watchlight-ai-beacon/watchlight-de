@@ -255,6 +255,18 @@ Run your governed agent in another terminal and watch the decisions stream in.
 It shows only *this* process — fleet-wide lineage, signed audit, and
 drift→quarantine are the governed control plane (Enterprise).
 
+On an ephemeral host, keep the trail: pass an `audit_sink` and every record —
+decisions, sanitizations, attenuations — is also handed to your code with exactly
+the fields the file line carries (the file stays on). The sink is fire-and-forget
+and can never block or change a decision; a failure is reported once.
+
+```python
+govern = Watchlight(agent="my-agent", audit_sink=lambda record: my_store.insert(record))
+```
+
+Reference sinks — a Postgres row, an OTLP log record, a webhook — are in
+[`examples/patterns/audit-sink.md`](examples/patterns/audit-sink.md).
+
 ---
 
 ## Test your policies before they gate real actions

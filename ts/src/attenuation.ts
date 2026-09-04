@@ -6,10 +6,9 @@
 // written to the value-free audit trail. The Developer Edition governs the tree
 // up to DE_MAX_DEPTH; Enterprise removes the cap and enforces it server-side.
 
-import * as fs from "node:fs";
-import * as path from "node:path";
 import * as crypto from "node:crypto";
 import type { Engine, GrantedScope, RequestedScope } from "@watchlight/engine";
+import type { AuditTrail } from "./audit";
 
 /** Developer-Edition sub-agent tree depth ceiling. */
 export const DE_MAX_DEPTH = 5;
@@ -56,7 +55,9 @@ export interface AttenuateOptions {
 
 interface ScopeInit {
   engine: Engine;
-  auditPath: string;
+  /** The governor's audit trail (file + optional sink) — shared by every scope
+   *  in the tree, so attenuations report through the same `auditSink`. */
+  audit: AuditTrail;
   agent: string;
   allowedTools: string[];
   allowedResources: string[];
@@ -81,11 +82,11 @@ export class Scope {
   readonly nodeId: string;
   readonly parentId?: string;
   private readonly _engine: Engine;
-  private readonly _auditPath: string;
+  private readonly _audit: AuditTrail;
 
   constructor(init: ScopeInit) {
     this._engine = init.engine;
-    this._auditPath = init.auditPath;
+    this._audit = init.audit;
     this.agent = init.agent;
     this.allowedTools = norm(init.allowedTools);
     this.allowedResources = norm(init.allowedResources);
@@ -164,7 +165,7 @@ export class Scope {
     );
     const child = new Scope({
       engine: this._engine,
-      auditPath: this._auditPath,
+      audit: this._audit,
       agent: this.agent,
       allowedTools: granted.allowed_tools ?? request.allowed_tools,
       allowedResources: grantedResources,
@@ -221,11 +222,7 @@ export class Scope {
     };
     if (r.parentId) record.parent_id = r.parentId;
     if (r.reason) record.reason = r.reason;
-    try {
-      fs.mkdirSync(path.dirname(this._auditPath), { recursive: true });
-      fs.appendFileSync(this._auditPath, JSON.stringify(record) + "\n", "utf8");
-    } catch {
-      // Best-effort in dev mode.
-    }
+    // One funnel: the governor's file + optional sink (see ./audit.ts).
+    this._audit.write(record);
   }
 }
