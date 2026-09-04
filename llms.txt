@@ -24,8 +24,9 @@ Watchlight Developer Edition (DE) is the open front door to an **Agent Runtime G
 - `govern.load("policies.json")` — load a JSON file: a list of `{"name", "code"}` objects, or `{"policies": [...]}`. A missing file loads nothing (still fail-closed).
 - `govern.allow('permit(principal, action == Action::"read", resource);', name="reader")` — add one Cedar policy inline. Chainable.
 - `@govern.tool(intent="research")` — decorate a function. On each call the engine authorizes `(agent, intent, "tool/<function_name>")`; on `Allow` the body runs, otherwise it raises `Denied(tool, intent, reason)` **before the body executes**. The resource is always `tool/<function_name>`.
-- `Watchlight(agent="my-agent", audit_dir=".watchlight")` — construct your own governor instead of the default. `agent` defaults to `$WATCHLIGHT_AGENT` or `"my-agent"`.
+- `Watchlight(agent="my-agent", audit_dir=".watchlight", audit_sink=None)` — construct your own governor instead of the default. `agent` defaults to `$WATCHLIGHT_AGENT` or `"my-agent"`.
 - Every decision is appended, **value-free** (no argument values, ever), to `.watchlight/audit.jsonl`.
+- `audit_sink=callable` (Python) / `auditSink: (record) => …` (TS `WatchlightOptions`) — an ADDITIVE destination for every audit record (decisions, `sanitization`, `attenuation` — including scopes derived via `govern.scope()`). The sink gets its own copy with EXACTLY the fields the file line carries (frozen in TS); the file stays on and is written first. Fire-and-forget: a returned promise/awaitable is never awaited (Python schedules it on the running event loop; with no loop it is dropped with one warning), and a throw/rejection is reported once (error type only) and never blocks or changes a decision. Reference sinks (Postgres row, OTLP log record, webhook): `examples/patterns/audit-sink.md`.
 
 **Minimal complete program (this is the whole pattern — load a policy, decorate, then CALL the tool):**
 ```python

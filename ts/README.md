@@ -238,6 +238,24 @@ decision** — never argument values. Same contract as the production audit trai
 A `sanitization` line carries `decision_id` only when `govern.sanitize` was given
 the `decisionId` of the `authorize` decision — the two lines then join on it.
 
+### Ship it somewhere durable — `auditSink`
+
+On an ephemeral host the file is gone on the next deploy. Add a sink and every
+record — decisions, sanitizations, and the attenuations of every derived scope —
+is also handed to your code, with **exactly** the fields the file line carries
+(a frozen copy). The file stays on.
+
+```ts
+const govern = new Watchlight({
+  auditSink: (record) => db.insert("agent_audit", record), // sync or async
+});
+```
+
+The sink is **fire-and-forget**: a returned promise is not awaited, and a throw or
+rejection is reported once (error type only) and never blocks or changes a
+decision. Reference sinks — a Postgres row, an OTLP log record, a webhook — are in
+[`examples/patterns/audit-sink.md`](../examples/patterns/audit-sink.md).
+
 ## Graduation to Enterprise
 
 Set `WATCHLIGHT_APDP_URL` and the **same code** authorizes against the networked

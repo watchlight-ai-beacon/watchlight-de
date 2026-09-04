@@ -19,6 +19,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomBytes, createHmac, timingSafeEqual } from "node:crypto";
 import { Scope, DE_MAX_DEPTH } from "./attenuation";
+import { AuditTrail, type AuditSink } from "./audit";
 import { selectBackend, type GovernanceBackend } from "./backend";
 import { sanitize as sanitizeText, type SanitizeOptions, type SanitizeResult } from "./sanitize";
 import {
@@ -29,6 +30,7 @@ import {
 } from "./policytest";
 
 export { Scope, DE_MAX_DEPTH, AttenuationDenied, DevEditionCeiling } from "./attenuation";
+export type { AuditRecord, AuditSink } from "./audit";
 export { governedHooks, DEFAULT_ON_RESULT_TIMEOUT_MS } from "./claude-agent";
 export type { GovernedHooksOptions, GovernedHooksResult } from "./claude-agent";
 export { governTool, governTools } from "./langchain";
@@ -224,6 +226,13 @@ export interface WatchlightOptions {
   /** Directory for the audit trail. `audit.jsonl` is written inside it.
    *  Defaults to `.watchlight`. */
   auditDir?: string;
+  /** Additive destination for every audit record — decisions, sanitizations
+   *  and attenuations (including those of scopes derived via {@link
+   *  Watchlight.scope}). Receives a frozen copy with exactly the fields the
+   *  `audit.jsonl` line carries; the local file stays on. Fire-and-forget: a
+   *  returned promise is not awaited, and a throw or rejection is reported once
+   *  and never blocks or changes a decision. */
+  auditSink?: AuditSink;
   /** Graduate to the networked control plane: authorize against this APDP URL
    *  instead of the in-process engine. Defaults to `WATCHLIGHT_APDP_URL`. When
    *  unset, governance runs fully in-process (Developer Edition). */
@@ -252,14 +261,17 @@ export interface ScopeOptions {
  */
 export class Watchlight {
   readonly agent: string;
-  private readonly _auditPath: string;
+  private readonly _trail: AuditTrail;
   private readonly _backend: GovernanceBackend;
   private _policyCount = 0;
   private _announced = false;
 
   constructor(opts: WatchlightOptions = {}) {
     this.agent = opts.agent ?? process.env.WATCHLIGHT_AGENT ?? "my-agent";
-    this._auditPath = path.join(opts.auditDir ?? ".watchlight", "audit.jsonl");
+    this._trail = new AuditTrail(
+      path.join(opts.auditDir ?? ".watchlight", "audit.jsonl"),
+      opts.auditSink
+    );
     this._backend = selectBackend({
       apdpUrl: opts.apdpUrl,
       token: opts.token,
@@ -313,7 +325,7 @@ export class Watchlight {
     const engine = await eng;
     const root = new Scope({
       engine,
-      auditPath: this._auditPath,
+      audit: this._trail,
       agent: this.agent,
       allowedTools: norm(opts.tools),
       allowedResources: norm(opts.resources),
@@ -584,12 +596,7 @@ export class Watchlight {
     };
     // Same key as the `authorize` line, so the two records join on `decision_id`.
     if (report.decisionId) record.decision_id = report.decisionId;
-    try {
-      fs.mkdirSync(path.dirname(this._auditPath), { recursive: true });
-      fs.appendFileSync(this._auditPath, JSON.stringify(record) + "\n", "utf8");
-    } catch {
-      // Best-effort in dev mode.
-    }
+    this._writeAudit(record);
   }
 
   /**
@@ -651,12 +658,7 @@ export class Watchlight {
     };
     if (info.decisionId) record.decision_id = info.decisionId;
     if (outcome.withheld) record.withheld = true;
-    try {
-      fs.mkdirSync(path.dirname(this._auditPath), { recursive: true });
-      fs.appendFileSync(this._auditPath, JSON.stringify(record) + "\n", "utf8");
-    } catch {
-      // Best-effort in dev mode.
-    }
+    this._writeAudit(record);
   }
 
   private _announce(): void {
@@ -692,12 +694,13 @@ export class Watchlight {
     };
     if (extra.decisionId) record.decision_id = extra.decisionId;
     if (extra.approved) record.approved = true;
-    try {
-      fs.mkdirSync(path.dirname(this._auditPath), { recursive: true });
-      fs.appendFileSync(this._auditPath, JSON.stringify(record) + "\n", "utf8");
-    } catch {
-      // Audit is best-effort in dev mode; never let it break the app.
-    }
+    this._writeAudit(record);
+  }
+
+  /** The single funnel for every audit record this governor produces: the local
+   *  `audit.jsonl` append, then the optional `auditSink` (fire-and-forget). */
+  private _writeAudit(record: Record<string, unknown>): void {
+    this._trail.write(record);
   }
 }
 
