@@ -1,0 +1,26 @@
+{
+  "policies": [
+    { "name": "reads-within-hourly-quota",
+      "code": "permit(principal, action == Action::\"read\", resource) when { context.reads_this_hour < 100 };" },
+    { "name": "hard-ceiling-on-reads",
+      "code": "forbid(principal, action == Action::\"read\", resource) when { context.reads_this_hour >= 100 };" },
+    { "name": "writes-within-daily-quota",
+      "code": "permit(principal, action == Action::\"write\", resource) when { context.writes_today < 20 };" }
+  ],
+  "tests": [
+    { "name": "first read of the hour allows", "action": "read", "principal": "User::\"u1\"",
+      "context": { "reads_this_hour": 0 }, "expect": "Allow" },
+    { "name": "99 reads so far still allows the 100th", "action": "read", "principal": "User::\"u1\"",
+      "context": { "reads_this_hour": 99 }, "expect": "Allow" },
+    { "name": "100 reads so far denies the 101st", "action": "read", "principal": "User::\"u1\"",
+      "context": { "reads_this_hour": 100 }, "expect": "Deny" },
+    { "name": "well over the quota denies", "action": "read", "principal": "User::\"u1\"",
+      "context": { "reads_this_hour": 250 }, "expect": "Deny" },
+    { "name": "missing counter denies (fail-closed)", "action": "read", "principal": "User::\"u1\"",
+      "context": {}, "expect": "Deny" },
+    { "name": "19 writes today allows the 20th", "action": "write", "principal": "User::\"u1\"",
+      "context": { "writes_today": 19 }, "expect": "Allow" },
+    { "name": "20 writes today denies the 21st", "action": "write", "principal": "User::\"u1\"",
+      "context": { "writes_today": 20 }, "expect": "Deny" }
+  ]
+}

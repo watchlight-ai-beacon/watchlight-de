@@ -27,6 +27,7 @@ import {
   sameSet,
   verifyScopeToken,
 } from "./scope-token";
+import { countAuditRecords, type Counters, type CountersOptions } from "./counters";
 import { selectBackend, type GovernanceBackend } from "./backend";
 import { sanitize as sanitizeText, type SanitizeOptions, type SanitizeResult } from "./sanitize";
 import { screen as screenText, type ScreenOptions, type ScreenResult } from "./screen";
@@ -42,6 +43,16 @@ export type { AuditRecord, AuditSink } from "./audit";
 export type { ScopeTokenOptions } from "./attenuation";
 export { ScopeTokenError, SCOPE_TOKEN_PREFIX, MAX_TOKEN_LENGTH } from "./scope-token";
 export type { ScopeTokenClaims, ScopeTokenErrorCode } from "./scope-token";
+export {
+  countAuditRecords,
+  parseWindowSeconds,
+  AuditTrailUnreadable,
+  DEFAULT_COUNTERS_MAX_BYTES,
+  MAX_COUNTERS_WINDOW_SECONDS,
+  MAX_COUNTERS_LINE_BYTES,
+  MAX_COUNTERS_NESTING,
+} from "./counters";
+export type { Counters, CountersOptions, CounterOutcome, CounterWindow } from "./counters";
 export { governedHooks, DEFAULT_ON_RESULT_TIMEOUT_MS } from "./claude-agent";
 export type { GovernedHooksOptions, GovernedHooksResult } from "./claude-agent";
 export { governTool, governTools } from "./langchain";
@@ -661,6 +672,25 @@ export class Watchlight {
     const result = screenText(content, { mode, families });
     this._auditScreen(intent, resource, result);
     return result;
+  }
+
+  /**
+   * Fold this governor's local audit trail into a count the caller places in
+   * Cedar `context` — the input to a quota policy such as
+   * `permit(...) when { context.reads_this_hour < 100 }`. Counts DECISION
+   * records (never `sanitization` / `egress` / `attenuation`) for exactly this
+   * `principal` — and, when given, this `intent` and `resource` — whose `ts`
+   * falls in `(now - window, now]`. `outcome` selects `allowed` (default),
+   * `denied` (Deny + NeedsApproval holds) or `all`. Reads only the local file
+   * (an `auditSink` mirrors records elsewhere but is never read back), streams
+   * it, and scans at most `maxBytes` from its end — `truncated` flags a lower
+   * bound. Malformed lines are skipped and counted in `skipped`, never echoed.
+   * A missing file is zero counts; an unreadable one throws
+   * {@link AuditTrailUnreadable}. Synchronous, so it can run inside a `context`
+   * binding right before the decision it feeds.
+   */
+  counters(opts: CountersOptions): Counters {
+    return countAuditRecords(this._trail.path, opts);
   }
 
   // ── internals ─────────────────────────────────────────────────────

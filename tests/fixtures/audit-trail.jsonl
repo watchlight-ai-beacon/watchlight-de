@@ -1,0 +1,26 @@
+{"ts":"2026-01-15T12:00:00.000Z","agent":"a","principal":"User::\"alice\"","intent":"read","resource":"doc/3","decision":"Allow","decision_id":"d8"}
+{"ts":"2026-01-15T11:05:00.000Z","agent":"a","principal":"User::\"alice\"","intent":"read","resource":"doc/1","decision":"Allow","decision_id":"d1"}
+{"ts":"2026-01-15T11:10:00.123456+00:00","agent":"a","principal":"User::\"alice\"","intent":"read","resource":"doc/2","decision":"Allow","decision_id":"d2"}
+{"ts":"2026-01-15T11:20:00Z","agent":"a","principal":"User::\"alice\"","intent":"read","resource":"doc/1","decision":"Deny","decision_id":"d3"}
+{"ts":"2026-01-15T11:30:00.000Z","agent":"a","principal":"User::\"alice\"","intent":"write","resource":"doc/1","decision":"Allow","decision_id":"d4"}
+{"ts":"2026-01-15T11:35:00.000Z","agent":"a","principal":"User::\"alice\"","intent":"wire","resource":"acct/1","decision":"NeedsApproval","decision_id":"d5"}
+{"ts":"2026-01-15T11:36:00.000Z","agent":"a","principal":"User::\"alice\"","intent":"wire","resource":"acct/1","decision":"Allow","decision_id":"d6","approved":true}
+{"ts":"2026-01-15T11:40:00.000Z","agent":"a","principal":"User::\"bob\"","intent":"read","resource":"doc/1","decision":"Allow","decision_id":"d7"}
+{"ts":"2026-01-15T11:00:00.000Z","agent":"a","principal":"User::\"alice\"","intent":"read","resource":"doc/1","decision":"Allow","decision_id":"d9"}
+{"ts":"2026-01-15T10:59:59.999Z","agent":"a","principal":"User::\"alice\"","intent":"read","resource":"doc/1","decision":"Allow","decision_id":"d10"}
+{"ts":"2026-01-15T12:00:00.001Z","agent":"a","principal":"User::\"alice\"","intent":"read","resource":"doc/1","decision":"Allow","decision_id":"d11"}
+{"ts":"2026-01-15T13:30:00.000+02:00","agent":"a","principal":"User::\"alice\"","intent":"read","resource":"doc/1","decision":"Allow","decision_id":"d12"}
+{"ts":"2026-01-15T11:45:00.000Z","agent":"a","intent":"read","event":"sanitization","resource":"doc/1","mode":"tag","detector":"de-rules-1","counts":{"EMAIL":1},"total":1}
+{"ts":"2026-01-15T11:46:00.000Z","agent":"a","principal":"User::\"alice\"","intent":"read","event":"egress","resource":"doc/1","replaced":false,"decision_id":"d1"}
+{"ts":"2026-01-15T11:47:00.000Z","agent":"a","intent":"attenuate","event":"attenuation","node_id":"n1","resource":"root scope","decision":"Allow","depth":0,"tools":["read"]}
+not json at all
+[1,2,3]
+{"ts":"2026-01-15 11:50:00","agent":"a","principal":"User::\"alice\"","intent":"read","resource":"doc/1","decision":"Allow"}
+{"ts":"2026-01-15T11:51:00.000Z","agent":"a","principal":"User::\"alice\"","intent":"read","resource":"doc/1"}
+
+{"ts":"2026-01-15T11:52:00.000Z","agent":"a","principal":"User::\"alice\"","intent":"read","resource":"doc/1","decision":"Allow","decision_id":"d13"}
+{"ts":"2026-01-15T11:53:00.000Z","agent":"a","principal":"User::\"carol\"","intent":"read","resource":"doc/1","decision":"Deny","decision_id":"d14"}
+{"ts":"2026-01-15T11:54:00.000Z","agent":"a","principal":"User::\"alice\"","intent":"read","resource":"doc/1","decision":"Allow","decision_id":"d15"}
+42
+{"ts":"2026-01-15T11:55:00.000Z","agent":"a","principal":"User::\"alice\"","intent":"read","resource":"doc/1","decision":true}
+{"ts":"2026-01-15T11:56:00.000Z","agent":"a","intent":"read","resource":"doc/1","decision":"Allow"}

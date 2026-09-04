@@ -44,6 +44,15 @@ from typing import Any, Callable, Optional, Sequence, TypeVar, Union
 import watchlight_engine as _engine
 
 from ._audit import AuditSink, AuditTrail
+from ._counters import (
+    DEFAULT_COUNTERS_MAX_BYTES,
+    MAX_COUNTERS_LINE_BYTES,
+    MAX_COUNTERS_NESTING,
+    MAX_COUNTERS_WINDOW_SECONDS,
+    AuditTrailUnreadable,
+    count_audit_records,
+    parse_window_seconds,
+)
 from .attenuation import DE_MAX_DEPTH, AttenuationDenied, DevEditionCeiling, Scope
 from .policytest import load_test_suite, run_policy_tests
 from .scope_token import ScopeTokenError, normalize_secret, require_secret, same_set, verify_scope_token
@@ -51,6 +60,13 @@ from .scope_token import ScopeTokenError, normalize_secret, require_secret, same
 __all__ = [
     "Watchlight",
     "AuditSink",
+    "AuditTrailUnreadable",
+    "count_audit_records",
+    "parse_window_seconds",
+    "DEFAULT_COUNTERS_MAX_BYTES",
+    "MAX_COUNTERS_LINE_BYTES",
+    "MAX_COUNTERS_NESTING",
+    "MAX_COUNTERS_WINDOW_SECONDS",
     "Denied",
     "NeedsApproval",
     "sanitize",
@@ -1116,6 +1132,43 @@ class Watchlight:
         return result
 
     # ── internals ───────────────────────────────────────────────────
+
+    def counters(
+        self,
+        principal: str,
+        intent: Optional[str] = None,
+        resource: Optional[str] = None,
+        window: Union[str, int] = "1h",
+        *,
+        outcome: str = "allowed",
+        now: Union[None, datetime.datetime, str] = None,
+        max_bytes: int = DEFAULT_COUNTERS_MAX_BYTES,
+    ) -> dict:
+        """Fold this governor's local audit trail into a count the caller places
+        in Cedar ``context`` — the input to a quota policy such as
+        ``permit(...) when { context.reads_this_hour < 100 }``.
+
+        Counts DECISION records (never ``sanitization`` / ``egress`` /
+        ``attenuation``) for exactly this ``principal`` — and, when given, this
+        ``intent`` and ``resource`` — whose ``ts`` falls in ``(now - window,
+        now]``. ``outcome`` selects ``"allowed"`` (default), ``"denied"`` (Deny +
+        NeedsApproval holds) or ``"all"``. Reads only the local file (an
+        ``audit_sink`` mirrors records elsewhere but is never read back), streams
+        it, and scans at most ``max_bytes`` from its end — ``truncated`` flags a
+        lower bound. Malformed lines are skipped and counted in ``skipped``,
+        never echoed. A missing file is zero counts; an unreadable one raises
+        :class:`AuditTrailUnreadable`. See :func:`watchlight.count_audit_records`.
+        """
+        return count_audit_records(
+            self._audit_path,
+            principal,
+            intent,
+            resource,
+            window,
+            outcome=outcome,
+            now=now,
+            max_bytes=max_bytes,
+        )
 
     def _apply_on_result(self, result: Any, on_result: Callable[[Any, dict], Any], info: dict) -> tuple[Any, bool]:
         """Run an egress hook over a governed tool's result and audit the outcome

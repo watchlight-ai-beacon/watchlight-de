@@ -274,6 +274,20 @@ govern = Watchlight(agent="my-agent", audit_sink=lambda record: my_store.insert(
 Reference sinks — a Postgres row, an OTLP log record, a webhook — are in
 [`examples/patterns/audit-sink.md`](examples/patterns/audit-sink.md).
 
+The trail is also an input: `govern.counters(...)` folds it into a number for a
+quota policy — decisions for exactly this principal (and intent / resource) in
+the last `window`, from the record timestamps — so `context.reads_this_hour < 100`
+has something to compare against. Streams the local file (bounded, 64 MiB by
+default); malformed lines are skipped and counted, never echoed.
+
+```python
+c = govern.counters(principal='User::"u1"', intent="read", window="1h")   # {"count": 7, "window": {...}, ...}
+govern.authorize(action="read", principal='User::"u1"', context={"reads_this_hour": c["count"]})
+```
+
+The [quotas pattern](examples/patterns/quotas.md) has the policy, the tool
+binding, and the exact counting rules.
+
 ---
 
 ## Test your policies before they gate real actions
@@ -341,6 +355,7 @@ The advanced policy JSON — each a runnable `{ policies, tests }` suite with Ce
 | [Screen before model](./examples/patterns/screen-before-model.md) | Catch prompt-injection shapes in what a read returns *before* the model reads it. | [`screen-before-model.mjs`](./examples/patterns/scripts/screen-before-model.mjs) |
 | [Sub-agent confinement](./examples/patterns/subagent-confinement.md) | A spawned agent can only ever do *less* than its parent — never more. | [`subagent-confinement.mjs`](./examples/patterns/scripts/subagent-confinement.mjs) |
 | [Audit sink](./examples/patterns/audit-sink.md) | Ship the value-free trail to a store you already run, without touching a decision. | [`audit-sink.mjs`](./examples/patterns/scripts/audit-sink.mjs) |
+| [Quotas](./examples/patterns/quotas.md) | *This many* reads per hour, writes per day — a counter from the audit trail in `context`. | [`quotas.suite.json`](./examples/patterns/suites/quotas.suite.json) |
 
 Patterns whose guarantee is not a policy verdict — sanitization, content
 screening, scope attenuation, the audit sink — are verified by a Node script under
