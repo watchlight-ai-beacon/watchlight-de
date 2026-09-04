@@ -24,6 +24,7 @@ what a pattern claims and what the engine does can't drift.
 | [Screen before model](./screen-before-model.md) | Catch prompt-injection shapes in what a read returns *before* the model reads it. | [`screen-before-model.mjs`](./scripts/screen-before-model.mjs) |
 | [Sub-agent confinement](./subagent-confinement.md) | A spawned agent can only ever do *less* than its parent — never more. | [`subagent-confinement.mjs`](./scripts/subagent-confinement.mjs) |
 | [Audit sink](./audit-sink.md) | Ship the value-free trail to a store you already run — Postgres, OTLP, a webhook — without touching a decision. | [`audit-sink.mjs`](./scripts/audit-sink.mjs) |
+| [Quotas](./quotas.md) | *This many* reads per hour, writes per day — a counter folded from the audit trail into Cedar `context`. | [`quotas.suite.json`](./suites/quotas.suite.json) |
 
 ## Run them
 

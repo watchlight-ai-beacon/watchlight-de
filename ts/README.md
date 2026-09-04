@@ -348,6 +348,28 @@ rejection is reported once (error type only) and never blocks or changes a
 decision. Reference sinks — a Postgres row, an OTLP log record, a webhook — are in
 [`examples/patterns/audit-sink.md`](../examples/patterns/audit-sink.md).
 
+### Count it — `govern.counters` for quota policies
+
+The trail is also an input. `govern.counters(...)` folds it into the number a
+quota policy compares against — decisions for exactly this `principal` (and
+`intent` / `resource` when given) whose `ts` falls in the last `window`:
+
+```ts
+const c = govern.counters({ principal: 'User::"u1"', intent: "read", window: "1h" });
+// { count: 7, outcome: "allowed", window: { seconds: 3600, start, end }, records, skipped, truncated }
+await govern.authorize({ action: "read", principal: 'User::"u1"', context: { reads_this_hour: c.count } });
+```
+
+Synchronous, so it runs inside a `context` binding. `window` is `"15m"` / `"1h"`
+/ `"24h"` / `"7d"` or seconds; `outcome` is `allowed` (default) / `denied` / `all`.
+Only decision records count (never `sanitization` / `egress` / `attenuation`);
+the local file is streamed and scanned to at most `maxBytes` (64 MiB) from its
+end — `truncated` marks a lower bound (omit the counter from `context` so the
+policy denies, audited). Malformed or oversized lines are skipped and counted in
+`skipped`, never echoed; a missing file is zero, an unreadable one throws
+`AuditTrailUnreadable`. Each call rescans the tail — rotate the file on a
+long-lived agent. Pattern: [quotas](../examples/patterns/quotas.md).
+
 ## Graduation to Enterprise
 
 Set `WATCHLIGHT_APDP_URL` and the **same code** authorizes against the networked
