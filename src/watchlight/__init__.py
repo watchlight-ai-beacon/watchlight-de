@@ -55,6 +55,9 @@ __all__ = [
     "sanitize",
     "SanitizeError",
     "DECISION_ID_MAX_LENGTH",
+    "DETECTOR_VERSION",
+    "DEFAULT_PII_TYPES",
+    "HEURISTIC_PII_TYPES",
     "govern",
     "Scope",
     "AttenuationDenied",
@@ -157,7 +160,16 @@ def _resolve(binding: Any, args: tuple, kwargs: dict) -> Optional[str]:
 
 
 # ── sanitize: deterministic PII redaction (mirrors the TS detector) ─────────
-DETECTOR_VERSION = "de-rules-1"
+# Structured, high-precision rules (email, phone, SSN, credit card w/ Luhn, IBAN,
+# IPv4, API keys, labelled passport numbers + MRZ lines, labelled dates of
+# birth), an application-supplied dictionary of KNOWN values, and OPT-IN
+# heuristics (PERSON, ADDRESS — lower precision, off by default). Every regex
+# quantifier is bounded or applies to a single character class: no nested
+# unbounded repetition, so no catastrophic backtracking on adversarial input.
+DETECTOR_VERSION = "de-rules-2"
+
+#: Heuristic detectors: lower precision, OFF unless listed in ``types``.
+HEURISTIC_PII_TYPES: tuple[str, ...] = ("PERSON", "ADDRESS")
 
 
 class SanitizeError(RuntimeError):
@@ -201,18 +213,138 @@ def _luhn_ok(digits: str) -> bool:
     return total % 10 == 0
 
 
-_DETECTORS: list[tuple[str, re.Pattern, Optional[Callable[[str], bool]]]] = [
-    ("EMAIL", re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"), None),
-    ("API_KEY", re.compile(r"\b(?:sk-[A-Za-z0-9]{16,}|ghp_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16})\b"), None),
-    ("SSN", re.compile(r"\b(?!000|666|9\d\d)\d{3}-(?!00)\d{2}-(?!0000)\d{4}\b"), None),
+# ── shared shapes (bounded quantifiers only) ──
+_MONTH = r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]{0,6}\.?"
+_DAY_ORD = r"\d{1,2}(?:st|nd|rd|th)?"
+_DATE_SHAPE = (
+    r"(?:\d{4}[/.-]\d{1,2}[/.-]\d{1,2}"  # 1985-03-15
+    r"|\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}"  # 03/15/1985, 15.03.85
+    rf"|{_DAY_ORD}[ \t]{{1,3}}{_MONTH}[ \t]{{1,3}}\d{{4}}"  # 15 March 1985
+    rf"|{_MONTH}[ \t]{{1,3}}{_DAY_ORD},?[ \t]{{1,3}}\d{{4}})"  # March 15, 1985
+)
+_DOB_LABEL = r"(?:d\.?o\.?b\.?|date[ \t]{1,3}of[ \t]{1,3}birth|birth[ \t]?date|birthday|born(?:[ \t]{1,3}on)?)"
+_CAP_WORD = r"[A-Z][a-z]{1,20}"
+_NAME_WORD = rf"{_CAP_WORD}(?:[-']{_CAP_WORD})?"
+_HONORIFIC = r"(?:Mr|Mrs|Ms|Miss|Mx|Dr|Prof|Sir|Dame|Rev|Hon)\.?"
+# Case-tolerant label (the pattern itself is case-sensitive so name words stay Title Case).
+_PERSON_LABEL = (
+    r"(?:[Nn]ame|[Pp]atient|[Cc]ustomer|[Cc]lient|[Ee]mployee|[Cc]ontact|[Aa]ttn|ATTN"
+    r"|[Aa]ttention|[Aa]pplicant|[Bb]eneficiary)"
+)
+_STREET_SUFFIX = (
+    r"(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr|Court|Ct|Way|Place|Pl"
+    r"|Terrace|Ter|Circle|Cir|Parkway|Pkwy|Highway|Hwy|Square|Sq|Trail|Trl|Close|Crescent|Cres)"
+)
+
+# Common capitalized sentence starters / calendar words that are not names.
+_PERSON_STOP = frozenset(
+    "The This That These Those There Then Thanks Thank Please Dear Hello Hi Hey Our Your Their "
+    "His Her New Re Subject From To Date Sent Cc Bcc Note Notes Summary Total Amount Invoice Order "
+    "Account Card Page Section Chapter Table Figure See Also However "
+    "Monday Tuesday Wednesday Thursday Friday Saturday Sunday "
+    "January February March April May June July August September October November December".split()
+)
+
+
+def _plausible_date(m: str) -> bool:
+    """Plausibility check for numeric date shapes (labelled contexts only)."""
+    if not m[:1].isdigit() or not re.fullmatch(r"[\d/.-]+", m):
+        return True  # textual month: shape already strict
+    try:
+        parts = [int(p) for p in re.split(r"[/.-]", m)]
+    except ValueError:
+        return False
+    if len(parts) != 3:
+        return False
+    year_idx = next((i for i, p in enumerate(parts) if p >= 1000), -1)
+    small = [p for i, p in enumerate(parts) if i != year_idx]
+    if year_idx >= 0 and not (1900 <= parts[year_idx] <= 2099):
+        return False
+    if year_idx < 0:
+        small.pop()  # two-digit year in last position
+    return all(1 <= p <= 31 for p in small) and min(small) <= 12
+
+
+# (type, pattern, validator, redact_group_1, default_on). A group-1 span is
+# always the LAST component of the match (a label such as ``DOB:`` precedes it
+# and is kept).
+_DETECTORS: list[tuple[str, re.Pattern, Optional[Callable[[str], bool]], bool, bool]] = [
+    ("EMAIL", re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"), None, False, True),
+    ("API_KEY", re.compile(r"\b(?:sk-[A-Za-z0-9]{16,}|ghp_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16})\b"),
+     None, False, True),
+    ("SSN", re.compile(r"\b(?!000|666|9\d\d)\d{3}-(?!00)\d{2}-(?!0000)\d{4}\b"), None, False, True),
     ("CREDIT_CARD", re.compile(r"\b(?:\d[ -]?){13,19}\b"),
-     lambda m: 13 <= len(re.sub(r"[ -]", "", m)) <= 19 and _luhn_ok(re.sub(r"[ -]", "", m))),
-    ("IBAN", re.compile(r"\b[A-Z]{2}\d{2}(?:[ ]?[A-Za-z0-9]{4}){2,7}(?:[ ]?[A-Za-z0-9]{1,3})?\b"), None),
+     lambda m: 13 <= len(re.sub(r"[ -]", "", m)) <= 19 and _luhn_ok(re.sub(r"[ -]", "", m)), False, True),
+    ("IBAN", re.compile(r"\b[A-Z]{2}\d{2}(?:[ ]?[A-Za-z0-9]{4}){2,7}(?:[ ]?[A-Za-z0-9]{1,3})?\b"), None, False, True),
     ("IPV4", re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"),
-     lambda m: all(int(o) <= 255 for o in m.split("."))),
+     lambda m: all(int(o) <= 255 for o in m.split(".")), False, True),
+    # PASSPORT (a): a number labelled as a passport — 6–9 alphanumerics with at
+    # least one digit. Bare unlabelled numbers are NOT detected (too ambiguous;
+    # list held numbers in ``known``).
+    ("PASSPORT",
+     re.compile(r"\bpassport(?:[ \t]{1,3}(?:no|number|num|nr))?\.?[ \t]{0,4}[:#-]{0,2}[ \t]{0,4}([A-Za-z0-9]{6,9})(?![A-Za-z0-9])",
+                re.IGNORECASE),
+     lambda m: any(ch.isdigit() for ch in m), True, True),
+    # PASSPORT (b): ICAO 9303 TD3 machine-readable-zone lines (44 chars), as
+    # produced by OCR of a passport data page.
+    ("PASSPORT",
+     re.compile(r"(?<![A-Z0-9<])(?:P[A-Z<][A-Z]{3}[A-Z<]{39}|[A-Z0-9<]{9}\d[A-Z<]{3}\d{7}[MF<]\d{7}[A-Z0-9<]{14}\d{2})(?![A-Z0-9<])"),
+     None, False, True),
+    # DOB: a date in a birth-date context (``DOB:``, ``date of birth``, ``born on``).
+    # Bare dates are not detected — a statement date is not a birth date.
+    ("DOB", re.compile(rf"\b{_DOB_LABEL}[ \t]{{0,4}}[:#=-]?[ \t]{{0,4}}({_DATE_SHAPE})(?!\d)", re.IGNORECASE),
+     _plausible_date, True, True),
     ("PHONE", re.compile(r"(?<!\d)(?:\+?\d{1,3}[ .-]?)?(?:\(\d{2,4}\)[ .-]?)?\d{3}[ .-]?\d{4}(?!\d)"),
-     lambda m: len(re.sub(r"\D", "", m)) >= 10),
+     lambda m: len(re.sub(r"\D", "", m)) >= 10, False, True),
+    # ── opt-in heuristics (default OFF; list in ``types`` to enable) ──
+    # ADDRESS: "<number> <Capitalized words> <street suffix>[, unit][, City, ST 12345]"
+    # and "P.O. Box <n>". Misses unnumbered / lower-case / non-Latin addresses.
+    ("ADDRESS",
+     re.compile(
+         rf"\b(?:\d{{1,6}}[A-Za-z]?[ \t]{{1,3}}(?:{_CAP_WORD}[ \t]{{1,3}}){{1,4}}{_STREET_SUFFIX}\b\.?"
+         rf"(?:,?[ \t]{{1,3}}(?:Apt|Suite|Ste|Unit|#)\.?[ \t]{{0,3}}[A-Za-z0-9-]{{1,8}})?"
+         rf"(?:,[ \t]{{1,3}}{_CAP_WORD}(?:[ \t]{_CAP_WORD}){{0,2}},?[ \t]{{1,3}}[A-Z]{{2}}[ \t]{{1,3}}\d{{5}}(?:-\d{{4}})?)?"
+         rf"|\bP\.?[ \t]?O\.?[ \t]{{1,3}}Box[ \t]{{1,3}}\d{{1,6}}\b)"
+     ),
+     None, False, False),
+    # PERSON (a): honorific- or label-anchored names ("Dr. Ada Lovelace", "Patient: Ada Lovelace").
+    ("PERSON",
+     re.compile(
+         rf"\b(?:{_HONORIFIC}|{_PERSON_LABEL}[ \t]{{0,3}}[:#-]?)[ \t]{{1,4}}"
+         rf"({_NAME_WORD}(?:[ \t]{{1,3}}[A-Z]\.)?(?:[ \t]{{1,3}}{_NAME_WORD}){{0,2}})(?![A-Za-z])"
+     ),
+     None, True, False),
+    # PERSON (b): bare "First [M.] Last [Last]" capitalized runs. Inherently low
+    # precision (any Title Case phrase); a stop-list trims sentence starters.
+    ("PERSON", re.compile(rf"\b{_NAME_WORD}(?:[ \t][A-Z]\.)?(?:[ \t]{_NAME_WORD}){{1,2}}(?![A-Za-z])"),
+     lambda m: re.split(r"[ \t]", m)[0] not in _PERSON_STOP, False, False),
 ]
+
+#: The structured (default-on) detector types, in priority order.
+DEFAULT_PII_TYPES: tuple[str, ...] = tuple(dict.fromkeys(d[0] for d in _DETECTORS if d[4]))
+
+
+def _detect_known(text: str, known: Sequence[str]) -> list[tuple[int, int, str, str]]:
+    """Every occurrence of every known value, case-insensitive; overlapping
+    occurrences merge into one span. Values are never logged or raised."""
+    raw: list[tuple[int, int]] = []
+    for v in known:
+        if not v or not v.strip():
+            continue
+        pat = re.compile(re.escape(v), re.IGNORECASE)
+        pos = 0
+        while (m := pat.search(text, pos)) is not None:
+            raw.append((m.start(), m.end()))
+            pos = m.start() + 1  # also find overlapping self-occurrences
+    raw.sort(key=lambda s: (s[0], -s[1]))
+    merged: list[list[int]] = []
+    for s, e in raw:
+        if merged and s < merged[-1][1]:
+            if e > merged[-1][1]:
+                merged[-1][1] = e
+        else:
+            merged.append([s, e])
+    return [(s, e, "KNOWN", text[s:e]) for s, e in merged]
 
 
 def sanitize(
@@ -221,35 +353,53 @@ def sanitize(
     mode: str = "tag",
     types: Optional[Sequence[str]] = None,
     decision_id: Optional[str] = None,
+    known: Optional[Sequence[str]] = None,
 ) -> dict:
     """Redact PII from ``text``. Deterministic, fail-closed. Returns
     ``{"text": ..., "report": {mode, detector_version, counts, total}}`` where the
     report is value-free (counts by type — never the values). ``mode`` is
     ``tag`` (consistent ``<EMAIL_1>``), ``mask`` (``[EMAIL]``), or ``hash``.
+    ``types`` restricts the detectors (default: every structured type; the
+    heuristics ``PERSON`` / ``ADDRESS`` run only when listed). ``known`` is an
+    application-supplied dictionary of exact strings to redact — matched
+    case-insensitively as substrings, every occurrence covered, counted under
+    ``KNOWN``; the values never appear in the output, report, or audit trail.
     ``decision_id`` — the correlation id of the :meth:`Watchlight.authorize`
     decision that governed this read — is validated (1-128 code points, no control or line-separator
     characters) and echoed onto ``report["decision_id"]``."""
     if not isinstance(text, str):
         raise SanitizeError("input must be a string (extract document text first)")
     decision_id = _validate_decision_id(decision_id)
-    enabled = set(types) if types is not None else {d[0] for d in _DETECTORS}
+    known_values = list(known) if known is not None else []
+    if not all(isinstance(v, str) for v in known_values):
+        # Value-free by design: the message never echoes the offending entry.
+        raise SanitizeError("known must be a sequence of strings")
+    enabled = set(types) if types is not None else set(DEFAULT_PII_TYPES)
     try:
-        spans: list[tuple[int, int, str, str]] = []
-        for typ, pat, valid in _DETECTORS:
+        # KNOWN first: an application-supplied value is the most authoritative
+        # label when it ties with a structured detector on the same span.
+        spans: list[tuple[int, int, str, str]] = _detect_known(text, known_values) if known_values else []
+        for typ, pat, valid, group, _default in _DETECTORS:
             if typ not in enabled:
                 continue
             for m in pat.finditer(text):
-                val = m.group(0)
+                val = m.group(1) if group else m.group(0)
+                start = m.start(1) if group else m.start()
                 if valid and not valid(val):
                     continue
-                spans.append((m.start(), m.end(), typ, val))
-        # resolve overlaps: earliest start, then longest
+                spans.append((start, start + len(val), typ, val))
+        # resolve overlaps: earliest start, then longest; a KNOWN span extending
+        # past a kept span is clipped, not dropped, so no part of an
+        # application-supplied value survives.
         spans.sort(key=lambda s: (s[0], -(s[1] - s[0])))
         kept: list[tuple[int, int, str, str]] = []
         last_end = -1
         for s in spans:
             if s[0] >= last_end:
                 kept.append(s)
+                last_end = s[1]
+            elif s[2] == "KNOWN" and s[1] > last_end:
+                kept.append((last_end, s[1], "KNOWN", text[last_end:s[1]]))
                 last_end = s[1]
         counters: dict[str, str] = {}
         per_type: dict[str, int] = {}
@@ -262,7 +412,8 @@ def sanitize(
             elif mode == "hash":
                 rep = f"<{typ}_{hashlib.sha256(val.encode()).hexdigest()[:8]}>"
             else:
-                key = f"{typ}:{val}"
+                # KNOWN values were matched case-insensitively, so their tag key is too.
+                key = f"{typ}:{val.lower() if typ == 'KNOWN' else val}"
                 rep = counters.get(key)
                 if rep is None:
                     per_type[typ] = per_type.get(typ, 0) + 1
@@ -572,15 +723,17 @@ class Watchlight:
         mode: str = "tag",
         types: Optional[Sequence[str]] = None,
         decision_id: Optional[str] = None,
+        known: Optional[Sequence[str]] = None,
     ) -> dict:
         """Strip PII from text before an agent reads it (governed data
         minimization). Fail-closed; writes a value-free ``sanitization`` audit
-        record. Extract a document to text first (never a "redacted PDF").
+        record (counts by type — never the values, including ``known`` ones).
+        Extract a document to text first (never a "redacted PDF").
         Pass the ``decision_id`` returned by :meth:`authorize` to join the
         ``sanitization`` audit line to the decision that governed the read."""
         # decision_id is validated (bounded, no control chars) inside sanitize()
         # before it is echoed onto the report and written to the audit line.
-        result = sanitize(content, mode=mode, types=types, decision_id=decision_id)
+        result = sanitize(content, mode=mode, types=types, decision_id=decision_id, known=known)
         self._audit_sanitize(intent, resource, result)
         return result
 

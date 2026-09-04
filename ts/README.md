@@ -209,10 +209,32 @@ const { text: safe, report } = govern.sanitize(text, { resource: "statement.pdf"
 await agent.read(safe);
 ```
 
-The deterministic detector covers structured PII — email, phone, SSN, credit card
-(Luhn-validated), IBAN, IPv4, API keys. Modes: `tag` (consistent `<EMAIL_1>`
-placeholders, default), `mask` (`[EMAIL]`), `hash`. `govern.sanitize` records a
-**value-free** audit entry (counts by type + mode — never the values).
+The deterministic detector (`DETECTOR_VERSION = "de-rules-2"`) covers structured
+PII — `EMAIL`, `PHONE`, `SSN`, `CREDIT_CARD` (Luhn-validated), `IBAN`, `IPV4`,
+`API_KEY`, `PASSPORT` (a number labelled `passport …`, plus ICAO machine-readable
+zone lines; bare unlabelled numbers are deliberately not matched) and `DOB` (a
+plausible date in a `DOB:` / `date of birth` / `born on` context; bare dates are
+not matched). Modes: `tag` (consistent `<EMAIL_1>` placeholders, default), `mask`
+(`[EMAIL]`), `hash`. `govern.sanitize` records a **value-free** audit entry
+(counts by type + mode + detector version — never the values).
+
+**Values you already hold** — names, streets, ids from your own records — go in
+`known`. Every occurrence is redacted (exact string, case-insensitive; overlapping
+or nested occurrences merge into one span) and counted under `KNOWN`; the values
+never appear in the output, the report, or the audit line. `known` is honoured
+even under a `types` filter.
+
+```ts
+govern.sanitize(text, { known: [customer.fullName, customer.street] });
+// report.counts → { KNOWN: 3, DOB: 1, … }   (counts only)
+```
+
+**Opt-in heuristics.** `PERSON` (honorific- or label-anchored names and bare
+Title Case runs) and `ADDRESS` (numbered street + suffix, `P.O. Box`) are lower
+precision — Title Case phrases and lower-case or unnumbered addresses are the
+known trade-offs — so they are **off by default**: list them in `types` to run
+them (`types: [...DEFAULT_PII_TYPES, "PERSON", "ADDRESS"]`). For precision, prefer
+`known`.
 
 `SanitizeOptions` is `{ mode?, types?, intent?, resource?, decisionId? }`. Pass
 the `decisionId` returned by `authorize` and the `sanitization` audit line
@@ -222,8 +244,9 @@ written — 1–128 characters (UTF-16 code units in TypeScript, code points in 
 (fail-closed, nothing is written).
 
 A pure `sanitize(text, opts)` is also exported. Fail-closed: it throws
-`SanitizeError` rather than return partially-redacted text. Names/addresses need
-NER (Enterprise); recall is bounded by the enabled detectors.
+`SanitizeError` rather than return partially-redacted text (a malformed `known`
+entry is rejected without echoing it). Recall is bounded by the enabled
+detectors; the report says exactly which ran.
 
 ## Value-free audit
 
