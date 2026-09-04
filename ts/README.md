@@ -76,7 +76,11 @@ the engine's strict-subset validator** — a widened chain throws
 oversized or wrong-agent token throws `ScopeTokenError` (`.code`). The token
 carries only the root grant, the per-level granted dimensions, `agent`, `depth`,
 `iat`, `exp`. A shared secret is integrity within one trust domain, not
-attestation — a holder of the secret can mint any scope the root allows.
+attestation: the root is rebuilt from the token, so a holder of the secret can
+mint any scope at all, root included — the token adds no authority beyond what
+the holder could grant itself with `scope()`. A rebuilt scope past the token's
+`exp` refuses `attenuate()` / `toToken()` (`ScopeTokenError`, `expired`); call
+`scope.assertActive()` before acting under a long-held scope.
 
 ## Claude Agent SDK
 

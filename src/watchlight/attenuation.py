@@ -76,6 +76,10 @@ class AttenuationDenied(PermissionError):
         super().__init__(f"attenuation denied ({dims}): {reason}")
 
 
+#: Fixed message for a spent scope (never carries scope or token details).
+_EXPIRED_SCOPE = "scope has expired"
+
+
 def _norm(x: Sequence[str] | None) -> list[str]:
     return list(x) if x else []
 
@@ -161,6 +165,20 @@ class Scope:
         rebuilt from a token so it cannot outlive the token."""
         self._expires_at = min(self._expires_at, int(exp))
 
+    @property
+    def expired(self) -> bool:
+        """True once this scope is past :attr:`expires_at`."""
+        return now_seconds() >= self._expires_at
+
+    def assert_active(self) -> None:
+        """Fail closed on a spent scope: raises :class:`ScopeTokenError`
+        (``expired``) once the scope is past :attr:`expires_at`. Called by
+        :meth:`attenuate` and :meth:`to_token`; call it yourself before acting
+        under a scope you hold across time (e.g. a scope rebuilt from a token in
+        a long-running worker)."""
+        if self.expired:
+            raise ScopeTokenError("expired", _EXPIRED_SCOPE)
+
     def _step_claim(self) -> dict[str, Any]:
         """The engine-granted dimensions of this level, as a token claim."""
         return {
@@ -182,10 +200,9 @@ class Scope:
         ``token_secret`` was configured or the scope has no remaining lifetime.
         The token never carries argument values, audit paths, or the secret."""
         secret = require_secret(self._token_secret)
+        self.assert_active()
         now = now_seconds()
         remaining = self.expires_at - now
-        if remaining <= 0:
-            raise ScopeTokenError("expired", "scope has no remaining lifetime")
         ttl = remaining if ttl_seconds is None else ttl_seconds
         if isinstance(ttl, bool) or not isinstance(ttl, int) or ttl <= 0:
             raise ScopeTokenError("lifetime", "ttl_seconds must be a positive integer")
@@ -222,6 +239,7 @@ class Scope:
         parent, and :class:`DevEditionCeiling` at the Developer-Edition depth
         ceiling.
         """
+        self.assert_active()  # a spent scope grants nothing further (fail-closed)
         child_depth = self.depth + 1
         requested_tools = _norm(tools) if tools is not None else self.allowed_tools
 

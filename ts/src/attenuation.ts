@@ -54,6 +54,8 @@ export class AttenuationDenied extends Error {
 }
 
 const norm = (x?: readonly string[] | null): string[] => (x ? [...x] : []);
+/** Fixed message for a spent scope (never carries scope or token details). */
+const EXPIRED_SCOPE = "scope has expired";
 const nodeId = (): string => crypto.randomBytes(4).toString("hex");
 
 export interface AttenuateOptions {
@@ -151,6 +153,21 @@ export class Scope {
     this._expiresAt = Math.min(this._expiresAt, exp);
   }
 
+  /** True once this scope is past {@link expiresAt}. */
+  get expired(): boolean {
+    return nowSeconds() >= this._expiresAt;
+  }
+
+  /**
+   * Fail closed on a spent scope: throws {@link ScopeTokenError} (`expired`) once
+   * the scope is past {@link expiresAt}. Called by {@link attenuate} and
+   * {@link toToken}; call it yourself before acting under a scope you hold
+   * across time (e.g. a scope rebuilt from a token in a long-running worker).
+   */
+  assertActive(): void {
+    if (this.expired) throw new ScopeTokenError("expired", EXPIRED_SCOPE);
+  }
+
   /** The engine-granted dimensions of this level, as a token claim. */
   private _stepClaim(): ScopeStepClaim {
     return {
@@ -173,9 +190,9 @@ export class Scope {
    */
   toToken(opts: ScopeTokenOptions = {}): string {
     const secret = requireSecret(this._tokenSecret);
+    this.assertActive();
     const now = nowSeconds();
     const remaining = this.expiresAt - now;
-    if (remaining <= 0) throw new ScopeTokenError("expired", "scope has no remaining lifetime");
     const ttl = opts.ttlSeconds === undefined ? remaining : opts.ttlSeconds;
     if (!Number.isSafeInteger(ttl) || ttl <= 0) {
       throw new ScopeTokenError("lifetime", "ttlSeconds must be a positive integer");
@@ -202,6 +219,7 @@ export class Scope {
    * {@link DevEditionCeiling} at the Developer-Edition depth ceiling.
    */
   attenuate(opts: AttenuateOptions = {}): Scope {
+    this.assertActive(); // a spent scope grants nothing further (fail-closed)
     const childDepth = this.depth + 1;
     const requestedTools = opts.tools !== undefined ? norm(opts.tools) : this.allowedTools;
 

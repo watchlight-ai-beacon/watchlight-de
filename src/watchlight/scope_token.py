@@ -87,7 +87,7 @@ MAX_CHAIN_LENGTH = 5
 
 _HMAC_BYTES = 32
 _MAX_SAFE_INT = 2**53 - 1
-_B64URL = re.compile(r"^[A-Za-z0-9_-]+$")
+_B64URL = re.compile(r"[A-Za-z0-9_-]+")
 
 _STEP_KEYS = ("intents", "resources", "time_budget_seconds", "tools")
 _ROOT_KEYS = _STEP_KEYS + ("max_depth",)
@@ -173,9 +173,12 @@ def normalize_claims(claims: dict[str, Any]) -> dict[str, Any]:
 def normalize_secret(secret: Union[str, bytes, bytearray, None]) -> Optional[bytes]:
     """Coerce a configured secret to bytes and enforce the minimum length. Never
     echoes the secret."""
-    if secret is None:
+    # An empty / whitespace-only value (an unfilled ``.env`` placeholder) is
+    # "unset": constructing a governor must not fail for users who never mint a
+    # token — the token operations themselves fail closed with ``no_secret``.
+    if secret is None or (isinstance(secret, str) and not secret.strip()) or len(secret) == 0:
         return None
-    raw = secret.encode("utf-8") if isinstance(secret, str) else bytes(secret)
+    raw = secret.encode("utf-8") if isinstance(secret, str) else bytes(secret)  # bytes() copies
     if len(raw) < MIN_SECRET_BYTES:
         raise ScopeTokenError("weak_secret", f"token secret must be at least {MIN_SECRET_BYTES} bytes")
     return raw
@@ -200,7 +203,7 @@ def _b64url(raw: bytes) -> str:
 
 def _b64url_decode(s: str) -> bytes:
     """Strict base64url decode: alphabet-only, no padding, canonical encoding."""
-    if not s or not _B64URL.match(s) or len(s) % 4 == 1:
+    if not s or not _B64URL.fullmatch(s) or len(s) % 4 == 1:
         raise ScopeTokenError("malformed", "token segment is not base64url")
     padded = s + "=" * (-len(s) % 4)
     try:

@@ -191,8 +191,13 @@ export function normalizeClaims(claims: ScopeTokenClaims): ScopeTokenClaims {
 /** Coerce a configured secret to bytes and enforce the minimum length. Never
  *  echoes the secret. */
 export function normalizeSecret(secret: string | Uint8Array | undefined): Uint8Array | undefined {
-  if (secret === undefined) return undefined;
-  const bytes = typeof secret === "string" ? Buffer.from(secret, "utf8") : secret;
+  // An empty / whitespace-only value (an unfilled `.env` placeholder) is "unset":
+  // constructing a governor must not fail for users who never mint a token —
+  // the token operations themselves fail closed with `no_secret`.
+  if (secret === undefined || (typeof secret === "string" && secret.trim().length === 0)) return undefined;
+  if (typeof secret !== "string" && secret.length === 0) return undefined;
+  // Copy caller-provided bytes so a later mutation of their array cannot change the key.
+  const bytes = typeof secret === "string" ? Buffer.from(secret, "utf8") : Buffer.from(secret);
   if (bytes.length < MIN_SECRET_BYTES) {
     throw new ScopeTokenError("weak_secret", `token secret must be at least ${MIN_SECRET_BYTES} bytes`);
   }

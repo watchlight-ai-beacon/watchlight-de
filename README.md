@@ -408,7 +408,7 @@ the reason a call was denied. (The example prints the exact
 |---|---|---|
 | Policy engine | in-process Cedar, policies from a local `.cedar` file | a running, scaled policy service |
 | Sub-agent scope attenuation | engine-side strict-subset validation | same, server-side |
-| Scope across processes | HMAC scope token (shared secret, one trust domain); the receiving engine re-proves the subset | independently attestable scopes |
+| Scope across processes | HMAC scope token — integrity within one trust domain, not attestation (a secret holder can mint any scope, root included); the receiving engine re-proves the subset | independently attestable scopes |
 | Content screening | rule-based, in-process, value-free: `govern.sanitize` (structured PII) + `govern.screen` (prompt-injection / output-leak shapes); not ML classification | a running guardrails service (ML classifiers, NER) |
 | Audit | local JSONL, greppable, value-free | a signed, tamper-evident audit service |
 | Dashboard | `watchlight dev` → `localhost:7000` (policies + execution lineage) | the full operator console |

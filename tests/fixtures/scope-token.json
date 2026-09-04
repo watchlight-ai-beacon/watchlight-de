@@ -55,5 +55,111 @@
     "exp": 4102444800
   },
   "canonical": "{\"agent\":\"fixture-agent\",\"chain\":[{\"intents\":[\"research\"],\"resources\":[\"docs/*\"],\"time_budget_seconds\":2500000000,\"tools\":[\"read_file\",\"web_search\"]},{\"intents\":[\"research\"],\"resources\":[\"docs/*\"],\"time_budget_seconds\":2500000000,\"tools\":[\"read_file\"]}],\"depth\":2,\"exp\":4102444800,\"iat\":1700000000,\"root\":{\"intents\":[\"outreach\",\"research\"],\"max_depth\":5,\"resources\":[\"crm/*\",\"docs/*\"],\"time_budget_seconds\":2500000000,\"tools\":[\"read_file\",\"send_email\",\"web_search\",\"über\"]}}",
-  "token": "wls1.eyJhZ2VudCI6ImZpeHR1cmUtYWdlbnQiLCJjaGFpbiI6W3siaW50ZW50cyI6WyJyZXNlYXJjaCJdLCJyZXNvdXJjZXMiOlsiZG9jcy8qIl0sInRpbWVfYnVkZ2V0X3NlY29uZHMiOjI1MDAwMDAwMDAsInRvb2xzIjpbInJlYWRfZmlsZSIsIndlYl9zZWFyY2giXX0seyJpbnRlbnRzIjpbInJlc2VhcmNoIl0sInJlc291cmNlcyI6WyJkb2NzLyoiXSwidGltZV9idWRnZXRfc2Vjb25kcyI6MjUwMDAwMDAwMCwidG9vbHMiOlsicmVhZF9maWxlIl19XSwiZGVwdGgiOjIsImV4cCI6NDEwMjQ0NDgwMCwiaWF0IjoxNzAwMDAwMDAwLCJyb290Ijp7ImludGVudHMiOlsib3V0cmVhY2giLCJyZXNlYXJjaCJdLCJtYXhfZGVwdGgiOjUsInJlc291cmNlcyI6WyJjcm0vKiIsImRvY3MvKiJdLCJ0aW1lX2J1ZGdldF9zZWNvbmRzIjoyNTAwMDAwMDAwLCJ0b29scyI6WyJyZWFkX2ZpbGUiLCJzZW5kX2VtYWlsIiwid2ViX3NlYXJjaCIsIsO8YmVyIl19fQ.se4k8ebCz21eVT_KBZq6oYQEJdTiKH1PFsRPrC_jYI0"
+  "token": "wls1.eyJhZ2VudCI6ImZpeHR1cmUtYWdlbnQiLCJjaGFpbiI6W3siaW50ZW50cyI6WyJyZXNlYXJjaCJdLCJyZXNvdXJjZXMiOlsiZG9jcy8qIl0sInRpbWVfYnVkZ2V0X3NlY29uZHMiOjI1MDAwMDAwMDAsInRvb2xzIjpbInJlYWRfZmlsZSIsIndlYl9zZWFyY2giXX0seyJpbnRlbnRzIjpbInJlc2VhcmNoIl0sInJlc291cmNlcyI6WyJkb2NzLyoiXSwidGltZV9idWRnZXRfc2Vjb25kcyI6MjUwMDAwMDAwMCwidG9vbHMiOlsicmVhZF9maWxlIl19XSwiZGVwdGgiOjIsImV4cCI6NDEwMjQ0NDgwMCwiaWF0IjoxNzAwMDAwMDAwLCJyb290Ijp7ImludGVudHMiOlsib3V0cmVhY2giLCJyZXNlYXJjaCJdLCJtYXhfZGVwdGgiOjUsInJlc291cmNlcyI6WyJjcm0vKiIsImRvY3MvKiJdLCJ0aW1lX2J1ZGdldF9zZWNvbmRzIjoyNTAwMDAwMDAwLCJ0b29scyI6WyJyZWFkX2ZpbGUiLCJzZW5kX2VtYWlsIiwid2ViX3NlYXJjaCIsIsO8YmVyIl19fQ.se4k8ebCz21eVT_KBZq6oYQEJdTiKH1PFsRPrC_jYI0",
+  "cases": [
+    {
+      "name": "astral characters (code-point order, not UTF-16)",
+      "claims": {
+        "agent": "fixture-agent",
+        "root": {
+          "tools": [
+            "😀",
+            "ﬁle",
+            "a",
+            "🔧",
+            "z"
+          ],
+          "resources": [
+            "📁/*"
+          ],
+          "intents": [
+            "研究"
+          ],
+          "time_budget_seconds": 2500000000,
+          "max_depth": 5
+        },
+        "chain": [
+          {
+            "tools": [
+              "😀",
+              "a"
+            ],
+            "resources": [
+              "📁/*"
+            ],
+            "intents": [
+              "研究"
+            ],
+            "time_budget_seconds": 2500000000
+          }
+        ],
+        "depth": 1,
+        "iat": 1700000000,
+        "exp": 4102444800
+      },
+      "canonical": "{\"agent\":\"fixture-agent\",\"chain\":[{\"intents\":[\"研究\"],\"resources\":[\"📁/*\"],\"time_budget_seconds\":2500000000,\"tools\":[\"a\",\"😀\"]}],\"depth\":1,\"exp\":4102444800,\"iat\":1700000000,\"root\":{\"intents\":[\"研究\"],\"max_depth\":5,\"resources\":[\"📁/*\"],\"time_budget_seconds\":2500000000,\"tools\":[\"a\",\"z\",\"ﬁle\",\"🔧\",\"😀\"]}}",
+      "token": "wls1.eyJhZ2VudCI6ImZpeHR1cmUtYWdlbnQiLCJjaGFpbiI6W3siaW50ZW50cyI6WyLnoJTnqbYiXSwicmVzb3VyY2VzIjpbIvCfk4EvKiJdLCJ0aW1lX2J1ZGdldF9zZWNvbmRzIjoyNTAwMDAwMDAwLCJ0b29scyI6WyJhIiwi8J-YgCJdfV0sImRlcHRoIjoxLCJleHAiOjQxMDI0NDQ4MDAsImlhdCI6MTcwMDAwMDAwMCwicm9vdCI6eyJpbnRlbnRzIjpbIueglOeptiJdLCJtYXhfZGVwdGgiOjUsInJlc291cmNlcyI6WyLwn5OBLyoiXSwidGltZV9idWRnZXRfc2Vjb25kcyI6MjUwMDAwMDAwMCwidG9vbHMiOlsiYSIsInoiLCLvrIFsZSIsIvCflKciLCLwn5iAIl19fQ.tY9-7QFof1FAasySkC2UYwyMxtvj4HbfolrXMZ5hnpA"
+    },
+    {
+      "name": "empty arrays",
+      "claims": {
+        "agent": "fixture-agent",
+        "root": {
+          "tools": [],
+          "resources": [],
+          "intents": [],
+          "time_budget_seconds": 2500000000,
+          "max_depth": 5
+        },
+        "chain": [],
+        "depth": 0,
+        "iat": 1700000000,
+        "exp": 4102444800
+      },
+      "canonical": "{\"agent\":\"fixture-agent\",\"chain\":[],\"depth\":0,\"exp\":4102444800,\"iat\":1700000000,\"root\":{\"intents\":[],\"max_depth\":5,\"resources\":[],\"time_budget_seconds\":2500000000,\"tools\":[]}}",
+      "token": "wls1.eyJhZ2VudCI6ImZpeHR1cmUtYWdlbnQiLCJjaGFpbiI6W10sImRlcHRoIjowLCJleHAiOjQxMDI0NDQ4MDAsImlhdCI6MTcwMDAwMDAwMCwicm9vdCI6eyJpbnRlbnRzIjpbXSwibWF4X2RlcHRoIjo1LCJyZXNvdXJjZXMiOltdLCJ0aW1lX2J1ZGdldF9zZWNvbmRzIjoyNTAwMDAwMDAwLCJ0b29scyI6W119fQ.9JakK92zbLpT8xW40N6-1LECA0pLfonfcNYvJUi6un4"
+    },
+    {
+      "name": "duplicate set entries preserved",
+      "claims": {
+        "agent": "fixture-agent",
+        "root": {
+          "tools": [
+            "read",
+            "read",
+            "search"
+          ],
+          "resources": [
+            "docs/*",
+            "docs/*"
+          ],
+          "intents": [
+            "research"
+          ],
+          "time_budget_seconds": 2500000000,
+          "max_depth": 5
+        },
+        "chain": [
+          {
+            "tools": [
+              "read",
+              "read"
+            ],
+            "resources": [
+              "docs/*"
+            ],
+            "intents": [
+              "research"
+            ],
+            "time_budget_seconds": 2500000000
+          }
+        ],
+        "depth": 1,
+        "iat": 1700000000,
+        "exp": 4102444800
+      },
+      "canonical": "{\"agent\":\"fixture-agent\",\"chain\":[{\"intents\":[\"research\"],\"resources\":[\"docs/*\"],\"time_budget_seconds\":2500000000,\"tools\":[\"read\",\"read\"]}],\"depth\":1,\"exp\":4102444800,\"iat\":1700000000,\"root\":{\"intents\":[\"research\"],\"max_depth\":5,\"resources\":[\"docs/*\",\"docs/*\"],\"time_budget_seconds\":2500000000,\"tools\":[\"read\",\"read\",\"search\"]}}",
+      "token": "wls1.eyJhZ2VudCI6ImZpeHR1cmUtYWdlbnQiLCJjaGFpbiI6W3siaW50ZW50cyI6WyJyZXNlYXJjaCJdLCJyZXNvdXJjZXMiOlsiZG9jcy8qIl0sInRpbWVfYnVkZ2V0X3NlY29uZHMiOjI1MDAwMDAwMDAsInRvb2xzIjpbInJlYWQiLCJyZWFkIl19XSwiZGVwdGgiOjEsImV4cCI6NDEwMjQ0NDgwMCwiaWF0IjoxNzAwMDAwMDAwLCJyb290Ijp7ImludGVudHMiOlsicmVzZWFyY2giXSwibWF4X2RlcHRoIjo1LCJyZXNvdXJjZXMiOlsiZG9jcy8qIiwiZG9jcy8qIl0sInRpbWVfYnVkZ2V0X3NlY29uZHMiOjI1MDAwMDAwMDAsInRvb2xzIjpbInJlYWQiLCJyZWFkIiwic2VhcmNoIl19fQ.4EY7QqYpAag4Fc6qgvFr92kzksZkUI2F2CmVQBEwPyo"
+    }
+  ]
 }

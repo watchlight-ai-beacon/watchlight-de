@@ -150,6 +150,39 @@ async function main() {
   ok("fixture: engine replays the chain to depth 2 / tools [read_file]", fs2.depth === 2 && same(fs2.allowedTools, ["read_file"]), JSON.stringify(fs2.allowedTools));
   await rejects("fixture: rejected under the wrong agent", () => gov({ tokenSecret: fixture.secret }).scopeFromToken(fixture.token), "identity");
 
+  // ── fixture edge cases (astral chars, empty arrays, duplicates) ──
+  for (const c of fixture.cases) {
+    ok(`fixture[${c.name}]: canonical reproduced`, canonicalJson(normalizeClaims(c.claims)) === c.canonical);
+    ok(`fixture[${c.name}]: token reproduced`, signScopeToken(c.claims, Buffer.from(fixture.secret, "utf8")) === c.token);
+    ok(`fixture[${c.name}]: verifies`, canonicalJson(verifyScopeToken(c.token, Buffer.from(fixture.secret, "utf8"), { agent: fixture.agent, now: fixture.now })) === c.canonical);
+  }
+
+  // ── a rebuilt scope past the token's exp is spent: attenuate/toToken refuse ──
+  const live = await g.scopeFromToken((await g.scope({ tools: ["read", "search"], timeBudgetSeconds: 600 })).attenuate({ tools: ["read"] }).toToken());
+  live._bindExpiry(now() - 1); // simulate the token's exp having passed
+  ok("spent scope reports expired", live.expired === true);
+  await rejects("spent rebuilt scope refuses attenuate", () => live.attenuate({ tools: ["read"] }), "expired", (e) => e.message.endsWith("scope has expired"));
+  await rejects("spent rebuilt scope refuses toToken", () => live.toToken(), "expired");
+  await rejects("assertActive fails closed on a spent scope", () => live.assertActive(), "expired");
+
+  // ── empty / whitespace env secret is "unset", not a construction error ──
+  process.env.WATCHLIGHT_TOKEN_SECRET = "   ";
+  let emptyOk = null;
+  try { emptyOk = new Watchlight({ agent: "test-agent", auditDir: tmp() }); } catch (e) { emptyOk = e; }
+  ok("blank WATCHLIGHT_TOKEN_SECRET does not break construction", emptyOk instanceof Watchlight, String(emptyOk));
+  await rejects("...but token operations still fail closed", async () => (await emptyOk.scope({ tools: ["read"] })).toToken(), "no_secret");
+  delete process.env.WATCHLIGHT_TOKEN_SECRET;
+  let emptyOpt = null;
+  try { emptyOpt = new Watchlight({ agent: "test-agent", auditDir: tmp(), tokenSecret: "" }); } catch (e) { emptyOpt = e; }
+  ok("empty tokenSecret option is treated as unset", emptyOpt instanceof Watchlight);
+
+  // ── a Uint8Array secret is copied: mutating the caller's array cannot change the key ──
+  const keyBytes = new Uint8Array(Buffer.from(SECRET, "utf8"));
+  const gb = new Watchlight({ agent: "test-agent", auditDir: tmp(), tokenSecret: keyBytes });
+  keyBytes.fill(0);
+  const tokB = (await gb.scope({ tools: ["read"] })).toToken();
+  ok("Uint8Array secret is copied at construction", (await gov().scopeFromToken(tokB)).depth === 0);
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 }

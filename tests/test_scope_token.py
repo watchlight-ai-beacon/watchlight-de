@@ -269,3 +269,51 @@ def test_fixture_replays_through_the_engine(tmp_path):
     with pytest.raises(ScopeTokenError) as ei:
         _gov(tmp_path, "wrong", token_secret=FIXTURE["secret"]).scope_from_token(FIXTURE["token"])
     assert ei.value.code == "identity"
+
+
+@pytest.mark.parametrize("case", FIXTURE["cases"], ids=[c["name"] for c in FIXTURE["cases"]])
+def test_fixture_edge_cases_match_byte_for_byte(case):
+    secret = FIXTURE["secret"].encode()
+    assert canonical_json(normalize_claims(case["claims"])) == case["canonical"]
+    assert sign_scope_token(case["claims"], secret) == case["token"]
+    claims = verify_scope_token(case["token"], secret, agent=FIXTURE["agent"], now=FIXTURE["now"])
+    assert canonical_json(claims) == case["canonical"]
+
+
+def test_spent_rebuilt_scope_refuses_attenuate_and_to_token(tmp_path):
+    g = _gov(tmp_path)
+    live = g.scope_from_token(g.scope(tools=["read", "search"], time_budget_seconds=600).attenuate(tools=["read"]).to_token())
+    live._bind_expiry(_now() - 1)  # simulate the token's exp having passed
+    assert live.expired is True
+    with pytest.raises(ScopeTokenError) as ei:
+        live.attenuate(tools=["read"])
+    assert ei.value.code == "expired" and str(ei.value).endswith("scope has expired")
+    with pytest.raises(ScopeTokenError) as ei:
+        live.to_token()
+    assert ei.value.code == "expired"
+    with pytest.raises(ScopeTokenError):
+        live.assert_active()
+
+
+def test_blank_env_secret_is_treated_as_unset(tmp_path, monkeypatch):
+    monkeypatch.setenv("WATCHLIGHT_TOKEN_SECRET", "   ")
+    g = Watchlight(agent="test-agent", audit_dir=str(tmp_path / ".watchlight"))  # must not raise
+    with pytest.raises(ScopeTokenError) as ei:
+        g.scope(tools=["read"]).to_token()
+    assert ei.value.code == "no_secret"
+    assert Watchlight(agent="test-agent", audit_dir=str(tmp_path / "b"), token_secret="").scope(tools=["read"]).depth == 0
+
+
+def test_bytearray_secret_is_copied(tmp_path):
+    key = bytearray(SECRET.encode())
+    g = Watchlight(agent="test-agent", audit_dir=str(tmp_path / ".watchlight"), token_secret=key)
+    key[:] = b"\0" * len(key)
+    assert _gov(tmp_path, "v").scope_from_token(g.scope(tools=["read"]).to_token()).depth == 0
+
+
+def test_trailing_newline_in_token_segment_is_malformed(tmp_path):
+    g = _gov(tmp_path)
+    v, p, s = g.scope(tools=["read"]).to_token().split(".")
+    with pytest.raises(ScopeTokenError) as ei:
+        g.scope_from_token(f"{v}.{p}.{s}\n")
+    assert ei.value.code == "malformed"

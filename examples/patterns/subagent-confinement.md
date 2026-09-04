@@ -89,7 +89,10 @@ fail closed.
 *The honest bound:* a shared secret gives **integrity** across processes within
 one trust domain — it proves the token was minted by a holder of the secret and
 not altered since. It is **not attestation**: it does not prove *which* process
-minted it, and a holder of the secret can mint any scope the root allows. Keep
+minted it, and the root grant is rebuilt **from the token**, not from the
+receiver's configuration — so a holder of the secret can mint any scope at all,
+root included. The token adds no authority beyond what the holder could grant
+itself with `scope()`; it gives integrity across processes, not attestation. Keep
 the secret out of job payloads and logs, rotate it like any credential, and treat
 every process holding it as inside the boundary. Independently attestable scopes
 are an Enterprise capability.
