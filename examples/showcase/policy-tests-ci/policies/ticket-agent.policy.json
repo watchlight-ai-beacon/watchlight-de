@@ -1,0 +1,22 @@
+[
+  {
+    "name": "read-public-or-internal",
+    "code": "permit(principal, action == Action::\"read\", resource) when { context.classification == \"public\" || context.classification == \"internal\" };"
+  },
+  {
+    "name": "never-read-restricted",
+    "code": "forbid(principal, action == Action::\"read\", resource) when { context.classification == \"restricted\" };"
+  },
+  {
+    "name": "small-refund",
+    "code": "permit(principal, action == Action::\"refund\", resource) when { context.amount <= 100 };"
+  },
+  {
+    "name": "large-refund-needs-human",
+    "code": "@enforcement_effect(\"require_approval\")\npermit(principal, action == Action::\"refund\", resource) when { context.amount > 100 && context.amount <= 1000 };"
+  },
+  {
+    "name": "ops-may-close",
+    "code": "permit(principal == User::\"ops\", action == Action::\"close\", resource);"
+  }
+]

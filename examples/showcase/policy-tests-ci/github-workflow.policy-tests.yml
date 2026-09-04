@@ -1,0 +1,98 @@
+# TEMPLATE — policy tests as a CI gate.
+#
+# This file is a template, deliberately NOT under .github/workflows/. To use it:
+#
+#   cp examples/showcase/policy-tests-ci/github-workflow.policy-tests.yml \
+#      .github/workflows/policy-tests.yml
+#
+# then change exactly two lines in the `env:` block below:
+#
+#   SUITE:         the path to YOUR suite file
+#   WIDENED_SUITE: the path to a deliberately broken variant of YOUR policy
+#                  (or delete the `gate-has-teeth` job if you keep none)
+#
+# The values shipped here point at this example's own files so the template runs
+# as-is from a checkout of this repository.
+#
+# `watchlight policy test <suite.json>` runs every fixture in the suite through
+# the real engine and exits 1 when any verdict differs from `expect`, 2 when the
+# suite is malformed — so a pull request that widens a policy fails the check
+# before the policy can gate a real action. No audit trail is written by the
+# harness, so CI leaves no residue.
+#
+# The two lanes (TypeScript CLI and Python CLI) evaluate the same suite with the
+# same engine; run one or both. Pin the actions to commit SHAs according to your
+# own supply-chain policy — tags are used here to keep the template readable.
+
+name: policy-tests
+
+on:
+  pull_request:
+    # Narrow to the files that can change a verdict, if you prefer:
+    # paths: ["policies/**", "**/*.suite.json", ".github/workflows/policy-tests.yml"]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  SUITE: examples/showcase/policy-tests-ci/tickets.suite.json
+  WIDENED_SUITE: examples/showcase/policy-tests-ci/widened/tickets.suite.json
+  NO_COLOR: "1"
+
+jobs:
+  typescript:
+    name: policy test (TypeScript CLI)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install the Developer Edition CLI
+        run: npm install -g @watchlight/sdk
+      - name: Run the policy suite
+        run: watchlight policy test "$SUITE"
+
+  python:
+    name: policy test (Python CLI)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the Developer Edition
+        run: python -m pip install --upgrade pip watchlight
+      - name: Run the policy suite
+        run: watchlight policy test "$SUITE"
+
+  # Proves the gate has teeth. The same CLI first passes the correct suite
+  # (exit 0 — the positive control: a missing or broken CLI cannot turn this job
+  # green), then MUST fail the widened suite with exit code exactly 1 — a
+  # verdict mismatch. Any other code (127 missing CLI, 2 malformed suite) fails
+  # the job. If the widened suite ever passes, the fixtures no longer cover the
+  # widening.
+  gate-has-teeth:
+    name: widened policy must fail
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm install -g @watchlight/sdk
+      - name: Positive control — the correct suite passes (exit 0)
+        run: watchlight policy test "$SUITE"
+      - name: The widened suite fails with exit code exactly 1
+        run: |
+          set +e
+          watchlight policy test "$WIDENED_SUITE"
+          code=$?
+          set -e
+          case "$code" in
+            0) echo "::error::the widened policy passed every fixture — the suite is not gating"; exit 1 ;;
+            1) echo "widened policy failed the suite with exit 1, as it must" ;;
+            *) echo "::error::unexpected exit $code (malformed suite or broken CLI, not a verdict mismatch)"; exit 1 ;;
+          esac

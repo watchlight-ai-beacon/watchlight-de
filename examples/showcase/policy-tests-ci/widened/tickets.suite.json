@@ -1,0 +1,24 @@
+{
+  "policyFile": "ticket-agent.policy.json",
+  "tests": [
+    { "name": "public ticket may be read", "action": "read", "principal": "User::\"alice\"", "resource": "ticket/T-1",
+      "context": { "classification": "public" }, "expect": "Allow" },
+    { "name": "internal ticket may be read", "action": "read", "principal": "User::\"alice\"", "resource": "ticket/T-2",
+      "context": { "classification": "internal" }, "expect": "Allow" },
+    { "name": "restricted ticket is never read", "action": "read", "principal": "User::\"alice\"", "resource": "ticket/T-9",
+      "context": { "classification": "restricted" }, "expect": "Deny" },
+    { "name": "unclassified ticket fails closed", "action": "read", "principal": "User::\"alice\"", "resource": "ticket/T-3",
+      "context": {}, "expect": "Deny" },
+    { "name": "small refund is allowed", "action": "refund", "principal": "User::\"alice\"", "resource": "ticket/T-1",
+      "context": { "amount": 40 }, "expect": "Allow" },
+    { "name": "mid-size refund holds for a human", "action": "refund", "principal": "User::\"alice\"", "resource": "ticket/T-1",
+      "context": { "amount": 250 }, "expect": "NeedsApproval" },
+    { "name": "mid-size refund proceeds once approved", "action": "refund", "principal": "User::\"alice\"", "resource": "ticket/T-1",
+      "context": { "amount": 250 }, "approved": true, "expect": "Allow" },
+    { "name": "refund above the approval band is denied", "action": "refund", "principal": "User::\"alice\"", "resource": "ticket/T-1",
+      "context": { "amount": 5000 }, "expect": "Deny" },
+    { "name": "ops may close a ticket", "action": "close", "principal": "User::\"ops\"", "resource": "ticket/T-1", "expect": "Allow" },
+    { "name": "anyone else may not close", "action": "close", "principal": "User::\"alice\"", "resource": "ticket/T-1", "expect": "Deny" },
+    { "name": "delete has no policy and is denied", "action": "delete", "principal": "User::\"ops\"", "resource": "ticket/T-1", "expect": "Deny" }
+  ]
+}

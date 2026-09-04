@@ -23,16 +23,18 @@ watchlight dev                  # → http://127.0.0.1:7000
 | [`context_governance.py`](context_governance.py) | **Fine-grained context gating** — the *same* tool call is allowed or denied by runtime `context`; missing context fails closed. | `watchlight[langgraph]` |
 | [`governed_subagents.py`](governed_subagents.py) | **Sub-agent scope attenuation** — every child gets a *strict subset* of its parent's authority (widening is refused by the real engine); the DE governs the tree up to depth 5, then points to Enterprise. | `watchlight` |
 
-## Showcase — the two verdicts you came for, proven end to end
+## Showcase — end-to-end setups, proven
 
-Each showcase runs in **both lanes** (`agent.py` / `agent.mjs` side by side), ships
-the policy and its golden tests in one `policy.suite.json`, and exits non-zero if
-what happened contradicts the verdict.
+Each showcase runs in **both lanes** (Python and TypeScript side by side) and exits
+non-zero if what happened contradicts the verdict. The governed-agent showcases ship
+their policy and golden tests in one `policy.suite.json`.
 
 | Example | What it shows | Run |
 |---|---|---|
 | [`showcase/denied-before-execute/`](showcase/denied-before-execute/README.md) | **Denied before it executed** — a governed transfer against a stub bank with a call counter; a `forbid` above a threshold refuses the call and the counter is asserted `0`; a small transfer runs exactly once. Prints verdict, decision id and the audit line. | `python examples/showcase/denied-before-execute/agent.py` |
 | [`showcase/human-in-the-loop/`](showcase/human-in-the-loop/README.md) | **Human in the loop** — `NeedsApproval` holds the call and writes a pending request; a separate `approve.py` signs a grant; `resume` runs the action once with an `approved: true` record joined to the pending one. Grant replay and token replay are refused. | `python agent.py request` → `python approve.py` → `python agent.py resume` |
+| [`showcase/policy-tests-ci/`](showcase/policy-tests-ci/README.md) | **Policy tests as a CI gate** — a policy set, an 11-fixture suite (Allow / Deny / NeedsApproval / approved), a GitHub Actions workflow template running `watchlight policy test` in the TypeScript and Python CLIs, and a deliberately widened policy that turns the run red. | `watchlight` or `@watchlight/sdk` |
+| [`showcase/audit-forensics/`](showcase/audit-forensics/README.md) | **Audit forensics** — generate a trail with every record kind (decisions incl. an approved one, sanitizations, egress, attenuations, screenings), then join on `decision_id`, roll up per principal, and list attenuation chains with `forensics.py` or `jq`. Documents every record kind's exact field names. | `watchlight` (+ `jq` for the recipes) |
 
 Verify a showcase policy on its own:
 `watchlight policy test examples/showcase/<name>/policy.suite.json`.
