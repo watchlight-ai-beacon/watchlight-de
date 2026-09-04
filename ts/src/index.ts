@@ -149,6 +149,9 @@ export interface EgressInfo {
   resource: string;
   principal: string;
   decisionId?: string;
+  /** The obligations the decision that let the body run carries (see
+   *  {@link Obligations}) — honour them here. Absent when it carries none. */
+  obligations?: Obligations;
 }
 
 /** A hook run over a governed tool's RESULT — after the body returns, before the
@@ -461,8 +464,9 @@ export class Watchlight {
         reason: string;
       }) => boolean | Promise<boolean>;
       /** Egress hook. Awaited AFTER the body returns and BEFORE the result is
-       *  handed back, with `{ intent, resource, principal, decisionId }` — the
-       *  `decisionId` of the decision that let the body run. Return a value to
+       *  handed back, with `{ intent, resource, principal, decisionId,
+       *  obligations? }` — the `decisionId` and obligations of the decision
+       *  that let the body run. Return a value to
        *  replace the payload; `void` passes it through; a throw propagates and
        *  the raw result is withheld (fail-closed). Writes a value-free `egress`
        *  audit record joined to the decision by `decision_id`. */
@@ -478,20 +482,17 @@ export class Watchlight {
         typeof opts.context === "function" ? opts.context(...args) : opts.context ?? {};
       // Run the body, then the egress hook (if any) over its result. `decisionId`
       // is the id of the decision that authorized THIS run.
-      const run = async (decisionId?: string): Promise<Awaited<R>> => {
+      const run = async (d: AuthorizeResult): Promise<Awaited<R>> => {
         const out = (await fn(...args)) as Awaited<R>;
         if (!opts.onResult) return out;
-        const { value } = await this._applyOnResult(out, opts.onResult, {
-          intent,
-          resource,
-          principal,
-          decisionId,
-        });
+        const info: EgressInfo = { intent, resource, principal, decisionId: d.decisionId };
+        if (d.obligations) info.obligations = d.obligations;
+        const { value } = await this._applyOnResult(out, opts.onResult, info);
         return value;
       };
 
       const d = await this.authorize({ principal, action: intent, resource, context });
-      if (d.allowed) return run(d.decisionId);
+      if (d.allowed) return run(d);
       if (d.needsApproval) {
         if (opts.onNeedsApproval) {
           const ok = await opts.onNeedsApproval({
@@ -504,7 +505,7 @@ export class Watchlight {
           if (ok) {
             const token = this.mintApproval({ principal, action: intent, resource });
             const d2 = await this.authorize({ principal, action: intent, resource, context, approval: token });
-            if (d2.allowed) return run(d2.decisionId);
+            if (d2.allowed) return run(d2);
           }
         }
         throw new NeedsApproval(name, intent, d.decisionId, d.reason);
@@ -674,14 +675,17 @@ export class Watchlight {
    * output leaves. Rule-based, deterministic, fail-closed. Writes a value-free
    * `screening` record to the audit trail (counts per family + `flagged` — never
    * the text) and returns the text (untouched in `report` mode, family markers
-   * in `redact` mode) plus the report.
+   * in `redact` mode) plus the report. Pass the `decisionId` of the decision
+   * that governed the read to join the two records on `decision_id`.
    */
   screen(
     content: string,
     opts: ScreenOptions & { intent?: string; resource?: string } = {}
   ): ScreenResult {
-    const { intent = "read", resource = "content", mode, families } = opts;
-    const result = screenText(content, { mode, families });
+    const { intent = "read", resource = "content", mode, families, decisionId } = opts;
+    // `decisionId` is validated (bounded, no control chars) inside screenText
+    // before it is echoed onto the report and written to the audit line.
+    const result = screenText(content, { mode, families, decisionId });
     this._auditScreen(intent, resource, result);
     return result;
   }
@@ -813,6 +817,8 @@ export class Watchlight {
       total: report.total,
       flagged: report.flagged,
     };
+    // Same key as the `authorize` line, so the two records join on `decision_id`.
+    if (report.decisionId) record.decision_id = report.decisionId;
     this._writeAudit(record);
   }
 

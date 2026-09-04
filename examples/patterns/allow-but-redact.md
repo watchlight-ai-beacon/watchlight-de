@@ -41,7 +41,8 @@ time (a malformed value rejects the policy) and surfaces them on the result:
 | `@obligate_<name>("raw")` | `extra: { name: ["raw"] }` / `"extra"` | Any other key, passed through raw for your own code to interpret — per name, the distinct values the carrying permits declared. |
 
 **Honour it in `onResult`.** The decision that let the body run is the one whose
-obligations apply, so read them where you already govern the result:
+obligations apply, and the hook receives them on its `info` argument next to the
+`decisionId` — read them where you already govern the result:
 
 ```ts
 import { govern } from "@watchlight/sdk";
@@ -50,9 +51,8 @@ const readRecord = govern.tool(fetchRecord, {
   intent: "read",
   resource: (id) => `customer/${id}`,
   context: () => ({ record_type: "customer" }),
-  onResult: async (record, { resource, principal, decisionId }) => {
-    const d = await govern.authorize({ principal, action: "read", resource, context: { record_type: "customer" } });
-    const fields = d.obligations?.redact ?? [];
+  onResult: (record, { resource, decisionId, obligations }) => {
+    const fields = obligations?.redact ?? [];
     // 1. Structural redaction: drop the obligated fields from the record itself.
     for (const f of fields) delete record[f];
     // 2. Belt and braces: sanitize the free text too, joined to the same decision.
@@ -66,9 +66,7 @@ const readRecord = govern.tool(fetchRecord, {
 from watchlight import govern
 
 def honour_obligations(record, info):
-    d = govern.authorize(action="read", principal=info["principal"], resource=info["resource"],
-                         context={"record_type": "customer"})
-    for field in (d.get("obligations") or {}).get("redact", []):
+    for field in (info["obligations"] or {}).get("redact", []):
         record.pop(field, None)                      # structural redaction
     record["notes"] = govern.sanitize(record.get("notes", ""), resource=info["resource"],
                                       decision_id=info["decision_id"], types=["SSN"])["text"]

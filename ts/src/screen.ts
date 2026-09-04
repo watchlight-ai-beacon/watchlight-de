@@ -22,6 +22,8 @@
 // TS/Python divergence is case folding of the Turkish dotted capital İ (U+0130):
 // `İgnore …` matches in Python's re, not in JavaScript.
 
+import { DECISION_ID_MAX_LENGTH } from "./sanitize";
+
 /** Rule families the screener recognizes. Each is a named counter in the report. */
 export type ScreenFamily =
   | "INSTRUCTION_OVERRIDE"
@@ -63,6 +65,11 @@ export interface ScreenOptions {
   mode?: ScreenMode;
   /** Restrict to these families. Default: all. Unknown names are an error. */
   families?: ScreenFamily[];
+  /** Correlation id of the `authorize` decision that governed the read. Echoed
+   *  onto `report.decisionId` and written as `decision_id` on the `screening`
+   *  audit line, so it joins the decision's line. Opaque, never interpreted:
+   *  1-128 characters, no control characters (`ScreenError` otherwise). */
+  decisionId?: string;
 }
 
 export interface ScreenReport {
@@ -74,6 +81,8 @@ export interface ScreenReport {
   total: number;
   /** `total > 0` — for callers that want to refuse rather than redact. */
   flagged: boolean;
+  /** The `decisionId` supplied by the caller, if any (validated, never interpreted). */
+  decisionId?: string;
 }
 
 export interface ScreenResult {
@@ -351,6 +360,22 @@ function detect(norm: string, families: Set<ScreenFamily>): Span[] {
   return kept;
 }
 
+// Same bounds as `sanitize`: an opaque correlation token that is written to the
+// audit line, so it is length-capped and free of control / line-separator
+// characters (U+2028/U+2029 included — JSON.stringify emits them raw).
+const DECISION_ID_CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
+
+function validateDecisionId(id: unknown): string | undefined {
+  if (id === undefined) return undefined;
+  if (typeof id !== "string" || id.length < 1 || id.length > DECISION_ID_MAX_LENGTH) {
+    throw new ScreenError(`decisionId must be a string of 1-${DECISION_ID_MAX_LENGTH} characters`);
+  }
+  if (DECISION_ID_CONTROL_CHARS.test(id)) {
+    throw new ScreenError("decisionId must not contain control characters");
+  }
+  return id;
+}
+
 /**
  * Screen `text` for prompt-injection / output-leak shapes. Pure and
  * deterministic. Mode `report` (default) returns the text untouched with a
@@ -374,6 +399,7 @@ export function screen(text: string, opts: ScreenOptions = {}): ScreenResult {
     if (!SCREEN_FAMILIES.includes(f)) throw new ScreenError("unknown family");
   }
   const families = new Set<ScreenFamily>(requested);
+  const decisionId = validateDecisionId(opts.decisionId);
   try {
     const { norm, map } = normalize(text);
     const spans = detect(norm, families);
@@ -394,16 +420,15 @@ export function screen(text: string, opts: ScreenOptions = {}): ScreenResult {
       out = parts.join("");
     }
 
-    return {
-      text: out,
-      report: {
-        mode,
-        detectorVersion: SCREEN_DETECTOR_VERSION,
-        counts,
-        total: spans.length,
-        flagged: spans.length > 0,
-      },
+    const report: ScreenReport = {
+      mode,
+      detectorVersion: SCREEN_DETECTOR_VERSION,
+      counts,
+      total: spans.length,
+      flagged: spans.length > 0,
     };
+    if (decisionId !== undefined) report.decisionId = decisionId;
+    return { text: out, report };
   } catch (e) {
     if (e instanceof ScreenError) throw e;
     throw new ScreenError(String((e as Error)?.message ?? e));

@@ -36,6 +36,15 @@ the recipes can't drift from the engine.
 actions, external messaging, data egress, kill-switch / quarantine, per-user
 attribution, PII-before-read, sub-agent confinement.
 
+## Showcase — end-to-end pipelines
+
+Complete, self-checking pipelines that combine several primitives. Each runs in
+both lanes and exits non-zero if any assertion fails.
+
+| Example | What it shows |
+|---|---|
+| [`showcase/poisoned-rag/`](showcase/poisoned-rag/README.md) | **Poisoned-document RAG** — a retrieved document hides a prompt injection and personal data; `screen()` withholds it, the permit's `@obligate_redact` obligation strips personal data from what passes, and every step joins the decision on one `decision_id`. |
+
 ## Govern an existing framework agent
 
 The *same* plugin you ship to production, wired to the in-process engine. Going

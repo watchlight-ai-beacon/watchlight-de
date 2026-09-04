@@ -195,8 +195,9 @@ It mirrors the Python package feature-for-feature:
   — runtime facts into Cedar `context.*`, per-call `principal`, and a three-state
   `Allow` / `Deny` / **`NeedsApproval`** verdict with a single-use approval token.
 - **Govern what a tool returns:** `onResult(result, { intent, resource, principal,
-  decisionId })` (Python `on_result`) runs after the body and before the caller
-  sees the result — sanitize, screen, or re-authorize on its classification; a
+  decisionId, obligations? })` (Python `on_result`) runs after the body and before
+  the caller sees the result — sanitize, screen, honour the decision's
+  obligations, or re-authorize on its classification; a
   returned value replaces the payload, a throw withholds it (fail-closed). Writes
   a value-free `egress` audit record joined to the decision by `decision_id`.
 - **Obligations on an `Allow`:** a permit annotated `@obligate_redact("ssn")`,
@@ -217,8 +218,9 @@ It mirrors the Python package feature-for-feature:
   Unicode case folding differs between lanes), and opt-in `PERSON` / `ADDRESS`
   heuristics. Pass the `decisionId` from `authorize` and the `sanitization`
   audit line joins the decision on `decision_id`.
-- **Content screening:** `govern.screen(text)` — flag or redact prompt-injection
-  shapes in what a read returns, before it reaches the model.
+- **Content screening:** `govern.screen(text, { resource, decisionId? })` — flag
+  or redact prompt-injection shapes in what a read returns, before it reaches the
+  model; with the `decisionId` the `screening` audit line joins the decision.
 - **Attenuation & graduation:** `govern.scope().attenuate()`; `scope.toToken()` /
   `govern.scopeFromToken()` carry an attenuated scope to a worker process (HMAC
   integrity; the receiving engine re-proves the subset); every decision returns a
