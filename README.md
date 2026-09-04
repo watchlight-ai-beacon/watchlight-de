@@ -208,6 +208,8 @@ It mirrors the Python package feature-for-feature:
   Unicode case folding differs between lanes), and opt-in `PERSON` / `ADDRESS`
   heuristics. Pass the `decisionId` from `authorize` and the `sanitization`
   audit line joins the decision on `decision_id`.
+- **Content screening:** `govern.screen(text)` — flag or redact prompt-injection
+  shapes in what a read returns, before it reaches the model.
 - **Attenuation & graduation:** `govern.scope().attenuate()`; every decision
   returns a `decisionId` to join to your records; `WATCHLIGHT_APDP_URL` graduates
   the *same code* to the control plane.
@@ -334,7 +336,8 @@ The advanced policy JSON — each a runnable `{ policies, tests }` suite with Ce
 | [Kill-switch / quarantine](./examples/patterns/kill-switch.md) | Stop a suspect agent cold — a hard boundary that beats every grant. | [`kill-switch.suite.json`](./examples/patterns/suites/kill-switch.suite.json) |
 | [Per-user attribution](./examples/patterns/per-user-attribution.md) | Attribute the decision to the acting end-user, and scope policy to them. | [`per-user.suite.json`](./examples/patterns/suites/per-user.suite.json) |
 
-Two more recipes — [PII before read](./examples/patterns/pii-before-read.md) and
+Three more recipes — [PII before read](./examples/patterns/pii-before-read.md),
+[screen before model](./examples/patterns/screen-before-model.md) and
 [sub-agent confinement](./examples/patterns/subagent-confinement.md) — round out
 the library. Run every suite at once:
 
@@ -403,7 +406,7 @@ the reason a call was denied. (The example prints the exact
 |---|---|---|
 | Policy engine | in-process Cedar, policies from a local `.cedar` file | a running, scaled policy service |
 | Sub-agent scope attenuation | engine-side strict-subset validation | same, server-side |
-| Content / PII screening | policy-based, in-process | a running guardrails service |
+| Content screening | rule-based, in-process, value-free: `govern.sanitize` (structured PII) + `govern.screen` (prompt-injection / output-leak shapes); not ML classification | a running guardrails service (ML classifiers, NER) |
 | Audit | local JSONL, greppable, value-free | a signed, tamper-evident audit service |
 | Dashboard | `watchlight dev` → `localhost:7000` (policies + execution lineage) | the full operator console |
 
