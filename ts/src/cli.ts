@@ -45,7 +45,11 @@ function printReport(file: string, report: PolicyTestReport): void {
       console.log(`  ${green("✓")} ${r.name} ${dim("→ " + r.actual)}`);
     } else {
       const why = r.reason ? dim(`  (${r.reason})`) : "";
-      console.log(`  ${red("✗")} ${r.name} ${red(`— expected ${r.expected}, got ${r.actual}`)}${why}`);
+      const what =
+        r.expected === r.actual && r.expectedObligations !== undefined
+          ? `— expected obligations ${JSON.stringify(r.expectedObligations)}, got ${JSON.stringify(r.obligations ?? {})}`
+          : `— expected ${r.expected}, got ${r.actual}`;
+      console.log(`  ${red("✗")} ${r.name} ${red(what)}${why}`);
     }
   }
   const summary = `${report.passed} passed, ${report.failed} failed (${report.total} total)`;

@@ -199,6 +199,13 @@ It mirrors the Python package feature-for-feature:
   sees the result — sanitize, screen, or re-authorize on its classification; a
   returned value replaces the payload, a throw withholds it (fail-closed). Writes
   a value-free `egress` audit record joined to the decision by `decision_id`.
+- **Obligations on an `Allow`:** a permit annotated `@obligate_redact("ssn")`,
+  `@obligate_max_items("25")`, `@obligate_log_values("false")` (or any
+  `@obligate_<name>("raw")`) yields `d.obligations` — `{ redact, maxItems,
+  logValues, extra }` (Python `result["obligations"]`: `redact` / `max_items` /
+  `log_values` / `extra`) — constraints your code or `onResult` must honour.
+  Only an `Allow` carries them; `Deny` and `NeedsApproval` never do. See the
+  [allow-but-redact pattern](examples/patterns/allow-but-redact.md).
 - **Frameworks:** `governedHooks()` for the Claude Agent SDK; `governTool()` for
   LangChain / LangGraph.js.
 - **Data minimization:** `govern.sanitize(text, { resource, decisionId, known? })`
@@ -315,7 +322,9 @@ assert report["failed"] == 0, report
 `govern.test(...)` (Node: `await govern.test([...])`) drives the engine's decision
 core directly, so it **never writes the audit trail** and holds zero decision logic —
 every verdict is the engine's. Set `"approved": true` on a fixture to mint a
-single-use token and assert the human-confirmed `NeedsApproval → Allow` downgrade.
+single-use token and assert the human-confirmed `NeedsApproval → Allow` downgrade;
+set `"obligations": {"redact": ["ssn"]}` to also assert the obligations an `Allow`
+carries (exact match; `{}` asserts none).
 
 Or from CI, with the CLI — a `suite.json` of `{ policyFile?, policies?, tests: [...] }`,
 exit 1 on any failure:

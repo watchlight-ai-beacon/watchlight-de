@@ -42,6 +42,72 @@ def _normalize_verdict(value: Any) -> str:
     return value if value else "Deny"
 
 
+_EXPECTED_OBLIGATION_KEYS = {"redact", "maxItems", "max_items", "logValues", "log_values", "extra"}
+
+
+def _one_spelling(o: dict, camel: str, snake: str, where: str) -> Any:
+    """Pick one of two spellings of the same key; both given with different
+    values is a contradiction and therefore malformed."""
+    a, b = o.get(camel), o.get(snake)
+    if a is not None and b is not None and a != b:
+        raise ValueError(f"{where}: '{camel}' and '{snake}' disagree")
+    return a if a is not None else b
+
+
+def normalize_expected_obligations(raw: Any, where: str = "fixture") -> dict:
+    """Validate and canonicalize a fixture's ``obligations`` expectation into
+    wire spelling (``redact`` / ``max_items`` / ``log_values`` / ``extra``).
+    Strict: an unknown key, an ill-typed value, or a contradiction between the
+    camelCase and snake_case spellings is a malformed suite and raises
+    ``ValueError`` — a typo must never pass as "no expectation". Returns ``{}``
+    for an expectation of "no obligations"."""
+    if not isinstance(raw, dict):
+        raise ValueError(f"{where}: 'obligations' must be an object")
+    unknown = set(raw) - _EXPECTED_OBLIGATION_KEYS
+    if unknown:
+        raise ValueError(f"{where}: unknown obligations key '{sorted(unknown)[0]}'")
+    out: dict = {}
+    redact = raw.get("redact")
+    if redact is not None:
+        if (not isinstance(redact, list) or not redact
+                or any(not isinstance(v, str) or not v.strip() for v in redact)):
+            raise ValueError(f"{where}: 'obligations.redact' must be a non-empty array of non-blank strings")
+        out["redact"] = list(dict.fromkeys(v.strip() for v in redact))
+    max_items = _one_spelling(raw, "maxItems", "max_items", where)
+    if max_items is not None:
+        if not isinstance(max_items, int) or isinstance(max_items, bool) or max_items < 1:
+            raise ValueError(f"{where}: 'obligations.maxItems' must be a positive integer")
+        out["max_items"] = max_items
+    log_values = _one_spelling(raw, "logValues", "log_values", where)
+    if log_values is not None:
+        if not isinstance(log_values, bool):
+            raise ValueError(f"{where}: 'obligations.logValues' must be a boolean")
+        out["log_values"] = log_values
+    extra = raw.get("extra")
+    if extra is not None:
+        if not isinstance(extra, dict) or any(not isinstance(v, str) for v in extra.values()):
+            raise ValueError(f"{where}: 'obligations.extra' must be an object of string values")
+        if extra:
+            out["extra"] = dict(extra)
+    return out
+
+
+def _canonical_obligations(o: Optional[dict]) -> str:
+    """Canonical, order-independent rendering for exact comparison: ``redact``
+    as a sorted set, ``extra`` with sorted keys."""
+    c: dict = {}
+    if o:
+        if o.get("redact"):
+            c["redact"] = sorted(set(o["redact"]))
+        if "max_items" in o:
+            c["max_items"] = o["max_items"]
+        if "log_values" in o:
+            c["log_values"] = o["log_values"]
+        if o.get("extra"):
+            c["extra"] = dict(sorted(o["extra"].items()))
+    return json.dumps(c, sort_keys=True, separators=(",", ":"))
+
+
 def run_policy_tests(
     decide: Callable[..., dict],
     mint: Callable[..., str],
@@ -52,18 +118,25 @@ def run_policy_tests(
     ``decide(action=, principal=, resource=, context=, approval=)`` returns the
     engine verdict dict; ``mint(action=, principal=, resource=)`` mints a valid
     approval token (used when a case sets ``"approved": True``). A verdict
-    mismatch is recorded as a failed result rather than raised — inspect
+    mismatch — or, when the case states ``"obligations"``, an obligations
+    mismatch — is recorded as a failed result rather than raised — inspect
     ``report["failed"]``. A fixture missing a required key (``action`` or
-    ``expect``) is a malformed suite and raises ``ValueError``.
+    ``expect``), or carrying an ill-typed ``obligations`` expectation, is a
+    malformed suite and raises ``ValueError``.
     """
     results: list[dict] = []
     for index, case in enumerate(cases):
+        where = f"fixture {index} ({case.get('name', '?')})"
         for required in ("action", "expect"):
             if required not in case:
-                raise ValueError(
-                    f"fixture {index} ({case.get('name', '?')}): missing required key '{required}'"
-                )
+                raise ValueError(f"{where}: missing required key '{required}'")
         expected = _normalize_verdict(case["expect"])
+        expected_obligations = (
+            normalize_expected_obligations(case["obligations"], where)
+            if "obligations" in case else None
+        )
+        if expected_obligations and expected != "Allow":
+            raise ValueError(f"{where}: 'obligations' can only be expected on an Allow, not {expected}")
         action = case["action"]
         principal = case.get("principal")
         resource = case.get("resource")
@@ -81,15 +154,22 @@ def run_policy_tests(
             approval=approval,
         )
         actual = _normalize_verdict(decision.get("decision"))
-        results.append(
-            {
-                "name": case.get("name") or f"{action} on {resource or 'resource'}",
-                "expected": expected,
-                "actual": actual,
-                "ok": actual == expected,
-                "reason": decision.get("reason", ""),
-            }
+        obligations_ok = expected_obligations is None or (
+            _canonical_obligations(expected_obligations)
+            == _canonical_obligations(decision.get("obligations"))
         )
+        result = {
+            "name": case.get("name") or f"{action} on {resource or 'resource'}",
+            "expected": expected,
+            "actual": actual,
+            "ok": actual == expected and obligations_ok,
+            "reason": decision.get("reason", ""),
+        }
+        if decision.get("obligations"):
+            result["obligations"] = decision["obligations"]
+        if expected_obligations is not None:
+            result["expected_obligations"] = expected_obligations
+        results.append(result)
     passed = sum(1 for r in results if r["ok"])
     return {
         "total": len(results),

@@ -1,0 +1,25 @@
+{
+  "policies": [
+    { "name": "records-are-readable-but-ssn-is-redacted",
+      "code": "@obligate_redact(\"ssn\")\npermit(principal, action == Action::\"read\", resource) when { context.record_type == \"customer\" };" },
+    { "name": "internal-notes-are-readable-in-full",
+      "code": "permit(principal, action == Action::\"read\", resource) when { context.record_type == \"note\" };" },
+    { "name": "exports-are-capped-and-never-logged",
+      "code": "@obligate_redact(\"ssn, dob\")\n@obligate_max_items(\"25\")\n@obligate_log_values(\"false\")\npermit(principal, action == Action::\"export\", resource) when { context.record_type == \"customer\" };" }
+  ],
+  "tests": [
+    { "name": "a customer record may be read - with the SSN redacted", "action": "read",
+      "resource": "customer/42", "context": { "record_type": "customer" },
+      "expect": "Allow", "obligations": { "redact": ["ssn"] } },
+    { "name": "an internal note may be read in full - no obligations", "action": "read",
+      "resource": "note/7", "context": { "record_type": "note" },
+      "expect": "Allow", "obligations": {} },
+    { "name": "an export is allowed under three obligations at once", "action": "export",
+      "resource": "customer/*", "context": { "record_type": "customer" },
+      "expect": "Allow", "obligations": { "redact": ["ssn", "dob"], "max_items": 25, "log_values": false } },
+    { "name": "an unknown record type is denied - a Deny carries no obligations", "action": "read",
+      "resource": "thing/1", "context": { "record_type": "other" }, "expect": "Deny" },
+    { "name": "an unclassified read is denied (fail-closed)", "action": "read",
+      "resource": "customer/42", "context": {}, "expect": "Deny" }
+  ]
+}

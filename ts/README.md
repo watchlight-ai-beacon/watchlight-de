@@ -176,6 +176,14 @@ if (d.decision === "NeedsApproval") {
   annotated `@enforcement_effect("require_approval")`.
 - **Correlation id** — every decision returns `decisionId` (also in the audit
   line), so you can join it to your own records.
+- **Obligations** — a permit annotated `@obligate_redact("ssn")`,
+  `@obligate_max_items("25")`, `@obligate_log_values("false")`, or any
+  `@obligate_<name>("raw")` yields `d.obligations` on an `Allow`:
+  `{ redact?: string[], maxItems?: number, logValues?: boolean, extra?: Record<string,string> }`
+  — constraints your code (or `onResult`) must honour. Several carrying permits
+  merge to the strictest reading (`redact` union, `maxItems` min, `logValues`
+  AND); `Deny` and `NeedsApproval` never carry any. Assert them in `govern.test`
+  with `obligations: { redact: ["ssn"] }`.
 - The audit line now carries `decision_id` + the resolved `principal`, and stays
   value-free (no context values).
 

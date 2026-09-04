@@ -171,6 +171,100 @@ def _needs_approval(details: Any) -> bool:
     )
 
 
+# `@obligate_max_items` upper bound, as validated by the engine at policy load.
+_MAX_ITEMS_UPPER_BOUND = 4294967295
+
+
+def _read_obligations(wire: Any) -> Optional[dict]:
+    """Read one engine obligations object, keeping only well-typed values:
+    ``redact`` a non-empty list of non-blank strings (trimmed, de-duplicated),
+    ``max_items`` an integer in 1..=4294967295, ``log_values`` a boolean,
+    ``extra`` a str→str map. Anything else is left out; ``None`` when empty."""
+    if not isinstance(wire, dict):
+        return None
+    out: dict = {}
+    redact = wire.get("redact")
+    if isinstance(redact, list):
+        seen: list[str] = []
+        for v in redact:
+            if isinstance(v, str) and v.strip() and v.strip() not in seen:
+                seen.append(v.strip())
+        if seen:
+            out["redact"] = seen
+    max_items = wire.get("max_items")
+    if isinstance(max_items, int) and not isinstance(max_items, bool) and 1 <= max_items <= _MAX_ITEMS_UPPER_BOUND:
+        out["max_items"] = max_items
+    log_values = wire.get("log_values")
+    if isinstance(log_values, bool):
+        out["log_values"] = log_values
+    extra = wire.get("extra")
+    if isinstance(extra, dict):
+        clean = {k: v for k, v in extra.items() if isinstance(k, str) and isinstance(v, str)}
+        if clean:
+            out["extra"] = clean
+    return out or None
+
+
+def _merge_obligations(parts: Sequence[dict]) -> Optional[dict]:
+    """Merge the obligations of several contributing permits: ``redact`` union
+    (first-seen order), ``max_items`` minimum, ``log_values`` logical AND,
+    ``extra`` only where every carrier agrees on the value."""
+    out: dict = {}
+    redact: list[str] = []
+    extra_values: dict[str, set[str]] = {}
+    for part in parts:
+        for r in part.get("redact", []):
+            if r not in redact:
+                redact.append(r)
+        if "max_items" in part:
+            out["max_items"] = min(out.get("max_items", part["max_items"]), part["max_items"])
+        if "log_values" in part:
+            out["log_values"] = out.get("log_values", True) and part["log_values"]
+        for k, v in part.get("extra", {}).items():
+            extra_values.setdefault(k, set()).add(v)
+    if redact:
+        out["redact"] = redact
+    extra = {k: next(iter(vs)) for k, vs in extra_values.items() if len(vs) == 1}
+    if extra:
+        out["extra"] = extra
+    return out or None
+
+
+def _derive_obligations(details: Any) -> Optional[dict]:
+    """The obligations attached to an ``Allow`` — ``{"redact", "max_items",
+    "log_values", "extra"}`` (wire spelling), or ``None`` when there is nothing
+    to honour.
+
+    Source of truth is the engine's merged ``details.obligations`` (present only
+    on a final Allow). A backend that predates that field, or emits only the
+    per-policy ``details.policy_results[].obligations``, gets the same merge
+    derived here from the permits that determined the decision
+    (``applicable: true``) — exactly as :func:`_needs_approval` reads
+    ``enforcement_effect``. ``extra`` is never merged by the engine, so it is
+    always read from the per-policy results. The caller decides whether the
+    verdict may carry obligations (only an Allow does)."""
+    if not isinstance(details, dict):
+        return None
+    results = details.get("policy_results")
+    per_policy = []
+    if isinstance(results, list):
+        for r in results:
+            if isinstance(r, dict) and r.get("applicable") is True:
+                o = _read_obligations(r.get("obligations"))
+                if o:
+                    per_policy.append(o)
+    from_policies = _merge_obligations(per_policy)
+    merged = _read_obligations(details.get("obligations"))
+    if not merged:
+        return from_policies
+    # The engine's merge is authoritative for the known keys; `extra` comes from
+    # the per-policy results because the engine deliberately does not merge it.
+    out = {k: v for k, v in merged.items() if k != "extra"}
+    if from_policies and "extra" in from_policies:
+        out["extra"] = from_policies["extra"]
+    return out or None
+
+
 def _resolve(binding: Any, args: tuple, kwargs: dict) -> Optional[str]:
     """Resolve a per-call binding: a fixed value, or a callable of the tool's
     ``(*args, **kwargs)``."""
@@ -1007,7 +1101,14 @@ class Watchlight:
         a correlation id. ``NeedsApproval`` (matched permit annotated
         ``require_approval``) is downgraded to ``Allow`` when a valid single-use
         ``approval`` token (from :meth:`mint_approval`, after a human confirms) is
-        supplied. Fail-closed and audited (value-free)."""
+        supplied. Fail-closed and audited (value-free).
+
+        The result is ``{"decision", "allowed", "needs_approval", "approved",
+        "decision_id", "reason"}`` plus, on an ``Allow`` whose permitting
+        policies declare ``@obligate_*`` annotations, ``"obligations"``:
+        ``{"redact": [...], "max_items": n, "log_values": bool, "extra": {name:
+        raw}}`` (each key only when set) — constraints the caller must honour
+        when acting on the Allow. Never present on ``Deny`` or ``NeedsApproval``."""
         result, prin, res, decision_id = self._decide(
             action=action, principal=principal, resource=resource, context=context, approval=approval
         )
@@ -1049,19 +1150,21 @@ class Watchlight:
         verdict = "Allow" if allowed else ("NeedsApproval" if needs else "Deny")
         # Non-revealing, uniform reason (never the engine's specific one).
         reason = _reason_for_verdict(verdict)
-        return (
-            {
-                "decision": verdict,
-                "allowed": allowed,
-                "needs_approval": needs,
-                "approved": approved,
-                "decision_id": decision_id,
-                "reason": reason,
-            },
-            prin,
-            res,
-            decision_id,
-        )
+        result = {
+            "decision": verdict,
+            "allowed": allowed,
+            "needs_approval": needs,
+            "approved": approved,
+            "decision_id": decision_id,
+            "reason": reason,
+        }
+        # Obligations ride only on a final Allow: a NeedsApproval hold or a Deny
+        # has nothing to honour, whatever the matched permits declared.
+        if verdict == "Allow":
+            obligations = _derive_obligations(raw.get("details"))
+            if obligations:
+                result["obligations"] = obligations
+        return result, prin, res, decision_id
 
     def test(self, cases: Sequence[dict]) -> dict:
         """Run policy fixtures against the loaded policies and report which pass —
@@ -1069,10 +1172,13 @@ class Watchlight:
         gates a real action. Each case is a dict with ``action`` and ``expect``
         (``"Allow"`` / ``"Deny"`` / ``"NeedsApproval"``), plus optional
         ``principal`` / ``resource`` / ``context``; set ``"approved": True`` to
-        mint a valid approval token and assert the human-confirmed downgrade.
-        Does NOT write to the audit trail. A verdict mismatch is a failed result
-        (inspect ``report["failed"]`` and assert on it in your test runner); a
-        malformed fixture missing ``action`` or ``expect`` raises ``ValueError``."""
+        mint a valid approval token and assert the human-confirmed downgrade;
+        set ``"obligations": {"redact": [...], "max_items": n, "log_values":
+        bool, "extra": {...}}`` to also assert the obligations an ``Allow`` must
+        carry. Does NOT write to the audit trail. A verdict mismatch is a failed
+        result (inspect ``report["failed"]`` and assert on it in your test
+        runner); a malformed fixture — missing ``action`` or ``expect``, or an
+        ill-typed ``obligations`` — raises ``ValueError``."""
         return run_policy_tests(
             lambda **req: self._decide(**req)[0],
             lambda **ch: self.mint_approval(**ch),
