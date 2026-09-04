@@ -40,6 +40,7 @@ def test_replacement_reaches_caller_and_joins_decision(tmp_path):
     info = seen[0]
     assert info["intent"] == "read" and info["resource"] == "doc/7" and info["principal"] == "egress-agent"
     assert isinstance(info["decision_id"], str) and info["decision_id"]
+    assert "obligations" not in info  # an unannotated permit carries none: no key
 
     recs = _records(tmp_path)
     decision = next(r for r in recs if r.get("resource") == "doc/7" and r.get("decision") == "Allow")

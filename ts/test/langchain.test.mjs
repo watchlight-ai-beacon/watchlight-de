@@ -85,6 +85,19 @@ async function main() {
     infos[0]?.intent === "research" && infos[0]?.resource === "tool/fetch_doc" && infos[0]?.principal === "lc-agent" && typeof infos[0]?.decisionId === "string",
     JSON.stringify(infos[0]));
 
+  ok("an unannotated permit puts no obligations key on the hook info", infos.length >= 1 && !("obligations" in infos[0]));
+
+  // The hook receives the SAME obligations the decision carries.
+  const og = new Watchlight({ agent: "lc-oblig-agent", auditDir: fs.mkdtempSync(join(os.tmpdir(), "wl-oblig-")) });
+  og.allow('@obligate_redact("ssn, email")\n@obligate_max_items("3")\npermit(principal, action == Action::"read", resource);', "read-redacted");
+  const oInfos = [];
+  const govRead = governTool(mockTool("read_doc"), { governor: og, intent: "read", onResult: (r, info) => { oInfos.push(info); return undefined; } });
+  await govRead.invoke({ id: 7 });
+  const oDecision = await og.authorize({ action: "read", resource: "tool/read_doc" });
+  ok("governTool onResult info carries the decision's obligations",
+    oInfos.length === 1 && oInfos[0].obligations !== undefined && JSON.stringify(oInfos[0].obligations) === JSON.stringify(oDecision.obligations)
+      && oInfos[0].obligations.redact.length === 2 && oInfos[0].obligations.maxItems === 3, JSON.stringify([oInfos[0], oDecision.obligations]));
+
   const pt = governTool(mockTool("pt_tool"), { governor, intent: "research", onResult: () => undefined });
   ok("void onResult passes the result through", (await pt.invoke({ a: 1 })) === 'pt_tool:{"a":1}');
 

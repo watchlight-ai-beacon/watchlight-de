@@ -325,16 +325,17 @@ DECISION_ID_MAX_LENGTH = 128
 _DECISION_ID_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
 
 
-def _validate_decision_id(decision_id: Any) -> Optional[str]:
+def _validate_decision_id(decision_id: Any, *, error: type = SanitizeError) -> Optional[str]:
     """Fail-closed check of a correlation id before it reaches the audit line.
     Accepts ``None`` (no correlation); rejects anything that is not a short,
-    control-character-free ``str``. The id is never parsed."""
+    control-character-free ``str`` by raising ``error`` (the calling
+    primitive's own exception type). The id is never parsed."""
     if decision_id is None:
         return None
     if not isinstance(decision_id, str) or not 1 <= len(decision_id) <= DECISION_ID_MAX_LENGTH:
-        raise SanitizeError(f"decision_id must be a string of 1-{DECISION_ID_MAX_LENGTH} characters")
+        raise error(f"decision_id must be a string of 1-{DECISION_ID_MAX_LENGTH} characters")
     if _DECISION_ID_CONTROL_CHARS.search(decision_id):
-        raise SanitizeError("decision_id must not contain control characters")
+        raise error("decision_id must not contain control characters")
     return decision_id
 
 
@@ -827,12 +828,23 @@ _SCREEN_RULES: list[tuple[str, re.Pattern]] = [
 ]
 
 
-def screen(text: str, *, mode: str = "report", families: Optional[Sequence[str]] = None) -> dict:
+def screen(
+    text: str,
+    *,
+    mode: str = "report",
+    families: Optional[Sequence[str]] = None,
+    decision_id: Optional[str] = None,
+) -> dict:
     """Screen ``text`` for prompt-injection / output-leak shapes. Deterministic,
     fail-closed. Returns ``{"text": ..., "report": {mode, detector_version,
     counts, total, flagged}}`` — the report is value-free (counts per family,
     never the matched text). ``mode`` is ``report`` (text untouched, default) or
-    ``redact`` (each match replaced by ``[FAMILY]`` in the ORIGINAL text)."""
+    ``redact`` (each match replaced by ``[FAMILY]`` in the ORIGINAL text).
+
+    ``decision_id`` — the correlation id of the :meth:`Watchlight.authorize`
+    decision that governed the read. Opaque and never interpreted; validated
+    (1-128 characters, no control characters, else :class:`ScreenError`) and
+    echoed onto ``report["decision_id"]``."""
     if not isinstance(text, str):
         raise ScreenError("input must be a string")
     if mode not in ("report", "redact"):
@@ -844,6 +856,7 @@ def screen(text: str, *, mode: str = "report", families: Optional[Sequence[str]]
         if fam not in SCREEN_FAMILIES:
             raise ScreenError("unknown family")
     enabled = set(requested)
+    decision_id = _validate_decision_id(decision_id, error=ScreenError)
     try:
         norm, idx = _screen_normalize(text)
         spans: list[tuple[int, int, str]] = []
@@ -874,16 +887,16 @@ def screen(text: str, *, mode: str = "report", families: Optional[Sequence[str]]
                 cursor = o_end
             parts.append(text[cursor:])
             out = "".join(parts)
-        return {
-            "text": out,
-            "report": {
-                "mode": mode,
-                "detector_version": SCREEN_DETECTOR_VERSION,
-                "counts": counts,
-                "total": len(kept),
-                "flagged": len(kept) > 0,
-            },
+        report: dict[str, Any] = {
+            "mode": mode,
+            "detector_version": SCREEN_DETECTOR_VERSION,
+            "counts": counts,
+            "total": len(kept),
+            "flagged": len(kept) > 0,
         }
+        if decision_id is not None:
+            report["decision_id"] = decision_id
+        return {"text": out, "report": report}
     except ScreenError:
         raise
     except Exception as exc:  # noqa: BLE001 - fail-closed
@@ -1061,8 +1074,10 @@ class Watchlight:
 
         ``on_result(result, info)`` is the egress hook: called AFTER the body
         returns and BEFORE the result is handed back, with ``info = {"intent",
-        "resource", "principal", "decision_id"}`` — the ``decision_id`` of the
-        decision that let the body run. This is where you run ``sanitize``, a
+        "resource", "principal", "decision_id"}`` plus ``"obligations"`` when
+        the decision that let the body run carries any (the key is absent
+        otherwise — read it with ``info.get("obligations")``). This is where
+        you run ``sanitize``, a
         screen, or a second ``authorize`` against the result's classification.
         Return a value to replace the payload; return ``None`` to pass it
         through; raise to withhold it — the exception propagates and the raw
@@ -1082,19 +1097,21 @@ class Watchlight:
                 res = _resolve(resource, args, kwargs) or f"tool/{name}"
                 ctx = context(*args, **kwargs) if callable(context) else (context or {})
 
-                def run(decision_id: Optional[str]) -> Any:
+                def run(d: dict) -> Any:
                     # Run the body, then the egress hook (if any) over its result.
                     out = fn(*args, **kwargs)
                     if on_result is None:
                         return out
-                    info = {"intent": intent, "resource": res, "principal": prin, "decision_id": decision_id}
+                    info = {"intent": intent, "resource": res, "principal": prin, "decision_id": d.get("decision_id")}
+                    if d.get("obligations"):
+                        info["obligations"] = d["obligations"]  # only when the Allow carries any
                     if inspect.isawaitable(out):
                         return self._apply_on_result_async(out, on_result, info)
                     return self._apply_on_result(out, on_result, info)[0]
 
                 d = self.authorize(action=intent, principal=prin, resource=res, context=ctx)
                 if d["allowed"]:
-                    return run(d.get("decision_id"))
+                    return run(d)
                 if d["needs_approval"]:
                     if on_needs_approval is not None and on_needs_approval(d):
                         token = self.mint_approval(action=intent, principal=prin, resource=res)
@@ -1102,7 +1119,7 @@ class Watchlight:
                             action=intent, principal=prin, resource=res, context=ctx, approval=token
                         )
                         if d2["allowed"]:
-                            return run(d2.get("decision_id"))
+                            return run(d2)
                     raise NeedsApproval(name, intent, d.get("decision_id"), d["reason"])
                 raise Denied(name, intent, d["reason"] or DENY_REASON)
 
@@ -1255,11 +1272,15 @@ class Watchlight:
         resource: str = "content",
         mode: str = "report",
         families: Optional[Sequence[str]] = None,
+        decision_id: Optional[str] = None,
     ) -> dict:
         """Screen text for prompt-injection / output-leak shapes before it
         (re-)enters the model. Fail-closed; writes a value-free ``screening``
-        audit record (counts per family + ``flagged`` — never the text)."""
-        result = screen(content, mode=mode, families=families)
+        audit record (counts per family + ``flagged`` — never the text). Pass the
+        ``decision_id`` returned by :meth:`authorize` to join the two records."""
+        # decision_id is validated (bounded, no control chars) inside screen()
+        # before it is echoed onto the report and written to the audit line.
+        result = screen(content, mode=mode, families=families, decision_id=decision_id)
         self._audit_screen(intent, resource, result)
         return result
 
@@ -1442,20 +1463,22 @@ class Watchlight:
             f"     flagged {report['total']} ({report['mode']})"
         )
         # Value-free: counts per rule family + mode + flagged — never the text.
-        self._write_audit(
-            {
-                "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                "agent": self.agent,
-                "intent": intent,
-                "event": "screening",
-                "resource": resource,
-                "mode": report["mode"],
-                "detector": report["detector_version"],
-                "counts": report["counts"],
-                "total": report["total"],
-                "flagged": report["flagged"],
-            }
-        )
+        record: dict[str, Any] = {
+            "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "agent": self.agent,
+            "intent": intent,
+            "event": "screening",
+            "resource": resource,
+            "mode": report["mode"],
+            "detector": report["detector_version"],
+            "counts": report["counts"],
+            "total": report["total"],
+            "flagged": report["flagged"],
+        }
+        # Same key as the authorize line, so the two records join on decision_id.
+        if report.get("decision_id"):
+            record["decision_id"] = report["decision_id"]
+        self._write_audit(record)
 
     def _write_audit(self, record: dict) -> None:
         """The single funnel for every audit record this governor produces: the

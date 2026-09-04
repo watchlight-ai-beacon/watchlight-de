@@ -1,0 +1,20 @@
+{
+  "policies": [
+    { "name": "kb-documents-are-retrievable-with-personal-data-redacted",
+      "code": "@obligate_redact(\"email, name, ssn\")\npermit(principal, action == Action::\"retrieve\", resource) when { context.collection == \"kb\" };" }
+  ],
+  "tests": [
+    { "name": "a knowledge-base document may be retrieved - email, name and ssn redacted first", "action": "retrieve",
+      "resource": "doc/ticket-4471", "context": { "collection": "kb" },
+      "expect": "Allow", "obligations": { "redact": ["email", "name", "ssn"] } },
+    { "name": "the poisoned document is retrievable under the same obligation - screening, not policy, catches the payload", "action": "retrieve",
+      "resource": "doc/vendor-faq", "context": { "collection": "kb" },
+      "expect": "Allow", "obligations": { "redact": ["email", "name", "ssn"] } },
+    { "name": "a document outside the knowledge base is denied", "action": "retrieve",
+      "resource": "doc/scratch-1", "context": { "collection": "scratch" }, "expect": "Deny" },
+    { "name": "a retrieval that names no collection is denied (fail-closed)", "action": "retrieve",
+      "resource": "doc/ticket-4471", "context": {}, "expect": "Deny" },
+    { "name": "no policy permits exporting the corpus", "action": "export",
+      "resource": "doc/*", "context": { "collection": "kb" }, "expect": "Deny" }
+  ]
+}

@@ -91,6 +91,20 @@ async function main() {
     infos[0]?.intent === "research" && infos[0]?.resource === "tool/WebSearch" && infos[0]?.principal === "claude-agent" && typeof infos[0]?.decisionId === "string",
     JSON.stringify(infos[0]));
 
+  ok("an unannotated permit puts no obligations key on the hook info", infos.length >= 1 && !("obligations" in infos[0]));
+
+  // The PostToolUse hook receives the SAME obligations the PreToolUse decision carried.
+  const og = new Watchlight({ agent: "claude-oblig-agent", auditDir: fs.mkdtempSync(join(os.tmpdir(), "wl-oblig-")) });
+  og.allow('@obligate_redact("ssn, email")\n@obligate_max_items("3")\npermit(principal, action == Action::"read", resource);', "read-redacted");
+  const oInfos = [];
+  const { hooks: oh } = governedHooks({ governor: og, intentFor: () => "read", onResult: (r, info) => { oInfos.push(info); return undefined; } });
+  await callPre(oh, "ReadDoc", "tu-o1");
+  await callPost(oh, "ReadDoc", "doc body", "tu-o1");
+  const oDecision = await og.authorize({ action: "read", resource: "tool/ReadDoc" });
+  ok("PostToolUse onResult info carries the decision's obligations",
+    oInfos.length === 1 && oInfos[0].obligations !== undefined && JSON.stringify(oInfos[0].obligations) === JSON.stringify(oDecision.obligations)
+      && oInfos[0].obligations.redact.length === 2 && oInfos[0].obligations.maxItems === 3, JSON.stringify([oInfos[0], oDecision.obligations]));
+
   await callPre(eh, "WebSearch", "tu-2");
   const post2 = await callPost(eh, "WebSearch", "plain result", "tu-2");
   ok("void onResult passes through (no updatedToolOutput)", !("updatedToolOutput" in (post2.hookSpecificOutput ?? {})), JSON.stringify(post2));

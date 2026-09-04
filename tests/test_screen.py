@@ -135,6 +135,26 @@ def test_governed_screen_audits_value_free(tmp_path):
     assert r2["report"]["mode"] == "report" and r2["report"]["flagged"] is False and r2["text"] == "plain text"
 
 
+def test_decision_id_is_echoed_and_joins_the_screening_record(tmp_path):
+    g = Watchlight(agent="join-agent", audit_dir=str(tmp_path))
+    r = g.screen(ATTACK, resource="page", decision_id="dec-7f1c9e")
+    assert r["report"]["decision_id"] == "dec-7f1c9e"
+    recs = [json.loads(l) for l in (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
+    rec = next(r for r in recs if r.get("event") == "screening")
+    assert rec["decision_id"] == "dec-7f1c9e"
+    plain = g.screen("plain text", resource="note.txt")
+    assert "decision_id" not in plain["report"]
+    recs = [json.loads(l) for l in (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert "decision_id" not in recs[-1]
+    assert screen("plain", decision_id="d-1")["report"]["decision_id"] == "d-1"
+
+
+@pytest.mark.parametrize("bad", ["bad\nid", "bad\u2028id", "", "x" * 129, 42])
+def test_malformed_decision_id_is_refused_fail_closed(bad):
+    with pytest.raises(ScreenError):
+        screen("plain", decision_id=bad)
+
+
 def test_screening_record_reaches_audit_sink_with_file_fields(tmp_path):
     seen: list[dict] = []
     g = Watchlight(agent="sink-agent", audit_dir=str(tmp_path), audit_sink=seen.append)

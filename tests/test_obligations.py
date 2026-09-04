@@ -143,9 +143,12 @@ def test_needs_approval_never_carries_obligations_but_the_approved_allow_does(tm
 def test_on_result_can_honour_a_redact_obligation(tmp_path):
     g = _stubbed(tmp_path)
 
+    seen: list[dict] = []
+
     def redact_if_obliged(text, info):
-        again = g.authorize(action="allow", resource=info["resource"])
-        if "ssn" in (again.get("obligations") or {}).get("redact", []):
+        # The hook receives the obligations of the decision that let the body run.
+        seen.append(info)
+        if "ssn" in (info["obligations"] or {}).get("redact", []):
             return g.sanitize(text, resource=info["resource"], types=["SSN"])["text"]
         return text
 
@@ -155,6 +158,7 @@ def test_on_result_can_honour_a_redact_obligation(tmp_path):
 
     out = read_doc("7")
     assert "<SSN_1>" in out and "123-45-6789" not in out
+    assert seen[0]["obligations"] == {"redact": ["ssn"], "extra": {"ttl": ["30"]}}
 
 
 def test_govern_test_asserts_obligations_end_to_end(tmp_path):

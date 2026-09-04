@@ -140,17 +140,25 @@ async function main() {
     ok("an approved Allow carries them", ap.decision === "Allow" && ap.approved === true &&
       canon(toWire(ap.obligations)) === canon({ redact: ["ssn"], max_items: 4 }), JSON.stringify(ap));
     // Governed tool: the hook receives the same result the caller would.
+    const seenInfo = [];
     const readDoc = g.tool(async (id) => `SSN 123-45-6789 for ${id}`, {
       intent: "allow", resource: (id) => `doc/${id}`,
-      onResult: async (text, info) => {
-        // A real app looks up `result.obligations` from the authorize decision;
-        // here we prove the decision that let the body run carried them.
-        const again = await g.authorize({ action: "allow", resource: info.resource });
-        return again.obligations?.redact?.includes("ssn") ? g.sanitize(text, { resource: info.resource, types: ["SSN"] }).text : text;
+      onResult: (text, info) => {
+        // The hook receives the obligations of the decision that let the body run.
+        seenInfo.push(info);
+        return info.obligations?.redact?.includes("ssn") ? g.sanitize(text, { resource: info.resource, types: ["SSN"] }).text : text;
       },
     });
     const out = await readDoc("7");
     ok("onResult can honour a redact obligation via sanitize", /<SSN_1>/.test(out) && !/123-45-6789/.test(out), out);
+    ok("onResult info carries the decision's obligations",
+      canon(toWire(seenInfo[0]?.obligations)) === canon({ redact: ["ssn"], extra: { ttl: ["30"] } }), JSON.stringify(seenInfo[0]));
+    // An unannotated permit (in-process engine) carries none: no `obligations` key on the hook info.
+    const gf = new Watchlight({ agent: "free-agent", auditDir: tmp() });
+    gf.allow('permit(principal, action == Action::"allow", resource);');
+    const freeInfos = [];
+    await gf.tool(async () => "x", { intent: "allow", onResult: (t, info) => { freeInfos.push(info); } })();
+    ok("an obligation-free decision puts no obligations key on the hook info", freeInfos.length === 1 && !("obligations" in freeInfos[0]));
 
     // Policy tests through the stub (verdict + obligations expectation).
     const report = await g.test([
