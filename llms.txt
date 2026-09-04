@@ -129,6 +129,8 @@ Two mistakes to avoid: (1) decorating a tool WITHOUT loading a policy first — 
 - [governed_langgraph_agent.py](https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/examples/governed_langgraph_agent.py) · [governed_pydantic_ai_agent.py](https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/examples/governed_pydantic_ai_agent.py) · [governed_claude_agent.py](https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/examples/governed_claude_agent.py): framework plugins, governed in-process.
 - [governed_mcp_server.py](https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/examples/governed_mcp_server.py): a policy enforcement point in front of an MCP server.
 - [context_governance.py](https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/examples/context_governance.py): policy-based content/PII screening.
+- [showcase/policy-tests-ci/](https://github.com/watchlight-ai-beacon/watchlight-de/tree/main/examples/showcase/policy-tests-ci): policy suites as a CI gate — a GitHub Actions workflow template running `watchlight policy test` (TypeScript and Python CLIs), plus a widened policy variant that fails the suite.
+- [showcase/audit-forensics/](https://github.com/watchlight-ai-beacon/watchlight-de/tree/main/examples/showcase/audit-forensics): reconstruct who did what from `audit.jsonl` — generators for a trail with every record kind, `forensics.py` and jq recipes that join on `decision_id`; exact field names per record kind.
 - Policy files live beside them: `watchlight.policy.json`, `research.policy.json`, `framework.policy.json`, `mcp.policy.json`.
 
 ## Gotchas for coding agents (get these right)

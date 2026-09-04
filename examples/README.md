@@ -50,6 +50,16 @@ the recipes can't drift from the engine.
 actions, external messaging, data egress, kill-switch / quarantine, per-user
 attribution, PII-before-read, sub-agent confinement.
 
+## Showcase — end-to-end setups
+
+Complete, copy-and-paste setups that use several parts of the SDK together.
+Each runs in both lanes and exits non-zero on any failed assertion.
+
+| Example | What it shows | Install |
+|---|---|---|
+| [`showcase/policy-tests-ci/`](showcase/policy-tests-ci/README.md) | **Policy tests as a CI gate** — a policy set, an 11-fixture suite (Allow / Deny / NeedsApproval / approved), a GitHub Actions workflow template running `watchlight policy test` in the TypeScript and Python CLIs, and a deliberately widened policy that turns the run red. | `watchlight` or `@watchlight/sdk` |
+| [`showcase/audit-forensics/`](showcase/audit-forensics/README.md) | **Audit forensics** — generate a trail with every record kind (decisions incl. an approved one, sanitizations, egress, attenuations, screenings), then join on `decision_id`, roll up per principal, and list attenuation chains with `forensics.py` or `jq`. Documents every record kind's exact field names. | `watchlight` (+ `jq` for the recipes) |
+
 ## Govern an existing framework agent
 
 The *same* plugin you ship to production, wired to the in-process engine. Going
