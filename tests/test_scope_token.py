@@ -123,7 +123,10 @@ def test_tampered_payload_is_rejected(tmp_path):
         g.scope_from_token(f"{v}.{flipped}.{s}")
     assert ei.value.code == "signature"
     with pytest.raises(ScopeTokenError) as ei:
-        g.scope_from_token(f"{v}.{p}.{s[:-1]}{'B' if s.endswith('A') else 'A'}")
+        # Flip a character in the middle of the signature: the final character of an
+        # unpadded base64url string carries zero bits, so a flip there can produce a
+        # non-canonical encoding that is rejected as "malformed" before the HMAC check.
+        g.scope_from_token(f"{v}.{p}.{s[:5]}{'B' if s[5] == 'A' else 'A'}{s[6:]}")
     assert ei.value.code == "signature"
     with pytest.raises(ScopeTokenError) as ei:
         _gov(tmp_path, "other", token_secret="another-secret-0123456789abcdef").scope_from_token(token)

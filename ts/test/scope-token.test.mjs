@@ -75,7 +75,9 @@ async function main() {
   const [v, p, s] = token.split(".");
   const flipped = p[10] === "A" ? "B" : "A";
   await rejects("tampered payload is rejected (signature)", () => g.scopeFromToken(`${v}.${p.slice(0, 10)}${flipped}${p.slice(11)}.${s}`), "signature");
-  await rejects("tampered signature is rejected", () => g.scopeFromToken(`${v}.${p}.${s.slice(0, -1)}${s.endsWith("A") ? "B" : "A"}`), "signature");
+  // Flip a middle character: the last char of unpadded base64url carries zero bits, so a
+  // flip there can yield a non-canonical string rejected as malformed before the HMAC check.
+  await rejects("tampered signature is rejected", () => g.scopeFromToken(`${v}.${p}.${s.slice(0, 5)}${s[5] === "A" ? "B" : "A"}${s.slice(6)}`), "signature");
   await rejects("wrong secret is rejected (signature)", () => gov({ tokenSecret: "another-secret-0123456789abcdef" }).scopeFromToken(token), "signature");
 
   // ── acceptance: widened scope with a VALID signature → the engine refuses ──
