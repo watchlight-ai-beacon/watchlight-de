@@ -11,19 +11,19 @@ what a pattern claims and what the engine does can't drift.
 
 ## The patterns
 
-| Pattern | The high-stakes question it answers |
-|---|---|
-| [Money-bounded agent](./money-bounded-agent.md) | May this agent spend *this much*, on *this*, right now — or does a human decide? |
-| [Destructive actions](./destructive-actions.md) | Delete / drop / deploy: require a human, and make some things undeletable. |
-| [External messaging](./external-messaging.md) | May the agent message *outside* — and only allowlisted destinations, with review? |
-| [Data egress](./data-egress.md) | May *this classification* of data cross *this boundary*? Keep restricted data in. |
-| [Egress after read](./egress-after-read.md) | Govern what a tool *returns* — decide on the result's classification after the fetch, in the audit trail. |
-| [Kill-switch / quarantine](./kill-switch.md) | Stop a suspect agent cold — a hard boundary that beats every grant. |
-| [Per-user attribution](./per-user-attribution.md) | Attribute the decision to the acting end-user, and scope policy to them. |
-| [PII before read](./pii-before-read.md) | Strip PII from a document *before* the agent ever sees it. |
-| [Screen before model](./screen-before-model.md) | Catch prompt-injection shapes in what a read returns *before* the model reads it. |
-| [Sub-agent confinement](./subagent-confinement.md) | A spawned agent can only ever do *less* than its parent — never more. |
-| [Audit sink](./audit-sink.md) | Ship the value-free trail to a store you already run — Postgres, OTLP, a webhook — without touching a decision. |
+| Pattern | The high-stakes question it answers | Verified by |
+|---|---|---|
+| [Money-bounded agent](./money-bounded-agent.md) | May this agent spend *this much*, on *this*, right now — or does a human decide? | [`money-bounded-agent.suite.json`](./suites/money-bounded-agent.suite.json) |
+| [Destructive actions](./destructive-actions.md) | Delete / drop / deploy: require a human, and make some things undeletable. | [`destructive-actions.suite.json`](./suites/destructive-actions.suite.json) |
+| [External messaging](./external-messaging.md) | May the agent message *outside* — and only allowlisted destinations, with review? | [`external-messaging.suite.json`](./suites/external-messaging.suite.json) |
+| [Data egress](./data-egress.md) | May *this classification* of data cross *this boundary*? Keep restricted data in. | [`data-egress.suite.json`](./suites/data-egress.suite.json) |
+| [Egress after read](./egress-after-read.md) | Govern what a tool *returns* — decide on the result's classification after the fetch, in the audit trail. | [`egress-after-read.suite.json`](./suites/egress-after-read.suite.json) |
+| [Kill-switch / quarantine](./kill-switch.md) | Stop a suspect agent cold — a hard boundary that beats every grant. | [`kill-switch.suite.json`](./suites/kill-switch.suite.json) |
+| [Per-user attribution](./per-user-attribution.md) | Attribute the decision to the acting end-user, and scope policy to them. | [`per-user-attribution.suite.json`](./suites/per-user-attribution.suite.json) |
+| [PII before read](./pii-before-read.md) | Strip PII from a document *before* the agent ever sees it. | [`pii-before-read.suite.json`](./suites/pii-before-read.suite.json) + [`pii-before-read.mjs`](./scripts/pii-before-read.mjs) |
+| [Screen before model](./screen-before-model.md) | Catch prompt-injection shapes in what a read returns *before* the model reads it. | [`screen-before-model.mjs`](./scripts/screen-before-model.mjs) |
+| [Sub-agent confinement](./subagent-confinement.md) | A spawned agent can only ever do *less* than its parent — never more. | [`subagent-confinement.mjs`](./scripts/subagent-confinement.mjs) |
+| [Audit sink](./audit-sink.md) | Ship the value-free trail to a store you already run — Postgres, OTLP, a webhook — without touching a decision. | [`audit-sink.mjs`](./scripts/audit-sink.mjs) |
 
 ## Run them
 
@@ -32,8 +32,13 @@ pip install watchlight            # or: npm i -g @watchlight/sdk
 examples/patterns/check.sh        # runs every suite + a private-data scan
 ```
 
-`check.sh` runs each `suites/*.suite.json` through `watchlight policy test` and
-scans the folder for anything resembling private data.
+`check.sh` first checks that **every** pattern doc has a matching check — a
+`suites/<name>.suite.json` (policy verdicts, run through `watchlight policy test`)
+and/or a `scripts/<name>.mjs` (a Node script for the parts that aren't a policy
+verdict: `sanitize`, scope attenuation, the audit sink) — and fails if one has
+neither. It then runs every suite and script, and scans the folder for anything
+resembling private data. The scripts need Node >= 18 and resolve the SDK from a
+global `npm i -g @watchlight/sdk` or an in-repo build (`cd ts && npm run build`).
 
 ## Contributing a pattern — the one rule
 
@@ -46,5 +51,6 @@ scans the folder for anything resembling private data.
 > (`partner.example`). Named stories belong on the marketing site, with
 > permission — never in this repo.
 
-`check.sh` enforces the mechanical part (no emails, keys, or tokens); the rest is
-on the author and the reviewer. When in doubt, leave it out.
+`check.sh` enforces the mechanical parts — every pattern ships a suite or script
+named after its doc, and no emails, keys, or tokens anywhere; the rest is on the
+author and the reviewer. When in doubt, leave it out.

@@ -1,0 +1,20 @@
+{
+  "policies": [
+    { "name": "reads-go-through-the-sanitizing-tool",
+      "code": "permit(principal, action == Action::\"read\", resource) when { context.sanitized == true };" },
+    { "name": "restricted-documents-are-never-read",
+      "code": "forbid(principal, action == Action::\"read\", resource) when { context.classification == \"restricted\" };" }
+  ],
+  "tests": [
+    { "name": "a read through the sanitizing tool is allowed", "action": "read",
+      "resource": "doc/statement", "context": { "sanitized": true, "classification": "internal" }, "expect": "Allow" },
+    { "name": "a read of the raw text is denied - the agent never sees the original", "action": "read",
+      "resource": "doc/statement", "context": { "sanitized": false, "classification": "internal" }, "expect": "Deny" },
+    { "name": "a read that does not say whether it was sanitized is denied (fail-closed)", "action": "read",
+      "resource": "doc/statement", "context": {}, "expect": "Deny" },
+    { "name": "a restricted document is withheld even when sanitized - the forbid boundary", "action": "read",
+      "resource": "doc/statement", "context": { "sanitized": true, "classification": "restricted" }, "expect": "Deny" },
+    { "name": "the sanitizing path grants reads only - a write is not covered", "action": "write",
+      "resource": "doc/statement", "context": { "sanitized": true, "classification": "internal" }, "expect": "Deny" }
+  ]
+}

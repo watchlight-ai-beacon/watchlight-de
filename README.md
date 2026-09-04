@@ -328,23 +328,27 @@ The advanced policy JSON — each a runnable `{ policies, tests }` suite with Ce
 `context` conditions and `@enforcement_effect` gates — lives under
 [`examples/patterns/suites/`](./examples/patterns/suites/):
 
-| Pattern | The high-stakes question | Policy JSON |
+| Pattern | The high-stakes question | Verified by |
 |---|---|---|
-| [Money-bounded agent](./examples/patterns/money-bounded-agent.md) | Spend *this much*, on *this*, now — or does a human decide? | [`money-bounded.suite.json`](./examples/patterns/suites/money-bounded.suite.json) |
+| [Money-bounded agent](./examples/patterns/money-bounded-agent.md) | Spend *this much*, on *this*, now — or does a human decide? | [`money-bounded-agent.suite.json`](./examples/patterns/suites/money-bounded-agent.suite.json) |
 | [Destructive actions](./examples/patterns/destructive-actions.md) | Delete / drop / deploy: require a human; make some things undeletable. | [`destructive-actions.suite.json`](./examples/patterns/suites/destructive-actions.suite.json) |
 | [External messaging](./examples/patterns/external-messaging.md) | May the agent message *outside* — allowlisted destinations only, with review? | [`external-messaging.suite.json`](./examples/patterns/suites/external-messaging.suite.json) |
 | [Data egress](./examples/patterns/data-egress.md) | May *this classification* of data cross *this boundary*? | [`data-egress.suite.json`](./examples/patterns/suites/data-egress.suite.json) |
 | [Egress after read](./examples/patterns/egress-after-read.md) | Govern what a tool *returns* — decide on the result's classification after the fetch. | [`egress-after-read.suite.json`](./examples/patterns/suites/egress-after-read.suite.json) |
 | [Kill-switch / quarantine](./examples/patterns/kill-switch.md) | Stop a suspect agent cold — a hard boundary that beats every grant. | [`kill-switch.suite.json`](./examples/patterns/suites/kill-switch.suite.json) |
-| [Per-user attribution](./examples/patterns/per-user-attribution.md) | Attribute the decision to the acting end-user, and scope policy to them. | [`per-user.suite.json`](./examples/patterns/suites/per-user.suite.json) |
+| [Per-user attribution](./examples/patterns/per-user-attribution.md) | Attribute the decision to the acting end-user, and scope policy to them. | [`per-user-attribution.suite.json`](./examples/patterns/suites/per-user-attribution.suite.json) |
+| [PII before read](./examples/patterns/pii-before-read.md) | Strip PII from a document *before* the agent ever sees it; read only through the sanitizing path. | [`pii-before-read.suite.json`](./examples/patterns/suites/pii-before-read.suite.json) + [`pii-before-read.mjs`](./examples/patterns/scripts/pii-before-read.mjs) |
+| [Screen before model](./examples/patterns/screen-before-model.md) | Catch prompt-injection shapes in what a read returns *before* the model reads it. | [`screen-before-model.mjs`](./examples/patterns/scripts/screen-before-model.mjs) |
+| [Sub-agent confinement](./examples/patterns/subagent-confinement.md) | A spawned agent can only ever do *less* than its parent — never more. | [`subagent-confinement.mjs`](./examples/patterns/scripts/subagent-confinement.mjs) |
+| [Audit sink](./examples/patterns/audit-sink.md) | Ship the value-free trail to a store you already run, without touching a decision. | [`audit-sink.mjs`](./examples/patterns/scripts/audit-sink.mjs) |
 
-Three more recipes — [PII before read](./examples/patterns/pii-before-read.md),
-[screen before model](./examples/patterns/screen-before-model.md) and
-[sub-agent confinement](./examples/patterns/subagent-confinement.md) — round out
-the library. Run every suite at once:
+Patterns whose guarantee is not a policy verdict — sanitization, content
+screening, scope attenuation, the audit sink — are verified by a Node script under
+[`examples/patterns/scripts/`](./examples/patterns/scripts/) instead. Run every
+suite and script at once:
 
 ```bash
-examples/patterns/check.sh          # runs each suite through the real engine
+examples/patterns/check.sh          # every pattern must have a suite or script; runs them all
 ```
 
 ---

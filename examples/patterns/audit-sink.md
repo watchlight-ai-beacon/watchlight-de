@@ -171,6 +171,13 @@ async def audit_sink(record: dict) -> None:                  # async: scheduled 
   enforces. A sink that enriches it with tool arguments, message text or user
   data re-creates exactly the exposure the trail is designed not to have.
 
+**Verify.** This pattern is a delivery contract, not a policy verdict, so it has
+no `.suite.json`; `check.sh` runs [`scripts/audit-sink.mjs`](./scripts/audit-sink.mjs)
+instead. It asserts that a decision, a sanitization and an attenuation each
+reach the sink with exactly the fields of their `audit.jsonl` line (frozen,
+value-free, joined on `decision_id`), and that a throwing sink changes neither
+the verdicts nor the file and is reported once, by error type only.
+
 In the Developer Edition the sink is your own store. Enterprise replaces it with a
 signed, tamper-evident audit service — every record KMS-signed and joined into a
 fleet-wide execution graph — with no sink code at all.
