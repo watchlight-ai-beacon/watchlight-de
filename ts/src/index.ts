@@ -39,7 +39,7 @@ export type {
   GovernToolOptions,
   GovernToolsOptions,
 } from "./langchain";
-export { sanitize, SanitizeError, DETECTOR_VERSION, DECISION_ID_MAX_LENGTH } from "./sanitize";
+export { sanitize, SanitizeError, DETECTOR_VERSION, DECISION_ID_MAX_LENGTH, DEFAULT_PII_TYPES, HEURISTIC_PII_TYPES } from "./sanitize";
 export type {
   PiiType,
   RedactMode,
@@ -560,15 +560,17 @@ export class Watchlight {
   /**
    * Strip PII from text before an agent reads it (governed data minimization).
    * Deterministic, fail-closed. Writes a value-free `sanitization` record to the
-   * audit trail (counts by PII type + mode — never the values) and returns the
-   * redacted text plus the report. Operates on extracted text — extract a
-   * document to text first (never hand the agent a "redacted PDF").
+   * audit trail (counts by PII type + mode — never the values, including any
+   * `known` dictionary values) and returns the redacted text plus the report.
+   * Operates on extracted text — extract a document to text first (never hand
+   * the agent a "redacted PDF").
    */
   sanitize(content: string, opts: SanitizeOptions = {}): SanitizeResult {
-    const { intent = "read", resource = "document", mode, types, decisionId } = opts;
+    const { intent = "read", resource = "document", mode, types, decisionId, known } = opts;
     // `decisionId` is validated (bounded, no control chars) inside sanitizeText
-    // before it is echoed onto the report and written to the audit line.
-    const result = sanitizeText(content, { mode, types, decisionId });
+    // before it is echoed onto the report and written to the audit line; `known`
+    // values are redacted in-process and never reach the report or the audit line.
+    const result = sanitizeText(content, { mode, types, decisionId, known });
     this._auditSanitize(intent, resource, result);
     return result;
   }

@@ -9,7 +9,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 
 const require = createRequire(import.meta.url);
-const { sanitize, SanitizeError, Watchlight, DECISION_ID_MAX_LENGTH } = require("../dist/index.js");
+const { sanitize, SanitizeError, Watchlight, DECISION_ID_MAX_LENGTH, DETECTOR_VERSION, DEFAULT_PII_TYPES, HEURISTIC_PII_TYPES } = require("../dist/index.js");
 const here = dirname(fileURLToPath(import.meta.url));
 
 let pass = 0, fail = 0;
@@ -114,6 +114,102 @@ async function main() {
     ], { stdio: "pipe" });
   } catch (e) { typesOk = false; typesErr = String(e.stdout || e.message).slice(0, 400); }
   ok("SanitizeOptions type accepts { resource, intent, decisionId }", typesOk, typesErr);
+
+  // ── de-rules-2: detector set + defaults ──
+  ok("detector version is de-rules-2", DETECTOR_VERSION === "de-rules-2" && report.detectorVersion === "de-rules-2");
+  ok("heuristics are not in the default set", HEURISTIC_PII_TYPES.every((t) => !DEFAULT_PII_TYPES.includes(t)));
+  ok("PASSPORT + DOB are in the default set", DEFAULT_PII_TYPES.includes("PASSPORT") && DEFAULT_PII_TYPES.includes("DOB"));
+  ok("existing callers see no new types on the sample", !("KNOWN" in report.counts) && !("PERSON" in report.counts) && !("ADDRESS" in report.counts));
+
+  // ── PASSPORT: labelled numbers + MRZ; bare numbers are NOT flagged ──
+  const pp = sanitize("Passport No: X1234567, passport #: AB123456, PASSPORT NUMBER 987654321.");
+  ok("PASSPORT: labelled numbers redacted (3)", pp.report.counts.PASSPORT === 3, JSON.stringify(pp.report.counts));
+  ok("PASSPORT: label kept, number gone", pp.text.startsWith("Passport No: <PASSPORT_1>") && !pp.text.includes("X1234567") && !pp.text.includes("AB123456"));
+  ok("PASSPORT: negative — label without a digit-bearing token", (sanitize("passport renewal office 123456").report.counts.PASSPORT ?? 0) === 0);
+  ok("PASSPORT: negative — bare number is not a passport", (sanitize("ref AB123456 / 987654321").report.counts.PASSPORT ?? 0) === 0);
+  const mrz1 = "P<UTOERIKSSON<<ANNA<MARIA".padEnd(44, "<");
+  const mrz2 = "L898902C36UTO7408122F1204159ZE184226B<<<<<10";
+  const mrz = sanitize(`scan:\n${mrz1}\n${mrz2}\n`);
+  ok("PASSPORT: both MRZ lines redacted", mrz.report.counts.PASSPORT === 2 && !mrz.text.includes("ERIKSSON") && !mrz.text.includes("L898902C3"));
+  ok("PASSPORT: negative — a 44-char upper-case word run is not an MRZ line", (sanitize("A".repeat(44)).report.counts.PASSPORT ?? 0) === 0);
+
+  // ── DOB: labelled dates only; plausibility-checked ──
+  const dob = sanitize("DOB: 03/15/1985. Date of birth 1985-03-15; born on 15 March 1985; birthday March 15th, 1985; D.O.B. 15.03.85");
+  ok("DOB: five labelled shapes redacted", dob.report.counts.DOB === 5, JSON.stringify(dob.report.counts));
+  ok("DOB: labels kept, dates gone", dob.text.includes("DOB: <DOB_1>") && !dob.text.includes("1985") && !dob.text.includes("15.03.85"));
+  ok("DOB: negative — unlabelled dates untouched", (sanitize("Statement date 03/15/2024, due 04/01/2024").report.counts.DOB ?? 0) === 0);
+  ok("DOB: negative — implausible dates untouched", (sanitize("DOB: 13/45/1985 dob 99/99/99 DOB: 01/01/1850").report.counts.DOB ?? 0) === 0);
+  ok("DOB: negative — 'born in <year>' is not a date", (sanitize("the project was born in 2019").report.counts.DOB ?? 0) === 0);
+
+  // ── KNOWN: application-supplied dictionary ──
+  const kn = sanitize("Ada Lovelace lives at 12 Oak Lane; contact ada lovelace or ADA LOVELACE.", { known: ["Ada Lovelace", "Oak Lane"] });
+  ok("KNOWN: every occurrence redacted, case-insensitive", kn.report.counts.KNOWN === 4 && !/ada lovelace|oak lane/i.test(kn.text));
+  ok("KNOWN: same value (any case) → same tag", (kn.text.match(/<KNOWN_1>/g) || []).length === 3 && kn.text.includes("<KNOWN_2>"));
+  ok("KNOWN: report carries counts only, never the values", !JSON.stringify(kn.report).includes("Lovelace") && !JSON.stringify(kn.report).includes("Oak"));
+  const ov = sanitize("Ann Lee Smith and ANN LEE", { known: ["Ann Lee", "Lee Smith"] });
+  ok("KNOWN: overlapping values merge — no fragment survives", !/smith|lee|ann/i.test(ov.text) && ov.report.counts.KNOWN === 2);
+  ok("KNOWN: nested self-overlap merges (aa in aaaa)", sanitize("aaaa", { known: ["aa"] }).text === "<KNOWN_1>");
+  const clip = sanitize("a@b.com Ltd", { known: ["com Ltd"] });
+  ok("KNOWN: span past a structured span is clipped, not dropped", clip.text === "<EMAIL_1><KNOWN_1>" && clip.report.counts.EMAIL === 1);
+  // union: a structured span that STARTS inside a KNOWN span keeps its tail
+  ok("UNION: card starting inside a known span", sanitize("ACC 4111 1111 1111 1111", { known: ["ACC 4111"] }).text === "<KNOWN_1><CREDIT_CARD_1>");
+  ok("UNION: SSN starting inside a known span", sanitize("SSN 123-45-6789", { known: ["SSN 123"] }).text === "<KNOWN_1><SSN_1>");
+  ok("UNION: email starting inside a known span", sanitize("Ann Lee@example.com", { known: ["Ann Lee"] }).text === "<KNOWN_1><EMAIL_1>");
+  ok("UNION: dictionary never reduces structured coverage", !/\d/.test(sanitize("ACC 4111 1111 1111 1111 / SSN 123-45-6789", { known: ["ACC 4111", "SSN 123"] }).text.replace(/<[A-Z_]+_\d+>/g, "")));
+  const meta = sanitize("see (a.b)*c$ and (a.b)*c$", { known: ["(a.b)*c$"] });
+  ok("KNOWN: regex metacharacters are literal", meta.report.counts.KNOWN === 2 && !meta.text.includes("(a.b)"));
+  ok("KNOWN: empty / blank entries are ignored", sanitize("nothing here", { known: ["", "   "] }).text === "nothing here");
+  ok("KNOWN: honoured even under a restrictive types filter", sanitize("SSN 123-45-6789 alice", { known: ["alice"], types: ["EMAIL"] }).text === "SSN 123-45-6789 <KNOWN_1>");
+  ok("KNOWN: no dictionary → no KNOWN in report", !("KNOWN" in sanitize("alice").report.counts));
+  ok("KNOWN: hash mode is deterministic and value-free", sanitize("Ada", { known: ["ada"], mode: "hash" }).text === sanitize("Ada", { known: ["ada"], mode: "hash" }).text && /^<KNOWN_[0-9a-f]{8}>$/.test(sanitize("Ada", { known: ["ada"], mode: "hash" }).text));
+  const hk = sanitize("Ada ADA ada", { known: ["ada"], mode: "hash" }).text.split(" ");
+  ok("KNOWN: hash mode is case-unified (one hash for Ada/ADA/ada)", new Set(hk).size === 1 && hk.length === 3);
+  ok("KNOWN: 10k-entry dictionary over 200k chars stays fast", (() => {
+    const dict = Array.from({ length: 10000 }, (_, i) => `name${i} street${i}`);
+    const t = Date.now(); sanitize("lorem ipsum ".repeat(16000).slice(0, 200000), { known: dict }); return Date.now() - t < 3000;
+  })());
+  let badKnown = false;
+  try { sanitize("x", { known: ["ok", 42] }); } catch (e) { badKnown = e instanceof SanitizeError && !String(e.message).includes("42"); }
+  ok("KNOWN: non-string entry is fail-closed and value-free", badKnown);
+
+  // ── PERSON / ADDRESS: opt-in heuristics, OFF by default ──
+  const people = "Dr. Ada Lovelace met Patient: Grace Hopper and ATTN: Alan M. Turing. Alan Turing wrote it. The Cedar is neat.";
+  ok("PERSON: off by default", !("PERSON" in sanitize(people).report.counts) && sanitize(people).text.includes("Ada Lovelace"));
+  const per = sanitize(people, { types: ["PERSON"] });
+  ok("PERSON: honorific / label / bare Title Case names redacted", per.report.counts.PERSON === 4 && !per.text.includes("Lovelace") && !per.text.includes("Hopper") && !per.text.includes("Turing"), JSON.stringify(per.report.counts) + " " + per.text);
+  ok("PERSON: a stop word followed by a single word is not a name", per.text.includes("The Cedar is neat"), per.text);
+  const trimmed = sanitize("Dear Ada Lovelace, Thanks Grace Hopper. From Alan Turing", { types: ["PERSON"] });
+  ok("PERSON: leading stop word is trimmed, the name is still redacted", trimmed.text === "Dear <PERSON_1>, Thanks <PERSON_2>. From <PERSON_3>", trimmed.text);
+  const irish = sanitize("Dr. Sam O'Neil met Kim McDonald-Lee and Jean-Luc D'Angelo", { types: ["PERSON"] });
+  ok("PERSON: apostrophe / camel-case / hyphenated names", irish.text === "Dr. <PERSON_1> met <PERSON_2> and <PERSON_3>", irish.text);
+  ok("PERSON: negative — lower-case words are not names", (sanitize("alice met bob at the cafe", { types: ["PERSON"] }).report.counts.PERSON ?? 0) === 0);
+  const where = "Ship to 123 Main Street, Apt 4B, Springfield, IL 62704 or P.O. Box 987. Meet at 10 Downing St.";
+  ok("ADDRESS: off by default", !("ADDRESS" in sanitize(where).report.counts));
+  const addr = sanitize(where, { types: ["ADDRESS"] });
+  ok("ADDRESS: numbered street, PO box and short form redacted", addr.report.counts.ADDRESS === 3 && !addr.text.includes("Main Street") && !addr.text.includes("Box 987") && !addr.text.includes("Downing"), JSON.stringify(addr.report.counts) + " " + addr.text);
+  ok("ADDRESS: negative — no street suffix / no number", (sanitize("Meet on Main at noon; 5 apples", { types: ["ADDRESS"] }).report.counts.ADDRESS ?? 0) === 0);
+  ok("ADDRESS beats PERSON on the same street", sanitize("123 Main Street", { types: ["PERSON", "ADDRESS"] }).text === "<ADDRESS_1>");
+
+  // ── regex safety: adversarial long inputs stay fast ──
+  const adversarial = [
+    "passport" + " ".repeat(50000) + "x", "DOB:" + " ".repeat(50000), "Aa ".repeat(20000),
+    "1 ".repeat(30000) + "Main St", "born on " + "1/".repeat(30000), "<".repeat(50000), "x".repeat(200000),
+  ];
+  const t0 = Date.now();
+  for (const a of adversarial) sanitize(a, { types: ["PASSPORT", "DOB", "PERSON", "ADDRESS", "PHONE", "CREDIT_CARD"], known: ["zzz"] });
+  ok("adversarial inputs complete quickly (no catastrophic backtracking)", Date.now() - t0 < 2000, `${Date.now() - t0}ms`);
+  const t1 = Date.now();
+  for (const a of ["a.".repeat(100000) + "@", "a@".repeat(50000), "x@" + "a.".repeat(100000)]) sanitize(a);
+  ok("EMAIL: 100k-char local-part run without a domain is linear (< 100 ms)", Date.now() - t1 < 100, `${Date.now() - t1}ms`);
+  ok("EMAIL: leading dot / hyphenated / plus-tag addresses still detected", sanitize(".alice@acme.com x-bob@acme.com plus+tag@acme.co.uk").report.counts.EMAIL === 3);
+
+  // ── governed: known values never reach the audit trail ──
+  const auditDir2 = fs.mkdtempSync(join(os.tmpdir(), "wl-san-"));
+  const g2 = new Watchlight({ agent: "doc-agent", auditDir: auditDir2 });
+  g2.sanitize("Ada Lovelace, DOB: 03/15/1985", { resource: "intake.txt", known: ["Ada Lovelace"] });
+  const raw2 = fs.readFileSync(join(auditDir2, "audit.jsonl"), "utf8");
+  ok("govern.sanitize audit: KNOWN + DOB counted, de-rules-2 recorded", raw2.includes('"KNOWN":1') && raw2.includes('"DOB":1') && raw2.includes('"detector":"de-rules-2"'));
+  ok("govern.sanitize audit is value-free (no known values, no dates)", !raw2.includes("Lovelace") && !raw2.includes("1985"));
 
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);

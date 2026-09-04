@@ -201,10 +201,13 @@ It mirrors the Python package feature-for-feature:
   a value-free `egress` audit record joined to the decision by `decision_id`.
 - **Frameworks:** `governedHooks()` for the Claude Agent SDK; `governTool()` for
   LangChain / LangGraph.js.
-- **Data minimization:** `govern.sanitize(text, { resource, decisionId })` —
-  strip PII before an agent reads a document; pass the `decisionId` from
-  `authorize` and the `sanitization` audit line joins the decision on
-  `decision_id`.
+- **Data minimization:** `govern.sanitize(text, { resource, decisionId, known? })`
+  — strip PII before an agent reads a document: structured detectors (email,
+  phone, SSN, card, IBAN, IPv4, API key, labelled passport / date of birth), an
+  app-supplied `known` dictionary (`KNOWN`; simple case-insensitive match —
+  Unicode case folding differs between lanes), and opt-in `PERSON` / `ADDRESS`
+  heuristics. Pass the `decisionId` from `authorize` and the `sanitization`
+  audit line joins the decision on `decision_id`.
 - **Attenuation & graduation:** `govern.scope().attenuate()`; every decision
   returns a `decisionId` to join to your records; `WATCHLIGHT_APDP_URL` graduates
   the *same code* to the control plane.
