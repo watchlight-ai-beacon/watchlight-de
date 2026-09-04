@@ -68,8 +68,11 @@ result = govern.sanitize(
 ```
 
 Overlapping or nested values (`"Ann Lee"` and `"Lee Smith"` in `Ann Lee Smith`)
-merge into one span, so no fragment survives. `known` is honoured even when
-`types` narrows the detectors.
+merge into one span, so no fragment survives — and a structured match that
+overlaps a dictionary value is redacted too (the union of every span is covered).
+`known` is honoured even when `types` narrows the detectors. Matching is simple
+case-insensitive; Unicode case folding differs between the TypeScript and Python
+lanes.
 
 **Names and addresses without a dictionary** are heuristics — `PERSON` and
 `ADDRESS` — and are **off by default** because Title Case phrases and unnumbered

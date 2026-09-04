@@ -204,7 +204,8 @@ It mirrors the Python package feature-for-feature:
 - **Data minimization:** `govern.sanitize(text, { resource, decisionId, known? })`
   — strip PII before an agent reads a document: structured detectors (email,
   phone, SSN, card, IBAN, IPv4, API key, labelled passport / date of birth), an
-  app-supplied `known` dictionary (`KNOWN`), and opt-in `PERSON` / `ADDRESS`
+  app-supplied `known` dictionary (`KNOWN`; simple case-insensitive match —
+  Unicode case folding differs between lanes), and opt-in `PERSON` / `ADDRESS`
   heuristics. Pass the `decisionId` from `authorize` and the `sanitization`
   audit line joins the decision on `decision_id`.
 - **Attenuation & graduation:** `govern.scope().attenuate()`; every decision

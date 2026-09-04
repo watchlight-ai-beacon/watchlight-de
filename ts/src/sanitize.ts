@@ -14,9 +14,11 @@
 // layers) is a separate step: you never hand the agent a "redacted PDF" (its
 // hidden layers leak) — you hand it redacted text.
 //
-// Regex safety: every quantifier is bounded or applies to a single
-// character class — no nested unbounded repetition, so no catastrophic
-// backtracking on adversarial input.
+// Regex safety: every repetition is either bounded, or anchored on a literal
+// prefix / run start so a failed attempt cannot rescan the same run (EMAIL's
+// local part is bounded to 64 and may only start where a run of local-part
+// characters starts). No nested unbounded repetition; the test suites assert
+// adversarial 100k-character inputs complete in well under 100 ms.
 
 import { createHash } from "node:crypto";
 
@@ -82,10 +84,11 @@ export interface SanitizeOptions {
    *  1–{@link DECISION_ID_MAX_LENGTH} characters with no control characters. */
   decisionId?: string;
   /** Application-supplied dictionary: exact strings to redact (names, streets,
-   *  ids the caller already holds). Matched case-insensitively as substrings;
-   *  every occurrence is covered — overlapping or nested occurrences merge into
-   *  one span. Counted under `KNOWN`. The values never appear in the output,
-   *  the report, or the audit trail. */
+   *  ids the caller already holds). Matched as substrings with simple
+   *  (ASCII-style) case-insensitivity — Unicode case folding differs between
+   *  the TypeScript and Python lanes; every occurrence is covered — overlapping
+   *  or nested occurrences merge into one span. Counted under `KNOWN`. The
+   *  values never appear in the output, the report, or the audit trail. */
   known?: string[];
 }
 
@@ -132,6 +135,9 @@ interface Detector {
   re: RegExp;
   /** Optional validator on the redacted value; false drops it. */
   valid?: (m: string) => boolean;
+  /** Optional front-trim of the redacted value (returns the kept suffix, or
+   *  null to drop the match). Runs before `valid`. */
+  trim?: (m: string) => string | null;
   /** When true the redacted span is capture group 1, which is always the LAST
    *  component of the match (a label such as `DOB:` precedes it and is kept). */
   group?: boolean;
@@ -150,7 +156,9 @@ const DATE_SHAPE =
 const DOB_LABEL =
   "(?:d\\.?o\\.?b\\.?|date[ \\t]{1,3}of[ \\t]{1,3}birth|birth[ \\t]?date|birthday|born(?:[ \\t]{1,3}on)?)";
 const CAP_WORD = "[A-Z][a-z]{1,20}";
-const NAME_WORD = `${CAP_WORD}(?:[-']${CAP_WORD})?`;
+// "Ada", "O'Neil", "D'Angelo", "McDonald", "Lovelace-Smith", "McDonald-Lee".
+const NAME_PART = `${CAP_WORD}(?:${CAP_WORD})?`;
+const NAME_WORD = `(?:[A-Z]')?${NAME_PART}(?:[-']${NAME_PART})?`;
 const HONORIFIC = "(?:Mr|Mrs|Ms|Miss|Mx|Dr|Prof|Sir|Dame|Rev|Hon)\\.?";
 // Case-tolerant label (the pattern itself is case-sensitive so name words stay Title Case).
 const PERSON_LABEL =
@@ -170,7 +178,8 @@ const plausibleDate = (m: string): boolean => {
   return small.every((p) => p >= 1 && p <= 31) && Math.min(...small) <= 12;
 };
 
-/** Common capitalized sentence starters / calendar words that are not names. */
+/** Common capitalized sentence starters / calendar words that are not names.
+ *  Leading stop words are trimmed off a candidate; the remaining name is kept. */
 const PERSON_STOP = new Set([
   "The", "This", "That", "These", "Those", "There", "Then", "Thanks", "Thank", "Please", "Dear",
   "Hello", "Hi", "Hey", "Our", "Your", "Their", "His", "Her", "New", "Re", "Subject", "From", "To",
@@ -181,8 +190,25 @@ const PERSON_STOP = new Set([
   "November", "December",
 ]);
 
+/** Strip leading stop words; drop the candidate if fewer than two words remain. */
+const trimPersonStop = (m: string): string | null => {
+  let v = m;
+  for (;;) {
+    const i = v.search(/[ \t]/);
+    if (i < 0) return null; // single word left → not a name candidate
+    if (!PERSON_STOP.has(v.slice(0, i))) return v;
+    v = v.slice(i).replace(/^[ \t]+/, "");
+  }
+};
+
 const DETECTORS: Detector[] = [
-  { type: "EMAIL", re: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, defaultOn: true },
+  // Local part bounded (RFC 5321: 64) and only attempted where a run of
+  // local-part characters begins, so a long run without "@" is scanned once.
+  {
+    type: "EMAIL",
+    re: /(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,24}\b/g,
+    defaultOn: true,
+  },
   // API keys / tokens with well-known prefixes (before generic patterns).
   {
     type: "API_KEY",
@@ -270,7 +296,7 @@ const DETECTORS: Detector[] = [
   {
     type: "PERSON",
     re: new RegExp(`\\b${NAME_WORD}(?:[ \\t][A-Z]\\.)?(?:[ \\t]${NAME_WORD}){1,2}(?![A-Za-z])`, "g"),
-    valid: (m) => !PERSON_STOP.has(m.split(/[ \t]/)[0]),
+    trim: trimPersonStop,
     defaultOn: false,
   },
 ];
@@ -284,20 +310,45 @@ interface Span {
 
 const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-/** Every occurrence of every known value, case-insensitive, overlapping
- *  occurrences merged into one span. Values are never logged or thrown. */
-function detectKnown(text: string, known: string[]): Span[] {
-  const raw: Array<[number, number]> = [];
-  for (const v of known) {
-    if (v.length === 0 || v.trim().length === 0) continue;
-    const re = new RegExp(escapeRe(v), "gi");
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(text)) !== null) {
-      raw.push([m.index, m.index + m[0].length]);
-      re.lastIndex = m.index + 1; // also find overlapping self-occurrences
+type TrieNode = Map<string, TrieNode> & { end?: boolean };
+
+/** Escaped prefix-trie alternation over the values: at each position the regex
+ *  walks the trie (cost bounded by the trie's branching, not the dictionary
+ *  size) and prefers the longest value (children before the empty branch). */
+function trieRegex(values: string[]): string {
+  const root: TrieNode = new Map();
+  for (const v of values) {
+    let node = root;
+    for (const ch of v) {
+      let next = node.get(ch);
+      if (!next) node.set(ch, (next = new Map()));
+      node = next;
     }
+    node.end = true;
   }
-  raw.sort((a, b) => a[0] - b[0] || b[1] - a[1]);
+  const render = (node: TrieNode): string => {
+    const alts = Array.from(node.keys()).sort().map((ch) => escapeRe(ch) + render(node.get(ch)!));
+    if (node.end) alts.push("");
+    return alts.length === 1 && alts[0] !== "" ? alts[0] : `(?:${alts.join("|")})`;
+  };
+  return render(root);
+}
+
+/** Every occurrence of every known value, case-insensitive, overlapping
+ *  occurrences merged into one span. One escaped trie alternation compiled once
+ *  per call; at each position the longest value wins and the scan resumes one
+ *  character later, so every occurrence of every value is covered. Values are
+ *  never logged or thrown. */
+function detectKnown(text: string, known: string[]): Span[] {
+  const values = Array.from(new Set(known.filter((v) => v.trim().length > 0)));
+  if (values.length === 0) return [];
+  const re = new RegExp(trieRegex(values), "gi");
+  const raw: Array<[number, number]> = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    raw.push([m.index, m.index + m[0].length]);
+    re.lastIndex = m.index + 1; // also find overlapping occurrences
+  }
   const merged: Span[] = [];
   for (const [s, e] of raw) {
     const last = merged[merged.length - 1];
@@ -323,18 +374,22 @@ function detect(text: string, types: PiiType[], known: string[]): Span[] {
     det.re.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = det.re.exec(text)) !== null) {
-      const value = det.group ? m[1] : m[0];
-      // Group spans are the LAST component of the match, so the offset is exact.
-      const start = det.group ? m.index + m[0].length - value.length : m.index;
       if (m.index === det.re.lastIndex) det.re.lastIndex++; // guard zero-width
+      let value: string | null = det.group ? m[1] : m[0];
+      if (det.trim) value = det.trim(value);
+      if (value === null) continue;
+      // Group / trimmed spans are the LAST component of the match, so the
+      // offset from the match end is exact.
+      const start = m.index + m[0].length - value.length;
       if (det.valid && !det.valid(value)) continue;
       spans.push({ start, end: start + value.length, type: det.type, value });
     }
   }
-  // Resolve overlaps: sort by start, then longest; drop any span overlapping one
-  // already kept (first detector wins by the DETECTORS order via stable sort).
-  // A KNOWN span that extends past a kept span is clipped, not dropped, so no
-  // part of an application-supplied value survives.
+  // Resolve overlaps as a UNION: sort by start, then longest (ties keep the
+  // DETECTORS order via stable sort). A span fully inside one already kept is
+  // dropped; a span that extends past it is clipped to the uncovered tail and
+  // kept under its own type — so no character matched by any enabled detector
+  // (or any dictionary value) survives, whatever else overlaps it.
   spans.sort((a, b) => a.start - b.start || b.end - b.start - (a.end - a.start));
   const kept: Span[] = [];
   let lastEnd = -1;
@@ -342,9 +397,8 @@ function detect(text: string, types: PiiType[], known: string[]): Span[] {
     if (s.start >= lastEnd) {
       kept.push(s);
       lastEnd = s.end;
-    } else if (s.type === "KNOWN" && s.end > lastEnd) {
-      const clipped: Span = { start: lastEnd, end: s.end, type: "KNOWN", value: text.slice(lastEnd, s.end) };
-      kept.push(clipped);
+    } else if (s.end > lastEnd) {
+      kept.push({ start: lastEnd, end: s.end, type: s.type, value: text.slice(lastEnd, s.end) });
       lastEnd = s.end;
     }
   }
@@ -358,13 +412,14 @@ function replacement(
   perType: Map<PiiType, number>
 ): string {
   if (mode === "mask") return `[${span.type}]`;
+  // KNOWN values were matched case-insensitively, so hash and tag keys are too.
+  const keyValue = span.type === "KNOWN" ? span.value.toLowerCase() : span.value;
   if (mode === "hash") {
-    const h = createHash("sha256").update(span.value).digest("hex").slice(0, 8);
+    const h = createHash("sha256").update(keyValue).digest("hex").slice(0, 8);
     return `<${span.type}_${h}>`;
   }
   // tag: consistent per value (same value → same tag within this call).
-  // KNOWN values were matched case-insensitively, so their tag key is too.
-  const key = `${span.type}:${span.type === "KNOWN" ? span.value.toLowerCase() : span.value}`;
+  const key = `${span.type}:${keyValue}`;
   let tag = counters.get(key);
   if (!tag) {
     const n = (perType.get(span.type) ?? 0) + 1;

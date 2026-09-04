@@ -222,7 +222,9 @@ not matched). Modes: `tag` (consistent `<EMAIL_1>` placeholders, default), `mask
 `known`. Every occurrence is redacted (exact string, case-insensitive; overlapping
 or nested occurrences merge into one span) and counted under `KNOWN`; the values
 never appear in the output, the report, or the audit line. `known` is honoured
-even under a `types` filter.
+even under a `types` filter. Matching is simple (ASCII-style) case-insensitive;
+Unicode case folding differs between the TypeScript and Python lanes (Python's
+`re.IGNORECASE` folds more characters), so supply the exact spellings you hold.
 
 ```ts
 govern.sanitize(text, { known: [customer.fullName, customer.street] });

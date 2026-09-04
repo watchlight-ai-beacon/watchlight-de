@@ -151,22 +151,37 @@ async function main() {
   ok("KNOWN: nested self-overlap merges (aa in aaaa)", sanitize("aaaa", { known: ["aa"] }).text === "<KNOWN_1>");
   const clip = sanitize("a@b.com Ltd", { known: ["com Ltd"] });
   ok("KNOWN: span past a structured span is clipped, not dropped", clip.text === "<EMAIL_1><KNOWN_1>" && clip.report.counts.EMAIL === 1);
+  // union: a structured span that STARTS inside a KNOWN span keeps its tail
+  ok("UNION: card starting inside a known span", sanitize("ACC 4111 1111 1111 1111", { known: ["ACC 4111"] }).text === "<KNOWN_1><CREDIT_CARD_1>");
+  ok("UNION: SSN starting inside a known span", sanitize("SSN 123-45-6789", { known: ["SSN 123"] }).text === "<KNOWN_1><SSN_1>");
+  ok("UNION: email starting inside a known span", sanitize("Ann Lee@example.com", { known: ["Ann Lee"] }).text === "<KNOWN_1><EMAIL_1>");
+  ok("UNION: dictionary never reduces structured coverage", !/\d/.test(sanitize("ACC 4111 1111 1111 1111 / SSN 123-45-6789", { known: ["ACC 4111", "SSN 123"] }).text.replace(/<[A-Z_]+_\d+>/g, "")));
   const meta = sanitize("see (a.b)*c$ and (a.b)*c$", { known: ["(a.b)*c$"] });
   ok("KNOWN: regex metacharacters are literal", meta.report.counts.KNOWN === 2 && !meta.text.includes("(a.b)"));
   ok("KNOWN: empty / blank entries are ignored", sanitize("nothing here", { known: ["", "   "] }).text === "nothing here");
   ok("KNOWN: honoured even under a restrictive types filter", sanitize("SSN 123-45-6789 alice", { known: ["alice"], types: ["EMAIL"] }).text === "SSN 123-45-6789 <KNOWN_1>");
   ok("KNOWN: no dictionary → no KNOWN in report", !("KNOWN" in sanitize("alice").report.counts));
   ok("KNOWN: hash mode is deterministic and value-free", sanitize("Ada", { known: ["ada"], mode: "hash" }).text === sanitize("Ada", { known: ["ada"], mode: "hash" }).text && /^<KNOWN_[0-9a-f]{8}>$/.test(sanitize("Ada", { known: ["ada"], mode: "hash" }).text));
+  const hk = sanitize("Ada ADA ada", { known: ["ada"], mode: "hash" }).text.split(" ");
+  ok("KNOWN: hash mode is case-unified (one hash for Ada/ADA/ada)", new Set(hk).size === 1 && hk.length === 3);
+  ok("KNOWN: 10k-entry dictionary over 200k chars stays fast", (() => {
+    const dict = Array.from({ length: 10000 }, (_, i) => `name${i} street${i}`);
+    const t = Date.now(); sanitize("lorem ipsum ".repeat(16000).slice(0, 200000), { known: dict }); return Date.now() - t < 3000;
+  })());
   let badKnown = false;
   try { sanitize("x", { known: ["ok", 42] }); } catch (e) { badKnown = e instanceof SanitizeError && !String(e.message).includes("42"); }
   ok("KNOWN: non-string entry is fail-closed and value-free", badKnown);
 
   // ── PERSON / ADDRESS: opt-in heuristics, OFF by default ──
-  const people = "Dr. Ada Lovelace met Patient: Grace Hopper and ATTN: Alan M. Turing. Alan Turing wrote it. The Cedar Policy Language is neat.";
+  const people = "Dr. Ada Lovelace met Patient: Grace Hopper and ATTN: Alan M. Turing. Alan Turing wrote it. The Cedar is neat.";
   ok("PERSON: off by default", !("PERSON" in sanitize(people).report.counts) && sanitize(people).text.includes("Ada Lovelace"));
   const per = sanitize(people, { types: ["PERSON"] });
   ok("PERSON: honorific / label / bare Title Case names redacted", per.report.counts.PERSON === 4 && !per.text.includes("Lovelace") && !per.text.includes("Hopper") && !per.text.includes("Turing"), JSON.stringify(per.report.counts) + " " + per.text);
-  ok("PERSON: stop-list trims a sentence starter", per.text.includes("The Cedar Policy Language"), per.text);
+  ok("PERSON: a stop word followed by a single word is not a name", per.text.includes("The Cedar is neat"), per.text);
+  const trimmed = sanitize("Dear Ada Lovelace, Thanks Grace Hopper. From Alan Turing", { types: ["PERSON"] });
+  ok("PERSON: leading stop word is trimmed, the name is still redacted", trimmed.text === "Dear <PERSON_1>, Thanks <PERSON_2>. From <PERSON_3>", trimmed.text);
+  const irish = sanitize("Dr. Sam O'Neil met Kim McDonald-Lee and Jean-Luc D'Angelo", { types: ["PERSON"] });
+  ok("PERSON: apostrophe / camel-case / hyphenated names", irish.text === "Dr. <PERSON_1> met <PERSON_2> and <PERSON_3>", irish.text);
   ok("PERSON: negative — lower-case words are not names", (sanitize("alice met bob at the cafe", { types: ["PERSON"] }).report.counts.PERSON ?? 0) === 0);
   const where = "Ship to 123 Main Street, Apt 4B, Springfield, IL 62704 or P.O. Box 987. Meet at 10 Downing St.";
   ok("ADDRESS: off by default", !("ADDRESS" in sanitize(where).report.counts));
@@ -183,6 +198,10 @@ async function main() {
   const t0 = Date.now();
   for (const a of adversarial) sanitize(a, { types: ["PASSPORT", "DOB", "PERSON", "ADDRESS", "PHONE", "CREDIT_CARD"], known: ["zzz"] });
   ok("adversarial inputs complete quickly (no catastrophic backtracking)", Date.now() - t0 < 2000, `${Date.now() - t0}ms`);
+  const t1 = Date.now();
+  for (const a of ["a.".repeat(100000) + "@", "a@".repeat(50000), "x@" + "a.".repeat(100000)]) sanitize(a);
+  ok("EMAIL: 100k-char local-part run without a domain is linear (< 100 ms)", Date.now() - t1 < 100, `${Date.now() - t1}ms`);
+  ok("EMAIL: leading dot / hyphenated / plus-tag addresses still detected", sanitize(".alice@acme.com x-bob@acme.com plus+tag@acme.co.uk").report.counts.EMAIL === 3);
 
   // ── governed: known values never reach the audit trail ──
   const auditDir2 = fs.mkdtempSync(join(os.tmpdir(), "wl-san-"));

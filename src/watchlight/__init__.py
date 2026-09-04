@@ -163,9 +163,12 @@ def _resolve(binding: Any, args: tuple, kwargs: dict) -> Optional[str]:
 # Structured, high-precision rules (email, phone, SSN, credit card w/ Luhn, IBAN,
 # IPv4, API keys, labelled passport numbers + MRZ lines, labelled dates of
 # birth), an application-supplied dictionary of KNOWN values, and OPT-IN
-# heuristics (PERSON, ADDRESS — lower precision, off by default). Every regex
-# quantifier is bounded or applies to a single character class: no nested
-# unbounded repetition, so no catastrophic backtracking on adversarial input.
+# heuristics (PERSON, ADDRESS — lower precision, off by default). Regex safety:
+# every repetition is either bounded, or anchored on a literal prefix / run
+# start so a failed attempt cannot rescan the same run (EMAIL's local part is
+# bounded to 64 and may only start where a run of local-part characters
+# starts). No nested unbounded repetition; the test suite asserts adversarial
+# 100k-character inputs complete in well under 100 ms.
 DETECTOR_VERSION = "de-rules-2"
 
 #: Heuristic detectors: lower precision, OFF unless listed in ``types``.
@@ -224,7 +227,9 @@ _DATE_SHAPE = (
 )
 _DOB_LABEL = r"(?:d\.?o\.?b\.?|date[ \t]{1,3}of[ \t]{1,3}birth|birth[ \t]?date|birthday|born(?:[ \t]{1,3}on)?)"
 _CAP_WORD = r"[A-Z][a-z]{1,20}"
-_NAME_WORD = rf"{_CAP_WORD}(?:[-']{_CAP_WORD})?"
+# "Ada", "O'Neil", "D'Angelo", "McDonald", "Lovelace-Smith", "McDonald-Lee".
+_NAME_PART = rf"{_CAP_WORD}(?:{_CAP_WORD})?"
+_NAME_WORD = rf"(?:[A-Z]')?{_NAME_PART}(?:[-']{_NAME_PART})?"
 _HONORIFIC = r"(?:Mr|Mrs|Ms|Miss|Mx|Dr|Prof|Sir|Dame|Rev|Hon)\.?"
 # Case-tolerant label (the pattern itself is case-sensitive so name words stay Title Case).
 _PERSON_LABEL = (
@@ -237,6 +242,7 @@ _STREET_SUFFIX = (
 )
 
 # Common capitalized sentence starters / calendar words that are not names.
+# Leading stop words are trimmed off a candidate; the remaining name is kept.
 _PERSON_STOP = frozenset(
     "The This That These Those There Then Thanks Thank Please Dear Hello Hi Hey Our Your Their "
     "His Her New Re Subject From To Date Sent Cc Bcc Note Notes Summary Total Amount Invoice Order "
@@ -265,11 +271,26 @@ def _plausible_date(m: str) -> bool:
     return all(1 <= p <= 31 for p in small) and min(small) <= 12
 
 
-# (type, pattern, validator, redact_group_1, default_on). A group-1 span is
-# always the LAST component of the match (a label such as ``DOB:`` precedes it
-# and is kept).
-_DETECTORS: list[tuple[str, re.Pattern, Optional[Callable[[str], bool]], bool, bool]] = [
-    ("EMAIL", re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"), None, False, True),
+def _trim_person_stop(m: str) -> Optional[str]:
+    """Strip leading stop words; drop the candidate if fewer than two words remain."""
+    v = m
+    while True:
+        ws = re.search(r"[ \t]", v)
+        if ws is None:
+            return None  # single word left → not a name candidate
+        if v[: ws.start()] not in _PERSON_STOP:
+            return v
+        v = v[ws.start():].lstrip(" \t")
+
+
+# (type, pattern, validator, redact_group_1, default_on[, front_trim]). A group-1
+# or trimmed span is always the LAST component of the match (a label such as
+# ``DOB:`` precedes it and is kept).
+_DETECTORS: list[tuple] = [
+    # Local part bounded (RFC 5321: 64) and only attempted where a run of
+    # local-part characters begins, so a long run without "@" is scanned once.
+    ("EMAIL", re.compile(r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,24}\b"),
+     None, False, True),
     ("API_KEY", re.compile(r"\b(?:sk-[A-Za-z0-9]{16,}|ghp_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16})\b"),
      None, False, True),
     ("SSN", re.compile(r"\b(?!000|666|9\d\d)\d{3}-(?!00)\d{2}-(?!0000)\d{4}\b"), None, False, True),
@@ -317,26 +338,52 @@ _DETECTORS: list[tuple[str, re.Pattern, Optional[Callable[[str], bool]], bool, b
     # PERSON (b): bare "First [M.] Last [Last]" capitalized runs. Inherently low
     # precision (any Title Case phrase); a stop-list trims sentence starters.
     ("PERSON", re.compile(rf"\b{_NAME_WORD}(?:[ \t][A-Z]\.)?(?:[ \t]{_NAME_WORD}){{1,2}}(?![A-Za-z])"),
-     lambda m: re.split(r"[ \t]", m)[0] not in _PERSON_STOP, False, False),
+     None, False, False, _trim_person_stop),
 ]
 
 #: The structured (default-on) detector types, in priority order.
 DEFAULT_PII_TYPES: tuple[str, ...] = tuple(dict.fromkeys(d[0] for d in _DETECTORS if d[4]))
 
 
+_END = object()
+
+
+def _trie_regex(values: Sequence[str]) -> str:
+    """Escaped prefix-trie alternation over the values: at each position the
+    regex walks the trie (cost bounded by the trie's branching, not the
+    dictionary size) and prefers the longest value (children before the empty
+    branch)."""
+    root: dict = {}
+    for v in values:
+        node = root
+        for ch in v:
+            node = node.setdefault(ch, {})
+        node[_END] = True
+
+    def render(node: dict) -> str:
+        alts = [re.escape(ch) + render(node[ch]) for ch in sorted(k for k in node if k is not _END)]
+        if _END in node:
+            alts.append("")
+        return alts[0] if len(alts) == 1 and alts[0] != "" else "(?:" + "|".join(alts) + ")"
+
+    return render(root)
+
+
 def _detect_known(text: str, known: Sequence[str]) -> list[tuple[int, int, str, str]]:
     """Every occurrence of every known value, case-insensitive; overlapping
-    occurrences merge into one span. Values are never logged or raised."""
+    occurrences merge into one span. One escaped trie alternation compiled once
+    per call; at each position the longest value wins and the scan resumes one
+    character later, so every occurrence of every value is covered. Values are
+    never logged or raised."""
+    values = list(dict.fromkeys(v for v in known if v.strip()))
+    if not values:
+        return []
+    pat = re.compile(_trie_regex(values), re.IGNORECASE)
     raw: list[tuple[int, int]] = []
-    for v in known:
-        if not v or not v.strip():
-            continue
-        pat = re.compile(re.escape(v), re.IGNORECASE)
-        pos = 0
-        while (m := pat.search(text, pos)) is not None:
-            raw.append((m.start(), m.end()))
-            pos = m.start() + 1  # also find overlapping self-occurrences
-    raw.sort(key=lambda s: (s[0], -s[1]))
+    pos = 0
+    while (m := pat.search(text, pos)) is not None:
+        raw.append((m.start(), m.end()))
+        pos = m.start() + 1  # also find overlapping occurrences
     merged: list[list[int]] = []
     for s, e in raw:
         if merged and s < merged[-1][1]:
@@ -364,12 +411,17 @@ def sanitize(
     application-supplied dictionary of exact strings to redact — matched
     case-insensitively as substrings, every occurrence covered, counted under
     ``KNOWN``; the values never appear in the output, report, or audit trail.
+    Dictionary matching is simple (ASCII-style) case-insensitive; Unicode case
+    folding differs between the Python and TypeScript lanes.
     ``decision_id`` — the correlation id of the :meth:`Watchlight.authorize`
     decision that governed this read — is validated (1-128 code points, no control or line-separator
     characters) and echoed onto ``report["decision_id"]``."""
     if not isinstance(text, str):
         raise SanitizeError("input must be a string (extract document text first)")
     decision_id = _validate_decision_id(decision_id)
+    if known is not None and isinstance(known, (str, bytes)):
+        # A bare string is a Sequence[str] of characters — never what was meant.
+        raise SanitizeError("known must be a sequence of strings")
     known_values = list(known) if known is not None else []
     if not all(isinstance(v, str) for v in known_values):
         # Value-free by design: the message never echoes the offending entry.
@@ -379,18 +431,27 @@ def sanitize(
         # KNOWN first: an application-supplied value is the most authoritative
         # label when it ties with a structured detector on the same span.
         spans: list[tuple[int, int, str, str]] = _detect_known(text, known_values) if known_values else []
-        for typ, pat, valid, group, _default in _DETECTORS:
+        for det in _DETECTORS:
+            typ, pat, valid, group, _default = det[:5]
+            trim = det[5] if len(det) > 5 else None
             if typ not in enabled:
                 continue
             for m in pat.finditer(text):
-                val = m.group(1) if group else m.group(0)
-                start = m.start(1) if group else m.start()
+                val: Optional[str] = m.group(1) if group else m.group(0)
+                if trim is not None:
+                    val = trim(val)
+                if val is None:
+                    continue
+                # group / trimmed spans are the LAST component of the match
+                start = m.end() - len(val)
                 if valid and not valid(val):
                     continue
                 spans.append((start, start + len(val), typ, val))
-        # resolve overlaps: earliest start, then longest; a KNOWN span extending
-        # past a kept span is clipped, not dropped, so no part of an
-        # application-supplied value survives.
+        # Resolve overlaps as a UNION: earliest start, then longest (ties keep
+        # detector order via stable sort). A span fully inside one already kept
+        # is dropped; one extending past it is clipped to the uncovered tail and
+        # kept under its own type — so no character matched by any enabled
+        # detector (or dictionary value) survives, whatever else overlaps it.
         spans.sort(key=lambda s: (s[0], -(s[1] - s[0])))
         kept: list[tuple[int, int, str, str]] = []
         last_end = -1
@@ -398,8 +459,8 @@ def sanitize(
             if s[0] >= last_end:
                 kept.append(s)
                 last_end = s[1]
-            elif s[2] == "KNOWN" and s[1] > last_end:
-                kept.append((last_end, s[1], "KNOWN", text[last_end:s[1]]))
+            elif s[1] > last_end:
+                kept.append((last_end, s[1], s[2], text[last_end:s[1]]))
                 last_end = s[1]
         counters: dict[str, str] = {}
         per_type: dict[str, int] = {}
@@ -407,13 +468,14 @@ def sanitize(
         out, cursor = [], 0
         for start, end, typ, val in kept:
             out.append(text[cursor:start])
+            # KNOWN values were matched case-insensitively, so hash and tag keys are too.
+            key_value = val.lower() if typ == "KNOWN" else val
             if mode == "mask":
                 rep = f"[{typ}]"
             elif mode == "hash":
-                rep = f"<{typ}_{hashlib.sha256(val.encode()).hexdigest()[:8]}>"
+                rep = f"<{typ}_{hashlib.sha256(key_value.encode()).hexdigest()[:8]}>"
             else:
-                # KNOWN values were matched case-insensitively, so their tag key is too.
-                key = f"{typ}:{val.lower() if typ == 'KNOWN' else val}"
+                key = f"{typ}:{key_value}"
                 rep = counters.get(key)
                 if rep is None:
                     per_type[typ] = per_type.get(typ, 0) + 1

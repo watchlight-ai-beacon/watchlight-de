@@ -81,6 +81,12 @@ def test_known_dictionary():
     # a span extending past a structured span is clipped, not dropped
     clip = sanitize("a@b.com Ltd", known=["com Ltd"])
     assert clip["text"] == "<EMAIL_1><KNOWN_1>" and clip["report"]["counts"]["EMAIL"] == 1
+    # union: a structured span that STARTS inside a KNOWN span keeps its tail
+    assert sanitize("ACC 4111 1111 1111 1111", known=["ACC 4111"])["text"] == "<KNOWN_1><CREDIT_CARD_1>"
+    assert sanitize("SSN 123-45-6789", known=["SSN 123"])["text"] == "<KNOWN_1><SSN_1>"
+    assert sanitize("Ann Lee@example.com", known=["Ann Lee"])["text"] == "<KNOWN_1><EMAIL_1>"
+    both = sanitize("ACC 4111 1111 1111 1111 / SSN 123-45-6789", known=["ACC 4111", "SSN 123"])["text"]
+    assert not re.search(r"\d", re.sub(r"<[A-Z_]+_\d+>", "", both))  # only tag numerals remain
     # regex metacharacters are literal
     meta = sanitize("see (a.b)*c$ and (a.b)*c$", known=["(a.b)*c$"])
     assert meta["report"]["counts"]["KNOWN"] == 2 and "(a.b)" not in meta["text"]
@@ -90,22 +96,41 @@ def test_known_dictionary():
     assert "KNOWN" not in counts("alice")
     h1 = sanitize("Ada", known=["ada"], mode="hash")["text"]
     assert h1 == sanitize("Ada", known=["ada"], mode="hash")["text"] and re.fullmatch(r"<KNOWN_[0-9a-f]{8}>", h1)
+    hk = sanitize("Ada ADA ada", known=["ada"], mode="hash")["text"].split(" ")
+    assert len(hk) == 3 and len(set(hk)) == 1  # hash mode is case-unified
     with pytest.raises(SanitizeError) as ei:
         sanitize("x", known=["ok", 42])
     assert "42" not in str(ei.value)
+    # a bare str is a Sequence[str] of characters — rejected, never echoed
+    for bad in ("Ann Lee", b"Ann Lee"):
+        with pytest.raises(SanitizeError) as ei:
+            sanitize("Ann Lee", known=bad)
+        assert str(ei.value).endswith("known must be a sequence of strings")
+
+
+def test_known_large_dictionary_stays_fast():
+    dictionary = [f"name{i} street{i}" for i in range(10000)]
+    text = ("lorem ipsum " * 16000)[:200000]
+    t0 = time.monotonic()
+    sanitize(text, known=dictionary)
+    assert time.monotonic() - t0 < 3.0
 
 
 def test_person_and_address_opt_in():
     people = (
         "Dr. Ada Lovelace met Patient: Grace Hopper and ATTN: Alan M. Turing. "
-        "Alan Turing wrote it. The Cedar Policy Language is neat."
+        "Alan Turing wrote it. The Cedar is neat."
     )
     assert "PERSON" not in counts(people) and "Ada Lovelace" in sanitize(people)["text"]
     per = sanitize(people, types=["PERSON"])
     assert per["report"]["counts"]["PERSON"] == 4, per
     for leak in ("Lovelace", "Hopper", "Turing"):
         assert leak not in per["text"]
-    assert "The Cedar Policy Language" in per["text"]
+    assert "The Cedar is neat" in per["text"]  # stop word + single word is not a name
+    trimmed = sanitize("Dear Ada Lovelace, Thanks Grace Hopper. From Alan Turing", types=["PERSON"])
+    assert trimmed["text"] == "Dear <PERSON_1>, Thanks <PERSON_2>. From <PERSON_3>"
+    irish = sanitize("Dr. Sam O'Neil met Kim McDonald-Lee and Jean-Luc D'Angelo", types=["PERSON"])
+    assert irish["text"] == "Dr. <PERSON_1> met <PERSON_2> and <PERSON_3>"
     assert counts("alice met bob at the cafe", types=["PERSON"]).get("PERSON", 0) == 0
 
     where = "Ship to 123 Main Street, Apt 4B, Springfield, IL 62704 or P.O. Box 987. Meet at 10 Downing St."
@@ -127,6 +152,11 @@ def test_adversarial_inputs_stay_fast():
     for a in adversarial:
         sanitize(a, types=["PASSPORT", "DOB", "PERSON", "ADDRESS", "PHONE", "CREDIT_CARD"], known=["zzz"])
     assert time.monotonic() - t0 < 5.0
+    t1 = time.monotonic()
+    for a in ("a." * 100000 + "@", "a@" * 50000, "x@" + "a." * 100000):
+        sanitize(a)
+    assert time.monotonic() - t1 < 0.1  # EMAIL local-part run without a domain is linear
+    assert counts(".alice@acme.com x-bob@acme.com plus+tag@acme.co.uk")["EMAIL"] == 3
 
 
 def test_governed_known_never_reaches_audit(tmp_path):
