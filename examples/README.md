@@ -23,6 +23,20 @@ watchlight dev                  # → http://127.0.0.1:7000
 | [`context_governance.py`](context_governance.py) | **Fine-grained context gating** — the *same* tool call is allowed or denied by runtime `context`; missing context fails closed. | `watchlight[langgraph]` |
 | [`governed_subagents.py`](governed_subagents.py) | **Sub-agent scope attenuation** — every child gets a *strict subset* of its parent's authority (widening is refused by the real engine); the DE governs the tree up to depth 5, then points to Enterprise. | `watchlight` |
 
+## Showcase — the two verdicts you came for, proven end to end
+
+Each showcase runs in **both lanes** (`agent.py` / `agent.mjs` side by side), ships
+the policy and its golden tests in one `policy.suite.json`, and exits non-zero if
+what happened contradicts the verdict.
+
+| Example | What it shows | Run |
+|---|---|---|
+| [`showcase/denied-before-execute/`](showcase/denied-before-execute/README.md) | **Denied before it executed** — a governed transfer against a stub bank with a call counter; a `forbid` above a threshold refuses the call and the counter is asserted `0`; a small transfer runs exactly once. Prints verdict, decision id and the audit line. | `python examples/showcase/denied-before-execute/agent.py` |
+| [`showcase/human-in-the-loop/`](showcase/human-in-the-loop/README.md) | **Human in the loop** — `NeedsApproval` holds the call and writes a pending request; a separate `approve.py` signs a grant; `resume` runs the action once with an `approved: true` record joined to the pending one. Grant replay and token replay are refused. | `python agent.py request` → `python approve.py` → `python agent.py resume` |
+
+Verify a showcase policy on its own:
+`watchlight policy test examples/showcase/<name>/policy.suite.json`.
+
 ## Governance patterns — high-stakes recipes
 
 Copy-paste recipes for the decisions people reach for the DE to make — spending

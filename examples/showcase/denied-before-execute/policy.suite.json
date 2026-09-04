@@ -1,0 +1,20 @@
+{
+  "policies": [
+    { "name": "small-transfers-are-permitted",
+      "code": "permit(principal, action == Action::\"transfer\", resource) when { context.amount <= 1000 };" },
+    { "name": "large-transfers-are-forbidden",
+      "code": "forbid(principal, action == Action::\"transfer\", resource) when { context.amount > 1000 };" }
+  ],
+  "tests": [
+    { "name": "a small transfer is allowed", "action": "transfer",
+      "resource": "account/acct-b", "context": { "amount": 250 }, "expect": "Allow" },
+    { "name": "the threshold itself is allowed", "action": "transfer",
+      "resource": "account/acct-b", "context": { "amount": 1000 }, "expect": "Allow" },
+    { "name": "a large transfer is denied", "action": "transfer",
+      "resource": "account/acct-b", "context": { "amount": 25000 }, "expect": "Deny" },
+    { "name": "a transfer with no amount is denied (fail-closed)", "action": "transfer",
+      "resource": "account/acct-b", "context": {}, "expect": "Deny" },
+    { "name": "an unlisted action is denied (fail-closed)", "action": "withdraw",
+      "resource": "account/acct-b", "context": { "amount": 10 }, "expect": "Deny" }
+  ]
+}
