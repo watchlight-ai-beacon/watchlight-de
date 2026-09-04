@@ -27,8 +27,12 @@ python forensics.py                    # analyzes ./trail/audit.jsonl
 python forensics.py --json             # same report, machine-readable
 python forensics.py --principal 'User::"alice"'
 
-# or generate the trail from the TypeScript lane instead — same records, same fields:
-npm i -g @watchlight/sdk && node generate-trail.mjs && python forensics.py
+# or generate the trail from the TypeScript lane instead — same records, same fields.
+# The script resolves @watchlight/sdk from NODE_PATH (a global install) or from
+# the in-repo build at ts/dist; pick one:
+npm i -g @watchlight/sdk && NODE_PATH="$(npm root -g)" node generate-trail.mjs   # global install
+(cd ../../../ts && npm install && npm run build) && node generate-trail.mjs       # in-repo build
+python forensics.py
 
 # any other example's trail works too:
 python forensics.py ../../../.watchlight/audit.jsonl

@@ -136,10 +136,23 @@ It defines three jobs:
 Set `SUITE` to your own suite path; keep one or both lanes; drop
 `gate-has-teeth` or keep a widened variant of your own next to your policy.
 
-Exit codes: `0` every fixture matched, `1` at least one verdict differed, `2`
-the suite could not be read or a fixture is malformed (missing `action` or
-`expect`). All three are what you want from a gate — a broken suite fails
-rather than silently passing.
+Exit codes, identical in both CLIs:
+
+| exit | when |
+|---|---|
+| `0` | every fixture produced its expected verdict |
+| `1` | at least one verdict differed from `expect` |
+| `2` | the suite file is missing or not valid JSON, has no `tests`, or a fixture lacks `action` or `expect` |
+
+One thing the loader does **not** treat as an error: a `policyFile` path that
+does not exist. The engine is fail-closed, so a missing policy file loads
+nothing and every fixture is evaluated against zero policies — every `Allow` and
+`NeedsApproval` fixture then fails (exit `1`), but a suite whose fixtures all
+expect `Deny` would pass (exit `0`). Keep at least one `Allow` fixture in every
+suite so a mistyped `policyFile` shows up as a red run, not a green one. The
+`gate-has-teeth` job also requires exit code exactly `1` from the widened suite
+and a passing run of the correct one in the same job, so a missing CLI (exit
+`127`) or a malformed suite (exit `2`) can never read as "the gate works".
 
 ## Add a case
 

@@ -5,8 +5,14 @@
 #   cp examples/showcase/policy-tests-ci/github-workflow.policy-tests.yml \
 #      .github/workflows/policy-tests.yml
 #
-# then point SUITE at your own suite file (and delete the `gate-has-teeth` job,
-# or point WIDENED_SUITE at a deliberately broken variant you keep around).
+# then change exactly two lines in the `env:` block below:
+#
+#   SUITE:         the path to YOUR suite file
+#   WIDENED_SUITE: the path to a deliberately broken variant of YOUR policy
+#                  (or delete the `gate-has-teeth` job if you keep none)
+#
+# The values shipped here point at this example's own files so the template runs
+# as-is from a checkout of this repository.
 #
 # `watchlight policy test <suite.json>` runs every fixture in the suite through
 # the real engine and exits 1 when any verdict differs from `expect`, 2 when the
@@ -62,8 +68,12 @@ jobs:
       - name: Run the policy suite
         run: watchlight policy test "$SUITE"
 
-  # Proves the gate has teeth: the same fixtures against a widened policy MUST
-  # fail. If this step ever passes, the fixtures no longer cover the widening.
+  # Proves the gate has teeth. The same CLI first passes the correct suite
+  # (exit 0 — the positive control: a missing or broken CLI cannot turn this job
+  # green), then MUST fail the widened suite with exit code exactly 1 — a
+  # verdict mismatch. Any other code (127 missing CLI, 2 malformed suite) fails
+  # the job. If the widened suite ever passes, the fixtures no longer cover the
+  # widening.
   gate-has-teeth:
     name: widened policy must fail
     runs-on: ubuntu-latest
@@ -73,10 +83,16 @@ jobs:
         with:
           node-version: "22"
       - run: npm install -g @watchlight/sdk
-      - name: Expect a non-zero exit on the widened policy
+      - name: Positive control — the correct suite passes (exit 0)
+        run: watchlight policy test "$SUITE"
+      - name: The widened suite fails with exit code exactly 1
         run: |
-          if watchlight policy test "$WIDENED_SUITE"; then
-            echo "::error::the widened policy passed every fixture — the suite is not gating"
-            exit 1
-          fi
-          echo "widened policy failed the suite, as it must"
+          set +e
+          watchlight policy test "$WIDENED_SUITE"
+          code=$?
+          set -e
+          case "$code" in
+            0) echo "::error::the widened policy passed every fixture — the suite is not gating"; exit 1 ;;
+            1) echo "widened policy failed the suite with exit 1, as it must" ;;
+            *) echo "::error::unexpected exit $code (malformed suite or broken CLI, not a verdict mismatch)"; exit 1 ;;
+          esac
