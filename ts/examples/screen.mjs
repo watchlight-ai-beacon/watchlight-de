@@ -1,18 +1,18 @@
 // Screen retrieved content for prompt-injection shapes before it reaches the model.
 //
-// Real usage: put it in the `onResult` hook of the governed read tool, so the
+// Real usage: screen inside the governed read tool before returning, so the
 // raw result never reaches the model when you refuse:
 //
-//   import { govern, Denied } from "@watchlight/sdk";
-//   const readPage = govern.tool(fetchPage, {
-//     intent: "read",
-//     resource: (url) => url,
-//     onResult: (html, { resource }) => {
-//       const { text, report } = govern.screen(html, { resource, mode: "redact" });
-//       if (report.flagged) throw new Denied(resource, "read", "not authorized");
-//       return text;
-//     },
-//   });
+//   import { govern, Denied, DENY_REASON } from "@watchlight/sdk";
+//   const readPage = govern.tool(async function fetchPage(url) {
+//     const html = await httpGet(url);
+//     const { text, report } = govern.screen(html, { resource: url, mode: "redact" });
+//     if (report.flagged) throw new Denied("fetchPage", "read", DENY_REASON);
+//     return text;
+//   }, { intent: "read", resource: (url) => url });
+//
+// (Or run the same screen in the tool's `onResult` egress hook.) Note: `redact`
+// marks the trigger — it does not neutralise HTML; strip markup first if needed.
 //
 // This script uses inline text so it runs offline.
 import { createRequire } from "node:module";

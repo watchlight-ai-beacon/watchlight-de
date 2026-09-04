@@ -14,6 +14,13 @@
 // paraphrase. Text that QUOTES an attack string verbatim (a security write-up)
 // is flagged — by design: the model would read that string too. Treat
 // `flagged` as a signal to route, refuse or log, not as a verdict on intent.
+//
+// `redact` marks the TRIGGER (a whole <script>…</script> element when its body
+// has no '<'); it does not neutralise HTML — strip markup to text first if the
+// model must not see it. Markers can be spoofed by input text: consumers decide
+// from the report, never by scanning the text for markers. The only known
+// TS/Python divergence is case folding of the Turkish dotted capital İ (U+0130):
+// `İgnore …` matches in Python's re, not in JavaScript.
 
 /** Rule families the screener recognizes. Each is a named counter in the report. */
 export type ScreenFamily =
@@ -141,6 +148,10 @@ const PROMPT_NOUN =
   "system message|system instructions|initial instructions|original instructions|hidden instructions|" +
   "secret instructions|developer instructions|pre-?prompt|meta-?prompt)";
 const PROMPT_ADJ = "(?:(?:full|entire|complete|exact|whole|original|hidden|secret|internal|verbatim) )?";
+/** Output-side nouns: a prompt noun, or a generic noun qualified as system/hidden. */
+const LEAK_NOUN =
+  `(?:${PROMPT_NOUN}|(?:system|hidden|secret|initial|original|developer|internal|underlying) ` +
+  "(?:instructions|guidelines|rules|configuration|prompt|directives))";
 
 interface Rule {
   family: ScreenFamily;
@@ -180,12 +191,12 @@ const RULES: Rule[] = [
   // "pretend you are a human".
   rule(
     "ROLE_SWITCH",
-    `${B}you are now (?:a |an |the |my )?${FILL}(?:assistant|ai|bot|chatbot|agent|persona|character|hacker|human|person)${E}`
+    `${B}you are now (?:a |an |the |my )?${FILL}(?:assistant|ai|bot|chatbot|agent|persona|hacker)${E}`
   ),
   rule(
     "ROLE_SWITCH",
     `${B}(?:act|behave|respond|answer|reply|roleplay|role-play|role play) as (?:a |an |the |if you were |if you are )${FILL}` +
-      `(?:assistant|ai|bot|chatbot|agent|persona|character|hacker|human|person)${E}`
+      `(?:assistant|ai|bot|chatbot|agent|persona|hacker)${E}`
   ),
   rule(
     "ROLE_SWITCH",
@@ -229,17 +240,21 @@ const RULES: Rule[] = [
   ),
   rule("JAILBREAK_MARKER", `${B}developer mode (?:enabled|output|activated|unlocked|response)${E}`),
   rule("JAILBREAK_MARKER", `${B}do anything now${E}`),
-  rule("JAILBREAK_MARKER", `${B}you are (?:now )?dan(?: \\d+(?:\\.\\d+)?)?${E}`),
-  rule("JAILBREAK_MARKER", `${B}(?:an?|the) (?:unrestricted|unfiltered|uncensored|jailbroken) (?:ai|assistant|model|chatbot|bot|agent|version)${E}`),
+  rule("JAILBREAK_MARKER", `${B}you are (?:now )?dan(?: [0-9]+(?:\\.[0-9]+)?)?${E}`),
+  rule("JAILBREAK_MARKER", `${B}(?:an?|the) (?:unrestricted|unfiltered|uncensored|jailbroken) (?:ai|assistant|model|chatbot|bot|agent)${E}`),
   rule(
     "JAILBREAK_MARKER",
-    `${B}you (?:are (?:now )?(?:free (?:of|from)|without|not bound by|no longer bound by|not restricted by|not limited by|not subject to|exempt from)|have no|no longer have) ` +
+    `${B}you (?:are (?:now )?(?:free (?:of|from)|without|not bound by|no longer bound by|not restricted by|not limited by|not subject to|exempt from)) ` +
       `(?:all |any |your |the )?(?:restrictions|rules|guidelines|filters|limitations|limits|content polic(?:y|ies)|safety (?:guidelines|rules|filters|measures|training)|ethical (?:guidelines|constraints|considerations)|guardrails|censorship)${E}`
   ),
   rule(
     "JAILBREAK_MARKER",
     `${B}(?:respond|answer|reply|act|operate|behave|write|continue|proceed) (?:without|with no|free of|ignoring|bypassing|regardless of) ` +
       `(?:any |all |your |the )?(?:restrictions|filters|guardrails|limits|limitations|censorship|content polic(?:y|ies)|safety (?:guidelines|rules|filters|measures)|ethical (?:guidelines|constraints|considerations)|moral (?:guidelines|constraints))${E}`
+  ),
+  rule(
+    "JAILBREAK_MARKER",
+    `${B}you (?:have no|no longer have) (?:any |all |your |the )?(?:restrictions|filters|guardrails|censorship|content polic(?:y|ies)|safety (?:guidelines|rules|filters|measures|training)|ethical (?:guidelines|constraints|considerations))${E}`
   ),
   rule("JAILBREAK_MARKER", `${B}you (?:are|have been|are now) (?:jailbroken|unrestricted|unfiltered|uncensored)${E}`),
 
@@ -258,7 +273,7 @@ const RULES: Rule[] = [
   ),
   rule(
     "AUTHORITY_IMPERSONATION",
-    `${B}(?:system|admin|administrator|operator|root|sudo|maintenance|debug|security|safety) (?:override|override code|command mode|access granted|privileges granted|authorization granted|authorisation granted|mode activated)${E}`
+    `${B}(?:system|admin|administrator|operator|root|sudo|maintenance|debug|security|safety) (?:override(?: (?:code|engaged|activated|enabled|accepted|authorized|authorised|granted)|:)|command mode|access granted|privileges granted|authorization granted|authorisation granted|mode activated)${E}`
   ),
   rule(
     "AUTHORITY_IMPERSONATION",
@@ -268,13 +283,14 @@ const RULES: Rule[] = [
 
   // ── HTML_INJECTION ───────────────────────────────────────────────
   // Active markup and hidden elements in retrieved pages / tool results.
+  rule("HTML_INJECTION", "<script[^<>]{0,200}>[^<]{0,5000}</script ?>"),
   rule("HTML_INJECTION", "</?(?:script|iframe|object|embed|applet|frame|frameset)(?=[ >/])"),
   rule("HTML_INJECTION", "<meta [^<>]{0,200}?http-equiv"),
   rule(
     "HTML_INJECTION",
     `(?<=[ "'/<>])on(?:load|error|click|dblclick|mouseover|mouseenter|mouseleave|mousedown|mouseup|focus|blur|input|change|submit|reset|keydown|keyup|keypress|abort|animationstart|animationend|transitionend|toggle|pointerdown|pointerup|touchstart|touchend|wheel|scroll|beforeunload|unload|hashchange|message|resize|select|drag|drop|copy|paste|cut) ?=`
   ),
-  rule("HTML_INJECTION", `${B}(?:javascript|vbscript|livescript):(?=\\S)`),
+  rule("HTML_INJECTION", `${B}(?:javascript|vbscript|livescript):(?=[^ ])`),
   rule("HTML_INJECTION", `${B}data:text/html`),
   rule(
     "HTML_INJECTION",
@@ -287,15 +303,18 @@ const RULES: Rule[] = [
   // "I was instructed to ...". Run on what the model produced.
   rule(
     "PROMPT_LEAK",
-    `${B}my ${PROMPT_ADJ}(?:${PROMPT_NOUN}|instructions|guidelines|rules|configuration|prompt) ` +
+    `${B}my ${PROMPT_ADJ}${LEAK_NOUN} ` +
       `(?:is|are|was|were|reads?|says?|states?|begins?|starts?|includes?|tells? me|specif(?:y|ies)|require[s]?)${E}`
   ),
   rule(
     "PROMPT_LEAK",
-    `${B}here (?:is|are) my ${PROMPT_ADJ}(?:${PROMPT_NOUN}|instructions|guidelines|rules|configuration|prompt)${E}`
+    `${B}here (?:is|are) my ${PROMPT_ADJ}${LEAK_NOUN}${E}`
   ),
   rule("PROMPT_LEAK", `${B}(?:system prompt|system message|system instructions|initial prompt|hidden prompt|developer message|developer prompt|pre-?prompt) ?:`),
-  rule("PROMPT_LEAK", `${B}i (?:was|am|have been|were) (?:instructed|programmed|configured) (?:to|not to|never to|by)${E}`),
+  rule(
+    "PROMPT_LEAK",
+    `${B}i (?:was|am|have been|were) (?:instructed|programmed|configured) (?:not to|never to|to (?:never|not|keep|only|refuse|avoid|always|withhold|hide|conceal|decline)|by (?:my|the) (?:developers?|creators?|operator|administrator|system prompt))${E}`
+  ),
 ];
 
 interface Span {
@@ -345,11 +364,14 @@ export function screen(text: string, opts: ScreenOptions = {}): ScreenResult {
     throw new ScreenError("input must be a string");
   }
   if (mode !== "report" && mode !== "redact") {
-    throw new ScreenError(`unknown mode '${String(mode)}' (expected 'report' or 'redact')`);
+    throw new ScreenError("unknown mode (expected 'report' or 'redact')");
   }
   const requested = opts.families ?? SCREEN_FAMILIES;
+  if (!Array.isArray(requested) || requested.length === 0) {
+    throw new ScreenError("families must name at least one family");
+  }
   for (const f of requested) {
-    if (!SCREEN_FAMILIES.includes(f)) throw new ScreenError(`unknown family '${String(f)}'`);
+    if (!SCREEN_FAMILIES.includes(f)) throw new ScreenError("unknown family");
   }
   const families = new Set<ScreenFamily>(requested);
   try {

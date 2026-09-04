@@ -529,6 +529,11 @@ def _reason_for_verdict(verdict: str) -> str:
 # characters; does NOT decode leetspeak, homoglyphs, encodings or paraphrase.
 # Text that QUOTES an attack string verbatim is flagged — by design. Treat
 # ``flagged`` as a signal to route, refuse or log, not as a verdict on intent.
+# ``redact`` marks the TRIGGER (a whole <script>…</script> element when its body
+# has no '<'); it does not neutralise HTML. Markers can be spoofed by input text:
+# consumers decide from the report, never by scanning for markers. Only known
+# divergence from TS: Python's re case-folds the Turkish dotted capital İ
+# (U+0130) onto ``i``; JavaScript does not.
 SCREEN_DETECTOR_VERSION = "de-screen-1"
 
 SCREEN_FAMILIES: tuple[str, ...] = (
@@ -588,6 +593,11 @@ _PROMPT_NOUN = (
     "secret instructions|developer instructions|pre-?prompt|meta-?prompt)"
 )
 _PROMPT_ADJ = "(?:(?:full|entire|complete|exact|whole|original|hidden|secret|internal|verbatim) )?"
+# Output-side nouns: a prompt noun, or a generic noun qualified as system/hidden.
+_LEAK_NOUN = (
+    f"(?:{_PROMPT_NOUN}|(?:system|hidden|secret|initial|original|developer|internal|underlying) "
+    "(?:instructions|guidelines|rules|configuration|prompt|directives))"
+)
 
 _SCREEN_RULES: list[tuple[str, re.Pattern]] = [
     (fam, re.compile(src, re.IGNORECASE))
@@ -607,10 +617,10 @@ _SCREEN_RULES: list[tuple[str, re.Pattern]] = [
          f"{_B}(?:instead|rather than that|from now on),? (?:you must|you will|you should|you have to|always) (?:only )?(?:do|say|respond|reply|answer|output|write|follow){_E}"),
         # ── ROLE_SWITCH ──
         ("ROLE_SWITCH",
-         f"{_B}you are now (?:a |an |the |my )?{_FILL}(?:assistant|ai|bot|chatbot|agent|persona|character|hacker|human|person){_E}"),
+         f"{_B}you are now (?:a |an |the |my )?{_FILL}(?:assistant|ai|bot|chatbot|agent|persona|hacker){_E}"),
         ("ROLE_SWITCH",
          f"{_B}(?:act|behave|respond|answer|reply|roleplay|role-play|role play) as (?:a |an |the |if you were |if you are ){_FILL}"
-         f"(?:assistant|ai|bot|chatbot|agent|persona|character|hacker|human|person){_E}"),
+         f"(?:assistant|ai|bot|chatbot|agent|persona|hacker){_E}"),
         ("ROLE_SWITCH",
          f"{_B}pretend (?:to be|you are|you're|that you are|that you're) (?:a |an |the |my )?{_FILL}"
          f"(?:assistant|ai|bot|chatbot|agent|persona|character|hacker|human|person|unrestricted|unfiltered|uncensored){_E}"),
@@ -633,15 +643,17 @@ _SCREEN_RULES: list[tuple[str, re.Pattern]] = [
          f"{_B}(?:dan|jailbreak|jailbroken|unrestricted|unfiltered|uncensored|evil|opposite|no[- ]rules|no[- ]filter|anti[- ]?gpt) mode{_E}"),
         ("JAILBREAK_MARKER", f"{_B}developer mode (?:enabled|output|activated|unlocked|response){_E}"),
         ("JAILBREAK_MARKER", f"{_B}do anything now{_E}"),
-        ("JAILBREAK_MARKER", f"{_B}you are (?:now )?dan(?: \\d+(?:\\.\\d+)?)?{_E}"),
+        ("JAILBREAK_MARKER", f"{_B}you are (?:now )?dan(?: [0-9]+(?:\\.[0-9]+)?)?{_E}"),
         ("JAILBREAK_MARKER",
-         f"{_B}(?:an?|the) (?:unrestricted|unfiltered|uncensored|jailbroken) (?:ai|assistant|model|chatbot|bot|agent|version){_E}"),
+         f"{_B}(?:an?|the) (?:unrestricted|unfiltered|uncensored|jailbroken) (?:ai|assistant|model|chatbot|bot|agent){_E}"),
         ("JAILBREAK_MARKER",
-         f"{_B}you (?:are (?:now )?(?:free (?:of|from)|without|not bound by|no longer bound by|not restricted by|not limited by|not subject to|exempt from)|have no|no longer have) "
+         f"{_B}you (?:are (?:now )?(?:free (?:of|from)|without|not bound by|no longer bound by|not restricted by|not limited by|not subject to|exempt from)) "
          f"(?:all |any |your |the )?(?:restrictions|rules|guidelines|filters|limitations|limits|content polic(?:y|ies)|safety (?:guidelines|rules|filters|measures|training)|ethical (?:guidelines|constraints|considerations)|guardrails|censorship){_E}"),
         ("JAILBREAK_MARKER",
          f"{_B}(?:respond|answer|reply|act|operate|behave|write|continue|proceed) (?:without|with no|free of|ignoring|bypassing|regardless of) "
          f"(?:any |all |your |the )?(?:restrictions|filters|guardrails|limits|limitations|censorship|content polic(?:y|ies)|safety (?:guidelines|rules|filters|measures)|ethical (?:guidelines|constraints|considerations)|moral (?:guidelines|constraints)){_E}"),
+        ("JAILBREAK_MARKER",
+         f"{_B}you (?:have no|no longer have) (?:any |all |your |the )?(?:restrictions|filters|guardrails|censorship|content polic(?:y|ies)|safety (?:guidelines|rules|filters|measures|training)|ethical (?:guidelines|constraints|considerations)){_E}"),
         ("JAILBREAK_MARKER", f"{_B}you (?:are|have been|are now) (?:jailbroken|unrestricted|unfiltered|uncensored){_E}"),
         # ── AUTHORITY_IMPERSONATION ──
         ("AUTHORITY_IMPERSONATION",
@@ -651,29 +663,31 @@ _SCREEN_RULES: list[tuple[str, re.Pattern]] = [
          f"{_B}(?:you (?:are|have been|are now) (?:granted|given|authorized with|authorised with)|i (?:hereby )?(?:grant|give) you|granting you) "
          f"(?:full|elevated|root|admin|administrator|administrative|operator|developer|unrestricted|special|complete) (?:access|privileges|permissions|clearance|authority|rights){_E}"),
         ("AUTHORITY_IMPERSONATION",
-         f"{_B}(?:system|admin|administrator|operator|root|sudo|maintenance|debug|security|safety) (?:override|override code|command mode|access granted|privileges granted|authorization granted|authorisation granted|mode activated){_E}"),
+         f"{_B}(?:system|admin|administrator|operator|root|sudo|maintenance|debug|security|safety) (?:override(?: (?:code|engaged|activated|enabled|accepted|authorized|authorised|granted)|:)|command mode|access granted|privileges granted|authorization granted|authorisation granted|mode activated){_E}"),
         ("AUTHORITY_IMPERSONATION",
          f"{_B}this (?:message|instruction|request|command) (?:is|comes|was|has been) (?:authori[sz]ed|approved|sanctioned|verified|signed) by (?:your|the) "
          f"(?:administrator|admin|operator|developers?|creators?|owner|security team|compliance team|safety team){_E}"),
         # ── HTML_INJECTION ──
+        ("HTML_INJECTION", "<script[^<>]{0,200}>[^<]{0,5000}</script ?>"),
         ("HTML_INJECTION", "</?(?:script|iframe|object|embed|applet|frame|frameset)(?=[ >/])"),
         ("HTML_INJECTION", "<meta [^<>]{0,200}?http-equiv"),
         ("HTML_INJECTION",
          "(?<=[ \"'/<>])on(?:load|error|click|dblclick|mouseover|mouseenter|mouseleave|mousedown|mouseup|focus|blur|input|change|submit|reset|keydown|keyup|keypress|abort|animationstart|animationend|transitionend|toggle|pointerdown|pointerup|touchstart|touchend|wheel|scroll|beforeunload|unload|hashchange|message|resize|select|drag|drop|copy|paste|cut) ?="),
-        ("HTML_INJECTION", f"{_B}(?:javascript|vbscript|livescript):(?=\\S)"),
+        ("HTML_INJECTION", f"{_B}(?:javascript|vbscript|livescript):(?=[^ ])"),
         ("HTML_INJECTION", f"{_B}data:text/html"),
         ("HTML_INJECTION",
          "style ?= ?[\"']?[^\"'<>]{0,200}?(?:display ?: ?none|visibility ?: ?hidden|font-size ?: ?0(?:px|pt|em|rem|%)?(?![0-9.])|opacity ?: ?0(?:\\.0+)?(?![0-9.])|color ?: ?transparent)"),
         ("HTML_INJECTION", "<[a-z][a-z0-9]{0,20}[^<>]{0,200}? hidden(?=[ >/=])"),
         # ── PROMPT_LEAK (output side) ──
         ("PROMPT_LEAK",
-         f"{_B}my {_PROMPT_ADJ}(?:{_PROMPT_NOUN}|instructions|guidelines|rules|configuration|prompt) "
+         f"{_B}my {_PROMPT_ADJ}{_LEAK_NOUN} "
          f"(?:is|are|was|were|reads?|says?|states?|begins?|starts?|includes?|tells? me|specif(?:y|ies)|require[s]?){_E}"),
         ("PROMPT_LEAK",
-         f"{_B}here (?:is|are) my {_PROMPT_ADJ}(?:{_PROMPT_NOUN}|instructions|guidelines|rules|configuration|prompt){_E}"),
+         f"{_B}here (?:is|are) my {_PROMPT_ADJ}{_LEAK_NOUN}{_E}"),
         ("PROMPT_LEAK",
          f"{_B}(?:system prompt|system message|system instructions|initial prompt|hidden prompt|developer message|developer prompt|pre-?prompt) ?:"),
-        ("PROMPT_LEAK", f"{_B}i (?:was|am|have been|were) (?:instructed|programmed|configured) (?:to|not to|never to|by){_E}"),
+        ("PROMPT_LEAK",
+         f"{_B}i (?:was|am|have been|were) (?:instructed|programmed|configured) (?:not to|never to|to (?:never|not|keep|only|refuse|avoid|always|withhold|hide|conceal|decline)|by (?:my|the) (?:developers?|creators?|operator|administrator|system prompt)){_E}"),
     ]
 ]
 
@@ -687,11 +701,13 @@ def screen(text: str, *, mode: str = "report", families: Optional[Sequence[str]]
     if not isinstance(text, str):
         raise ScreenError("input must be a string")
     if mode not in ("report", "redact"):
-        raise ScreenError(f"unknown mode '{mode}' (expected 'report' or 'redact')")
+        raise ScreenError("unknown mode (expected 'report' or 'redact')")
     requested = tuple(families) if families is not None else SCREEN_FAMILIES
+    if not requested:
+        raise ScreenError("families must name at least one family")
     for fam in requested:
         if fam not in SCREEN_FAMILIES:
-            raise ScreenError(f"unknown family '{fam}'")
+            raise ScreenError("unknown family")
     enabled = set(requested)
     try:
         norm, idx = _screen_normalize(text)

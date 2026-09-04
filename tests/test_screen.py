@@ -73,7 +73,7 @@ def test_obfuscation_bounds():
 
 def test_families_filter():
     r = screen(ATTACK, families=["HTML_INJECTION"])["report"]
-    assert r["total"] == 2 and "ROLE_SWITCH" not in r["counts"]
+    assert r["total"] == 1 and "ROLE_SWITCH" not in r["counts"]
 
 
 def test_fail_closed():
@@ -83,6 +83,19 @@ def test_fail_closed():
         screen("x", mode="strip")
     with pytest.raises(ScreenError):
         screen("x", families=["NOPE"])
+    with pytest.raises(ScreenError):
+        screen("x", families=[])  # empty list is not "no families": fail-closed
+    with pytest.raises(ScreenError) as ei:
+        screen("x", mode="BOGUSMODE")
+    assert "BOGUSMODE" not in str(ei.value)  # fixed strings, never the caller's value
+    with pytest.raises(ScreenError) as ei:
+        screen("x", families=["BOGUSFAM"])
+    assert "BOGUSFAM" not in str(ei.value)
+
+
+def test_documented_divergence_turkish_dotted_capital_i():
+    kd = FIX["known_divergence"]["turkish_dotted_capital_i"]
+    assert screen(kd["input"])["report"]["total"] == kd["python_total"]
 
 
 MB = 1 << 20
@@ -115,8 +128,21 @@ def test_governed_screen_audits_value_free(tmp_path):
     raw = (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
     rec = json.loads(raw.splitlines()[0])
     assert rec["event"] == "screening" and rec["flagged"] is True and rec["detector"] == "de-screen-1"
-    assert rec["counts"]["HTML_INJECTION"] == 2 and rec["mode"] == "redact"
+    assert rec["counts"]["HTML_INJECTION"] == 1 and rec["mode"] == "redact"
     for word in ("ignore", "hacker", "alert(1)", "administrator", "secret"):
         assert word not in raw.lower()
     r2 = g.screen("plain text", resource="note.txt")
     assert r2["report"]["mode"] == "report" and r2["report"]["flagged"] is False and r2["text"] == "plain text"
+
+
+def test_screening_record_reaches_audit_sink_with_file_fields(tmp_path):
+    seen: list[dict] = []
+    g = Watchlight(agent="sink-agent", audit_dir=str(tmp_path), audit_sink=seen.append)
+    g.screen(ATTACK, intent="read", resource="page", mode="redact")
+    file_lines = [json.loads(l) for l in (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
+    sink_rec = next(r for r in seen if r.get("event") == "screening")
+    file_rec = next(r for r in file_lines if r.get("event") == "screening")
+    assert sink_rec == file_rec and sink_rec["flagged"] is True
+    blob = json.dumps(seen).lower()
+    for word in ("ignore", "hacker", "alert(1)", "administrator", "secret"):
+        assert word not in blob
