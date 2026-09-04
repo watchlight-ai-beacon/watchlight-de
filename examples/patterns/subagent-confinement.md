@@ -97,4 +97,19 @@ the secret out of job payloads and logs, rotate it like any credential, and trea
 every process holding it as inside the boundary. Independently attestable scopes
 are an Enterprise capability.
 
+**Verify.** Attenuation is a capability check, not a policy verdict, so this
+pattern has no `.suite.json`; `check.sh` runs
+[`scripts/subagent-confinement.mjs`](./scripts/subagent-confinement.mjs) against
+the real engine instead. It asserts the rules above: a child narrower than its
+parent is granted and holds exactly the clamped subset (tools and time budget); a
+child asking for a tool its parent lacks is refused with `AttenuationDenied`; what
+the root never held cannot be granted below it, and a tool a parent dropped cannot
+be re-acquired by a grandchild; depth `DE_MAX_DEPTH + 1` raises
+`DevEditionCeiling`, not a denial; every grant and refusal lands in the audit
+trail as an `attenuation` record carrying tool *names* and depth only; and the
+token round-trip holds — a scope minted with `toToken()` in one `Watchlight`
+instance is rebuilt by `scopeFromToken()` in another with the same secret and
+the same grants, the rebuilt scope still cannot widen, and a tampered, wrong-secret
+or expired token is refused with `ScopeTokenError`.
+
 Full guide: [Sub-agent scope attenuation](https://docs.watchlight.ai/de/scope-attenuation).

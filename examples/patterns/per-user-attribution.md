@@ -4,7 +4,7 @@
 *acting user* — for liability and reconstruction — and policy must be scoped to
 them, not to the agent as a whole.
 
-**Policy** — [`suites/per-user.suite.json`](./suites/per-user.suite.json):
+**Policy** — [`suites/per-user-attribution.suite.json`](./suites/per-user-attribution.suite.json):
 
 ```cedar
 permit(principal == User::"alice", action == Action::"pay", resource);

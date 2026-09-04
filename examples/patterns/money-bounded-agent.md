@@ -4,7 +4,7 @@
 per-action limit, only on refundable items, and anything above a threshold should
 go to a human — decided *before* the charge, not audited after.
 
-**Policy** — [`suites/money-bounded.suite.json`](./suites/money-bounded.suite.json):
+**Policy** — [`suites/money-bounded-agent.suite.json`](./suites/money-bounded-agent.suite.json):
 
 ```cedar
 // small, refundable charges within the limit are fine

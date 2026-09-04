@@ -124,6 +124,16 @@ never echo the caller's values.
   and with [PII before read](./pii-before-read.md) when the content also carries
   personal data.
 
+**Verify.** Screening is not a policy verdict, so this pattern has no
+`.suite.json`; `check.sh` runs
+[`scripts/screen-before-model.mjs`](./scripts/screen-before-model.mjs) instead. It
+asserts that one well-known shape per family is flagged under its own family in
+`report` mode with the text untouched; that `redact` mode leaves no matched
+trigger in the text and the report carries counts only; that an innocent
+paragraph using the same vocabulary stays clean; that an empty `families` list
+raises `ScreenError`; and that every call writes a value-free `screening` audit
+record.
+
 Restrict the families with `families: ["HTML_INJECTION", "INSTRUCTION_OVERRIDE"]`
 (TS) / `families=[...]` (Python). The two implementations are held to identical
 verdicts by shared fixtures; the one known divergence is case folding of the
