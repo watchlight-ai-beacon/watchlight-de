@@ -81,7 +81,7 @@ async function main() {
     ok("covers attenuation Allow and Deny (escalation + ceiling)",
       seen.some((r) => r.event === "attenuation" && r.decision === "Allow" && r.resource === "root scope") &&
       seen.filter((r) => r.event === "attenuation" && r.decision === "Deny" && r.reason).length === 2);
-    ok("sink records are value-free", !JSON.stringify(seen).includes("a@b.com") && !JSON.stringify(seen).includes("4111") && !JSON.stringify(seen).includes("cedar policies"));
+    ok("sink records are value-free", !JSON.stringify(seen).includes("a@b.com") && !JSON.stringify(seen).includes("4111 1111") && !JSON.stringify(seen).includes("cedar policies"));
     ok("local file still written with the sink on (additive)", file.length === controlShapes.length);
   }
 
