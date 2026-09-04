@@ -255,3 +255,33 @@ def test_inflight_async_sink_task_is_held_strongly(tmp_path):
 
     asyncio.run(main())
     assert len(delivered) == 1 and delivered[0]["intent"] == "research"
+
+
+def test_egress_and_sanitize_decision_id_flow_through_the_sink(tmp_path):
+    seen = []
+    g = _gov(tmp_path, sink=seen.append)
+
+    @g.tool("research", on_result=lambda out, info: out.upper())
+    def fetch_doc(doc_id):
+        return f"doc {doc_id}"
+
+    def block(out, info):
+        raise RuntimeError("egress blocked")
+
+    @g.tool("research", on_result=block)
+    def withheld():
+        return "secret"
+
+    fetch_doc("42")
+    with pytest.raises(RuntimeError):
+        withheld()
+    d = g.authorize(action="research", resource="doc.txt")
+    g.sanitize(SAMPLE, resource="doc.txt", decision_id=d["decision_id"])
+    file = _lines(tmp_path)
+    assert seen == file
+    egress = [r for r in seen if r.get("event") == "egress"]
+    assert len(egress) == 2 and egress[0]["replaced"] is True and egress[1].get("withheld") is True
+    assert all(isinstance(r.get("decision_id"), str) for r in egress)
+    assert "DOC 42" not in json.dumps(egress) and "secret" not in json.dumps(egress)
+    san = next(r for r in seen if r.get("event") == "sanitization")
+    assert isinstance(d["decision_id"], str) and san["decision_id"] == d["decision_id"]

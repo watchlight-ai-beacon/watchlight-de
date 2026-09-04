@@ -174,6 +174,26 @@ async function main() {
     ok("legacy auditPath Scope still writes the file", lines(dir).filter((r) => r.event === "attenuation").length === 2);
   }
 
+  // ── 10. egress records (onResult) and sanitize decision_id flow through the sink unchanged ──
+  {
+    const seen = [];
+    const { g, auditDir } = gov((rec) => { seen.push(rec); });
+    const fetchDoc = g.tool(async (id) => `doc ${id}`, { intent: "research", onResult: (out) => out.toUpperCase() });
+    await fetchDoc("42");
+    const withheld = g.tool(async () => "secret", { intent: "research", onResult: () => { throw new Error("egress blocked"); } });
+    try { await withheld(); } catch { /* fail-closed: withheld */ }
+    const d = await g.authorize({ action: "research", resource: "doc.txt" });
+    g.sanitize(SAMPLE, { resource: "doc.txt", decisionId: d.decisionId });
+    const file = lines(auditDir);
+    ok("egress + sanitize: sink saw every file line with identical fields", JSON.stringify(seen) === JSON.stringify(file));
+    const egress = seen.filter((r) => r.event === "egress");
+    ok("egress records reach the sink (replaced + withheld), joined by decision_id",
+      egress.length === 2 && egress[0].replaced === true && egress[1].withheld === true && egress.every((r) => typeof r.decision_id === "string"));
+    ok("egress record is value-free", !JSON.stringify(egress).includes("DOC 42") && !JSON.stringify(egress).includes("secret"));
+    const san = seen.find((r) => r.event === "sanitization");
+    ok("sanitization decision_id flows through unchanged", san && san.decision_id === d.decisionId && typeof d.decisionId === "string");
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);
 }
