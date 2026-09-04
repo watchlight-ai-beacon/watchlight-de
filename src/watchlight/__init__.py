@@ -46,6 +46,7 @@ import watchlight_engine as _engine
 from ._audit import AuditSink, AuditTrail
 from .attenuation import DE_MAX_DEPTH, AttenuationDenied, DevEditionCeiling, Scope
 from .policytest import load_test_suite, run_policy_tests
+from .scope_token import ScopeTokenError, normalize_secret, require_secret, same_set, verify_scope_token
 
 __all__ = [
     "Watchlight",
@@ -64,6 +65,7 @@ __all__ = [
     "Scope",
     "AttenuationDenied",
     "DevEditionCeiling",
+    "ScopeTokenError",
     "DE_MAX_DEPTH",
     "run_policy_tests",
     "load_test_suite",
@@ -768,6 +770,8 @@ class Watchlight:
         agent: str | None = None,
         audit_dir: str | os.PathLike[str] = ".watchlight",
         audit_sink: Optional[AuditSink] = None,
+        *,
+        token_secret: Union[str, bytes, None] = None,
     ) -> None:
         """:param agent: stable agent identity for the audit trail (default
             ``$WATCHLIGHT_AGENT`` or ``"my-agent"``).
@@ -775,17 +779,27 @@ class Watchlight:
             written inside it.
         :param audit_sink: additive destination for every audit record —
             decisions, sanitizations and attenuations (including those of scopes
-            derived via :meth:`scope`). Receives its own copy of exactly the
-            fields the ``audit.jsonl`` line carries; the local file stays on.
-            Fire-and-forget: an awaitable it returns is scheduled on the running
-            event loop (never awaited inline), and an exception or rejection is
-            reported once and never blocks or changes a decision."""
+            derived via :meth:`scope` or rebuilt via :meth:`scope_from_token`).
+            Receives its own copy of exactly the fields the ``audit.jsonl`` line
+            carries; the local file stays on. Fire-and-forget: an awaitable it
+            returns is scheduled on the running event loop (never awaited
+            inline), and an exception or rejection is reported once and never
+            blocks or changes a decision.
+        :param token_secret: shared secret (≥ 16 bytes) for
+            :meth:`~watchlight.attenuation.Scope.to_token` /
+            :meth:`scope_from_token` — lets an attenuated scope cross a process
+            boundary with integrity. Defaults to ``$WATCHLIGHT_TOKEN_SECRET``.
+            When unset, minting and verifying scope tokens fail closed; there is
+            no built-in default. Never logged or written."""
         self._engine = _engine.PolicyEngine()
         self.agent = agent or os.environ.get("WATCHLIGHT_AGENT", "my-agent")
         self._audit_path = pathlib.Path(audit_dir) / "audit.jsonl"
         self._trail = AuditTrail(self._audit_path, audit_sink)
         self._announced = False
         self._policy_count = 0
+        self._token_secret = normalize_secret(
+            token_secret if token_secret is not None else os.environ.get("WATCHLIGHT_TOKEN_SECRET")
+        )
 
     # ── policy loading ──────────────────────────────────────────────
 
@@ -840,9 +854,55 @@ class Watchlight:
             max_depth=min(int(max_depth), DE_MAX_DEPTH),
             time_budget_seconds=time_budget_seconds,
             depth=0,
+            token_secret=self._token_secret,
         )
         root._emit_root()  # record the tree's starting authority for `watchlight dev`
         return root
+
+    def scope_from_token(self, token: str) -> Scope:
+        """Re-establish a scope minted by
+        :meth:`~watchlight.attenuation.Scope.to_token` in another process.
+
+        Verifies the token's format, HMAC (constant-time), agent binding,
+        ``iat``/``exp`` window and lifetime bound, then rebuilds the root grant
+        and replays every level of the chain through the engine's strict-subset
+        attenuation — exactly as if ``attenuate()`` had been called here. The
+        engine, not the token, decides whether each level is a subset: a widened
+        chain raises :class:`AttenuationDenied` even with a valid signature, and
+        a chain whose engine-granted result differs from the token's claim is
+        rejected. Raises :class:`ScopeTokenError` when ``token_secret`` is unset
+        (fail-closed) or the token is malformed, tampered, expired, or bound to a
+        different agent. The returned scope cannot outlive the token's ``exp``."""
+        secret = require_secret(self._token_secret)
+        claims = verify_scope_token(token, secret, agent=self.agent)
+        root = claims["root"]
+        scope = self.scope(
+            tools=root["tools"],
+            resources=root["resources"],
+            intents=root["intents"],
+            max_depth=root["max_depth"],
+            time_budget_seconds=root["time_budget_seconds"],
+        )
+        for step in claims["chain"]:
+            scope = scope.attenuate(
+                tools=step["tools"],
+                resources=step["resources"],
+                intents=step["intents"],
+                time_budget_seconds=step["time_budget_seconds"],
+            )
+        # The engine's grant must be exactly what the token claimed for this level.
+        claimed = claims["chain"][-1] if claims["chain"] else root
+        if (
+            scope.depth != claims["depth"]
+            or not same_set(scope.allowed_tools, claimed["tools"])
+            or not same_set(scope.allowed_resources, claimed["resources"])
+            or not same_set(scope.allowed_intents, claimed["intents"])
+            or scope.time_budget_seconds != claimed["time_budget_seconds"]
+            or (not claims["chain"] and scope.max_depth != root["max_depth"])
+        ):
+            raise ScopeTokenError("mismatch", "engine grant does not match the token's claim")
+        scope._bind_expiry(claims["exp"])
+        return scope
 
     # ── governing tools ─────────────────────────────────────────────
 

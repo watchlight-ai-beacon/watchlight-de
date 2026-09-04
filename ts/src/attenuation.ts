@@ -10,6 +10,15 @@ import * as crypto from "node:crypto";
 import type { Engine, GrantedScope, RequestedScope } from "@watchlight/engine";
 import * as path from "node:path";
 import { AuditTrail } from "./audit";
+import {
+  ScopeTokenError,
+  nowSeconds,
+  requireSecret,
+  signScopeToken,
+  type ScopeRootClaim,
+  type ScopeStepClaim,
+  type ScopeTokenClaims,
+} from "./scope-token";
 
 /** Developer-Edition sub-agent tree depth ceiling. */
 export const DE_MAX_DEPTH = 5;
@@ -70,6 +79,21 @@ interface ScopeInit {
   timeBudgetSeconds: number;
   depth: number;
   parentId?: string;
+  /** The scope this one was attenuated from (undefined for a root). Lets
+   *  {@link Scope.toToken} serialise the full chain for engine replay. */
+  parent?: Scope;
+  /** HMAC key for {@link Scope.toToken}; inherited by children. Unset ⇒ minting
+   *  fails closed. Never logged or written. */
+  tokenSecret?: Uint8Array;
+  /** Epoch seconds this scope came into force (defaults to now). */
+  issuedAt?: number;
+}
+
+/** Options for {@link Scope.toToken}. */
+export interface ScopeTokenOptions {
+  /** Token lifetime in seconds. Defaults to — and is always capped at — the
+   *  scope's remaining lifetime ({@link Scope.expiresAt}). */
+  ttlSeconds?: number;
 }
 
 /** A capability scope that can spawn strictly-narrower child scopes. Create the
@@ -85,6 +109,11 @@ export class Scope {
   readonly depth: number;
   readonly nodeId: string;
   readonly parentId?: string;
+  /** Epoch seconds this scope came into force. */
+  readonly issuedAt: number;
+  private _expiresAt: number;
+  private readonly _parent?: Scope;
+  private readonly _tokenSecret?: Uint8Array;
   private readonly _engine: Engine;
   private readonly _audit: AuditTrail;
 
@@ -101,6 +130,69 @@ export class Scope {
     this.depth = init.depth;
     this.nodeId = nodeId();
     this.parentId = init.parentId;
+    this._parent = init.parent;
+    this._tokenSecret = init.tokenSecret;
+    this.issuedAt = init.issuedAt ?? nowSeconds();
+    // A scope never outlives its parent, whatever its own budget says.
+    this._expiresAt = this.issuedAt + this.timeBudgetSeconds;
+    if (init.parent) this._expiresAt = Math.min(this._expiresAt, init.parent.expiresAt);
+  }
+
+  /** Epoch seconds after which this scope is spent: `issuedAt + timeBudgetSeconds`,
+   *  clamped to the parent's expiry (and, for a scope rebuilt from a token, to
+   *  the token's `exp`). */
+  get expiresAt(): number {
+    return this._expiresAt;
+  }
+
+  /** @internal Lower this scope's expiry (never raise it). Used when a scope is
+   *  rebuilt from a token so it cannot outlive the token. */
+  _bindExpiry(exp: number): void {
+    this._expiresAt = Math.min(this._expiresAt, exp);
+  }
+
+  /** The engine-granted dimensions of this level, as a token claim. */
+  private _stepClaim(): ScopeStepClaim {
+    return {
+      tools: [...this.allowedTools],
+      resources: [...this.allowedResources],
+      intents: [...this.allowedIntents],
+      time_budget_seconds: this.timeBudgetSeconds,
+    };
+  }
+
+  /**
+   * Serialise this scope for another process: an HMAC-signed token carrying the
+   * root grant and the engine-granted scope at every level down to this one.
+   * The receiving `Watchlight.scopeFromToken()` verifies the signature and time
+   * window, then re-runs the engine's strict-subset attenuation level by level
+   * — the token is integrity across processes sharing the secret, never
+   * authority. Fails closed with {@link ScopeTokenError} when no `tokenSecret`
+   * was configured or the scope has no remaining lifetime. The token never
+   * carries argument values, audit paths, or the secret.
+   */
+  toToken(opts: ScopeTokenOptions = {}): string {
+    const secret = requireSecret(this._tokenSecret);
+    const now = nowSeconds();
+    const remaining = this.expiresAt - now;
+    if (remaining <= 0) throw new ScopeTokenError("expired", "scope has no remaining lifetime");
+    const ttl = opts.ttlSeconds === undefined ? remaining : opts.ttlSeconds;
+    if (!Number.isSafeInteger(ttl) || ttl <= 0) {
+      throw new ScopeTokenError("lifetime", "ttlSeconds must be a positive integer");
+    }
+    const exp = Math.min(now + ttl, this.expiresAt);
+
+    // Walk to the root, collecting each level's GRANTED dimensions.
+    const levels: Scope[] = [];
+    for (let s: Scope | undefined = this; s; s = s._parent) levels.unshift(s);
+    const rootScope = levels[0];
+    const root: ScopeRootClaim = { ...rootScope._stepClaim(), max_depth: rootScope.maxDepth };
+    const chain = levels.slice(1).map((s) => s._stepClaim());
+    if (chain.length !== this.depth) {
+      throw new ScopeTokenError("mismatch", "scope lineage does not match its depth");
+    }
+    const claims: ScopeTokenClaims = { agent: this.agent, root, chain, depth: this.depth, iat: now, exp };
+    return signScopeToken(claims, secret);
   }
 
   /**
@@ -179,6 +271,8 @@ export class Scope {
       timeBudgetSeconds: granted.time_budget_seconds ?? request.time_budget_seconds,
       depth: granted.depth ?? childDepth,
       parentId: this.nodeId,
+      parent: this,
+      tokenSecret: this._tokenSecret,
     });
     this._record({
       nodeId: child.nodeId,

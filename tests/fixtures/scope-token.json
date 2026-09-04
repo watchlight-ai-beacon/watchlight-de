@@ -1,0 +1,59 @@
+{
+  "_comment": "Shared TS/Python fixture for scope tokens. The secret is a TEST value only. Both lanes must reproduce `canonical` and `token` byte-for-byte from `claims` + `secret`, and verify `token` at `now`.",
+  "secret": "watchlight-test-fixture-secret-not-for-production",
+  "agent": "fixture-agent",
+  "now": 1800000000,
+  "claims": {
+    "agent": "fixture-agent",
+    "root": {
+      "tools": [
+        "web_search",
+        "read_file",
+        "send_email",
+        "über"
+      ],
+      "resources": [
+        "docs/*",
+        "crm/*"
+      ],
+      "intents": [
+        "research",
+        "outreach"
+      ],
+      "max_depth": 5,
+      "time_budget_seconds": 2500000000
+    },
+    "chain": [
+      {
+        "tools": [
+          "web_search",
+          "read_file"
+        ],
+        "resources": [
+          "docs/*"
+        ],
+        "intents": [
+          "research"
+        ],
+        "time_budget_seconds": 2500000000
+      },
+      {
+        "tools": [
+          "read_file"
+        ],
+        "resources": [
+          "docs/*"
+        ],
+        "intents": [
+          "research"
+        ],
+        "time_budget_seconds": 2500000000
+      }
+    ],
+    "depth": 2,
+    "iat": 1700000000,
+    "exp": 4102444800
+  },
+  "canonical": "{\"agent\":\"fixture-agent\",\"chain\":[{\"intents\":[\"research\"],\"resources\":[\"docs/*\"],\"time_budget_seconds\":2500000000,\"tools\":[\"read_file\",\"web_search\"]},{\"intents\":[\"research\"],\"resources\":[\"docs/*\"],\"time_budget_seconds\":2500000000,\"tools\":[\"read_file\"]}],\"depth\":2,\"exp\":4102444800,\"iat\":1700000000,\"root\":{\"intents\":[\"outreach\",\"research\"],\"max_depth\":5,\"resources\":[\"crm/*\",\"docs/*\"],\"time_budget_seconds\":2500000000,\"tools\":[\"read_file\",\"send_email\",\"web_search\",\"über\"]}}",
+  "token": "wls1.eyJhZ2VudCI6ImZpeHR1cmUtYWdlbnQiLCJjaGFpbiI6W3siaW50ZW50cyI6WyJyZXNlYXJjaCJdLCJyZXNvdXJjZXMiOlsiZG9jcy8qIl0sInRpbWVfYnVkZ2V0X3NlY29uZHMiOjI1MDAwMDAwMDAsInRvb2xzIjpbInJlYWRfZmlsZSIsIndlYl9zZWFyY2giXX0seyJpbnRlbnRzIjpbInJlc2VhcmNoIl0sInJlc291cmNlcyI6WyJkb2NzLyoiXSwidGltZV9idWRnZXRfc2Vjb25kcyI6MjUwMDAwMDAwMCwidG9vbHMiOlsicmVhZF9maWxlIl19XSwiZGVwdGgiOjIsImV4cCI6NDEwMjQ0NDgwMCwiaWF0IjoxNzAwMDAwMDAwLCJyb290Ijp7ImludGVudHMiOlsib3V0cmVhY2giLCJyZXNlYXJjaCJdLCJtYXhfZGVwdGgiOjUsInJlc291cmNlcyI6WyJjcm0vKiIsImRvY3MvKiJdLCJ0aW1lX2J1ZGdldF9zZWNvbmRzIjoyNTAwMDAwMDAwLCJ0b29scyI6WyJyZWFkX2ZpbGUiLCJzZW5kX2VtYWlsIiwid2ViX3NlYXJjaCIsIsO8YmVyIl19fQ.se4k8ebCz21eVT_KBZq6oYQEJdTiKH1PFsRPrC_jYI0"
+}

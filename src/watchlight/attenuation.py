@@ -25,6 +25,7 @@ import uuid
 from typing import Any, Optional, Sequence
 
 from ._audit import AuditTrail
+from .scope_token import ScopeTokenError, now_seconds, require_secret, sign_scope_token
 
 __all__ = ["Scope", "DevEditionCeiling", "AttenuationDenied", "DE_MAX_DEPTH"]
 
@@ -79,6 +80,16 @@ def _norm(x: Sequence[str] | None) -> list[str]:
     return list(x) if x else []
 
 
+def _matchers(resources: Sequence[str]) -> list[dict[str, str]]:
+    """The engine's resource dimension is a list of ``{"matcher": ...}`` structs
+    (mirrors the TS lane); a Scope keeps the plain matcher strings."""
+    return [{"matcher": r} for r in resources]
+
+
+def _unmatchers(resources: Sequence[Any]) -> list[str]:
+    return [r["matcher"] if isinstance(r, dict) else str(r) for r in resources]
+
+
 class Scope:
     """A capability scope that can spawn strictly-narrower child scopes.
 
@@ -103,7 +114,15 @@ class Scope:
         depth: int,
         parent_id: str | None = None,
         audit: Optional[AuditTrail] = None,
+        parent: Optional["Scope"] = None,
+        token_secret: Optional[bytes] = None,
+        issued_at: Optional[int] = None,
     ) -> None:
+        """``parent`` is the scope this one was attenuated from (``None`` for a
+        root) — it lets :meth:`to_token` serialise the full chain for engine
+        replay. ``token_secret`` is the HMAC key for :meth:`to_token`, inherited
+        by children; unset ⇒ minting fails closed. Never logged or written.
+        ``issued_at`` is the epoch second this scope came into force (now)."""
         self._engine = engine
         self._audit_path = pathlib.Path(audit_path)
         # The governor's audit trail (file + optional ``audit_sink``) — shared by
@@ -121,6 +140,70 @@ class Scope:
         #: distinct). ``parent_id`` is None for a root scope.
         self.node_id = uuid.uuid4().hex[:8]
         self.parent_id = parent_id
+        self._parent = parent
+        self._token_secret = token_secret
+        #: Epoch seconds this scope came into force.
+        self.issued_at = int(issued_at) if issued_at is not None else now_seconds()
+        # A scope never outlives its parent, whatever its own budget says.
+        self._expires_at = self.issued_at + self.time_budget_seconds
+        if parent is not None:
+            self._expires_at = min(self._expires_at, parent.expires_at)
+
+    @property
+    def expires_at(self) -> int:
+        """Epoch seconds after which this scope is spent: ``issued_at +
+        time_budget_seconds``, clamped to the parent's expiry (and, for a scope
+        rebuilt from a token, to the token's ``exp``)."""
+        return self._expires_at
+
+    def _bind_expiry(self, exp: int) -> None:
+        """Lower this scope's expiry (never raise it). Used when a scope is
+        rebuilt from a token so it cannot outlive the token."""
+        self._expires_at = min(self._expires_at, int(exp))
+
+    def _step_claim(self) -> dict[str, Any]:
+        """The engine-granted dimensions of this level, as a token claim."""
+        return {
+            "tools": list(self.allowed_tools),
+            "resources": list(self.allowed_resources),
+            "intents": list(self.allowed_intents),
+            "time_budget_seconds": self.time_budget_seconds,
+        }
+
+    def to_token(self, *, ttl_seconds: Optional[int] = None) -> str:
+        """Serialise this scope for another process: an HMAC-signed token carrying
+        the root grant and the engine-granted scope at every level down to this
+        one. The receiving :meth:`watchlight.Watchlight.scope_from_token` verifies
+        the signature and time window, then re-runs the engine's strict-subset
+        attenuation level by level — the token is integrity across processes
+        sharing the secret, never authority. ``ttl_seconds`` defaults to — and
+        is always capped at — the scope's remaining lifetime
+        (:attr:`expires_at`). Fails closed with :class:`ScopeTokenError` when no
+        ``token_secret`` was configured or the scope has no remaining lifetime.
+        The token never carries argument values, audit paths, or the secret."""
+        secret = require_secret(self._token_secret)
+        now = now_seconds()
+        remaining = self.expires_at - now
+        if remaining <= 0:
+            raise ScopeTokenError("expired", "scope has no remaining lifetime")
+        ttl = remaining if ttl_seconds is None else ttl_seconds
+        if isinstance(ttl, bool) or not isinstance(ttl, int) or ttl <= 0:
+            raise ScopeTokenError("lifetime", "ttl_seconds must be a positive integer")
+        exp = min(now + ttl, self.expires_at)
+
+        # Walk to the root, collecting each level's GRANTED dimensions.
+        levels: list[Scope] = []
+        s: Optional[Scope] = self
+        while s is not None:
+            levels.insert(0, s)
+            s = s._parent
+        root = levels[0]._step_claim()
+        root["max_depth"] = levels[0].max_depth
+        chain = [lvl._step_claim() for lvl in levels[1:]]
+        if len(chain) != self.depth:
+            raise ScopeTokenError("mismatch", "scope lineage does not match its depth")
+        claims = {"agent": self.agent, "root": root, "chain": chain, "depth": self.depth, "iat": now, "exp": exp}
+        return sign_scope_token(claims, secret)
 
     # ── the primitive ───────────────────────────────────────────────
 
@@ -159,7 +242,7 @@ class Scope:
         parent = self._as_dict()
         request = {
             "allowed_tools": requested_tools,
-            "allowed_resources": _norm(resources) if resources is not None else self.allowed_resources,
+            "allowed_resources": _matchers(_norm(resources) if resources is not None else self.allowed_resources),
             "allowed_intents": _norm(intents) if intents is not None else self.allowed_intents,
             "max_depth": max(0, self.max_depth - 1),
             "time_budget_seconds": (
@@ -191,13 +274,15 @@ class Scope:
             audit_path=self._audit_path,
             agent=self.agent,
             allowed_tools=granted.get("allowed_tools", request["allowed_tools"]),
-            allowed_resources=granted.get("allowed_resources", request["allowed_resources"]),
+            allowed_resources=_unmatchers(granted.get("allowed_resources", request["allowed_resources"])),
             allowed_intents=granted.get("allowed_intents", request["allowed_intents"]),
             max_depth=granted.get("max_depth", request["max_depth"]),
             time_budget_seconds=granted.get("time_budget_seconds", request["time_budget_seconds"]),
             depth=granted.get("depth", child_depth),
             parent_id=self.node_id,
             audit=self._audit,
+            parent=self,
+            token_secret=self._token_secret,
         )
         self._record(
             node_id=child.node_id,
@@ -214,7 +299,7 @@ class Scope:
     def _as_dict(self) -> dict[str, Any]:
         return {
             "allowed_tools": self.allowed_tools,
-            "allowed_resources": self.allowed_resources,
+            "allowed_resources": _matchers(self.allowed_resources),
             "allowed_intents": self.allowed_intents,
             "max_depth": self.max_depth,
             "time_budget_seconds": self.time_budget_seconds,

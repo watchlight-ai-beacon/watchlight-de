@@ -210,9 +210,11 @@ It mirrors the Python package feature-for-feature:
   audit line joins the decision on `decision_id`.
 - **Content screening:** `govern.screen(text)` — flag or redact prompt-injection
   shapes in what a read returns, before it reaches the model.
-- **Attenuation & graduation:** `govern.scope().attenuate()`; every decision
-  returns a `decisionId` to join to your records; `WATCHLIGHT_APDP_URL` graduates
-  the *same code* to the control plane.
+- **Attenuation & graduation:** `govern.scope().attenuate()`; `scope.toToken()` /
+  `govern.scopeFromToken()` carry an attenuated scope to a worker process (HMAC
+  integrity; the receiving engine re-proves the subset); every decision returns a
+  `decisionId` to join to your records; `WATCHLIGHT_APDP_URL` graduates the
+  *same code* to the control plane.
 
 Full API + runnable examples: [`ts/`](ts/) · npm: `@watchlight/sdk` (glue,
 Apache-2.0) + `@watchlight/engine` (the compiled engine). Docs:
@@ -406,6 +408,7 @@ the reason a call was denied. (The example prints the exact
 |---|---|---|
 | Policy engine | in-process Cedar, policies from a local `.cedar` file | a running, scaled policy service |
 | Sub-agent scope attenuation | engine-side strict-subset validation | same, server-side |
+| Scope across processes | HMAC scope token (shared secret, one trust domain); the receiving engine re-proves the subset | independently attestable scopes |
 | Content screening | rule-based, in-process, value-free: `govern.sanitize` (structured PII) + `govern.screen` (prompt-injection / output-leak shapes); not ML classification | a running guardrails service (ML classifiers, NER) |
 | Audit | local JSONL, greppable, value-free | a signed, tamper-evident audit service |
 | Dashboard | `watchlight dev` → `localhost:7000` (policies + execution lineage) | the full operator console |

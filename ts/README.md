@@ -57,6 +57,27 @@ The Developer Edition governs the tree up to depth `DE_MAX_DEPTH` (5); beyond it
 `attenuate` throws `DevEditionCeiling`. Enterprise removes the cap and enforces
 it server-side.
 
+To hand a scope to another process (a queue worker, a scheduler) without trusting
+the job payload, serialise it as a **scope token**. Configure a shared secret
+(≥ 16 bytes; `tokenSecret` or `WATCHLIGHT_TOKEN_SECRET` — there is no default,
+minting and verifying fail closed without one):
+
+```ts
+const govern = new Watchlight({ tokenSecret: process.env.WATCHLIGHT_TOKEN_SECRET });
+const token = child.toToken();                 // wls1.<canonical claims>.<HMAC-SHA256>
+// ...in the worker (same agent identity, same secret):
+const scope = await govern.scopeFromToken(token);
+```
+
+`scopeFromToken` verifies the signature (constant-time), the agent binding and
+the `iat`/`exp` window, then rebuilds the root and **replays every level through
+the engine's strict-subset validator** — a widened chain throws
+`AttenuationDenied` even with a valid signature; a malformed, tampered, expired,
+oversized or wrong-agent token throws `ScopeTokenError` (`.code`). The token
+carries only the root grant, the per-level granted dimensions, `agent`, `depth`,
+`iat`, `exp`. A shared secret is integrity within one trust domain, not
+attestation — a holder of the secret can mint any scope the root allows.
+
 ## Claude Agent SDK
 
 Govern an SDK-managed agent's tool calls with a `PreToolUse` gate — no glue in
