@@ -196,7 +196,8 @@ For retrieval tools the classification of what comes back is only known after th
 fetch. `onResult` runs **after the body returns and before the caller sees the
 result**, with the same `decisionId` that is on the call's decision line (and, on
 `obligations`, the constraints that decision carries — see the obligations
-section):
+section; `governTool` and the `governedHooks` `PostToolUse` hook pass the same
+info shape):
 
 ```ts
 const readDoc = govern.tool(fetchDocument, {

@@ -104,7 +104,10 @@ function release(text, { resource, decisionId, obligations }) {
   if (screened.report.flagged) throw new Denied(resource, "retrieve", DENY_REASON);
 
   // 2. Honour the redact obligation of the decision that let the body run.
+  //    No redact obligation → withhold: personal data may only be released redacted,
+  //    and a missing obligation is no permission, not no limit.
   const fields = [...(obligations?.redact ?? [])].sort();
+  if (fields.length === 0) throw new Denied(resource, "retrieve", DENY_REASON);
   honoured.push(fields);
   const types = [];
   let known = [];
@@ -113,7 +116,6 @@ function release(text, { resource, decisionId, obligations }) {
     else if (field in DETECTOR_FOR) types.push(DETECTOR_FOR[field]);
     else throw new Denied(resource, "retrieve", DENY_REASON); // an obligation we cannot honour → withhold
   }
-  if (fields.length === 0) return screened.text; // no redact obligation: the policy releases the text in full
   const cleaned = govern.sanitize(screened.text, { intent: "retrieve", resource, decisionId, types, known });
   // 3. The cleaned text replaces the raw payload.
   return cleaned.text;
@@ -225,6 +227,20 @@ async function main() {
   const blob = JSON.stringify(trail).toLowerCase();
   check("the audit trail is value-free — none of the personal data or injection text appears in it",
     leaked.every((v) => !blob.includes(v)));
+
+  // Fail-closed branches of the hook, exercised directly (independent of the corpus):
+  // an Allow without a redact obligation, or with one the hook cannot honour, withholds.
+  const withholds = (info) => {
+    try { release("plain text with nothing to redact", info); } catch (e) { if (e instanceof Denied) return true; throw e; }
+    return false;
+  };
+  const base = { intent: "retrieve", resource: "doc/check", principal: "rag-agent", decisionId: "check-branch" };
+  check("an Allow that carries no redact obligation withholds the document (fail-closed)",
+    withholds(base) && withholds({ ...base, obligations: { maxItems: 3 } }));
+  check("a redact field the hook has no detector for withholds the document (fail-closed)",
+    withholds({ ...base, obligations: { redact: ["email", "passport"] } }));
+  check("a redact obligation the hook can honour releases the text",
+    !withholds({ ...base, obligations: { redact: ["email", "name", "ssn"] } }));
 
   // The policy suite this run loaded, executed in-process (same as `watchlight policy test`).
   const suite = JSON.parse(readFileSync(new URL("policy.suite.json", HERE), "utf8"));

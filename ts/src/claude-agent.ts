@@ -127,19 +127,17 @@ export function governedHooks(options: GovernedHooksOptions = {}): GovernedHooks
     const toolName = ev.tool_name ?? "unknown";
     try {
       const intent = intentFor(toolName);
-      const { allowed, reason, decisionId } = await governor.check(intent, toolName);
+      const { allowed, reason, decisionId, obligations } = await governor.check(intent, toolName);
       const key = pendingKey(ev, toolUseID);
       if (allowed && onResult && key !== undefined) {
         if (pending.size >= PENDING_CAP) {
           const oldest = pending.keys().next().value;
           if (oldest !== undefined) pending.delete(oldest);
         }
-        pending.set(key, {
-          intent,
-          resource: `tool/${toolName}`,
-          principal: governor.agent,
-          decisionId,
-        });
+        // The PostToolUse hook receives the decision's id AND its obligations.
+        const info: EgressInfo = { intent, resource: `tool/${toolName}`, principal: governor.agent, decisionId };
+        if (obligations) info.obligations = obligations;
+        pending.set(key, info);
       }
       return {
         hookSpecificOutput: {

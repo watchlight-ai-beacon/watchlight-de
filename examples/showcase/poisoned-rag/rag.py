@@ -102,7 +102,11 @@ def release(text: str, info: dict) -> str:
         raise Denied(resource, "retrieve", DENY_REASON)
 
     # 2. Honour the redact obligation of the decision that let the body run.
-    fields = sorted((info["obligations"] or {}).get("redact", []))
+    #    No redact obligation → withhold: personal data may only be released redacted,
+    #    and a missing obligation is no permission, not no limit.
+    fields = sorted((info.get("obligations") or {}).get("redact", []))
+    if not fields:
+        raise Denied(resource, "retrieve", DENY_REASON)
     honoured.append(fields)
     types, known = [], []
     for field in fields:
@@ -112,8 +116,6 @@ def release(text: str, info: dict) -> str:
             types.append(DETECTOR_FOR[field])
         else:
             raise Denied(resource, "retrieve", DENY_REASON)  # an obligation we cannot honour → withhold
-    if not fields:
-        return screened["text"]  # no redact obligation: the policy releases the text in full
     cleaned = govern.sanitize(
         screened["text"], intent="retrieve", resource=resource, decision_id=decision_id, types=types, known=known
     )
@@ -224,6 +226,23 @@ def main() -> int:
     blob = json.dumps(trail).lower()
     check("the audit trail is value-free — none of the personal data or injection text appears in it",
           not any(v in blob for v in leaked))
+
+    # Fail-closed branches of the hook, exercised directly (independent of the corpus):
+    # an Allow without a redact obligation, or with one the hook cannot honour, withholds.
+    def withholds(info: dict) -> bool:
+        try:
+            release("plain text with nothing to redact", info)
+        except Denied:
+            return True
+        return False
+
+    base = {"intent": "retrieve", "resource": "doc/check", "principal": "rag-agent", "decision_id": "check-branch"}
+    check("an Allow that carries no redact obligation withholds the document (fail-closed)",
+          withholds(base) and withholds({**base, "obligations": {"max_items": 3}}))
+    check("a redact field the hook has no detector for withholds the document (fail-closed)",
+          withholds({**base, "obligations": {"redact": ["email", "passport"]}}))
+    check("a redact obligation the hook can honour releases the text",
+          not withholds({**base, "obligations": {"redact": ["email", "name", "ssn"]}}))
 
     # The policy suite this run loaded, executed in-process (same as `watchlight policy test`).
     suite = json.loads((HERE / "policy.suite.json").read_text(encoding="utf-8"))

@@ -150,7 +150,9 @@ export interface EgressInfo {
   principal: string;
   decisionId?: string;
   /** The obligations the decision that let the body run carries (see
-   *  {@link Obligations}) — honour them here. Absent when it carries none. */
+   *  {@link Obligations}) — honour them here. Absent when it carries none.
+   *  Populated by `tool`, `governTool` / `governTools` and the `governedHooks`
+   *  `PostToolUse` hook alike. */
   obligations?: Obligations;
 }
 
@@ -523,9 +525,13 @@ export class Watchlight {
   async check(
     intent: string,
     toolName: string
-  ): Promise<{ allowed: boolean; decision: string; reason: string; decisionId?: string }> {
+  ): Promise<{ allowed: boolean; decision: string; reason: string; decisionId?: string; obligations?: Obligations }> {
     const d = await this.authorize({ action: intent, resource: `tool/${toolName}` });
-    return { allowed: d.allowed, decision: d.decision, reason: d.reason, decisionId: d.decisionId };
+    const out: { allowed: boolean; decision: string; reason: string; decisionId?: string; obligations?: Obligations } = {
+      allowed: d.allowed, decision: d.decision, reason: d.reason, decisionId: d.decisionId,
+    };
+    if (d.obligations) out.obligations = d.obligations;
+    return out;
   }
 
   /**

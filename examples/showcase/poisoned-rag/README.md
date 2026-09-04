@@ -99,12 +99,24 @@ const retrieve = govern.tool(function retrieve(id) { ... }, {
 });
 ```
 
-Three fail-closed choices worth copying: a flagged document is **withheld**, not
-redacted (the pipeline puts a fixed opaque line in its slot); an obligation field
-the hook has no detector for **withholds** the document rather than silently
-dropping the constraint; and the `name` field is honoured through `known` — the
-value the application already holds — rather than the lower-precision `PERSON`
-heuristic.
+Four fail-closed choices worth copying:
+
+- a flagged document is **withheld**, not redacted (the pipeline puts a fixed
+  opaque line in its slot);
+- an Allow that carries **no `redact` obligation withholds** the document — a
+  missing obligation is treated as *no permission*, not *no limit*, so a permit
+  that forgot the annotation cannot release personal data in full;
+- an obligation field the hook has **no detector for withholds** the document
+  rather than silently dropping the constraint;
+- the `name` field is honoured through `known` — rather than the lower-precision
+  `PERSON` heuristic. `KNOWN_PEOPLE` is the **application-held dictionary**: the
+  values the application already knows (here, the customer on file), not
+  anything derived from the corpus or the retrieved text. Its values never enter
+  the report or the audit trail.
+
+The scripts exercise those branches directly with synthetic `info` objects
+(no redact obligation, an unknown redact field, an honourable one), independent
+of the corpus.
 
 ## Sample output
 
@@ -149,6 +161,9 @@ watchlight: EGRESS retrieve  doc/ticket-4471     replaced
   ✓ the ticket's sanitization record carries counts only — EMAIL 1, KNOWN 1
   ✓ no screening / sanitization / egress record is left unjoined
   ✓ the audit trail is value-free — none of the personal data or injection text appears in it
+  ✓ an Allow that carries no redact obligation withholds the document (fail-closed)
+  ✓ a redact field the hook has no detector for withholds the document (fail-closed)
+  ✓ a redact obligation the hook can honour releases the text
   ✓ policy.suite.json: 5/5 fixtures pass, obligations asserted
 
 ALL CHECKS OK
