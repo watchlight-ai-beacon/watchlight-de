@@ -32,7 +32,10 @@ written to `.watchlight/audit.jsonl` next to the scripts.
 ## What you see
 
 ```
+stub bank calls at start: 0
+
 attempt: transfer amount=25000 → account/acct-b
+watchlight: governing 'payments-agent' (dev mode, in-process engine)
 watchlight: DENY   transfer  account/acct-b     not authorized
 refused: watchlight denied intent 'transfer' on tool/transfer: not authorized
 verdict: Deny    decision_id: 5a8697c3-84a0-4fbd-bb0b-0e7718db7973

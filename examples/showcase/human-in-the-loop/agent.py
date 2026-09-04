@@ -183,7 +183,21 @@ def resume() -> int:
         check(store.deletes == 1, f"the replayed grant was refused; deletes still {store.deletes}")
     check(hitl.read_pending() is None, "a refused replay does not open a new pending request")
 
-    # Replay 2: present the same SDK approval token twice.
+    # Replay 2: a well-signed grant naming a request that is not the outstanding one. Anyone
+    # holding the secret can sign one (see README); the agent still refuses it.
+    print("\nreplay: presenting a signed grant for a request that is not the outstanding one")
+    hitl.write_grant(
+        {"decision_id": "00000000-0000-4000-8000-000000000000", "principal": govern.agent,
+         "action": "delete", "resource": f"record/{RECORD}"},
+        hitl.approver_secret(),
+    )
+    try:
+        delete_record(RECORD)
+        check(False, "the grant for a non-outstanding request was refused")
+    except NeedsApproval:
+        check(store.deletes == 1, f"the grant for a non-outstanding request was refused; deletes still {store.deletes}")
+
+    # Replay 3: present the same SDK approval token twice.
     print("\nreplay: presenting the same SDK approval token twice (probe resource)")
     probe = "record/rec-probe"
     token = govern.mint_approval(action="delete", resource=probe)

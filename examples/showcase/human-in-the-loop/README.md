@@ -22,7 +22,7 @@ cd examples/showcase/human-in-the-loop
 export APPROVER_SECRET="$(openssl rand -hex 32)"   # shared by approver and agent, via env only
 
 python agent.py request      # 1. NeedsApproval → .watchlight/hitl/pending.json; nothing deleted
-python approve.py            # 2. a human approves → .watchlight/hitl/grant.json (or: --deny)
+python approve.py            # 2. a human approves → .watchlight/hitl/grant.json (or: --deny); pending.json stays
 python agent.py resume       # 3. grant verified → approved decision → delete runs once; replays refused
 ```
 
@@ -40,6 +40,8 @@ watchlight policy test examples/showcase/human-in-the-loop/policy.suite.json
 SDK raises `NeedsApproval`; the store's `deletes` is still `0`:
 
 ```
+attempt: delete record/rec-42
+watchlight: governing 'records-agent' (dev mode, in-process engine)
 watchlight: APPRV? delete    record/rec-42     approval required
 hold:    pending request written to .watchlight/hitl/pending.json; the delete did not run
 held:    watchlight requires human approval for intent 'delete' on tool/delete
@@ -67,6 +69,8 @@ SDK mints a single-use approval token in-process, re-authorizes, and runs the
 body once. The two decision records and how they join:
 
 ```
+attempt: delete record/rec-42 (grant on disk for pending bbbd176c-…)
+watchlight: governing 'records-agent' (dev mode, in-process engine)
 watchlight: APPRV? delete    record/rec-42     approval required
 resume:  grant verified and consumed — approves pending bbbd176c-…
 watchlight: OK✓    delete    record/rec-42
@@ -85,6 +89,10 @@ replay: presenting the consumed grant again
 refused: grant already used (replay); the delete did not run
   ✓ the replayed grant was refused; deletes still 1
 
+replay: presenting a signed grant for a request that is not the outstanding one
+refused: grant does not match the outstanding pending request; the delete did not run
+  ✓ the grant for a non-outstanding request was refused; deletes still 1
+
 replay: presenting the same SDK approval token twice (probe resource)
   ✓ a fresh token downgrades NeedsApproval to Allow once
   ✓ the same token presented again is refused (single use)
@@ -99,9 +107,11 @@ recorded — the approval is never assumed), calls the hook, mints the token, an
 re-authorizes; the resulting record is `decision: Allow, approved: true` with a
 new id **B**. So the chain is: record **A** ← grant(`pending_decision_id` = A) →
 record **B**, with the same `principal`, `intent` and `resource` on both
-records. The example prints A and B and asserts the join.
+records. The example prints A and B and asserts the join. The grant is accepted
+only if A is the request currently outstanding in `pending.json`; on success
+the agent removes `pending.json` and `grant.json` together.
 
-## Why the approver signs a grant, not the SDK token
+## Why the approver signs a grant, not the SDK token — and what that does not give you
 
 The DE's approval tokens (`mint_approval` / `mintApproval`) are HMAC-signed
 under a random secret generated when the *process* starts, and used tokens are
@@ -125,12 +135,23 @@ ids and names only; the secret lives in the environment of the two processes.
 session with `openssl rand -hex 32`; any placeholder such as
 `replace-me-with-a-random-secret` works for a local walk-through.
 
+**The HMAC is symmetric.** The agent process verifies the grant with the same
+`APPROVER_SECRET` the approver signs with, so whoever holds the secret — the
+agent included — can sign a grant for anything. The approver/agent role
+separation in this example is procedural (two commands, one secret), not
+cryptographic; the example itself demonstrates this by signing a grant from
+inside the agent for a request that is not the outstanding one (refused on a
+different check, not on the signature). The production shape is an asymmetric signature: the approver
+holds a private key and the agent verifies with the public key, so the agent can
+check approvals it could never mint. That is not implemented here.
+
 ## Replay behaviour (observed)
 
 | Replay | Result |
 |---|---|
 | The same grant file presented again after it was consumed | Refused: `grant already used (replay)`. The nonce is recorded in `.watchlight/hitl/consumed.json` on first use; the file is deleted on sight, and a refused grant does **not** open a new pending request. |
 | A grant edited after signing (e.g. a different `resource`) | Refused: `signature does not verify`. `resume` exits 1. |
+| A correctly signed grant for a request that is not the outstanding one (e.g. approved for an earlier request, planted for a later one with the same principal/action/resource) | Refused: `grant does not match the outstanding pending request`. The agent compares `pending_decision_id`, principal, action and resource against the `pending.json` it wrote itself; `approve` leaves that file in place and the agent removes it only when a grant is consumed. |
 | A grant for a different `(principal, action, resource)` | Refused: `grant is bound to a different request`. |
 | The same SDK approval token passed to `authorize` twice | First call `Allow, approved: true`; second call `NeedsApproval`. Single use per mint. |
 | An SDK token minted in another process | `NeedsApproval` — the verifying process has a different secret. |
@@ -144,4 +165,6 @@ session with `openssl rand -hex 32`; any placeholder such as
   decisionId }` directly.
 - **Files.** `.watchlight/hitl/` holds `pending.json`, `grant.json` and
   `consumed.json`; the audit trail is `.watchlight/audit.jsonl`, next to the
-  scripts. Both are ignored by git.
+  scripts. Both are ignored by git. `consumed.json` (used grant nonces) grows
+  with every approval and is never reset by design — a nonce forgotten is a
+  nonce replayable; `request` clears only `pending.json` and `grant.json`.

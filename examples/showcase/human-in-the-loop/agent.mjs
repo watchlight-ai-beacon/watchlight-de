@@ -174,7 +174,23 @@ async function resume() {
   }
   check(hitl.readPending() === null, "a refused replay does not open a new pending request");
 
-  // Replay 2: present the same SDK approval token twice.
+  // Replay 2: a well-signed grant naming a request that is not the outstanding one. Anyone
+  // holding the secret can sign one (see README); the agent still refuses it.
+  console.log("\nreplay: presenting a signed grant for a request that is not the outstanding one");
+  hitl.writeGrant(
+    { decision_id: "00000000-0000-4000-8000-000000000000", principal: govern.agent,
+      action: "delete", resource: `record/${RECORD}` },
+    hitl.approverSecret(),
+  );
+  try {
+    await deleteRecord(RECORD);
+    check(false, "the grant for a non-outstanding request was refused");
+  } catch (e) {
+    if (!(e instanceof NeedsApproval)) throw e;
+    check(store.deletes === 1, `the grant for a non-outstanding request was refused; deletes still ${store.deletes}`);
+  }
+
+  // Replay 3: present the same SDK approval token twice.
   console.log("\nreplay: presenting the same SDK approval token twice (probe resource)");
   const probe = "record/rec-probe";
   const token = govern.mintApproval({ action: "delete", resource: probe });

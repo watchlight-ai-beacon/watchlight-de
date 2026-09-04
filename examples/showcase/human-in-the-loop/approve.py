@@ -3,7 +3,7 @@
 sign a grant for exactly that request.
 
     export APPROVER_SECRET="$(openssl rand -hex 32)"   # same shell as 'agent.py resume'
-    python approve.py            # approve the pending request → grant.json
+    python approve.py            # approve the pending request → grant.json (pending stays until consumed)
     python approve.py --deny     # refuse it → pending removed, no grant, nothing runs
 
 The pending request names the action, the resource and the decision id — never

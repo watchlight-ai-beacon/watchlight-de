@@ -11,8 +11,10 @@ request:
 `sig` is HMAC-SHA256 over the grant's other fields under the approver's secret.
 The secret is read from `$APPROVER_SECRET` by both processes and is never
 written anywhere. The agent verifies the signature, the binding (principal,
-action, resource) and the expiry, then records the grant's nonce in
-`consumed.json` so the same grant cannot be presented twice.
+action, resource) and the expiry, records the grant's nonce in `consumed.json`
+so the same grant cannot be presented twice, and requires the grant to name the
+request it currently has outstanding in `pending.json` (a file the agent itself
+wrote), so a grant for an earlier request cannot be planted for a later one.
 
 Why a grant and not the SDK's own approval token: the DE mints approval tokens
 under a random secret generated when the process starts, and remembers used
@@ -113,8 +115,8 @@ def _sign(grant: dict, secret: bytes) -> str:
 
 
 def write_grant(pending: dict, secret: bytes) -> dict:
-    """Approve a pending request: sign a grant bound to exactly that request,
-    write it, and remove the pending file."""
+    """Approve a pending request: sign a grant bound to exactly that request and
+    write it next to the (still outstanding) pending file."""
     grant = {
         "pending_decision_id": pending["decision_id"],
         "principal": pending["principal"],
@@ -125,7 +127,8 @@ def write_grant(pending: dict, secret: bytes) -> dict:
     }
     grant["sig"] = _sign(grant, secret)
     _write(GRANT, grant)
-    PENDING.unlink(missing_ok=True)
+    # pending.json stays: the agent compares the grant against it on resume and
+    # removes both once the grant is consumed.
     return grant
 
 
@@ -145,8 +148,11 @@ def take_grant(principal: str, action: str, resource: str, secret: bytes) -> tup
 
     Returns `(grant, "ok")` or `(None, why)`. The file is removed as soon as it is
     read, before any verification, so a crash mid-way never leaves a reusable
-    grant; a verified grant's nonce is recorded so the same document cannot be
-    presented again.
+    grant. A verified grant's nonce is recorded so the same document cannot be
+    presented again, and the grant must name the request this agent currently
+    has outstanding (`pending.json`, which the agent itself wrote) — so a grant
+    approved for an earlier request cannot be planted for a later one. On
+    success the pending file is removed too.
     """
     grant = _read(GRANT)
     GRANT.unlink(missing_ok=True)
@@ -164,6 +170,12 @@ def take_grant(principal: str, action: str, resource: str, secret: bytes) -> tup
     if grant["nonce"] in used:
         return None, "grant already used (replay)"
     _write(CONSUMED, {"nonces": [*used, grant["nonce"]]})
+    pending = read_pending()
+    if pending is None or (
+        pending.get("decision_id"), pending.get("principal"), pending.get("action"), pending.get("resource")
+    ) != (grant["pending_decision_id"], principal, action, resource):
+        return None, "grant does not match the outstanding pending request"
+    PENDING.unlink(missing_ok=True)
     return grant, "ok"
 
 

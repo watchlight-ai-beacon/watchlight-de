@@ -12,8 +12,11 @@
 // `sig` is HMAC-SHA256 over the grant's other fields under the approver's
 // secret. The secret is read from $APPROVER_SECRET by both processes and is
 // never written anywhere. The agent verifies the signature, the binding
-// (principal, action, resource) and the expiry, then records the grant's nonce
-// in consumed.json so the same grant cannot be presented twice.
+// (principal, action, resource) and the expiry, records the grant's nonce in
+// consumed.json so the same grant cannot be presented twice, and requires the
+// grant to name the request it currently has outstanding in pending.json (a file
+// the agent itself wrote), so a grant for an earlier request cannot be planted
+// for a later one.
 //
 // Why a grant and not the SDK's own approval token: the DE mints approval tokens
 // under a random secret generated when the process starts, and remembers used
@@ -104,8 +107,8 @@ function sign(grant, secret) {
   return createHmac("sha256", secret).update(payload).digest("hex");
 }
 
-/** Approve a pending request: sign a grant bound to exactly that request,
- *  write it, and remove the pending file. */
+/** Approve a pending request: sign a grant bound to exactly that request and
+ *  write it next to the (still outstanding) pending file. */
 export function writeGrant(pending, secret) {
   const grant = {
     pending_decision_id: pending.decision_id,
@@ -117,7 +120,8 @@ export function writeGrant(pending, secret) {
   };
   grant.sig = sign(grant, secret);
   write(GRANT, grant);
-  fs.rmSync(PENDING, { force: true });
+  // pending.json stays: the agent compares the grant against it on resume and
+  // removes both once the grant is consumed.
   return grant;
 }
 
@@ -132,8 +136,11 @@ export const plantGrant = (grant) => write(GRANT, grant);
  *
  *  Returns `{ grant, why: "ok" }` or `{ grant: null, why }`. The file is removed
  *  as soon as it is read, before any verification, so a crash mid-way never
- *  leaves a reusable grant; a verified grant's nonce is recorded so the same
- *  document cannot be presented again. */
+ *  leaves a reusable grant. A verified grant's nonce is recorded so the same
+ *  document cannot be presented again, and the grant must name the request this
+ *  agent currently has outstanding (pending.json, which the agent itself wrote)
+ *  — so a grant approved for an earlier request cannot be planted for a later
+ *  one. On success the pending file is removed too. */
 export function takeGrant(principal, action, resource, secret) {
   const grant = read(GRANT);
   fs.rmSync(GRANT, { force: true });
@@ -151,6 +158,12 @@ export function takeGrant(principal, action, resource, secret) {
   const used = read(CONSUMED)?.nonces ?? [];
   if (used.includes(grant.nonce)) return { grant: null, why: "grant already used (replay)" };
   write(CONSUMED, { nonces: [...used, grant.nonce] });
+  const pending = readPending();
+  if (pending === null || pending.decision_id !== grant.pending_decision_id
+      || pending.principal !== principal || pending.action !== action || pending.resource !== resource) {
+    return { grant: null, why: "grant does not match the outstanding pending request" };
+  }
+  fs.rmSync(PENDING, { force: true });
   return { grant, why: "ok" };
 }
 
