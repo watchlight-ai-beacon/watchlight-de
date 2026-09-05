@@ -307,8 +307,16 @@ It mirrors the Python package feature-for-feature:
   only an `Allow` carries them; `Deny` and `NeedsApproval` never do; an
   unreadable obligation fails closed (`AuthorizeError`). Needs engine >= 0.2.0.
   See the [allow-but-redact pattern](examples/patterns/allow-but-redact.md).
-- **Frameworks:** `governedHooks()` for the Claude Agent SDK; `governTool()` for
-  LangChain / LangGraph.js.
+- **Frameworks:** `governedHooks()` for the Claude Agent SDK; `governTool()` /
+  `governTools()` for LangChain / LangGraph.js. Each takes the same governance
+  terms as `govern.tool()` — `principal`, `agent`, `resource` (`resourceFor` on
+  the mapping forms), `context`, `onNeedsApproval`, `onResult` — so a policy that
+  reads Cedar `context.*` reaches the same verdict through an adapter as it does
+  through a hand-written governed tool, and the record names the person the call
+  was made for. Each is a fixed value or a function of the call. Pass none and
+  the defaults are unchanged: the agent is the subject, the resource is
+  `tool/<name>`, the context is empty. See the
+  [context-through-an-adapter pattern](examples/patterns/context-through-an-adapter.md).
 - **Data minimization:** `govern.sanitize(text, { resource, decisionId, principal?, known? })`
   — strip PII before an agent reads a document: structured detectors (email,
   phone, SSN, card, IBAN, IPv4, API key, labelled passport / date of birth), an
@@ -365,6 +373,26 @@ Going to production is one environment variable, not a rewrite — set
 `WATCHLIGHT_APDP_URL` and the identical code authorizes against a running policy
 service. Runnable examples for all three frameworks are in
 [`examples/`](examples/).
+
+### What a plugin can and cannot express
+
+`governed_plugin()` is constructor wiring: it builds the published plugin and
+hands it the in-process engine. The governance terms of a single call belong to
+the plugin's own run handle, not to the factory.
+
+- **Cedar `context` and the resource: yes, per call.**
+  `await handle.authorize_action("read_ticket", "tool/read_ticket", context={"caller": caller, "owner": owner})`
+  — a policy that reads `context.*` is satisfiable this way. (`tenant_id` is the
+  plugin's own and wins over a value passed here.)
+- **An acting subject: no.** A plugin attributes every decision to the agent it
+  runs — `Agent::"<agent>"` — and there is no per-call principal. For a policy
+  that must name the person or tenant a call is made **for**, govern that call
+  with `Watchlight.tool(..., principal=...)` (or `authorize(principal=...)`),
+  alongside the plugin or instead of it.
+
+`governed_plugin()` refuses `principal=`, `context=` and `resource=` by name
+rather than forwarding them into a constructor that would drop them — a term you
+believe is reaching the decision, and is not, is a policy that never matches.
 
 ---
 

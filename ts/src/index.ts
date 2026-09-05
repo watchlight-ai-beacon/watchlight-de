@@ -73,10 +73,16 @@ export { CounterSourceError } from "./counters";
 export type { Counters, CountersOptions, CounterOutcome, CounterWindow } from "./counters";
 export type { CounterQuery, CounterSource, CounterSourceKind } from "./counters";
 export { governedHooks, DEFAULT_ON_RESULT_TIMEOUT_MS } from "./claude-agent";
-export type { GovernedHooksOptions, GovernedHooksResult } from "./claude-agent";
+export type {
+  GovernedHooksOptions,
+  GovernedHooksResult,
+  HookCall,
+  HookBinding,
+} from "./claude-agent";
 export { governTool, governTools } from "./langchain";
 export type {
   LangChainToolLike,
+  InvokeArgs,
   GovernToolOptions,
   GovernToolsOptions,
 } from "./langchain";
@@ -192,6 +198,21 @@ export type OnResult<R> = (
   result: R,
   info: EgressInfo
 ) => R | void | null | Promise<R | void | null>;
+
+/** What a human-in-the-loop hook learns about the call it is being asked to
+ *  confirm. `decisionId` is the id of the `NeedsApproval` decision on record. */
+export interface ApprovalRequest {
+  intent: string;
+  resource: string;
+  principal: string;
+  decisionId?: string;
+  reason: string;
+}
+
+/** A human-in-the-loop hook. Called when the decision is `NeedsApproval`;
+ *  return `true` to proceed (which records an approval), `false` (or nothing) to
+ *  hold — the call is refused and the body never runs. */
+export type OnNeedsApproval = (info: ApprovalRequest) => boolean | Promise<boolean>;
 
 /** Thrown (internally) when an egress hook outruns its deadline; the payload is
  *  withheld. Carries no payload-derived data. */
@@ -978,13 +999,7 @@ export class Watchlight {
       /** Human-in-the-loop hook. Called when the decision is `NeedsApproval`;
        *  return `true` to proceed (records an approval), `false`/absent to hold
        *  (throws `NeedsApproval`). */
-      onNeedsApproval?: (info: {
-        intent: string;
-        resource: string;
-        principal: string;
-        decisionId?: string;
-        reason: string;
-      }) => boolean | Promise<boolean>;
+      onNeedsApproval?: OnNeedsApproval;
       /** Egress hook. Awaited AFTER the body returns and BEFORE the result is
        *  handed back, with `{ intent, resource, principal, decisionId,
        *  obligations? }` — the `decisionId` and obligations of the decision
@@ -1042,9 +1057,10 @@ export class Watchlight {
 
   /**
    * Authorize a raw `(intent, tool)` pair, audit the decision, and return it.
-   * Fail-closed. Used by framework adapters (e.g. the Claude Agent SDK hooks)
-   * that gate tool calls themselves rather than wrapping the function — the
-   * decision is identical to {@link tool}, just without running a body.
+   * Fail-closed. For a gate that decides for itself rather than wrapping a
+   * function — the decision is {@link tool}'s, without running a body, under
+   * this governor's agent and `tool/<name>`. To name a subject, supply a
+   * `context`, or choose the resource, use {@link authorize}.
    */
   async check(
     intent: string,

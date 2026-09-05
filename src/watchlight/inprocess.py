@@ -65,6 +65,44 @@ def in_process_backend(
     return InProcessClient(policies, audit_path=audit_path)
 
 
+# Terms a ``governed_plugin`` factory cannot take, and what to do instead. A
+# framework plugin is constructed once and then governs many calls, so a term
+# that belongs to ONE call is not a constructor argument — and the acting
+# subject is not expressible through a plugin at all. Forwarded blindly, each
+# of these would surface as a TypeError naming a plugin constructor the caller
+# never wrote; named here, the message says where the term actually goes.
+_PER_CALL_TERMS: Dict[str, str] = {
+    "principal": (
+        "a framework plugin attributes every decision to the agent it runs "
+        '(`Agent::"<agent>"`) and takes no acting subject, at construction or '
+        "per call. To name the subject a call is made FOR, govern that call "
+        "with `watchlight.Watchlight.tool(..., principal=...)` or "
+        "`authorize(principal=...)`."
+    ),
+    "context": (
+        "Cedar `context` is a per-call term: pass it on the run handle — "
+        "`await handle.authorize_action(action, resource, context={...})` — "
+        "and the policy reads it as `context.*`."
+    ),
+    "resource": (
+        "the resource is a per-call term: pass it on the run handle — "
+        "`await handle.authorize_action(action, resource)`."
+    ),
+}
+
+
+def _reject_per_call_terms(plugin_kwargs: Dict[str, Any]) -> None:
+    """Refuse a governance term a plugin constructor cannot carry.
+
+    Fail loudly and by name rather than forward it: a term the caller believes
+    is reaching the decision, and is not, is a policy that silently never
+    matches.
+    """
+    for term, guidance in _PER_CALL_TERMS.items():
+        if term in plugin_kwargs:
+            raise TypeError(f"governed_plugin() does not take `{term}` — {guidance}")
+
+
 def _select_backend_kwargs(
     policies: Policies,
     audit_path: Optional[str],
@@ -75,7 +113,12 @@ def _select_backend_kwargs(
 
     One environment variable flips dev↔prod with no code change — the shared
     logic behind every ``watchlight.<framework>.governed_plugin`` helper.
+
+    Governance terms that belong to a single call — ``principal``, ``context``,
+    ``resource`` — are refused here rather than forwarded into a constructor
+    that has no place for them (see :data:`_PER_CALL_TERMS`).
     """
+    _reject_per_call_terms(plugin_kwargs)
     apdp_url = os.getenv("WATCHLIGHT_APDP_URL")
     if apdp_url:
         # Production: the plugin builds its own networked ApdpClient (which

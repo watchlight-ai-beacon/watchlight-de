@@ -10,10 +10,18 @@
 //   for await (const msg of query({ prompt, options: { hooks } })) { … }
 //
 // The returned `hooks` install a PreToolUse gate: before the SDK runs any tool,
-// the in-process engine authorizes (agent, intent, tool/<name>). ALLOW lets the
+// the in-process engine authorizes (principal, intent, resource). ALLOW lets the
 // call proceed; anything else returns a `deny` permission decision and the tool
 // never executes — denied before it runs. Fail-closed: a governance error also
 // denies. Every decision lands in the value-free `.watchlight/audit.jsonl`.
+//
+// The gate takes the same terms a hand-written governed tool does: `principal`,
+// `agent`, `resourceFor`, `context` and `onNeedsApproval` alongside `intentFor`,
+// so a policy that reads Cedar `context.*` reaches the same verdict here as it
+// does through `govern.tool()`. Each is a fixed value or a function of the call
+// the SDK is about to make (`{ toolName, toolInput }`), because a subject is
+// usually per-invocation. Supply none and nothing changes: the subject is the
+// agent, the resource is `tool/<name>`, the context is empty.
 //
 // With `onResult`, a PostToolUse hook is installed as well: after the tool runs
 // and before the model sees its output, the hook inspects the result (sanitize,
@@ -23,7 +31,15 @@
 // timeout: SDK hooks run in parallel on the original output, so a hook that
 // merely outran the SDK timeout would let the raw output through. Ours withholds.
 
-import { Watchlight, govern, DENY_REASON, type OnResult, type EgressInfo } from "./index";
+import {
+  Watchlight,
+  govern,
+  DENY_REASON,
+  type AuthorizeResult,
+  type OnNeedsApproval,
+  type OnResult,
+  type EgressInfo,
+} from "./index";
 import type {
   HooksOption,
   HookCallback,
@@ -48,6 +64,24 @@ export type {
  *  derived from it so the deadline sits at 80% of the SDK's. */
 export const DEFAULT_ON_RESULT_TIMEOUT_MS = 8_000;
 
+/** What the SDK is about to run — the argument every per-call binding on
+ *  {@link governedHooks} receives, so a subject, a resource or a context
+ *  attribute can be derived from the tool and the arguments it was called
+ *  with. */
+export interface HookCall {
+  /** The Claude tool the SDK is about to run (`"WebSearch"`, `"Bash"`, …). */
+  toolName: string;
+  /** The arguments the model supplied for it. */
+  toolInput: Record<string, unknown>;
+}
+
+/** A per-call binding on the hooks adapter: a fixed value, or a function of the
+ *  call the SDK is about to make. */
+export type HookBinding<T> = T | ((call: HookCall) => T);
+
+const resolveHookBinding = <T>(b: HookBinding<T> | undefined, call: HookCall): T | undefined =>
+  typeof b === "function" ? (b as (c: HookCall) => T)(call) : b;
+
 export interface GovernedHooksOptions {
   /** The governor to authorize against. Defaults to the shared `govern`. */
   governor?: Watchlight;
@@ -55,6 +89,29 @@ export interface GovernedHooksOptions {
    *  (the intent is the tool name). Provide this to bind semantic intents,
    *  e.g. `(t) => ({ WebSearch: "research", Bash: "execute" }[t] ?? t)`. */
   intentFor?: (toolName: string) => string;
+  /** Acting principal — a value, or `(call) => value` so the subject can come
+   *  from the call the SDK is about to make. Build it with `principals`
+   *  (`principals.user(sub)`). With none, the subject is the governor's agent,
+   *  recorded as `Agent::"<name>"` — the adapter's default derivation. */
+  principal?: HookBinding<string>;
+  /** Agent name for these hooks, overriding the governor's — the same rename
+   *  `as()` returns. */
+  agent?: string;
+  /** Map a call to its Cedar resource — return `undefined` to keep the default,
+   *  `tool/<name>`. A mapping rather than a single value: one resource for
+   *  every tool the agent has would collapse them onto one anchor and silently
+   *  re-point every policy written against them. */
+  resourceFor?: (call: HookCall) => string | undefined;
+  /** Attributes for Cedar `context.*` — an object, or `(call) => object`. A
+   *  policy whose verdict depends on `context` needs this; without it the
+   *  context is empty and such a policy denies. */
+  context?: HookBinding<Record<string, unknown>>;
+  /** Human-in-the-loop hook. Called when the decision is `NeedsApproval`;
+   *  return `true` to confirm — the call is re-authorized with a single-use
+   *  approval and, on ALLOW, permitted. Return `false`, or leave the hook out,
+   *  and the call is denied — the default for a `NeedsApproval` here.
+   *  Fail-closed: a throwing hook denies. */
+  onNeedsApproval?: OnNeedsApproval;
   /** Egress hook (PostToolUse). Awaited over the tool's raw response AFTER the
    *  tool ran and BEFORE the model sees it, with `{ intent, resource, principal,
    *  decisionId }` — the same `decisionId` the PreToolUse gate recorded for this
@@ -107,7 +164,10 @@ const safeErrorName = (e: unknown): string => {
  * governance error becomes a `deny`.
  */
 export function governedHooks(options: GovernedHooksOptions = {}): GovernedHooksResult {
-  const governor = options.governor ?? govern;
+  const base = options.governor ?? govern;
+  // A per-adapter `agent` is exactly a rename of the governor (same engine,
+  // same policies, same trail) with a different name on it.
+  const governor = options.agent ? base.as(options.agent) : base;
   const intentFor = options.intentFor ?? ((t: string) => t);
   const onResult = options.onResult;
   const timeoutMs = options.onResultTimeoutMs ?? DEFAULT_ON_RESULT_TIMEOUT_MS;
@@ -122,12 +182,57 @@ export function governedHooks(options: GovernedHooksOptions = {}): GovernedHooks
   const pendingKey = (ev: { tool_use_id?: string }, toolUseID?: string): string | undefined =>
     ev.tool_use_id ?? toolUseID;
 
+  /** Everything the engine needs for one call, resolved from the bindings.
+   *  Defaults: the governor's agent as the subject, `tool/<name>` as the
+   *  resource, an empty context. */
+  const callTerms = (toolName: string, toolInput: unknown) => {
+    const call: HookCall = {
+      toolName,
+      toolInput: (toolInput ?? {}) as Record<string, unknown>,
+    };
+    return {
+      intent: intentFor(toolName),
+      principal: governor._principal(resolveHookBinding(options.principal, call)),
+      resource: options.resourceFor?.(call) ?? `tool/${toolName}`,
+      context: resolveHookBinding(options.context, call) ?? {},
+    };
+  };
+
   const preToolUse: HookCallback = async (input, toolUseID): Promise<HookOutput> => {
     const ev = input as PreToolUseHookInput;
     const toolName = ev.tool_name ?? "unknown";
     try {
-      const intent = intentFor(toolName);
-      const { allowed, reason, decisionId, obligations, principal } = await governor.check(intent, toolName);
+      const { intent, principal, resource, context } = callTerms(toolName, ev.tool_input);
+      let d: AuthorizeResult = await governor.authorize({
+        principal,
+        action: intent,
+        resource,
+        context,
+      });
+      // A `NeedsApproval` is a hold, not a verdict: with a hook, a human can
+      // confirm it and the call is re-authorized under a single-use approval.
+      // Without a hook it is a denial.
+      if (d.needsApproval && options.onNeedsApproval) {
+        const confirmed = await options.onNeedsApproval({
+          intent,
+          resource,
+          principal,
+          decisionId: d.decisionId,
+          reason: d.reason,
+        });
+        if (confirmed) {
+          const approval = governor.mintApproval({ principal, action: intent, resource });
+          const retry = await governor.authorize({
+            principal,
+            action: intent,
+            resource,
+            context,
+            approval,
+          });
+          if (retry.allowed) d = retry;
+        }
+      }
+      const { allowed, reason, decisionId, obligations } = d;
       const key = pendingKey(ev, toolUseID);
       if (allowed && onResult && key !== undefined) {
         if (pending.size >= PENDING_CAP) {
@@ -137,7 +242,7 @@ export function governedHooks(options: GovernedHooksOptions = {}): GovernedHooks
         // The PostToolUse hook receives the decision's id AND its obligations.
         // `principal` is the subject the decision was recorded against, so the
         // egress record joins the decision record on both id and subject.
-        const info: EgressInfo = { intent, resource: `tool/${toolName}`, principal, decisionId };
+        const info: EgressInfo = { intent, resource, principal, decisionId };
         if (obligations) info.obligations = obligations;
         pending.set(key, info);
       }
@@ -176,13 +281,15 @@ export function governedHooks(options: GovernedHooksOptions = {}): GovernedHooks
       const key = pendingKey(ev, toolUseID);
       const info = key !== undefined ? pending.get(key) : undefined;
       if (key !== undefined) pending.delete(key);
-      const egress: EgressInfo = info ?? {
+      let egress = info;
+      if (!egress) {
         // No PreToolUse decision on record for this call: the hook still runs,
-        // and the egress record is written honestly without a decision_id.
-        intent: intentFor(toolName),
-        resource: `tool/${toolName}`,
-        principal: governor._principal(),
-      };
+        // and the egress record is written honestly without a decision_id. The
+        // terms are resolved the way the gate resolves them, so the record
+        // names the subject and resource that decision would have carried.
+        const { intent, principal, resource } = callTerms(toolName, ev.tool_input);
+        egress = { intent, principal, resource };
+      }
       const { value, replaced } = await governor._applyOnResult(ev.tool_response, onResult, egress, {
         timeoutMs,
       });
