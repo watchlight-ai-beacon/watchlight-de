@@ -194,6 +194,47 @@ for await (const msg of query({ prompt, options: { hooks } })) {
 The hook is fail-closed and never throws back to the SDK — a governance error
 denies the call. Every decision is audited.
 
+### The same terms as `govern.tool()`
+
+The gate takes the governance terms a hand-written governed tool takes, so a
+policy that reads Cedar `context.*` reaches the same verdict here as it does
+there — and the record can name the person the call was made for, not only the
+agent:
+
+| option | what it sets | default |
+|---|---|---|
+| `intentFor(toolName)` | the intent | the tool name |
+| `principal` | the acting subject | the agent, `Agent::"<name>"` |
+| `agent` | the agent name on the record and in `context.actor` | the governor's |
+| `resourceFor(call)` | the Cedar resource | `tool/<name>` |
+| `context` | attributes for `context.*` | none (a rule that reads them denies) |
+| `onNeedsApproval(info)` | confirm a `require_approval` permit and proceed | deny |
+| `onResult`, `onResultTimeoutMs` | egress hook over the tool's output | none |
+
+`principal` and `context` are each a fixed value **or** a function of the call
+the SDK is about to make — `({ toolName, toolInput }) => value` — because a
+subject is usually per-invocation rather than fixed at wrap time.
+
+```ts
+const { hooks } = governedHooks({
+  intentFor: (t) => TOOL_INTENTS[t] ?? t,
+  principal: ({ toolInput }) => `User::"${toolInput.caller}"`,
+  context: ({ toolInput }) => ({ caller: toolInput.caller, owner: toolInput.owner }),
+});
+```
+```
+permit(principal, action == Action::"read_ticket", resource)
+when { context has owner && context has caller && context.caller == context.owner };
+```
+
+`resourceFor` is a mapping, not a single value: one resource shared by every tool
+the agent has would collapse them onto one anchor and silently re-point every
+policy written against them. Return `undefined` to keep a tool's `tool/<name>`.
+
+Pass none of these and nothing changes: the subject is the agent, the resource is
+`tool/<name>`, the context is empty. Worked example:
+[`examples/patterns/context-through-an-adapter.md`](https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/examples/patterns/context-through-an-adapter.md).
+
 ## LangChain / LangGraph.js
 
 Govern any LangChain `StructuredTool` (which is what LangGraph.js tools are) — the
@@ -220,6 +261,46 @@ const search = governTool(
 `governTool(tool, { intent })` returns a governed copy of the tool (the original
 isn't mutated); `governTools(tools, { intentFor })` maps an array. Intent defaults to
 the tool's name. Fail-closed. `@langchain/core` is a peer dependency.
+
+### The same terms as `govern.tool()`
+
+`governTool` is a thin shim over `govern.tool()` and takes the same terms, so a
+context-dependent policy is decidable here and a decision can name its subject:
+
+| option | what it sets | default |
+|---|---|---|
+| `intent` | the intent | the tool's `name` |
+| `principal` | the acting subject | the agent, `Agent::"<name>"` |
+| `agent` | the agent name on the record and in `context.actor` | the governor's |
+| `resource` | the Cedar resource | `tool/<name>` |
+| `context` | attributes for `context.*` | none (a rule that reads them denies) |
+| `onNeedsApproval(info)` | confirm a `require_approval` permit and proceed | throw `NeedsApproval` |
+| `onResult` | egress hook over the tool's result | none |
+
+`principal`, `resource` and `context` are each a fixed value **or** a function of
+the tool's own `invoke(input, config)` arguments:
+
+```ts
+const tickets = governTool(ticketTool, {
+  intent: "read_ticket",
+  principal: ({ caller }) => `User::"${caller}"`,
+  context: ({ caller, owner }) => ({ caller, owner }),
+});
+```
+
+On `governTools`, `intentFor(name)` and `resourceFor(name)` map per tool —
+`resourceFor` returns a value, or a `(input, config) => value` binding, or
+`undefined` to keep that tool's `tool/<name>`. A single shared `resource` is not
+offered: it would collapse every tool in the array onto one anchor. `principal`,
+`agent`, `context`, `onNeedsApproval` and `onResult` apply to every tool in the
+array — use the binding form where the subject varies per call.
+
+Pass none of these and nothing changes: the subject is the agent, the resource is
+`tool/<name>`, the context is empty. One behaviour differs once a policy asks for
+a human: a `require_approval` permit raises `NeedsApproval` — which carries the
+decision id — rather than a flat `Denied`, and `onNeedsApproval` can confirm and
+proceed. Worked example:
+[`examples/patterns/context-through-an-adapter.md`](https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/examples/patterns/context-through-an-adapter.md).
 
 ## Gate a consequential action — runtime context, per-user, human-in-the-loop
 

@@ -31,6 +31,26 @@ def governed_plugin(
 ) -> Any:
     """Return a governed ``WatchlightClaudeAgentSDKPlugin``.
 
+    **What this path can express.** The intent (the ``action``), the resource
+    and Cedar ``context`` — each a per-call term, supplied on the run handle::
+
+        async with await plugin.start_run("research-agent") as handle:
+            ok = await handle.authorize_action(
+                "read", "tool/web_search",
+                context={"caller": user_id, "owner": record_owner},
+            )
+
+    A policy whose verdict depends on ``context.*`` is therefore satisfiable
+    through this plugin. (``tenant_id`` is the plugin's own and always wins over
+    a value passed here.)
+
+    **What it cannot express: an acting subject.** Every decision a framework
+    plugin makes is attributed to the agent it runs — ``Agent::"<agent>"`` —
+    and there is no per-call principal, at construction or on the handle. For a
+    policy that must name the person or tenant a call is made FOR, govern that
+    call with :meth:`watchlight.Watchlight.tool` (which takes ``principal``,
+    ``resource`` and ``context``) instead of, or alongside, this plugin.
+
     :param policies: local Cedar policies — a path to a JSON policy file or an
         in-memory list of ``{"name", "code"}`` objects. ``None`` → fail-closed.
     :param audit_path: local JSONL lineage sink (value-free). ``None`` disables.
