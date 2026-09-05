@@ -14,7 +14,7 @@ import pytest
 
 pytest.importorskip("watchlight_engine")
 
-from watchlight import ASYNC_CONTEXT_MESSAGE, Denied, NeedsApproval, CounterSourceError, Watchlight
+from watchlight import ASYNC_CONTEXT_MESSAGE, Denied, NeedsApproval, CounterSourceError, UnresolvedContextError, Watchlight
 
 # The quotas pattern's policy, verbatim.
 UNDER_QUOTA = 'permit(principal, action == Action::"read", resource) when { context.reads_this_hour < 100 };'
@@ -306,3 +306,59 @@ def test_a_synchronous_binding_over_an_async_source_still_fails_closed(tmp_path)
     with pytest.raises(CounterSourceError, match="counters_async"):
         fetch_doc({})
     assert ran == []
+
+
+# ── authorize(): an unresolved awaitable is refused, not evaluated ──────────
+# The async binding above is a tool() feature. authorize() is synchronous and
+# has no moment in which to await one, so handing it a coroutine must refuse
+# rather than evaluate the policy against a context the caller never produced.
+
+
+def test_authorize_refuses_an_unresolved_awaitable_context(tmp_path):
+    """Before this guard the coroutine reached ``dict(context)``, which raised
+    inside the decision path — so the call was audited as a Deny and re-raised
+    as ``AuthorizeRequestError``, a message about principal and resource entity
+    types that names nothing the caller got wrong."""
+    records = []
+    g = Watchlight(
+        agent="actx-agent",
+        audit_dir=str(tmp_path / ".watchlight"),
+        audit_file=False,
+        audit_sink=records.append,
+    )
+    g.allow(UNDER_QUOTA, "reads-within-hourly-quota")
+
+    async def quota():
+        return {"reads_this_hour": 0}
+
+    pending = quota()
+    try:
+        with pytest.raises(UnresolvedContextError) as caught:
+            g.authorize(action="read", resource="doc", principal=USER, context=pending)
+    finally:
+        # The SDK does not close what the caller made; the test does.
+        pending.close()
+
+    # It names the fix, not the engine's entity types.
+    assert "counters_async" in str(caught.value)
+    # And it is a refusal, not a decision: nothing was written to the trail.
+    assert records == []
+
+
+def test_authorize_still_takes_a_resolved_mapping(tmp_path):
+    """The guard must not touch the ordinary path."""
+    records = []
+    g = Watchlight(
+        agent="actx-agent",
+        audit_dir=str(tmp_path / ".watchlight"),
+        audit_file=False,
+        audit_sink=records.append,
+    )
+    g.allow(UNDER_QUOTA, "reads-within-hourly-quota")
+
+    decision = g.authorize(
+        action="read", resource="doc", principal=USER,
+        context={"reads_this_hour": 0},
+    )
+    assert decision["decision"] == "Allow"
+    assert len(records) == 1

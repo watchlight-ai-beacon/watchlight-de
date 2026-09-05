@@ -12,7 +12,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 
 const require = createRequire(import.meta.url);
-const { Watchlight, Denied, NeedsApproval, CounterSourceError } = require("../dist/index.js");
+const { Watchlight, Denied, NeedsApproval, CounterSourceError, UnresolvedContextError } =
+  require("../dist/index.js");
 
 let pass = 0, fail = 0;
 const ok = (name, cond, detail = "") => {
@@ -206,6 +207,41 @@ async function main() {
     ok("a synchronous binding over an async source still fails closed by name",
       e !== null && /countersAsync/.test(e.message));
     ok("…and that body never ran either", bodyRuns === 1);
+  }
+
+  // ── authorize(): an unresolved promise is refused, not evaluated ─────────
+  // The async binding is a tool() feature. `authorize` takes a resolved record,
+  // and `{...promise}` spreads to nothing — so before this guard a promise
+  // handed to `authorize` produced a plain Deny with the quota key missing,
+  // indistinguishable from a policy refusing the call. TypeScript rejects it at
+  // compile time; plain JavaScript callers had no such warning.
+  {
+    const records = [];
+    const g = new Watchlight({
+      agent: "actx-agent", auditFile: false, auditSink: (r) => records.push(r),
+    });
+    g.allow(UNDER_QUOTA, "reads-within-hourly-quota");
+
+    const pending = (async () => ({ reads_this_hour: 0 }))();
+    let thrown = null;
+    try {
+      await g.authorize({ action: "read", resource: "doc", principal: USER, context: pending });
+    } catch (e) { thrown = e; }
+    await pending;   // the SDK does not dispose of what the caller made
+
+    ok("authorize refuses an unresolved promise context",
+      thrown instanceof UnresolvedContextError, String(thrown && thrown.name));
+    ok("…naming the fix rather than the engine's entity types",
+      thrown !== null && /countersAsync/.test(thrown.message));
+    ok("…and writes no decision record, because it is not a decision",
+      records.length === 0, `records=${records.length}`);
+
+    const d = await g.authorize({
+      action: "read", resource: "doc", principal: USER,
+      context: { reads_this_hour: 0 },
+    });
+    ok("a resolved record still decides normally", d.decision === "Allow", d.decision);
+    ok("…and that one IS on the trail", records.length === 1, `records=${records.length}`);
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);

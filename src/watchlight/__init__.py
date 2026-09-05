@@ -86,6 +86,8 @@ __all__ = [
     "MAX_ACTOR_CHAIN",
     "RESERVED_CONTEXT_MESSAGE",
     "ReservedContextError",
+    "UNRESOLVED_CONTEXT_MESSAGE",
+    "UnresolvedContextError",
     "ASYNC_CONTEXT_MESSAGE",
     "AuthorizeRequestError",
     "REQUEST_INVALID_MESSAGE",
@@ -205,6 +207,28 @@ RESERVED_CONTEXT_MESSAGE = (
 )
 
 
+#: Fixed, value-free message of :class:`UnresolvedContextError`.
+UNRESOLVED_CONTEXT_MESSAGE = (
+    "`context` is an unresolved awaitable. Resolve it before the call — "
+    "`context=await govern.counters_async(...)` — since authorize() is "
+    "synchronous. An async `context` binding is supported on a governed tool "
+    "with an `async def` body, where the SDK awaits it before the decision"
+)
+
+
+class UnresolvedContextError(TypeError):
+    """Raised when ``context`` is an awaitable that was never resolved.
+
+    Spreading or coercing one yields a mapping without the caller's attributes,
+    so the policy would be evaluated against a context the caller never
+    produced — which reads as an ordinary Deny. This refuses instead, before
+    anything reaches the engine and without writing a decision record.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(UNRESOLVED_CONTEXT_MESSAGE)
+
+
 class ReservedContextError(ValueError):
     """Raised when a caller's ``context`` sets a reserved actor key to a value
     that differs from the governor's own — the acting agent, or the delegation
@@ -231,6 +255,11 @@ def _same_chain(value: Any, chain: Sequence[str]) -> bool:
 
 def _with_actor_context(context: Optional[dict], actor: str, chain: Sequence[str]) -> dict:
     """The caller's context with the reserved actor keys stamped on it."""
+    if inspect.isawaitable(context):
+        # Refused before the engine, and NOT closed: the caller made this
+        # awaitable, so disposing of it is not the SDK's to do. The tool()
+        # binding path closes the one it created itself.
+        raise UnresolvedContextError()
     out = dict(context or {})
     # The SDK's values always win — and a caller who disagreed is told, never
     # silently overruled. The chain is derived from the scope the call was made
@@ -1800,7 +1829,7 @@ class Watchlight:
                 action=action, principal=principal, resource=resource, context=context,
                 approval=approval,
             )
-        except (ReservedContextError, AuthorizeError):
+        except (ReservedContextError, UnresolvedContextError, AuthorizeError):
             # The caller's own context, refused before anything reached the
             # engine — raised as-is.
             raise

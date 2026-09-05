@@ -471,6 +471,13 @@ A synchronous binding reads the local file or a synchronous source; an async
 source needs the async binding — calling the synchronous `counters()` on one
 raises, naming `counters_async`, rather than answering from the file.
 
+The async form is a property of the tool binding, not of `authorize`, which
+takes a context you have already resolved. Handing `authorize` an unresolved
+awaitable raises `UnresolvedContextError` before anything reaches the engine,
+and records no decision — the attributes it was going to carry are not there
+yet, and a policy evaluated without them denies for a reason that has nothing
+to do with the caller.
+
 The [quotas pattern](examples/patterns/quotas.md) has the policy, the tool
 binding, and the exact counting rules.
 
