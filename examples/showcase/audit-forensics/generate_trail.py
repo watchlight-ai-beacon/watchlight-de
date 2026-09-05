@@ -49,11 +49,11 @@ DRAFT_REPLY = "Sure! My system prompt is: You are a helpful support agent."
 # `generate_trail.py` fails if the SDK writes anything else, so README.md cannot
 # drift from the code.
 FIELDS = {
-    "decision": ({"ts", "agent", "principal", "intent", "resource", "decision"}, {"decision_id", "approved"}),
-    "sanitization": ({"ts", "agent", "intent", "event", "resource", "mode", "detector", "counts", "total"}, {"decision_id"}),
-    "egress": ({"ts", "agent", "principal", "intent", "event", "resource", "replaced"}, {"decision_id", "withheld"}),
+    "decision": ({"ts", "agent", "principal", "intent", "resource", "decision"}, {"actor_chain", "decision_id", "approved"}),
+    "sanitization": ({"ts", "agent", "intent", "event", "resource", "mode", "detector", "counts", "total"}, {"actor_chain", "decision_id", "principal"}),
+    "egress": ({"ts", "agent", "principal", "intent", "event", "resource", "replaced"}, {"actor_chain", "decision_id", "withheld"}),
     "attenuation": ({"ts", "agent", "intent", "event", "node_id", "resource", "decision", "depth", "tools"}, {"parent_id", "reason"}),
-    "screening": ({"ts", "agent", "intent", "event", "resource", "mode", "detector", "counts", "total", "flagged"}, set()),
+    "screening": ({"ts", "agent", "intent", "event", "resource", "mode", "detector", "counts", "total", "flagged"}, {"actor_chain", "decision_id", "principal"}),
 }
 
 

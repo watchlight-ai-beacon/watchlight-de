@@ -104,6 +104,13 @@ values.
 addition to the local trail file. Use it to ship records to your own logging.
 → [audit sink pattern](../examples/patterns/audit-sink.md)
 
+**Audit record kinds** — the five shapes a record takes: `decision`,
+`sanitization`, `screening`, `egress` and `attenuation`, discriminated by the
+`event` field — absent on a decision, a literal on every other kind. Exported as
+a typed union (TypeScript) and as `TypedDict`s (Python) so a sink reads a kind's
+fields by name.
+→ [record kinds](../examples/showcase/audit-forensics/README.md#record-kinds)
+
 **Audit trail** — the local `.watchlight/audit.jsonl` file every governor
 appends to, and the stream every renamed agent and delegate writes into.
 → [audit forensics](../examples/showcase/audit-forensics/README.md)

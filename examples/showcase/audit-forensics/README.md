@@ -129,6 +129,22 @@ The exact field names the SDK writes, taken from the writers in
 both generators. A **decision** record has no `event` field; every other kind
 names itself in `event`. Both lanes write the same names.
 
+This table is also a **type**. TypeScript exports the five kinds as a
+discriminated union on `event` — `AuditRecord = DecisionRecord |
+SanitizationRecord | ScreeningRecord | EgressRecord | AttenuationRecord`, with
+the common fields on `AuditRecordBase` — and Python exports the same five as
+`TypedDict`s under the same names. A sink annotated with them reads a kind's
+fields by name, and a field renamed or removed breaks that sink where its author
+wants to hear about it. To opt out, annotate `UnknownAuditRecord` (TypeScript)
+or `dict` (Python) and take the record as the untyped bag it has always been.
+
+Two fields ride along on every kind but `attenuation` and are easy to miss:
+
+| field | type | notes |
+|---|---|---|
+| `actor_chain` | string[], optional | the ordered delegation chain, root first. Written ONLY through a `delegate()`d governor, whose chain is longer than one name; a call outside any delegation carries none |
+| `principal` | string | the subject. Required on `decision` and `egress`; carried by `sanitization` and `screening` too — a governor resolves one for every call, so in practice both name their subject even with no decision to join to |
+
 ### `decision` — written by `authorize()` (and so by every governed tool call)
 
 | field | type | notes |
@@ -139,6 +155,7 @@ names itself in `event`. Both lanes write the same names.
 | `intent` | string | the action authorized |
 | `resource` | string | the resource; `tool/<name>` for a governed tool with no `resource` binding |
 | `decision` | string | `Allow`, `Deny`, or `NeedsApproval` |
+| `actor_chain` | string[], optional | the delegation chain — see above |
 | `decision_id` | string, optional | the engine's per-decision correlation id — the join key; present on every record the in-process engine produces |
 | `approved` | `true`, optional | present only when a valid approval token downgraded a `NeedsApproval` to `Allow` |
 
@@ -159,9 +176,9 @@ verdict only.
 | `detector` | string | detector version, e.g. `de-rules-2` |
 | `counts` | object | redactions per PII type, e.g. `{"SSN": 1, "KNOWN": 1}` |
 | `total` | number | total redactions |
+| `actor_chain` | string[], optional | the delegation chain — see above |
 | `decision_id` | string, optional | present only when the caller passed the read's `decision_id` / `decisionId` to `sanitize` — that is what joins it to the decision |
-
-No `principal`: the principal comes from the joined decision.
+| `principal` | string, optional | whom the text was redacted for. A governor resolves one for every call — the caller's, or the typed `Agent::"<name>"` — so a `sanitize()` through a governor always carries it; the field is optional because the writer emits it only when the report carries one |
 
 ### `egress` — written after a governed tool's `on_result` / `onResult` hook
 
@@ -170,6 +187,7 @@ No `principal`: the principal comes from the joined decision.
 | `ts`, `agent`, `principal`, `intent`, `resource` | | those of the call whose result was inspected |
 | `event` | `"egress"` | |
 | `replaced` | boolean | `true` when the hook returned a value that replaced the payload |
+| `actor_chain` | string[], optional | the delegation chain — see above |
 | `decision_id` | string, optional | the id of the decision that let the body run — present for `govern.tool`; on a framework adapter without a `tool_use_id` there is none |
 | `withheld` | `true`, optional | the hook threw, or outran its deadline — the payload was never released; `replaced` is `false` |
 
@@ -192,6 +210,9 @@ the body never ran.
 | `parent_id` | string, optional | absent on the root |
 | `reason` | string, optional | present on a `Deny`: the violated dimension, or the depth-ceiling notice |
 
+The one kind with no `principal` and no `actor_chain`: a scope names capabilities,
+not a subject.
+
 Chains are `parent_id → node_id`; what a child dropped is
 `parent.tools − child.tools`. Only tool names appear; resources and intents
 granted to a scope are not written.
@@ -209,18 +230,26 @@ granted to a scope are not written.
 | `counts` | object | matches per rule family, e.g. `{"PROMPT_LEAK": 1}` |
 | `total` | number | total matches |
 | `flagged` | boolean | `total > 0` |
+| `actor_chain` | string[], optional | the delegation chain — see above |
+| `decision_id` | string, optional | present only when the caller passed a `decision_id` / `decisionId` to `screen` |
+| `principal` | string, optional | whom the text was screened for — resolved exactly as on `sanitization` above |
 
-No `principal` and no `decision_id`: a screening is joined to a call only by
-being written inside its egress hook — order it by `ts` next to the `egress`
-record on the same `resource`, or give the screen the call's `resource` label,
-as the generators do.
+A screening the caller gives no `decision_id` is joined to a call only by being
+written inside its egress hook — order it by `ts` next to the `egress` record on
+the same `resource`, or give the screen the call's `resource` label, as the
+generators do.
 
 ## Reading the joins
 
-- **`decision_id` is the only cross-kind key.** `sanitization` carries it only
-  when the caller passed the read's id into `sanitize`; `egress` carries it
-  automatically from `govern.tool`. Calls through a framework adapter can lack
-  it — `forensics.py` counts those under *integrity* rather than guessing.
+- **`decision_id` is the only cross-kind key.** `sanitization` and `screening`
+  carry it only when the caller passed the read's id into `sanitize` / `screen`;
+  `egress` carries it automatically from `govern.tool`. Calls through a framework
+  adapter can lack it — `forensics.py` counts those under *integrity* rather than
+  guessing.
+- **`principal` is not a join key.** `sanitization` and `screening` name their
+  own subject, so a query that filters the trail on principal alone matches them
+  as well as decisions. Count decisions by testing that `event` is absent — see
+  the quotas note in `examples/patterns/audit-sink.md`.
 - **An `Allow` with nothing after it** is a body that ran with no egress hook.
   If every read in your application should be minimized, that count should be
   zero — the analyzer prints it.

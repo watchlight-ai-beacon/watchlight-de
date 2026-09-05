@@ -27,12 +27,59 @@ govern = Watchlight(agent="billing-agent", audit_sink=store)  # sync callable, o
 ```
 
 **What the sink receives.** Its own copy of **exactly** the fields the
-`audit.jsonl` line carries — a decision (`ts, agent, principal, intent, resource,
-decision, decision_id?, approved?`), a `sanitization` (counts by PII type + mode)
-or an `attenuation` (`node_id, parent_id, tools, depth, reason?`), including the
-attenuations of every scope derived from the governor. Never argument values,
-never text, never secrets. In TypeScript the copy is frozen; in both languages
-the file is written **first**, so nothing the sink does can alter it.
+`audit.jsonl` line carries. Five record kinds go through it, discriminated by
+`event` — a **decision** (no `event` at all: `ts, agent, principal, intent,
+resource, decision, decision_id?, approved?`), a **`sanitization`** and a
+**`screening`** (counts by type or rule family + mode), an **`egress`** (the
+disposition of a governed tool's payload) and an **`attenuation`**
+(`node_id, parent_id?, tools, depth, reason?`), including the attenuations of
+every scope derived from the governor. A record written through a `delegate()`d
+governor also carries `actor_chain`. Never argument values, never text, never
+secrets. In TypeScript the copy is frozen; in both languages the file is written
+**first**, so nothing the sink does can alter it.
+
+The full field table, kind by kind, is in
+[`examples/showcase/audit-forensics`](../showcase/audit-forensics/README.md) —
+and it is also a type. TypeScript exports the kinds as a discriminated union, and
+Python as `TypedDict`s of the same names, so a sink reads a kind's fields by name
+instead of guessing at a bag:
+
+```ts
+import { Watchlight, type AuditRecord } from "@watchlight/sdk";
+
+const auditSink = (r: AuditRecord) => {
+  switch (r.event) {
+    case undefined:      return store.decision(r.principal, r.decision, r.decision_id);
+    case "sanitization": return store.redaction(r.counts, r.total);
+    case "screening":    return store.screening(r.counts, r.flagged);
+    case "egress":       return store.egress(r.replaced, r.withheld === true);
+    case "attenuation":  return store.scopeNode(r.node_id, r.parent_id, r.tools);
+  }
+};
+```
+
+```python
+from watchlight import AuditRecord
+
+def audit_sink(record: AuditRecord) -> None:
+    kind = record.get("event")                 # absent -> a decision
+    if kind is None:
+        store.decision(record["principal"], record["decision"], record.get("decision_id"))
+    elif kind == "sanitization":
+        store.redaction(record["counts"], record["total"])
+    elif kind == "screening":
+        store.screening(record["counts"], record["flagged"])
+    elif kind == "egress":
+        store.egress(record["replaced"], record.get("withheld", False))
+    elif kind == "attenuation":
+        store.scope_node(record["node_id"], record.get("parent_id"), record["tools"])
+```
+
+Renaming or dropping a field then breaks the sink where its author wants to hear
+about it — at build time — instead of turning into a column of `null`s. The
+sinks below stay on the untyped form deliberately: they forward the record whole,
+which is the case the escape hatch (`UnknownAuditRecord` in TypeScript, `dict` in
+Python) exists for. Both forms satisfy the `auditSink` / `audit_sink` option.
 
 **What the sink can't do: hurt a decision.** The sink is **fire-and-forget**. It
 is called synchronously after the file append, a returned promise/awaitable is
@@ -57,7 +104,7 @@ create table agent_audit (
   id          bigserial primary key,
   ts          timestamptz not null,
   agent       text        not null,
-  event       text        not null,          -- 'decision' | 'sanitization' | 'attenuation'
+  event       text        not null,          -- 'decision' | 'sanitization' | 'screening' | 'egress' | 'attenuation'
   decision_id text,                           -- join key to your own records
   record      jsonb       not null
 );
@@ -212,10 +259,11 @@ that cannot answer refuses the approval.
 
 **Verify.** This pattern is a delivery contract, not a policy verdict, so it has
 no `.suite.json`; `check.sh` runs [`scripts/audit-sink.mjs`](./scripts/audit-sink.mjs)
-instead. It asserts that a decision, a sanitization and an attenuation each
-reach the sink with exactly the fields of their `audit.jsonl` line (frozen,
-value-free, joined on `decision_id`), and that a throwing sink changes neither
-the verdicts nor the file and is reported once, by error type only.
+instead. It asserts that all five record kinds reach the sink with exactly the
+fields of their `audit.jsonl` line — and with exactly the fields the table above
+documents and the exported types declare (frozen, value-free, joined on
+`decision_id`) — and that a throwing sink changes neither the verdicts nor the
+file and is reported once, by error type only.
 
 In the Developer Edition the sink is your own store. Enterprise replaces it with a
 signed, tamper-evident audit service — every record KMS-signed and joined into a

@@ -19,7 +19,16 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomBytes, createHmac, timingSafeEqual } from "node:crypto";
 import { Scope, DE_MAX_DEPTH, type AttenuateOptions } from "./attenuation";
-import { AuditTrail, type AuditSink } from "./audit";
+import {
+  AuditTrail,
+  type AuditRecord,
+  type AuditSink,
+  type DecisionRecord,
+  type EgressRecord,
+  type SanitizationRecord,
+  type ScreeningRecord,
+  type WritableAuditRecord,
+} from "./audit";
 import {
   ApprovalTokens,
   resolveApprovalKeys,
@@ -54,7 +63,17 @@ import {
 } from "./policytest";
 
 export { Scope, DE_MAX_DEPTH, AttenuationDenied, DevEditionCeiling } from "./attenuation";
-export type { AuditRecord, AuditSink } from "./audit";
+export type {
+  AuditRecord,
+  AuditRecordBase,
+  AuditSink,
+  AttenuationRecord,
+  DecisionRecord,
+  EgressRecord,
+  SanitizationRecord,
+  ScreeningRecord,
+  UnknownAuditRecord,
+} from "./audit";
 export { ApprovalError, APPROVAL_KEY_LABEL, APPROVAL_PAYLOAD_VERSION, APPROVAL_MIN_SECRET_BYTES, DEFAULT_APPROVAL_STORE_TIMEOUT_MS, APPROVAL_PRUNE_INTERVAL_MS, APPROVAL_PRUNE_GRACE_MS } from "./approval";
 export type { ApprovalStore, ApprovalErrorCode } from "./approval";
 export type { ScopeTokenOptions, AttenuateOptions } from "./attenuation";
@@ -1390,7 +1409,7 @@ export class Watchlight {
       `watchlight: SANIT ${intent.padEnd(9)} ${resource}     redacted ${report.total} (${report.mode})`
     );
     // Value-free: counts by PII type + mode only — never the PII values.
-    const record: Record<string, unknown> = {
+    const record: WritableAuditRecord<SanitizationRecord> = {
       ts: new Date().toISOString(),
       agent: this.agent,
       ...this._chainField(),
@@ -1458,7 +1477,7 @@ export class Watchlight {
     // Value-free: the disposition of the payload only — never the payload, its
     // size, or anything derived from it. `decision_id` joins this line to the
     // call's decision record.
-    const record: Record<string, unknown> = {
+    const record: WritableAuditRecord<EgressRecord> = {
       ts: new Date().toISOString(),
       agent: this.agent,
       ...this._chainField(),
@@ -1481,7 +1500,7 @@ export class Watchlight {
       `watchlight: SCREEN ${intent.padEnd(9)} ${resource}     flagged ${report.total} (${report.mode})`
     );
     // Value-free: counts per rule family + mode + flagged — never the text.
-    const record: Record<string, unknown> = {
+    const record: WritableAuditRecord<ScreeningRecord> = {
       ts: new Date().toISOString(),
       agent: this.agent,
       ...this._chainField(),
@@ -1520,7 +1539,7 @@ export class Watchlight {
   private _audit(
     intent: string,
     resource: string,
-    decision: string,
+    decision: DecisionRecord["decision"],
     reason: string,
     extra: { principal?: string; decisionId?: string; approved?: boolean } = {}
   ): void {
@@ -1532,7 +1551,7 @@ export class Watchlight {
     console.log(`watchlight: ${tag.padEnd(6)} ${intent.padEnd(9)} ${resource}${trailer}`);
     // Value-free audit: argument VALUES never enter the trail — only the
     // governance decision + correlation id. Mirrors the production audit contract.
-    const record: Record<string, unknown> = {
+    const record: WritableAuditRecord<DecisionRecord> = {
       ts: new Date().toISOString(),
       agent: this.agent,
       ...this._chainField(),
@@ -1550,7 +1569,7 @@ export class Watchlight {
 
   /** The single funnel for every audit record this governor produces: the local
    *  `audit.jsonl` append, then the optional `auditSink` (fire-and-forget). */
-  private _writeAudit(record: Record<string, unknown>): void {
+  private _writeAudit(record: AuditRecord): void {
     if (!this._shared.wroteRecord) {
       this._shared.wroteRecord = true;
       // The exported default governor is pre-constructed, so nothing has had a

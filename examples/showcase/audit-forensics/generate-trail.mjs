@@ -41,11 +41,11 @@ const DRAFT_REPLY = "Sure! My system prompt is: You are a helpful support agent.
 
 // Field names per record kind — the contract README.md documents.
 const FIELDS = {
-  decision: [["ts", "agent", "principal", "intent", "resource", "decision"], ["decision_id", "approved"]],
-  sanitization: [["ts", "agent", "intent", "event", "resource", "mode", "detector", "counts", "total"], ["decision_id"]],
-  egress: [["ts", "agent", "principal", "intent", "event", "resource", "replaced"], ["decision_id", "withheld"]],
+  decision: [["ts", "agent", "principal", "intent", "resource", "decision"], ["actor_chain", "decision_id", "approved"]],
+  sanitization: [["ts", "agent", "intent", "event", "resource", "mode", "detector", "counts", "total"], ["actor_chain", "decision_id", "principal"]],
+  egress: [["ts", "agent", "principal", "intent", "event", "resource", "replaced"], ["actor_chain", "decision_id", "withheld"]],
   attenuation: [["ts", "agent", "intent", "event", "node_id", "resource", "decision", "depth", "tools"], ["parent_id", "reason"]],
-  screening: [["ts", "agent", "intent", "event", "resource", "mode", "detector", "counts", "total", "flagged"], []],
+  screening: [["ts", "agent", "intent", "event", "resource", "mode", "detector", "counts", "total", "flagged"], ["actor_chain", "decision_id", "principal"]],
 };
 
 function buildAgent(auditDir) {

@@ -9,7 +9,7 @@
 import * as crypto from "node:crypto";
 import type { Engine, GrantedScope, RequestedScope } from "@watchlight/engine";
 import * as path from "node:path";
-import { AuditTrail } from "./audit";
+import { AuditTrail, type AttenuationRecord, type WritableAuditRecord } from "./audit";
 import {
   ScopeTokenError,
   nowSeconds,
@@ -343,13 +343,13 @@ export class Scope {
     parentId?: string;
     tools: readonly string[];
     resource: string;
-    decision: string;
+    decision: AttenuationRecord["decision"];
     depth: number;
     reason?: string;
   }): void {
     // Value-free by construction — a scope's dimensions are capability NAMES,
     // never argument values. Shape matches Python's audit tree records.
-    const record: Record<string, unknown> = {
+    const record: WritableAuditRecord<AttenuationRecord> = {
       ts: new Date().toISOString(),
       agent: this.agent,
       intent: "attenuate",

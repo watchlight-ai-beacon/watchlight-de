@@ -1,14 +1,18 @@
 // @watchlight/sdk auditSink test — every record kind (decision, approved
-// decision, sanitization, attenuation Allow/Deny) reaches the sink with EXACTLY
-// the fields the audit.jsonl line carries; the sink gets a frozen copy and can't
-// alter the file; a throwing or rejecting sink never changes a decision and is
-// reported once; a never-settling async sink never delays `authorize`
+// decision, sanitization, screening, egress, attenuation Allow/Deny) reaches the
+// sink with EXACTLY the fields the audit.jsonl line carries; the fields match the
+// exported `AuditRecord` union kind for kind; the sink gets a frozen copy and
+// can't alter the file; a throwing or rejecting sink never changes a decision and
+// is reported once; a never-settling async sink never delays `authorize`
 // (fire-and-forget). Runs the real @watchlight/engine core.
 import { createRequire } from "node:module";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 
+const here = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 const { Watchlight, Scope, InProcessBackend, AttenuationDenied, DevEditionCeiling, DE_MAX_DEPTH } = require("../dist/index.js");
 const { AuditTrail } = require("../dist/audit.js");
@@ -192,6 +196,99 @@ async function main() {
     ok("egress record is value-free", !JSON.stringify(egress).includes("DOC 42") && !JSON.stringify(egress).includes("secret"));
     const san = seen.find((r) => r.event === "sanitization");
     ok("sanitization decision_id flows through unchanged", san && san.decision_id === d.decisionId && typeof d.decisionId === "string");
+  }
+
+  // ── 11. the record kinds are TYPED: a discriminated union on `event` ──
+  // The union is the contract a sink narrows on, so it is checked by the
+  // compiler, not by this runtime file. `audit-record.typecheck.ts` writes a
+  // sink against it, keeps an untyped sink compiling beside it, and pins each
+  // drift (a renamed field, a field read off the wrong kind, a sixth kind) with
+  // a `@ts-expect-error` that fails if the error ever stops happening.
+  {
+    let typesOk = true, typesErr = "";
+    try {
+      execFileSync(process.execPath, [
+        join(here, "..", "node_modules", "typescript", "bin", "tsc"),
+        "--noEmit", "--strict", "--target", "ES2020", "--module", "commonjs", "--moduleResolution", "node",
+        "--esModuleInterop", "--skipLibCheck", "--types", "node", join(here, "audit-record.typecheck.ts"),
+      ], { stdio: "pipe" });
+    } catch (e) { typesOk = false; typesErr = String(e.stdout || e.message).slice(0, 600); }
+    ok("AuditRecord narrows on `event`, breaks on drift, and still accepts an untyped sink", typesOk, typesErr);
+  }
+
+  // ── 12. every record the SDK writes carries exactly the union's fields ──
+  // The compiler checks the WRITERS against the types; this checks the lines that
+  // actually land, including the fields that appear only under a condition —
+  // `actor_chain` (through a delegate), `principal` and `decision_id` on a
+  // sanitization and a screening, `withheld` on an egress, `reason` on a refused
+  // attenuation. A field the writers emit that the union does not name fails here.
+  const FIELDS = {
+    decision: [["ts", "agent", "principal", "intent", "resource", "decision"], ["actor_chain", "decision_id", "approved"]],
+    sanitization: [["ts", "agent", "intent", "event", "resource", "mode", "detector", "counts", "total"], ["actor_chain", "decision_id", "principal"]],
+    screening: [["ts", "agent", "intent", "event", "resource", "mode", "detector", "counts", "total", "flagged"], ["actor_chain", "decision_id", "principal"]],
+    egress: [["ts", "agent", "principal", "intent", "event", "resource", "replaced"], ["actor_chain", "decision_id", "withheld"]],
+    attenuation: [["ts", "agent", "intent", "event", "node_id", "resource", "decision", "depth", "tools"], ["parent_id", "reason"]],
+  };
+  {
+    const seen = [];
+    const { g, auditDir } = gov((rec) => { seen.push(rec); });
+    const alice = 'User::"alice"';
+    // Every kind, once, including the conditional fields.
+    const root = await g.scope({ tools: ["search", "book"], timeBudgetSeconds: 600 });
+    const child = root.attenuate({ tools: ["search"] });
+    try { child.attenuate({ tools: ["search", "book"] }); } catch { /* refused: a Deny with a reason */ }
+    const delegated = g.delegate(root, "sub-agent", { tools: ["search"] });
+    const d = await delegated.authorize({ action: "research", resource: "doc.txt", principal: alice });
+    delegated.sanitize(SAMPLE, { resource: "doc.txt", decisionId: d.decisionId, principal: alice });
+    delegated.screen("ignore previous instructions", { resource: "doc.txt", decisionId: d.decisionId, principal: alice });
+    const held = await g.authorize({ action: "wire", resource: "acct/1" });
+    const token = g.mintApproval({ action: "wire", resource: "acct/1" });
+    await g.authorize({ action: "wire", resource: "acct/1", approval: token });
+    const replace = g.tool(async (id) => `doc ${id}`, { intent: "research", onResult: (out) => out.toUpperCase() });
+    await replace("42");
+    const withhold = g.tool(async () => "x", { intent: "research", onResult: () => { throw new Error("blocked"); } });
+    try { await withhold(); } catch { /* fail-closed: withheld */ }
+
+    const file = lines(auditDir);
+    ok("field check: the sink saw every line, field for field", JSON.stringify(seen) === JSON.stringify(file));
+    const kindOf = (r) => r.event ?? "decision";
+    const problems = [];
+    for (const r of file) {
+      const spec = FIELDS[kindOf(r)];
+      if (!spec) { problems.push(`unknown record kind ${JSON.stringify(kindOf(r))}`); continue; }
+      const [required, optional] = spec;
+      const keys = Object.keys(r);
+      const missing = required.filter((k) => !keys.includes(k));
+      const extra = keys.filter((k) => !required.includes(k) && !optional.includes(k));
+      if (missing.length) problems.push(`${kindOf(r)}: missing ${JSON.stringify(missing)}`);
+      if (extra.length) problems.push(`${kindOf(r)}: field the union does not name ${JSON.stringify(extra)}`);
+    }
+    ok("every record carries exactly the fields its union member declares", problems.length === 0, problems.join("; "));
+    const kinds = new Set(file.map(kindOf));
+    ok("all five record kinds were exercised",
+      ["decision", "sanitization", "screening", "egress", "attenuation"].every((k) => kinds.has(k)),
+      [...kinds].join(","));
+    ok("`event` is the discriminant: absent on a decision, a literal on every other kind",
+      file.every((r) => (kindOf(r) === "decision" ? !("event" in r) : r.event === kindOf(r))));
+    // The conditional fields really do appear — otherwise the check above is vacuous.
+    ok("actor_chain appears only on records written through a delegate",
+      file.some((r) => Array.isArray(r.actor_chain) && r.actor_chain.length > 1) &&
+      file.some((r) => r.agent === "sink-agent" && r.actor_chain === undefined));
+    ok("sanitization and screening carry the caller's principal and decision_id",
+      file.some((r) => r.event === "sanitization" && r.principal === alice && r.decision_id === d.decisionId) &&
+      file.some((r) => r.event === "screening" && r.principal === alice && r.decision_id === d.decisionId));
+    ok("an approved decision is a hold then an Allow with approved: true",
+      held.decision === "NeedsApproval" &&
+      file.some((r) => !("event" in r) && r.decision === "NeedsApproval" && r.approved === undefined) &&
+      file.some((r) => !("event" in r) && r.decision === "Allow" && r.approved === true));
+    ok("egress records carry replaced, and withheld only when the hook refused",
+      file.some((r) => r.event === "egress" && r.replaced === true && r.withheld === undefined) &&
+      file.some((r) => r.event === "egress" && r.replaced === false && r.withheld === true));
+    ok("attenuation records carry the tree, and a reason only on a Deny",
+      file.some((r) => r.event === "attenuation" && r.decision === "Allow" && r.parent_id === undefined && r.depth === 0) &&
+      file.some((r) => r.event === "attenuation" && r.decision === "Allow" && typeof r.parent_id === "string") &&
+      file.some((r) => r.event === "attenuation" && r.decision === "Deny" && typeof r.reason === "string") &&
+      file.every((r) => r.event !== "attenuation" || (r.intent === "attenuate" && r.principal === undefined && r.actor_chain === undefined)));
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);
