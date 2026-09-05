@@ -21,6 +21,14 @@ the TypeScript CLI (`npm i -g @watchlight/sdk`) and the Python CLI
 comes from the engine; the harness has no decision logic of its own and never
 writes to the audit trail.
 
+That last point holds for `watchlight policy test` and `govern.test()`, which
+run the engine's decision core directly. A test that calls `authorize()` — or a
+governed tool — is a governed call like any other, and appends a record to
+`.watchlight/audit.jsonl` in whatever working directory it runs in. If that is
+also the directory an application is writing, set `WATCHLIGHT_AUDIT_FILE=0` (or
+`WATCHLIGHT_AUDIT_DIR=.watchlight-test`) for the test run and its verdicts stay
+out of the application's trail.
+
 ## The policy set
 
 A support-ticket agent: reads gated on classification, refunds banded by amount,

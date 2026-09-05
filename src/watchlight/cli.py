@@ -264,6 +264,15 @@ def _cmd_policy_test(args: argparse.Namespace) -> int:
     return 1 if report["failed"] else 0
 
 
+def _default_audit_path() -> str:
+    """The file ``watchlight dev`` tails when ``--audit`` names none: the same
+    directory ``WATCHLIGHT_AUDIT_DIR`` sends the default governor's trail to, so
+    the dashboard follows the trail rather than having to be pointed at it twice."""
+    env_dir = os.environ.get("WATCHLIGHT_AUDIT_DIR")
+    directory = env_dir.strip() if env_dir and env_dir.strip() else ".watchlight"
+    return str(pathlib.Path(directory) / "audit.jsonl")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="watchlight", description="Watchlight Developer Edition.")
     sub = parser.add_subparsers(dest="command")
@@ -273,8 +282,11 @@ def main(argv: list[str] | None = None) -> int:
     dev.add_argument("--host", default="127.0.0.1", help="bind host (default: 127.0.0.1)")
     dev.add_argument(
         "--audit",
-        default=".watchlight/audit.jsonl",
-        help="audit JSONL to tail (default: .watchlight/audit.jsonl)",
+        default=_default_audit_path(),
+        help=(
+            "audit JSONL to tail (default: $WATCHLIGHT_AUDIT_DIR/audit.jsonl when that "
+            "is set, else .watchlight/audit.jsonl)"
+        ),
     )
     dev.add_argument("--no-open", action="store_true", help="do not open a browser")
     dev.set_defaults(func=_cmd_dev)

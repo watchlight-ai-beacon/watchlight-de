@@ -483,9 +483,43 @@ from watchlight import govern, configure_default
 configure_default(agent="billing-agent", audit_sink=my_store.insert)
 ```
 
-`configure_default(...)` raises once the default governor has written a record:
-records already written cannot reach a sink added later, and a trail split
-across two destinations reads like a data bug.
+Once it has written a record its destination is fixed: records already written
+cannot reach a sink added later, and a trail split across two destinations reads
+like a data bug. Re-applying the configuration *already in force* is a no-op, so
+the defensive second call is not an exception path; a call that would CHANGE an
+option raises and names which one. A sink matches when it is the same function
+on the same object, so passing `audit_sink=my_store.insert` twice is one sink —
+but a `lambda` written out a second time is a different one, and conflicts.
+`can_configure_default()` asks the question outright, and mutates nothing:
+
+```python
+from watchlight import can_configure_default, configure_default
+
+if can_configure_default():
+    configure_default(audit_sink=my_store.insert)
+```
+
+Two environment variables configure the default governor's trail where the code
+is not yours to change — a test run, a container, a CI job:
+
+| Variable | Effect |
+|---|---|
+| `WATCHLIGHT_AUDIT_DIR` | the directory `audit.jsonl` is written into (default `.watchlight`) |
+| `WATCHLIGHT_AUDIT_FILE` | `0` / `false` / `no` / `off` writes no local file at all |
+
+```bash
+WATCHLIGHT_AUDIT_FILE=0 pytest    # this run adds nothing to the application's audit.jsonl
+```
+
+Both are read lazily, at first use, so setting them before or after importing
+`watchlight` works the same. Precedence is option, then environment, then
+default: an explicit `configure_default(audit_dir=…)` wins, and a governor you
+construct yourself already names its own options and is untouched. `watchlight
+dev` reads `WATCHLIGHT_AUDIT_DIR` too, so the dashboard follows the trail. The
+default governor deliberately still writes `.watchlight/audit.jsonl` with no
+opt-in — that file appearing with zero configuration is the quickstart, and
+`watchlight dev` reads it and nothing else. Full guide:
+[`docs/using-the-governor.md`](docs/using-the-governor.md#the-exported-default-governor).
 
 The trail is also an input: `govern.counters(...)` folds it into a number for a
 quota policy — decisions for exactly this principal (and intent / resource) in

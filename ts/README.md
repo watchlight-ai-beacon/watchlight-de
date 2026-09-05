@@ -673,9 +673,44 @@ import { govern, configureDefault } from "@watchlight/sdk";
 configureDefault({ agent: "billing-agent", auditSink: (r) => db.insert("agent_audit", r) });
 ```
 
-`configureDefault(...)` throws once the default governor has written a record:
-records already written cannot reach a sink added later, and a trail split
-across two destinations reads like a data bug.
+Once it has written a record its destination is fixed: records already written
+cannot reach a sink added later, and a trail split across two destinations reads
+like a data bug. Re-applying the configuration *already in force* is a no-op, so
+the defensive second call is not an exception path; a call that would CHANGE an
+option throws and names which one. A sink matches when it is the same function
+reference, so passing `auditSink: db.insert` twice is one sink — but an arrow
+function written out a second time, or a new `fn.bind(obj)`, is a different one
+and conflicts (bind once and pass the result). `canConfigureDefault()` asks the
+question outright, and mutates nothing:
+
+```ts
+import { canConfigureDefault, configureDefault } from "@watchlight/sdk";
+
+if (canConfigureDefault()) {
+  configureDefault({ auditSink: (r) => db.insert("agent_audit", r) });
+}
+```
+
+Two environment variables configure the default governor's trail where the code
+is not yours to change — a test run, a container, a CI job:
+
+| Variable | Effect |
+|---|---|
+| `WATCHLIGHT_AUDIT_DIR` | the directory `audit.jsonl` is written into (default `.watchlight`) |
+| `WATCHLIGHT_AUDIT_FILE` | `0` / `false` / `no` / `off` writes no local file at all |
+
+```bash
+WATCHLIGHT_AUDIT_FILE=0 npm test   # this run adds nothing to the application's audit.jsonl
+```
+
+Both are read lazily, at first use, so setting them before or after importing
+the SDK works the same. Precedence is option, then environment, then default: an
+explicit `configureDefault({ auditDir })` wins, and a governor you construct
+yourself already names its own options and is untouched. The default governor
+deliberately still writes `.watchlight/audit.jsonl` with no opt-in — that file
+appearing with zero configuration is the quickstart, and `watchlight dev` reads
+it and nothing else. Full guide:
+[`docs/using-the-governor.md`](../docs/using-the-governor.md#the-exported-default-governor).
 
 ### Count it — `govern.counters` for quota policies
 
