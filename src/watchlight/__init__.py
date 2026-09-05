@@ -54,7 +54,18 @@ from ._approval import (
     resolve_approval_keys,
     split_env_secrets,
 )
-from ._audit import AuditSink, AuditTrail
+from ._audit import (
+    AttenuationRecord,
+    AuditRecord,
+    AuditRecordBase,
+    AuditSink,
+    AuditTrail,
+    DecisionRecord,
+    EgressRecord,
+    SanitizationRecord,
+    ScreeningRecord,
+    UnknownAuditRecord,
+)
 from ._counters import (
     DEFAULT_COUNTERS_MAX_BYTES,
     MAX_COUNTERS_LINE_BYTES,
@@ -94,6 +105,14 @@ __all__ = [
     "AuthorizeRequestError",
     "REQUEST_INVALID_MESSAGE",
     "AuditSink",
+    "AuditRecord",
+    "AuditRecordBase",
+    "DecisionRecord",
+    "SanitizationRecord",
+    "ScreeningRecord",
+    "EgressRecord",
+    "AttenuationRecord",
+    "UnknownAuditRecord",
     "AuditTrailUnreadable",
     "ApprovalError",
     "ApprovalStore",

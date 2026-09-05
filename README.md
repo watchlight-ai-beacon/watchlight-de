@@ -441,13 +441,24 @@ It shows only *this* process — fleet-wide lineage, signed audit, and
 drift→quarantine are the governed control plane (Enterprise).
 
 On an ephemeral host, keep the trail: pass an `audit_sink` and every record —
-decisions, sanitizations, attenuations — is also handed to your code with exactly
-the fields the file line carries (the file stays on). The sink is fire-and-forget
-and can never block or change a decision; a failure is reported once.
+decisions, sanitizations, screenings, egress dispositions, attenuations — is also
+handed to your code with exactly the fields the file line carries (the file stays
+on). The sink is fire-and-forget and can never block or change a decision; a
+failure is reported once.
 
 ```python
 govern = Watchlight(agent="my-agent", audit_sink=lambda record: my_store.insert(record))
 ```
+
+The five kinds are **typed**, discriminated by `event` — absent on a decision, a
+literal on every other kind. TypeScript exports them as a union
+(`AuditRecord = DecisionRecord | SanitizationRecord | ScreeningRecord |
+EgressRecord | AttenuationRecord`, common fields on `AuditRecordBase`) and Python
+as `TypedDict`s of the same names, so a sink that maps fields breaks at build
+time when a kind changes shape rather than quietly writing `null`s. A sink that
+just forwards records can stay untyped: annotate `UnknownAuditRecord` (or a plain
+`dict`) and nothing changes. The field table, kind by kind, is in
+[`examples/showcase/audit-forensics`](examples/showcase/audit-forensics/README.md).
 
 Reference sinks — a Postgres row, an OTLP log record, a webhook — are in
 [`examples/patterns/audit-sink.md`](examples/patterns/audit-sink.md).

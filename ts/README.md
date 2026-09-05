@@ -613,15 +613,42 @@ the `decisionId` of the `authorize` decision — the two lines then join on it.
 ### Ship it somewhere durable — `auditSink`
 
 On an ephemeral host the file is gone on the next deploy. Add a sink and every
-record — decisions, sanitizations, and the attenuations of every derived scope —
-is also handed to your code, with **exactly** the fields the file line carries
-(a frozen copy). The file stays on.
+record — decisions, sanitizations, screenings, egress dispositions, and the
+attenuations of every derived scope — is also handed to your code, with
+**exactly** the fields the file line carries (a frozen copy). The file stays on.
 
 ```ts
 const govern = new Watchlight({
   auditSink: (record) => db.insert("agent_audit", record), // sync or async
 });
 ```
+
+`AuditRecord` is a **discriminated union** over the five kinds, keyed on `event`
+— absent on a decision record, a literal on every other kind — with the common
+fields (`ts`, `agent`, `intent`, `resource`) on `AuditRecordBase`. A sink that
+maps fields narrows first, and a renamed or removed field then stops the build
+instead of silently becoming `undefined`:
+
+```ts
+import { type AuditRecord } from "@watchlight/sdk";
+
+const auditSink = (r: AuditRecord) => {
+  switch (r.event) {
+    case undefined:      return db.decision(r.principal, r.decision, r.decision_id);
+    case "sanitization": return db.redaction(r.counts, r.total);
+    case "screening":    return db.screening(r.counts, r.flagged);
+    case "egress":       return db.egress(r.replaced, r.withheld === true);
+    case "attenuation":  return db.scopeNode(r.node_id, r.parent_id, r.tools);
+  }
+};
+```
+
+The kinds are exported individually — `DecisionRecord`, `SanitizationRecord`,
+`ScreeningRecord`, `EgressRecord`, `AttenuationRecord` — and
+`UnknownAuditRecord` is the escape hatch: annotate a sink with it (or with
+`Record<string, unknown>`) to take the record as an untyped bag, exactly as
+before. Both forms satisfy `AuditSink`. The field table, kind by kind, is in
+[`examples/showcase/audit-forensics`](https://github.com/watchlight-ai-beacon/watchlight-de/tree/main/examples/showcase/audit-forensics).
 
 The sink is **fire-and-forget**: a returned promise is not awaited, and a throw or
 rejection is reported once (error type only) and never blocks or changes a

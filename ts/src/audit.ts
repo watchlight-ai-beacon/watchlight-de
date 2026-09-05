@@ -1,7 +1,10 @@
 // The value-free audit trail — the ONE funnel every audit record passes through.
 //
-// Decisions (`Watchlight.authorize`), sanitizations (`Watchlight.sanitize`) and
-// attenuations (`Scope.attenuate`) all end up here. Two destinations:
+// All five record kinds end up here — decisions (`Watchlight.authorize`),
+// sanitizations (`Watchlight.sanitize`), screenings (`Watchlight.screen`),
+// egress dispositions (a governed tool's `onResult` hook) and attenuations
+// (`Scope.attenuate`). Their shapes are the discriminated union below. Two
+// destinations:
 //
 //   1. the local `.watchlight/audit.jsonl` file (on by default, best-effort;
 //      `auditFile: false` turns it off and makes the sink the sole
@@ -19,11 +22,189 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import type { PiiType, RedactMode } from "./sanitize";
+import type { ScreenFamily, ScreenMode } from "./screen";
 
-/** One value-free audit record, as delivered to an {@link AuditSink}. Frozen —
- *  the same fields the `.watchlight/audit.jsonl` line carries, and never
- *  argument values, PII, or secrets. */
-export type AuditRecord = Readonly<Record<string, unknown>>;
+// ── the record kinds ──────────────────────────────────────────────────
+//
+// Five kinds go through this funnel, and a sink sees exactly the fields the
+// `audit.jsonl` line carries. They are DISCRIMINATED BY `event`: a decision
+// record has no `event` field at all; the other four name themselves in it.
+// That is not a tidier restatement of the shape — it is the shape, and it is
+// what `countAuditRecords` already keys on to tell a decision from the rest.
+//
+// Each kind is written by exactly one function, and this is the whole list:
+//
+//   decision      `Watchlight.authorize` (and so every governed tool call)
+//   sanitization  `Watchlight.sanitize`
+//   screening     `Watchlight.screen`
+//   egress        the `onResult` hook of a governed tool
+//   attenuation   `Watchlight.scope` (the root) and every `Scope.attenuate`
+//
+// The field reference these types mirror — one table per kind, checked against
+// a real trail — is `examples/showcase/audit-forensics/README.md`.
+
+/** The fields every audit record carries, whatever its kind. */
+export type AuditRecordBase = {
+  /** ISO-8601 UTC timestamp. */
+  readonly ts: string;
+  /** The governor's agent identity. */
+  readonly agent: string;
+  /** The action, label or (for an attenuation) the fixed word `attenuate`. */
+  readonly intent: string;
+  /** The resource, label or scope description the record is about. */
+  readonly resource: string;
+};
+
+/** The ordered delegation chain, root first — present ONLY on a record written
+ *  through a `delegate()`d governor, whose chain is longer than one name. A
+ *  call outside any delegation carries no `actor_chain` at all. Never written
+ *  on an `attenuation` record. */
+type ActorChain = { readonly actor_chain?: readonly string[] };
+
+/** A governance decision — written by `authorize()`, and so by every governed
+ *  tool call. The ONLY kind with no `event` field: that absence is the
+ *  discriminant. An approved action is two records — the `NeedsApproval` hold,
+ *  then an `Allow` carrying `approved: true` under a new `decision_id`. The
+ *  reason is never written; callers see a uniform, non-revealing one. */
+export type DecisionRecord = AuditRecordBase &
+  ActorChain & {
+    /** Absent on a decision record. Present, and a literal, on every other kind. */
+    readonly event?: undefined;
+    /** The acting principal, e.g. `User::"alice"`; defaults to `Agent::"<agent>"`. */
+    readonly principal: string;
+    readonly decision: "Allow" | "Deny" | "NeedsApproval";
+    /** The engine's per-decision correlation id — the join key. */
+    readonly decision_id?: string;
+    /** Present only when a valid approval token downgraded a `NeedsApproval`. */
+    readonly approved?: true;
+  };
+
+/** A PII redaction pass — written by `sanitize()`. Value-free: counts per type
+ *  and the mode, never the values. */
+export type SanitizationRecord = AuditRecordBase &
+  ActorChain & {
+    readonly event: "sanitization";
+    readonly mode: RedactMode;
+    /** Detector version, e.g. `de-rules-2`. */
+    readonly detector: string;
+    /** Redactions per PII type, e.g. `{ SSN: 1 }`. */
+    readonly counts: Readonly<Partial<Record<PiiType, number>>>;
+    readonly total: number;
+    /** Present only when the caller passed the read's `decisionId` to
+     *  `sanitize` — that is what joins this record to its decision. */
+    readonly decision_id?: string;
+    /** Present only when the caller passed `principal` to `sanitize`. */
+    readonly principal?: string;
+  };
+
+/** A prompt-injection / content screening pass — written by `screen()`.
+ *  Value-free: counts per rule family, never the text. */
+export type ScreeningRecord = AuditRecordBase &
+  ActorChain & {
+    readonly event: "screening";
+    readonly mode: ScreenMode;
+    /** Detector version, e.g. `de-screen-1`. */
+    readonly detector: string;
+    /** Matches per rule family, e.g. `{ PROMPT_LEAK: 1 }`. */
+    readonly counts: Readonly<Partial<Record<ScreenFamily, number>>>;
+    readonly total: number;
+    /** `total > 0`. */
+    readonly flagged: boolean;
+    /** Present only when the caller passed `decisionId` to `screen`. */
+    readonly decision_id?: string;
+    /** Present only when the caller passed `principal` to `screen`. */
+    readonly principal?: string;
+  };
+
+/** The disposition of a governed tool's payload — written after the `onResult`
+ *  hook runs. Value-free: the disposition only, never the payload or anything
+ *  derived from it. A denied call has no `egress` record; the body never ran. */
+export type EgressRecord = AuditRecordBase &
+  ActorChain & {
+    readonly event: "egress";
+    /** The principal of the call whose result was inspected. */
+    readonly principal: string;
+    /** `true` when the hook returned a value that replaced the payload. */
+    readonly replaced: boolean;
+    /** The id of the decision that let the body run. Absent on a framework
+     *  adapter call that carries no id of its own. */
+    readonly decision_id?: string;
+    /** The hook threw, or outran its deadline — the payload was never
+     *  released. `replaced` is then `false`. */
+    readonly withheld?: true;
+  };
+
+/** One node of a sub-agent scope tree — written by `scope()` for the root and
+ *  by every `attenuate()`, granted or refused. Carries capability NAMES only.
+ *  Unlike the other kinds it has no `principal` and no `actor_chain`. */
+export type AttenuationRecord = AuditRecordBase & {
+  readonly event: "attenuation";
+  /** Always the fixed word `attenuate`. */
+  readonly intent: "attenuate";
+  /** This scope's id. A refused request gets a fresh id that heads no chain. */
+  readonly node_id: string;
+  readonly decision: "Allow" | "Deny";
+  /** 0 for the root. */
+  readonly depth: number;
+  /** The GRANTED tool set (the engine's clamped grant); on a `Deny`, the
+   *  requested set. */
+  readonly tools: readonly string[];
+  /** Absent on the root. */
+  readonly parent_id?: string;
+  /** Present on a `Deny`: the violated dimension, or the depth-ceiling notice. */
+  readonly reason?: string;
+};
+
+/**
+ * One value-free audit record, as delivered to an {@link AuditSink}. Frozen —
+ * the same fields the `.watchlight/audit.jsonl` line carries, and never
+ * argument values, PII, or secrets.
+ *
+ * A discriminated union on `event`, so a sink narrows to one kind and reads its
+ * fields by name. A field that is renamed or removed, or a sixth record kind,
+ * then breaks the sink at COMPILE time — which is when its author wants to know,
+ * rather than by printing a record in production:
+ *
+ * ```ts
+ * const sink: AuditSink = (r) => {
+ *   switch (r.event) {
+ *     case undefined:      return store.decision(r.principal, r.decision, r.decision_id);
+ *     case "sanitization": return store.redaction(r.counts, r.total);
+ *     case "screening":    return store.screening(r.counts, r.flagged);
+ *     case "egress":       return store.egress(r.replaced, r.withheld === true);
+ *     case "attenuation":  return store.scopeNode(r.node_id, r.parent_id, r.tools);
+ *   }
+ * };
+ * ```
+ *
+ * To opt OUT — to forward a record whole without naming its fields, or to keep
+ * a sink compiling against a future version that adds a kind — annotate the
+ * parameter {@link UnknownAuditRecord} instead. Both forms satisfy
+ * {@link AuditSink}.
+ */
+export type AuditRecord =
+  | DecisionRecord
+  | SanitizationRecord
+  | ScreeningRecord
+  | EgressRecord
+  | AttenuationRecord;
+
+/**
+ * The escape hatch: an audit record with nothing said about its fields. A sink
+ * whose parameter is annotated with this (or with `Record<string, unknown>`)
+ * still satisfies {@link AuditSink} — every {@link AuditRecord} is assignable to
+ * it — so a sink that only forwards records, or one that must survive a kind it
+ * does not know about, needs no narrowing.
+ */
+export type UnknownAuditRecord = Readonly<Record<string, unknown>>;
+
+/** A record under construction, inside the SDK. The writers build one of these
+ *  and hand it to {@link AuditTrail.write}, so a field added, renamed or dropped
+ *  at a writer that is not also changed in its record type fails to compile —
+ *  the types cannot drift from the lines they describe.
+ *  @internal */
+export type WritableAuditRecord<T extends AuditRecord> = { -readonly [K in keyof T]: T[K] };
 
 /**
  * An application-supplied destination for audit records, configured via
@@ -81,7 +262,7 @@ export class AuditTrail {
   }
 
   /** Append `record` to the local file, then hand the same fields to the sink. */
-  write(record: Record<string, unknown>): void {
+  write(record: AuditRecord): void {
     if (this.path === null && !this._sink) {
       this._warnNoDestination();
       return;
