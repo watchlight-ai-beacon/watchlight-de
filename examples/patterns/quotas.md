@@ -111,14 +111,88 @@ both languages:
 - **The count is of decisions *before* this one.** The first call sees `0`, so
   `< 100` admits exactly 100 reads and denies the 101st.
 
+## Which source is in play
+
+`counters()` reads **one** of two sources, and the result says which:
+
+| `source` | where the number comes from | what it bounds |
+|---|---|---|
+| `"local"` (default) | this container's `.watchlight/audit.jsonl` | decisions **this process** has written since the file was last rotated or lost |
+| `"external"` | a `counterSource` / `counter_source` you configure | whatever your store holds — every replica, across deploys |
+
+With no source configured nothing changes: the local file is folded exactly as
+described above, and `records` / `skipped` / `truncated` describe that scan.
+
+**Counting the durable store — `counterSource` / `counter_source`.** It is the
+read side of the [`auditSink`](./audit-sink.md): the sink writes the records, the
+source answers the same question over them.
+
+```ts
+import { Watchlight } from "@watchlight/sdk";
+
+const govern = new Watchlight({
+  auditSink: (record) => db.insert("agent_audit", record),
+  counterSource: (q) =>
+    db.countDecisions({                       // your query, your index
+      principal: q.principal,
+      intent: q.intent,
+      resource: q.resource,
+      outcome: q.outcome,                     // "allowed" | "denied" | "all"
+      after: q.window.start,                  // exclusive
+      until: q.window.end,                    // inclusive
+    }),
+});
+```
+
+```python
+from watchlight import Watchlight
+
+govern = Watchlight(
+    audit_sink=lambda record: db.insert("agent_audit", record),
+    counter_source=lambda q: db.count_decisions(
+        principal=q["principal"], intent=q["intent"], resource=q["resource"],
+        outcome=q["outcome"], after=q["window"]["start"], until=q["window"]["end"],
+    ),
+)
+```
+
+The source is handed the **validated, resolved** query — the same filters the
+local scan would apply, with `window.start` exclusive and `window.end` inclusive,
+both ISO-8601 UTC — and must return a **non-negative integer**. On an external
+result, `records` and `skipped` describe the local scan that did not happen and
+are `0`; `truncated` is `false` (your store's bound is yours to enforce).
+
+**Fail-closed.** A source that raises, or returns anything that is not a count,
+raises `CounterSourceError` — it never falls back to the local file, because a
+silently local count is a quota that under-counts without saying so. Handle it in
+the `context` binding the same way as `truncated`: omit the counter so the policy
+denies, and the denial is audited.
+
+```ts
+context: (o) => {
+  try {
+    const c = govern.counters({ principal: user(o), intent: "read", window: "1h" });
+    return c.truncated ? {} : { reads_this_hour: c.count };
+  } catch {
+    return {};   // no counter → the condition can't evaluate → Deny, audited
+  }
+},
+```
+
+**An async source** is read with `await govern.countersAsync(...)` /
+`await govern.counters_async(...)`, *before* the call whose `context` it feeds — a
+`context` binding is synchronous. Calling the synchronous `counters()` while an
+async source is configured raises and names the async method rather than quietly
+answering from the local file.
+
 ## Durability and the bound
 
-**The local file is the source of truth.** An
+**Without a source, the local file is the source of truth.** An
 [`auditSink`](./audit-sink.md) can mirror every record to a store you run, but
-counters read *only* the local file — the sink is never read back. On an
+counters then read *only* the local file — the sink is never read back. On an
 ephemeral host the count restarts with the file; if a quota must survive a
-redeploy, keep the file on a persistent volume, or compute the counter from your
-own store and place it in `context` yourself.
+redeploy, configure a `counterSource` over your store (above), keep the file on a
+persistent volume, or compute the counter yourself and place it in `context`.
 
 **The read is bounded and streamed.** The file is read in 64 KiB chunks, never
 loaded whole, and at most `maxBytes` / `max_bytes` (default 64 MiB) are scanned —
@@ -151,12 +225,15 @@ and disk). Keep it cheap:
   not cheaper than one with `"15m"` — the scan is bounded by bytes, not time.
 - **Durable counting belongs in your store.** The [audit sink](./audit-sink.md)
   mirrors every record into a database you run; a quota that must survive a
-  redeploy or span several hosts is a `count(*)` there, placed in `context` by
-  you. `counters()` is the zero-infrastructure version of that query.
+  redeploy or span several hosts is a `count(*)` there — reached through a
+  `counterSource` (above) or placed in `context` by you. The local scan is the
+  zero-infrastructure version of that query, and its cost is the tail rescan.
 
 ## Trust boundary
 
-`counters()` is only as trustworthy as the file it reads:
+With a `counterSource` the trust boundary moves to your store, and these points
+apply to it in whatever form they take there. Reading the local file,
+`counters()` is only as trustworthy as that file:
 
 - **Whoever can write the audit file can reset their own quota** — truncate it,
   or append fabricated `Allow`/`Deny` lines. Do not let the governed agent (or the

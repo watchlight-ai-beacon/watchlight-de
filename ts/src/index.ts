@@ -20,6 +20,7 @@ import * as path from "node:path";
 import { randomBytes, createHmac, timingSafeEqual } from "node:crypto";
 import { Scope, DE_MAX_DEPTH, type AttenuateOptions } from "./attenuation";
 import { AuditTrail, type AuditSink } from "./audit";
+import { ApprovalTokens, resolveApprovalKey, type ApprovalStore } from "./approval";
 import {
   ScopeTokenError,
   normalizeSecret,
@@ -27,7 +28,14 @@ import {
   sameSet,
   verifyScopeToken,
 } from "./scope-token";
-import { countAuditRecords, type Counters, type CountersOptions } from "./counters";
+import {
+  countAuditRecords,
+  countFromSource,
+  countFromSourceAsync,
+  type Counters,
+  type CountersOptions,
+  type CounterSource,
+} from "./counters";
 import { AuthorizeError, selectBackend, type GovernanceBackend, type Obligations } from "./backend";
 import { sanitize as sanitizeText, type SanitizeOptions, type SanitizeResult } from "./sanitize";
 import { screen as screenText, type ScreenOptions, type ScreenResult } from "./screen";
@@ -41,6 +49,8 @@ import {
 
 export { Scope, DE_MAX_DEPTH, AttenuationDenied, DevEditionCeiling } from "./attenuation";
 export type { AuditRecord, AuditSink } from "./audit";
+export { ApprovalError, APPROVAL_KEY_LABEL, APPROVAL_PAYLOAD_VERSION, APPROVAL_MIN_SECRET_BYTES } from "./approval";
+export type { ApprovalStore, ApprovalErrorCode } from "./approval";
 export type { ScopeTokenOptions, AttenuateOptions } from "./attenuation";
 export { ScopeTokenError, SCOPE_TOKEN_PREFIX, MAX_TOKEN_LENGTH } from "./scope-token";
 export type { ScopeTokenClaims, ScopeTokenErrorCode } from "./scope-token";
@@ -53,7 +63,9 @@ export {
   MAX_COUNTERS_LINE_BYTES,
   MAX_COUNTERS_NESTING,
 } from "./counters";
+export { CounterSourceError } from "./counters";
 export type { Counters, CountersOptions, CounterOutcome, CounterWindow } from "./counters";
+export type { CounterQuery, CounterSource, CounterSourceKind } from "./counters";
 export { governedHooks, DEFAULT_ON_RESULT_TIMEOUT_MS } from "./claude-agent";
 export type { GovernedHooksOptions, GovernedHooksResult } from "./claude-agent";
 export { governTool, governTools } from "./langchain";
@@ -201,52 +213,10 @@ export interface AuthorizeResult {
 }
 
 // ── approval tokens (DE: local, single-use, HMAC, TTL) ───────────────
-// Enterprise mints these KMS-signed and records them in signed lineage.
-const APPROVAL_SECRET = randomBytes(32);
-const USED_APPROVALS = new Set<string>();
-
-const approvalPayload = (
-  principal: string,
-  action: string,
-  resource: string,
-  exp: number,
-  nonce: string
-): string => `${principal} ${action} ${resource} ${exp} ${nonce}`;
-
-function mintApprovalToken(principal: string, action: string, resource: string, ttlMs: number): string {
-  const exp = Date.now() + ttlMs;
-  // A per-mint nonce makes every token unique, so two approvals for the same
-  // (principal, action, resource) minted in the same millisecond never collide
-  // — and "single-use" is genuinely per-mint, not per-(challenge, exp).
-  const nonce = randomBytes(8).toString("hex");
-  const sig = createHmac("sha256", APPROVAL_SECRET)
-    .update(approvalPayload(principal, action, resource, exp, nonce))
-    .digest("hex");
-  return `${exp}.${nonce}.${sig}`;
-}
-
-/** Verify + CONSUME an approval token (single-use). Bound to the exact
- *  (principal, action, resource); rejects expired, tampered, or reused tokens. */
-function consumeApprovalToken(
-  token: string,
-  principal: string,
-  action: string,
-  resource: string
-): boolean {
-  const parts = token.split(".");
-  if (parts.length !== 3) return false;
-  const [expStr, nonce, sig] = parts;
-  const exp = Number(expStr);
-  if (!Number.isFinite(exp) || Date.now() > exp) return false;
-  const expected = createHmac("sha256", APPROVAL_SECRET)
-    .update(approvalPayload(principal, action, resource, exp, nonce))
-    .digest("hex");
-  if (sig.length !== expected.length) return false;
-  if (!timingSafeEqual(Buffer.from(sig, "hex"), Buffer.from(expected, "hex"))) return false;
-  if (USED_APPROVALS.has(token)) return false;
-  USED_APPROVALS.add(token);
-  return true;
-}
+// Minting, verification, the signing key and the seen-token store all live in
+// `./approval` — including the per-process defaults and what they do NOT cover
+// (a second process, a second replica). Enterprise mints these KMS-signed and
+// records them in signed lineage.
 
 function resolveBinding<A extends unknown[]>(
   b: Binding<A> | undefined,
@@ -309,6 +279,36 @@ export interface WatchlightOptions {
    *  later version. See "Breaking in 0.8.0" in the identity model:
    *  https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/docs/identity-model.md */
   strictPrincipal?: boolean;
+  /** Shared secret (>= 16 bytes) that approval tokens are signed under, so a
+   *  token minted in one process verifies in another and survives a redeploy
+   *  inside its TTL. Defaults to `WATCHLIGHT_APPROVAL_SECRET`, then to
+   *  `tokenSecret` — one secret configures both, because the approval key is
+   *  `HMAC-SHA256(secret, "watchlight-de:approval-token:v1")` and never the
+   *  secret itself. With nothing configured a RANDOM PER-PROCESS key is used:
+   *  tokens then never cross a process boundary, and a restart invalidates
+   *  every outstanding approval. A token presented to a governor holding a
+   *  different key is refused exactly like an expired one — the decision stays
+   *  `NeedsApproval` with the uniform `approval required` reason. Never logged
+   *  or written. Shared with every view made by {@link Watchlight.as}. */
+  approvalSecret?: string | Uint8Array;
+  /** Where consumed approval-token ids are recorded, which is what makes an
+   *  approval single-use. Defaults to an IN-PROCESS map shared by every
+   *  governor in this process and by nothing else — behind two replicas the
+   *  same token can be consumed once on each. Supply a shared store
+   *  ({@link ApprovalStore}: `has(id)` / `add(id, expiresAt)`, sync or async)
+   *  and single-use holds across every replica. Fail-closed: a store that
+   *  throws refuses the approval; it never admits one. Shared with every view
+   *  made by {@link Watchlight.as}. */
+  approvalStore?: ApprovalStore;
+  /** Read side of {@link auditSink}: where {@link Watchlight.counters} gets its
+   *  number. Defaults to folding the local `audit.jsonl`. Configure it and
+   *  `counters` folds your durable store instead — the same store the sink
+   *  writes to — so a quota spans every replica and survives a redeploy. A
+   *  source that throws, or returns anything but a non-negative integer, fails
+   *  the read closed ({@link CounterSourceError}); it never falls back to the
+   *  local file. An async source is read with {@link Watchlight.countersAsync}.
+   *  Shared with every view made by {@link Watchlight.as}. */
+  counterSource?: CounterSource;
 }
 
 /**
@@ -436,6 +436,14 @@ interface GovernorState {
   trail: AuditTrail;
   backend: GovernanceBackend;
   tokenSecret?: Uint8Array;
+  /** The approval signing key + seen-token store. On the SHARED state, so an
+   *  approval minted through one view is consumed — and, once consumed, refused
+   *  — through every other view of the same governor. A view that had its own
+   *  store would let one token be spent once per name. */
+  approval: ApprovalTokens;
+  /** The read side of the trail, shared for the same reason: `counters()` must
+   *  answer the same number whichever name asks. */
+  counterSource?: CounterSource;
   policyCount: number;
   announced: boolean;
   /** Resolved sources already loaded — the key of {@link Watchlight.load}'s
@@ -464,6 +472,9 @@ function resolveSource(file: string): string {
 }
 
 function newState(opts: WatchlightOptions): GovernorState {
+  // Resolved once: the approval key falls back to the scope-token secret, so
+  // both are derived from the same configured value.
+  const tokenSecret = normalizeSecret(opts.tokenSecret ?? process.env.WATCHLIGHT_TOKEN_SECRET);
   return {
     trail: new AuditTrail(
       opts.auditFile === false ? null : path.join(opts.auditDir ?? ".watchlight", "audit.jsonl"),
@@ -474,7 +485,12 @@ function newState(opts: WatchlightOptions): GovernorState {
       token: opts.token,
       tenantId: opts.tenantId,
     }),
-    tokenSecret: normalizeSecret(opts.tokenSecret ?? process.env.WATCHLIGHT_TOKEN_SECRET),
+    tokenSecret: tokenSecret,
+    approval: new ApprovalTokens(
+      resolveApprovalKey(opts.approvalSecret, tokenSecret),
+      opts.approvalStore
+    ),
+    counterSource: opts.counterSource,
     policyCount: 0,
     announced: false,
     sources: new Set<string>(),
@@ -542,6 +558,12 @@ export class Watchlight {
   }
   private get _tokenSecret(): Uint8Array | undefined {
     return this._shared.tokenSecret;
+  }
+  private get _approval(): ApprovalTokens {
+    return this._shared.approval;
+  }
+  private get _counterSource(): CounterSource | undefined {
+    return this._shared.counterSource;
   }
   private get _announced(): boolean {
     return this._shared.announced;
@@ -986,7 +1008,7 @@ export class Watchlight {
     let needsApproval = allowed && !!raw.needsApproval;
     let approved = false;
     if (needsApproval) {
-      if (req.approval && consumeApprovalToken(req.approval, principal, req.action, resource)) {
+      if (req.approval && (await this._approval.consume(req.approval, principal, req.action, resource))) {
         approved = true;
         needsApproval = false; // human-confirmed → proceed
       } else {
@@ -1038,12 +1060,31 @@ export class Watchlight {
    * resource)`, to pass to {@link authorize} after a human confirms a
    * `NeedsApproval` decision. Local HMAC, TTL-bounded (default 2 min). In
    * Enterprise these are KMS-signed and recorded in signed lineage.
+   *
+   * SCOPE OF THE DEFAULTS — both are per-process, and neither is upgraded
+   * silently:
+   *
+   * * **The signing key.** With no `approvalSecret` (or `tokenSecret`) the key
+   *   is random and per-process: a token minted here is refused by any other
+   *   process, and a redeploy invalidates every outstanding approval —
+   *   indistinguishably from a genuine hold, since the reason is uniform.
+   *   Configure `approvalSecret` to mint in one process and consume in another.
+   * * **Single use.** "Used once" is recorded in the `approvalStore`, which
+   *   defaults to a map in THIS process. Behind two replicas the same token can
+   *   therefore be consumed once on EACH — single-use is per-replica, not per
+   *   token, and that degrades silently under a routine scaling change.
+   *   Configure `approvalStore` with a store every replica shares and
+   *   single-use holds across all of them.
+   *
+   * Both live on the state a view made by {@link as} shares, so a token minted
+   * through one name and consumed through another is the SAME token: the second
+   * use is refused as a replay, not admitted a second time.
    */
   mintApproval(
     challenge: { action: string; principal?: string; resource?: string },
     opts: { ttlMs?: number } = {}
   ): string {
-    return mintApprovalToken(
+    return this._approval.mint(
       this._principal(challenge.principal),
       challenge.action,
       challenge.resource ?? "resource",
@@ -1058,6 +1099,14 @@ export class Watchlight {
    * `known` dictionary values) and returns the redacted text plus the report.
    * Operates on extracted text — extract a document to text first (never hand
    * the agent a "redacted PDF").
+   *
+   * `principal` names WHO the text was sanitized for and is written to the
+   * record under the same key the decision line uses, so "what was redacted,
+   * for whom" is answerable from that record alone — including when the
+   * sanitization runs BEFORE any decision exists to join to. Omit it and the
+   * agent is the subject, recorded as `Agent::"<name>"` exactly as a decision
+   * with no named principal is. It is an identifier the caller supplies; never
+   * anything derived from the content.
    */
   sanitize(content: string, opts: SanitizeOptions & { agent?: string } = {}): SanitizeResult {
     if (opts.agent && opts.agent !== this.agent) {
@@ -1065,10 +1114,15 @@ export class Watchlight {
       return this.as(agent).sanitize(content, rest);
     }
     const { intent = "read", resource = "document", mode, types, decisionId, known } = opts;
-    // `decisionId` is validated (bounded, no control chars) inside sanitizeText
-    // before it is echoed onto the report and written to the audit line; `known`
-    // values are redacted in-process and never reach the report or the audit line.
-    const result = sanitizeText(content, { mode, types, decisionId, known });
+    // The subject the redaction was performed FOR. A call that names none has
+    // this agent as its subject — recorded as the TYPED `Agent::"<name>"`, the
+    // same reference the decision line carries, never a bare name.
+    const principal = this._principal(opts.principal);
+    // `decisionId` and `principal` are validated (bounded, no control chars)
+    // inside sanitizeText before they are echoed onto the report and written to
+    // the audit line; `known` values are redacted in-process and never reach the
+    // report or the audit line.
+    const result = sanitizeText(content, { mode, types, decisionId, principal, known });
     this._auditSanitize(intent, resource, result);
     return result;
   }
@@ -1080,7 +1134,9 @@ export class Watchlight {
    * `screening` record to the audit trail (counts per family + `flagged` — never
    * the text) and returns the text (untouched in `report` mode, family markers
    * in `redact` mode) plus the report. Pass the `decisionId` of the decision
-   * that governed the read to join the two records on `decision_id`.
+   * that governed the read to join the two records on `decision_id`, and
+   * `principal` to name whom it was screened for (the agent, typed, when the
+   * call names no subject — as on {@link sanitize}).
    */
   screen(
     content: string,
@@ -1091,9 +1147,13 @@ export class Watchlight {
       return this.as(agent).screen(content, rest);
     }
     const { intent = "read", resource = "content", mode, families, decisionId } = opts;
-    // `decisionId` is validated (bounded, no control chars) inside screenText
-    // before it is echoed onto the report and written to the audit line.
-    const result = screenText(content, { mode, families, decisionId });
+    // As in `sanitize`: the subject the screening was performed for, typed when
+    // the call names none.
+    const principal = this._principal(opts.principal);
+    // `decisionId` and `principal` are validated (bounded, no control chars)
+    // inside screenText before they are echoed onto the report and written to
+    // the audit line.
+    const result = screenText(content, { mode, families, decisionId, principal });
     this._auditScreen(intent, resource, result);
     return result;
   }
@@ -1112,19 +1172,47 @@ export class Watchlight {
    * A missing file is zero counts; an unreadable one throws
    * {@link AuditTrailUnreadable}. Synchronous, so it can run inside a `context`
    * binding right before the decision it feeds.
+   *
+   * With a `counterSource` configured this folds THAT store instead of the local
+   * file — same query, same filters, same window — and `source` says which. A
+   * source that throws or returns a non-count throws {@link CounterSourceError};
+   * an asynchronous source throws too, naming {@link countersAsync}, rather than
+   * quietly handing back a local number. The source is on the shared state, so
+   * every view made by {@link as} counts from the same place.
    */
   counters(opts: CountersOptions): Counters {
+    if (this._counterSource) return countFromSource(this._counterSource, opts);
+    return countAuditRecords(this._localTrailPath(), opts);
+  }
+
+  /**
+   * {@link counters} for an asynchronous `counterSource` — the only way to read
+   * one that returns a promise. Identical in every other respect, and identical
+   * to `counters` when no source is configured (the local file is read
+   * synchronously either way), so a caller can use it unconditionally. Await it
+   * BEFORE the call whose `context` it feeds; a `context` binding itself is
+   * synchronous.
+   */
+  async countersAsync(opts: CountersOptions): Promise<Counters> {
+    if (this._counterSource) return countFromSourceAsync(this._counterSource, opts);
+    return countAuditRecords(this._localTrailPath(), opts);
+  }
+
+  /** The local file counters fold when no `counterSource` is configured.
+   *  Counters are folded from the LOCAL file; with `auditFile: false` there is
+   *  nothing to fold, and a quota that cannot be counted must not read as zero
+   *  (that would silently widen it). Fail closed instead — unless a
+   *  `counterSource` answers, which is exactly the pairing `auditFile: false`
+   *  calls for: the sink holds the records and the source counts them. */
+  private _localTrailPath(): string {
     const trailPath = this._trail.path;
-    // Counters are folded from the LOCAL file; with `auditFile: false` there is
-    // nothing to fold, and a quota that cannot be counted must not read as
-    // zero (that would silently widen it). Fail closed instead.
     if (trailPath === null) {
       throw new Error(
         "counters() reads the local audit file, which is disabled by `auditFile: false`; " +
-          "count from your own sink's records instead"
+          "configure a `counterSource` to count your own sink's records instead"
       );
     }
-    return countAuditRecords(trailPath, opts);
+    return trailPath;
   }
 
   // ── internals ─────────────────────────────────────────────────────
@@ -1151,6 +1239,9 @@ export class Watchlight {
     };
     // Same key as the `authorize` line, so the two records join on `decision_id`.
     if (report.decisionId) record.decision_id = report.decisionId;
+    // Same key, and the same typed vocabulary, as the `authorize` line: the
+    // record names its subject even with no decision to join to.
+    if (report.principal) record.principal = report.principal;
     this._writeAudit(record);
   }
 
@@ -1240,6 +1331,9 @@ export class Watchlight {
     };
     // Same key as the `authorize` line, so the two records join on `decision_id`.
     if (report.decisionId) record.decision_id = report.decisionId;
+    // Same key, and the same typed vocabulary, as the `authorize` line: the
+    // record names its subject even with no decision to join to.
+    if (report.principal) record.principal = report.principal;
     this._writeAudit(record);
   }
 

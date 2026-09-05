@@ -255,6 +255,45 @@ if (d.decision === "NeedsApproval") {
 
 - **Three-state verdict** — `NeedsApproval` is surfaced when a matched permit is
   annotated `@enforcement_effect("require_approval")`.
+- **Approval tokens are single-use, TTL-bounded and bound to the exact
+  `(principal, action, resource)`.** Both defaults are **per-process**:
+  - the token is signed with a **random per-process key**, so it cannot cross a
+    process boundary and a restart invalidates every outstanding approval. Set
+    `approvalSecret` (or `WATCHLIGHT_APPROVAL_SECRET`, or `tokenSecret` — one
+    secret configures both, the approval key being
+    `HMAC-SHA256(secret, "watchlight-de:approval-token:v1")`, never the secret
+    itself) to mint in one process and consume in another.
+  - "used once" is recorded in an **in-process map**, so behind two replicas the
+    same token can be consumed once on *each*. Pass an `approvalStore`
+    (`has(id)` / `add(id, expiresAt)`, sync or async — the read/write shape of an
+    `auditSink`) backed by a store every replica shares, and single-use holds
+    across all of them. A store that throws **refuses** the approval; it never
+    admits one.
+
+  ```ts
+  const govern = new Watchlight({
+    approvalSecret: process.env.APPROVAL_SECRET,          // >= 16 bytes
+    approvalStore: {                                       // e.g. Redis
+      has: (id) => redis.exists(`wl:appr:${id}`).then(Boolean),
+      // a conditional write makes single-use atomic; `false` refuses the replay
+      add: (id, expiresAt) =>
+        redis.set(`wl:appr:${id}`, "1", { NX: true, PXAT: expiresAt }).then((r) => r !== null),
+    },
+  });
+  ```
+
+  Every refusal — expired, tampered, signed with another key, already consumed,
+  or a store that could not answer — surfaces as the *same* `NeedsApproval` hold
+  with the uniform `approval required` reason, so a probing caller learns nothing
+  about which check refused.
+
+  The signed payload is length-prefixed and carries a version marker, so no two
+  different `(principal, action, resource)` triples can sign the same bytes, and
+  both language packages sign identical bytes (a token minted by either verifies
+  in the other under the same secret). **Breaking in 0.8.0:** approval tokens
+  minted by an earlier version do not verify against 0.8.0 — they were signed
+  under the previous payload format. Nothing else changes, and the tokens are
+  short-lived, so drain in-flight approvals across the upgrade.
 - **Correlation id** — every decision returns `decisionId` (also in the audit
   line), so you can join it to your own records.
 - **Obligations** — a permit annotated `@obligate_redact("ssn")`,
@@ -337,6 +376,23 @@ plausible date in a `DOB:` / `date of birth` / `born on` context; bare dates are
 not matched). Modes: `tag` (consistent `<EMAIL_1>` placeholders, default), `mask`
 (`[EMAIL]`), `hash`. `govern.sanitize` records a **value-free** audit entry
 (counts by type + mode + detector version — never the values).
+
+**Name the subject with `principal`.** `sanitize` and `screen` both take
+`principal` alongside `decisionId`, echoed onto the report and written to the
+audit line under the same key the decision line uses:
+
+```ts
+govern.sanitize(text, { resource: "statement.pdf", principal: `User::"${userId}"`, decisionId });
+```
+
+Without it the record says what was redacted but not *for whom* — answerable only
+by joining through `decisionId`, and only when a decision exists. A pipeline that
+sanitizes and screens *before* it authorizes (the right order when the text must
+never be embedded unsanitized) has nothing to join to, so a data-minimisation
+audit gets "something was redacted for someone". `principal` is an identifier
+**you** supply — never anything derived from the content — validated exactly like
+`decisionId` (1–128 characters, no control or line-separator characters,
+`SanitizeError` / `ScreenError` otherwise). Records without one are unchanged.
 
 **Values you already hold** — names, streets, ids from your own records — go in
 `known`. Every occurrence is redacted (exact string, case-insensitive; overlapping
@@ -488,6 +544,31 @@ policy denies, audited). Malformed or oversized lines are skipped and counted in
 `skipped`, never echoed; a missing file is zero, an unreadable one throws
 `AuditTrailUnreadable`. Each call rescans the tail — rotate the file on a
 long-lived agent. Pattern: [quotas](../examples/patterns/quotas.md).
+
+**Count the durable store instead — `counterSource`.** The local file is
+per-container and does not survive a deploy, so a quota folded from it counts one
+replica since its last restart. `counterSource` is the read side of `auditSink`:
+the same query, answered by the store the sink writes to.
+
+```ts
+const govern = new Watchlight({
+  auditSink: (record) => db.insert("agent_audit", record),
+  counterSource: (q) => db.countDecisions(q),   // { principal, intent?, resource?, outcome, window }
+});
+const c = govern.counters({ principal: 'User::"u1"', intent: "read", window: "1h" });
+// c.source === "external"; `records` / `skipped` describe the local scan that did not happen
+```
+
+The source is handed the **validated, resolved** query — `window.start`
+exclusive, `window.end` inclusive, both ISO-8601 UTC, so it maps straight onto a
+range query — and must return a non-negative integer. Fail-closed: a throw or a
+non-count raises `CounterSourceError`; it never falls back to the local file,
+because a silently local count is a quota that under-counts without saying so. An
+**async** source is read with `await govern.countersAsync(...)`; calling the
+synchronous `counters()` on one raises rather than answering from the file (the
+`context` binding it feeds is synchronous, so resolve the number before the
+call). With no source configured, everything above is unchanged and
+`c.source === "local"`.
 
 ## Graduation to Enterprise
 

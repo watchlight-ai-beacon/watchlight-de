@@ -22,7 +22,7 @@
 // TS/Python divergence is case folding of the Turkish dotted capital İ (U+0130):
 // `İgnore …` matches in Python's re, not in JavaScript.
 
-import { DECISION_ID_MAX_LENGTH } from "./sanitize";
+import { DECISION_ID_MAX_LENGTH, validateOpaqueId } from "./sanitize";
 
 /** Rule families the screener recognizes. Each is a named counter in the report. */
 export type ScreenFamily =
@@ -70,6 +70,14 @@ export interface ScreenOptions {
    *  audit line, so it joins the decision's line. Opaque, never interpreted:
    *  1-128 characters, no control characters (`ScreenError` otherwise). */
   decisionId?: string;
+  /** Who the text is being screened FOR — the Cedar principal, exactly as it is
+   *  written on the decision record (e.g. `User::"u1"`). Echoed onto
+   *  `report.principal` and written as `principal` on the `screening` audit
+   *  record, so the record names a subject even when the screening happens
+   *  BEFORE any decision exists to join to. Opaque and never interpreted;
+   *  validated exactly like `decisionId`. An identifier the caller supplies —
+   *  never anything derived from the content. */
+  principal?: string;
 }
 
 export interface ScreenReport {
@@ -83,6 +91,8 @@ export interface ScreenReport {
   flagged: boolean;
   /** The `decisionId` supplied by the caller, if any (validated, never interpreted). */
   decisionId?: string;
+  /** The `principal` supplied by the caller, if any (validated, never interpreted). */
+  principal?: string;
 }
 
 export interface ScreenResult {
@@ -360,21 +370,11 @@ function detect(norm: string, families: Set<ScreenFamily>): Span[] {
   return kept;
 }
 
-// Same bounds as `sanitize`: an opaque correlation token that is written to the
-// audit line, so it is length-capped and free of control / line-separator
-// characters (U+2028/U+2029 included — JSON.stringify emits them raw).
-const DECISION_ID_CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
-
-function validateDecisionId(id: unknown): string | undefined {
-  if (id === undefined) return undefined;
-  if (typeof id !== "string" || id.length < 1 || id.length > DECISION_ID_MAX_LENGTH) {
-    throw new ScreenError(`decisionId must be a string of 1-${DECISION_ID_MAX_LENGTH} characters`);
-  }
-  if (DECISION_ID_CONTROL_CHARS.test(id)) {
-    throw new ScreenError("decisionId must not contain control characters");
-  }
-  return id;
-}
+// `decisionId` and `principal` are opaque ids written to the audit line, so they
+// carry the SAME bounds as in `sanitize` — length-capped and free of control /
+// line-separator characters (U+2028/U+2029 included: JSON.stringify emits them
+// raw) — enforced by the one shared validator, with `ScreenError` as the type.
+const screenError = (message: string): Error => new ScreenError(message);
 
 /**
  * Screen `text` for prompt-injection / output-leak shapes. Pure and
@@ -399,7 +399,8 @@ export function screen(text: string, opts: ScreenOptions = {}): ScreenResult {
     if (!SCREEN_FAMILIES.includes(f)) throw new ScreenError("unknown family");
   }
   const families = new Set<ScreenFamily>(requested);
-  const decisionId = validateDecisionId(opts.decisionId);
+  const decisionId = validateOpaqueId(opts.decisionId, "decisionId", screenError);
+  const principal = validateOpaqueId(opts.principal, "principal", screenError);
   try {
     const { norm, map } = normalize(text);
     const spans = detect(norm, families);
@@ -428,6 +429,7 @@ export function screen(text: string, opts: ScreenOptions = {}): ScreenResult {
       flagged: spans.length > 0,
     };
     if (decisionId !== undefined) report.decisionId = decisionId;
+    if (principal !== undefined) report.principal = principal;
     return { text: out, report };
   } catch (e) {
     if (e instanceof ScreenError) throw e;

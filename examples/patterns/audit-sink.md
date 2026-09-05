@@ -171,6 +171,25 @@ async def audit_sink(record: dict) -> None:                  # async: scheduled 
   enforces. A sink that enriches it with tool arguments, message text or user
   data re-creates exactly the exposure the trail is designed not to have.
 
+## Reading the store back
+
+The sink is write-only: nothing in the SDK reads it back by itself. Two options
+turn the same store into an input, for the two places where the local file is
+otherwise the only source:
+
+- **`counterSource` / `counter_source`** — the read side of this sink.
+  `govern.counters(...)` then folds your store instead of the local file, so a
+  quota spans every replica and survives a deploy. See the
+  [quotas pattern](./quotas.md).
+- **`approvalStore` / `approval_store`** — where consumed approval-token ids are
+  recorded, so an approval is single-use across replicas rather than once per
+  replica. See [destructive actions](./destructive-actions.md).
+
+Both are separate from the sink deliberately: the sink is fire-and-forget and
+must never affect a decision, while these two are read *on* the decision path and
+so must fail closed — a source that cannot answer refuses the read, and a store
+that cannot answer refuses the approval.
+
 **Verify.** This pattern is a delivery contract, not a policy verdict, so it has
 no `.suite.json`; `check.sh` runs [`scripts/audit-sink.mjs`](./scripts/audit-sink.mjs)
 instead. It asserts that a decision, a sanitization and an attenuation each

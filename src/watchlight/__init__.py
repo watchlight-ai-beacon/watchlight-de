@@ -31,20 +31,26 @@ from __future__ import annotations
 import datetime
 import functools
 import hashlib
-import hmac
 import inspect
 import json
 import os
 import pathlib
 import re
-import secrets
 import sys
-import time
 from typing import Any, Callable, Optional, Sequence, TypeVar, Union
 
 import watchlight_engine as _engine
 
 from . import principals
+from ._approval import (
+    APPROVAL_KEY_LABEL,
+    APPROVAL_MIN_SECRET_BYTES,
+    APPROVAL_PAYLOAD_VERSION,
+    ApprovalError,
+    ApprovalStore,
+    ApprovalTokens,
+    resolve_approval_key,
+)
 from ._audit import AuditSink, AuditTrail
 from ._counters import (
     DEFAULT_COUNTERS_MAX_BYTES,
@@ -52,7 +58,11 @@ from ._counters import (
     MAX_COUNTERS_NESTING,
     MAX_COUNTERS_WINDOW_SECONDS,
     AuditTrailUnreadable,
+    CounterSource,
+    CounterSourceError,
     count_audit_records,
+    count_from_source,
+    count_from_source_async,
     parse_window_seconds,
 )
 from .attenuation import DE_MAX_DEPTH, AttenuationDenied, DevEditionCeiling, Scope
@@ -72,6 +82,13 @@ __all__ = [
     "REQUEST_INVALID_MESSAGE",
     "AuditSink",
     "AuditTrailUnreadable",
+    "ApprovalError",
+    "ApprovalStore",
+    "APPROVAL_KEY_LABEL",
+    "APPROVAL_MIN_SECRET_BYTES",
+    "APPROVAL_PAYLOAD_VERSION",
+    "CounterSource",
+    "CounterSourceError",
     "count_audit_records",
     "parse_window_seconds",
     "DEFAULT_COUNTERS_MAX_BYTES",
@@ -207,14 +224,17 @@ class _GovernorState:
     """Everything a governor owns that is NOT its name: the engine and its
     compiled policies, the audit trail (file + sink), the scope-token secret,
     and the counters. A view made by :meth:`Watchlight.as_` shares this object
-    by reference, so it is provably the same engine, the same policies and the
-    same trail — only the name stamped on records and decisions differs."""
+    by reference, so it is provably the same engine, the same policies, the same
+    trail, the same approval store and the same counter source — only the name
+    stamped on records and decisions differs."""
 
     __slots__ = (
         "engine",
         "trail",
         "audit_path",
         "token_secret",
+        "approval",
+        "counter_source",
         "policy_count",
         "announced",
         "sources",
@@ -230,6 +250,14 @@ class _GovernorState:
         self.trail: Optional[AuditTrail] = None
         self.audit_path: Optional[pathlib.Path] = None
         self.token_secret: Optional[bytes] = None
+        #: The approval signing key + seen-token store. On the SHARED state, so
+        #: an approval minted through one view is consumed — and, once consumed,
+        #: refused — through every other view of the same governor. A view with
+        #: its own store would let one token be spent once per name.
+        self.approval: Any = None
+        #: The read side of the trail, shared for the same reason:
+        #: ``counters()`` must answer the same number whichever name asks.
+        self.counter_source: Optional[CounterSource] = None
         self.policy_count = 0
         self.announced = False
         #: Resolved sources already loaded — the key of ``load()``'s idempotence.
@@ -294,43 +322,10 @@ class NeedsApproval(PermissionError):
 
 
 # ── approval tokens (DE: local, single-use, HMAC, TTL) ──────────────────────
-# Enterprise mints these KMS-signed and records them in signed lineage.
-_APPROVAL_SECRET = secrets.token_bytes(32)
-_USED_APPROVALS: set[str] = set()
-
-
-def _mint_approval_token(principal: str, action: str, resource: str, ttl_ms: int) -> str:
-    exp = int(time.time() * 1000) + ttl_ms
-    # A per-mint nonce makes every token unique, so two approvals for the same
-    # (principal, action, resource) minted in the same millisecond never collide
-    # — and "single-use" is genuinely per-mint, not per-(challenge, exp).
-    nonce = secrets.token_hex(8)
-    payload = f"{principal} {action} {resource} {exp} {nonce}".encode()
-    sig = hmac.new(_APPROVAL_SECRET, payload, hashlib.sha256).hexdigest()
-    return f"{exp}.{nonce}.{sig}"
-
-
-def _consume_approval_token(token: str, principal: str, action: str, resource: str) -> bool:
-    """Verify + consume (single-use). Bound to the exact (principal, action,
-    resource); rejects expired, tampered, or reused tokens."""
-    parts = token.split(".")
-    if len(parts) != 3:
-        return False
-    exp_str, nonce, sig = parts
-    try:
-        exp = int(exp_str)
-    except ValueError:
-        return False
-    if int(time.time() * 1000) > exp:
-        return False
-    payload = f"{principal} {action} {resource} {exp} {nonce}".encode()
-    expected = hmac.new(_APPROVAL_SECRET, payload, hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(sig, expected):
-        return False
-    if token in _USED_APPROVALS:
-        return False
-    _USED_APPROVALS.add(token)
-    return True
+# Minting, verification, the signing key and the seen-token store all live in
+# ``watchlight._approval`` — including the per-process defaults and what they do
+# NOT cover (a second process, a second replica). Enterprise mints these
+# KMS-signed and records them in signed lineage.
 
 
 def _needs_approval(details: Any) -> bool:
@@ -498,18 +493,28 @@ DECISION_ID_MAX_LENGTH = 128
 _DECISION_ID_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
 
 
-def _validate_decision_id(decision_id: Any, *, error: type = SanitizeError) -> Optional[str]:
-    """Fail-closed check of a correlation id before it reaches the audit line.
-    Accepts ``None`` (no correlation); rejects anything that is not a short,
-    control-character-free ``str`` by raising ``error`` (the calling
-    primitive's own exception type). The id is never parsed."""
-    if decision_id is None:
+def _validate_opaque_id(
+    value: Any, *, field: str = "decision_id", error: type = SanitizeError
+) -> Optional[str]:
+    """Fail-closed check of a caller-supplied opaque id — a ``decision_id``, a
+    ``principal`` — before it reaches the audit line. Accepts ``None`` (the field
+    is simply absent); rejects anything that is not a short,
+    control-character-free ``str`` by raising ``error`` (the calling primitive's
+    own exception type) with a fixed message that never echoes the value. The id
+    is never parsed. Shared by ``sanitize`` and ``screen``, so both primitives
+    apply exactly the same bounds to both fields."""
+    if value is None:
         return None
-    if not isinstance(decision_id, str) or not 1 <= len(decision_id) <= DECISION_ID_MAX_LENGTH:
-        raise error(f"decision_id must be a string of 1-{DECISION_ID_MAX_LENGTH} characters")
-    if _DECISION_ID_CONTROL_CHARS.search(decision_id):
-        raise error("decision_id must not contain control characters")
-    return decision_id
+    if not isinstance(value, str) or not 1 <= len(value) <= DECISION_ID_MAX_LENGTH:
+        raise error(f"{field} must be a string of 1-{DECISION_ID_MAX_LENGTH} characters")
+    if _DECISION_ID_CONTROL_CHARS.search(value):
+        raise error(f"{field} must not contain control characters")
+    return value
+
+
+def _validate_decision_id(decision_id: Any, *, error: type = SanitizeError) -> Optional[str]:
+    """:func:`_validate_opaque_id` for the ``decision_id`` field."""
+    return _validate_opaque_id(decision_id, field="decision_id", error=error)
 
 
 def _luhn_ok(digits: str) -> bool:
@@ -711,6 +716,7 @@ def sanitize(
     mode: str = "tag",
     types: Optional[Sequence[str]] = None,
     decision_id: Optional[str] = None,
+    principal: Optional[str] = None,
     known: Optional[Sequence[str]] = None,
 ) -> dict:
     """Redact PII from ``text``. Deterministic, fail-closed. Returns
@@ -730,6 +736,7 @@ def sanitize(
     if not isinstance(text, str):
         raise SanitizeError("input must be a string (extract document text first)")
     decision_id = _validate_decision_id(decision_id)
+    principal = _validate_opaque_id(principal, field="principal")
     if known is not None and isinstance(known, (str, bytes)):
         # A bare string is a Sequence[str] of characters — never what was meant.
         raise SanitizeError("known must be a sequence of strings")
@@ -801,6 +808,8 @@ def sanitize(
         }
         if decision_id is not None:
             report["decision_id"] = decision_id
+        if principal is not None:
+            report["principal"] = principal
         return {"text": "".join(out), "report": report}
     except Exception as exc:  # noqa: BLE001 - fail-closed
         raise SanitizeError(str(exc)) from exc
@@ -1007,6 +1016,7 @@ def screen(
     mode: str = "report",
     families: Optional[Sequence[str]] = None,
     decision_id: Optional[str] = None,
+    principal: Optional[str] = None,
 ) -> dict:
     """Screen ``text`` for prompt-injection / output-leak shapes. Deterministic,
     fail-closed. Returns ``{"text": ..., "report": {mode, detector_version,
@@ -1030,6 +1040,7 @@ def screen(
             raise ScreenError("unknown family")
     enabled = set(requested)
     decision_id = _validate_decision_id(decision_id, error=ScreenError)
+    principal = _validate_opaque_id(principal, field="principal", error=ScreenError)
     try:
         norm, idx = _screen_normalize(text)
         spans: list[tuple[int, int, str]] = []
@@ -1069,6 +1080,8 @@ def screen(
         }
         if decision_id is not None:
             report["decision_id"] = decision_id
+        if principal is not None:
+            report["principal"] = principal
         return {"text": out, "report": report}
     except ScreenError:
         raise
@@ -1091,6 +1104,9 @@ class Watchlight:
         audit_sink: Optional[AuditSink] = None,
         *,
         token_secret: Union[str, bytes, None] = None,
+        approval_secret: Union[str, bytes, None] = None,
+        approval_store: Optional[ApprovalStore] = None,
+        counter_source: Optional[CounterSource] = None,
         audit_file: bool = True,
         strict_principal: bool = True,
     ) -> None:
@@ -1112,6 +1128,40 @@ class Watchlight:
             boundary with integrity. Defaults to ``$WATCHLIGHT_TOKEN_SECRET``.
             When unset, minting and verifying scope tokens fail closed; there is
             no built-in default. Never logged or written.
+        :param approval_secret: shared secret (>= 16 bytes) that approval tokens
+            are signed under, so a token minted in one process verifies in
+            another and survives a redeploy inside its TTL. Defaults to
+            ``$WATCHLIGHT_APPROVAL_SECRET``, then to ``token_secret`` — one
+            secret configures both, because the approval key is
+            ``HMAC-SHA256(secret, "watchlight-de:approval-token:v1")`` and never
+            the secret itself. With nothing configured a RANDOM PER-PROCESS key
+            is used: tokens then never cross a process boundary, and a restart
+            invalidates every outstanding approval. A token presented to a
+            governor holding a different key is refused exactly like an expired
+            one — the decision stays ``NeedsApproval`` with the uniform
+            ``approval required`` reason. Never logged or written. Shared with
+            every view made by :meth:`as_`.
+        :param approval_store: where consumed approval-token ids are recorded,
+            which is what makes an approval single-use. Defaults to an
+            IN-PROCESS dict shared by every governor in this process and by
+            nothing else — behind two replicas the same token can be consumed
+            once on each. Supply a shared store
+            (:class:`~watchlight._approval.ApprovalStore`: ``has(id)`` /
+            ``add(id, expires_at)``) and single-use holds across every replica.
+            Fail-closed: a store that raises refuses the approval; it never
+            admits one. Shared with every view made by :meth:`as_`, so a token
+            minted through one name and consumed through another is refused as a
+            replay rather than admitted twice.
+        :param counter_source: read side of ``audit_sink``: where
+            :meth:`counters` gets its number. Defaults to folding the local
+            ``audit.jsonl``. Configure it and ``counters`` folds your durable
+            store instead — the same store the sink writes to — so a quota spans
+            every replica and survives a redeploy, and ``audit_file=False``
+            stops being an obstacle to counting. A source that raises, or
+            returns anything but a non-negative ``int``, fails the read closed
+            (:class:`CounterSourceError`); it never falls back to the local file.
+            An async source is read with :meth:`counters_async`. Shared with
+            every view made by :meth:`as_`.
         :param audit_file: write the local ``audit.jsonl`` at all (default
             ``True``). ``False`` makes ``audit_sink`` the SOLE destination: no
             ``.watchlight`` directory and no file are created, and
@@ -1153,6 +1203,13 @@ class Watchlight:
         state.token_secret = normalize_secret(
             token_secret if token_secret is not None else os.environ.get("WATCHLIGHT_TOKEN_SECRET")
         )
+        state.approval = ApprovalTokens(
+            resolve_approval_key(
+                approval_secret, state.token_secret, os.environ.get("WATCHLIGHT_APPROVAL_SECRET")
+            ),
+            approval_store,
+        )
+        state.counter_source = counter_source
 
     # The state below is reached through properties so that a view from
     # :meth:`as_` and the governor it came from read and write ONE copy of it.
@@ -1176,6 +1233,14 @@ class Watchlight:
     @property
     def _token_secret(self) -> Optional[bytes]:
         return self._shared.token_secret
+
+    @property
+    def _approval(self) -> ApprovalTokens:
+        return self._shared.approval
+
+    @property
+    def _counter_source(self) -> Optional[CounterSource]:
+        return self._shared.counter_source
 
     @property
     def _announced(self) -> bool:
@@ -1619,7 +1684,7 @@ class Watchlight:
         needs = allowed and _needs_approval(raw.get("details"))
         approved = False
         if needs:
-            if approval and _consume_approval_token(approval, prin, action, res):
+            if approval and self._approval.consume(approval, prin, action, res):
                 approved, needs = True, False
             else:
                 allowed = False
@@ -1669,8 +1734,29 @@ class Watchlight:
     ) -> str:
         """Mint a single-use approval token bound to ``(principal, action,
         resource)``, to pass to :meth:`authorize` after a human confirms a
-        ``NeedsApproval``. Local HMAC, TTL-bounded (default 2 min)."""
-        return _mint_approval_token(
+        ``NeedsApproval``. Local HMAC, TTL-bounded (default 2 min).
+
+        SCOPE OF THE DEFAULTS — both are per-process, and neither is upgraded
+        silently:
+
+        * **The signing key.** With no ``approval_secret`` (or ``token_secret``)
+          the key is random and per-process: a token minted here is refused by
+          any other process, and a redeploy invalidates every outstanding
+          approval — indistinguishably from a genuine hold, since the reason is
+          uniform. Configure ``approval_secret`` to mint in one process and
+          consume in another.
+        * **Single use.** "Used once" is recorded in the ``approval_store``,
+          which defaults to a dict in THIS process. Behind two replicas the same
+          token can therefore be consumed once on EACH — single-use is
+          per-replica, not per token, and that degrades silently under a routine
+          scaling change. Configure ``approval_store`` with a store every replica
+          shares and single-use holds across all of them.
+
+        Both live on the state a view made by :meth:`as_` shares, so a token
+        minted through one name and consumed through another is the SAME token:
+        the second use is refused as a replay, not admitted twice.
+        """
+        return self._approval.mint(
             self._principal(principal), action, resource or "resource", ttl_ms
         )
 
@@ -1683,6 +1769,7 @@ class Watchlight:
         mode: str = "tag",
         types: Optional[Sequence[str]] = None,
         decision_id: Optional[str] = None,
+        principal: Optional[str] = None,
         known: Optional[Sequence[str]] = None,
         agent: Optional[str] = None,
     ) -> dict:
@@ -1691,7 +1778,15 @@ class Watchlight:
         record (counts by type — never the values, including ``known`` ones).
         Extract a document to text first (never a "redacted PDF").
         Pass the ``decision_id`` returned by :meth:`authorize` to join the
-        ``sanitization`` audit line to the decision that governed the read."""
+        ``sanitization`` audit line to the decision that governed the read.
+
+        ``principal`` names WHO the text was sanitized for and is written to the
+        record under the same key the decision line uses, so "what was redacted,
+        for whom" is answerable from that record alone — including when the
+        sanitization runs BEFORE any decision exists to join to. Omit it and the
+        agent is the subject, recorded as ``Agent::"<name>"`` exactly as a
+        decision with no named principal is. It is an identifier the caller
+        supplies; never anything derived from the content."""
         if agent and agent != self.agent:
             return self.as_(agent).sanitize(
                 content,
@@ -1700,11 +1795,23 @@ class Watchlight:
                 mode=mode,
                 types=types,
                 decision_id=decision_id,
+                principal=principal,
                 known=known,
             )
-        # decision_id is validated (bounded, no control chars) inside sanitize()
-        # before it is echoed onto the report and written to the audit line.
-        result = sanitize(content, mode=mode, types=types, decision_id=decision_id, known=known)
+        # The subject the redaction was performed FOR. A call that names none has
+        # this agent as its subject — recorded as the TYPED Agent::"<name>", the
+        # same reference the decision line carries, never a bare name.
+        # decision_id and principal are validated (bounded, no control chars)
+        # inside sanitize() before they are echoed onto the report and written to
+        # the audit line.
+        result = sanitize(
+            content,
+            mode=mode,
+            types=types,
+            decision_id=decision_id,
+            principal=self._principal(principal),
+            known=known,
+        )
         self._audit_sanitize(intent, resource, result)
         return result
 
@@ -1717,12 +1824,15 @@ class Watchlight:
         mode: str = "report",
         families: Optional[Sequence[str]] = None,
         decision_id: Optional[str] = None,
+        principal: Optional[str] = None,
         agent: Optional[str] = None,
     ) -> dict:
         """Screen text for prompt-injection / output-leak shapes before it
         (re-)enters the model. Fail-closed; writes a value-free ``screening``
         audit record (counts per family + ``flagged`` — never the text). Pass the
-        ``decision_id`` returned by :meth:`authorize` to join the two records."""
+        ``decision_id`` returned by :meth:`authorize` to join the two records, and
+        ``principal`` to name whom the text was screened for (the agent, typed,
+        when the call names no subject — as on :meth:`sanitize`)."""
         if agent and agent != self.agent:
             return self.as_(agent).screen(
                 content,
@@ -1731,10 +1841,18 @@ class Watchlight:
                 mode=mode,
                 families=families,
                 decision_id=decision_id,
+                principal=principal,
             )
-        # decision_id is validated (bounded, no control chars) inside screen()
-        # before it is echoed onto the report and written to the audit line.
-        result = screen(content, mode=mode, families=families, decision_id=decision_id)
+        # As in sanitize(): the subject the screening was performed for, typed
+        # when the call names none. decision_id and principal are validated
+        # (bounded, no control chars) inside screen().
+        result = screen(
+            content,
+            mode=mode,
+            families=families,
+            decision_id=decision_id,
+            principal=self._principal(principal),
+        )
         self._audit_screen(intent, resource, result)
         return result
 
@@ -1768,16 +1886,29 @@ class Watchlight:
         with ``audit_file=False`` there is nothing to fold and this raises,
         rather than reading as zero and silently widening a quota. See
         :func:`watchlight.count_audit_records`.
+
+        With a ``counter_source`` configured this folds THAT store instead of the
+        local file — same query, same filters, same window — and
+        ``result["source"]`` says which; ``audit_file=False`` then stops being an
+        obstacle, since the number no longer comes from the file. A source that
+        raises or returns a non-count raises :class:`CounterSourceError`; an
+        asynchronous source raises too, naming :meth:`counters_async`, rather
+        than quietly handing back a local number. The source lives on the shared
+        state, so every view made by :meth:`as_` counts from the same place.
         """
-        if self._audit_path is None:
-            # A quota that cannot be counted must not read as zero — that would
-            # silently widen it. Fail closed instead.
-            raise RuntimeError(
-                "counters() reads the local audit file, which is disabled by "
-                "audit_file=False; count from your own sink's records instead"
+        if self._counter_source is not None:
+            return count_from_source(
+                self._counter_source,
+                principal=principal,
+                intent=intent,
+                resource=resource,
+                window=window,
+                outcome=outcome,
+                now=now,
+                max_bytes=max_bytes,
             )
         return count_audit_records(
-            self._audit_path,
+            self._local_audit_path(),
             principal,
             intent,
             resource,
@@ -1786,6 +1917,59 @@ class Watchlight:
             now=now,
             max_bytes=max_bytes,
         )
+
+    async def counters_async(
+        self,
+        principal: str,
+        intent: Optional[str] = None,
+        resource: Optional[str] = None,
+        window: Union[str, int] = "1h",
+        *,
+        outcome: str = "allowed",
+        now: Union[None, datetime.datetime, str] = None,
+        max_bytes: int = DEFAULT_COUNTERS_MAX_BYTES,
+    ) -> dict:
+        """:meth:`counters` for an asynchronous ``counter_source`` — the only way
+        to read one that returns an awaitable. Identical in every other respect,
+        and identical to :meth:`counters` when no source is configured (the local
+        file is read synchronously either way), so a caller can use it
+        unconditionally. Await it BEFORE the call whose ``context`` it feeds; a
+        ``context`` binding itself is synchronous."""
+        if self._counter_source is not None:
+            return await count_from_source_async(
+                self._counter_source,
+                principal=principal,
+                intent=intent,
+                resource=resource,
+                window=window,
+                outcome=outcome,
+                now=now,
+                max_bytes=max_bytes,
+            )
+        return count_audit_records(
+            self._local_audit_path(),
+            principal,
+            intent,
+            resource,
+            window,
+            outcome=outcome,
+            now=now,
+            max_bytes=max_bytes,
+        )
+
+    def _local_audit_path(self) -> pathlib.Path:
+        """The local file counters fold when no ``counter_source`` is configured.
+        A quota that cannot be counted must not read as zero — that would
+        silently widen it — so ``audit_file=False`` fails closed here, unless a
+        source answers instead, which is exactly the pairing that option calls
+        for: the sink holds the records and the source counts them."""
+        if self._audit_path is None:
+            raise RuntimeError(
+                "counters() reads the local audit file, which is disabled by "
+                "audit_file=False; configure a counter_source to count your own "
+                "sink's records instead"
+            )
+        return self._audit_path
 
     def _apply_on_result(self, result: Any, on_result: Callable[[Any, dict], Any], info: dict) -> tuple[Any, bool]:
         """Run an egress hook over a governed tool's result and audit the outcome
@@ -1929,6 +2113,10 @@ class Watchlight:
         # Same key as the authorize line, so the two records join on decision_id.
         if report.get("decision_id"):
             record["decision_id"] = report["decision_id"]
+        # Same key, and the same typed vocabulary, as the authorize line: the
+        # record names its subject even with no decision to join to.
+        if report.get("principal"):
+            record["principal"] = report["principal"]
         self._write_audit(record)
 
     def _audit_screen(self, intent: str, resource: str, result: dict) -> None:
@@ -1955,6 +2143,10 @@ class Watchlight:
         # Same key as the authorize line, so the two records join on decision_id.
         if report.get("decision_id"):
             record["decision_id"] = report["decision_id"]
+        # Same key, and the same typed vocabulary, as the authorize line: the
+        # record names its subject even with no decision to join to.
+        if report.get("principal"):
+            record["principal"] = report["principal"]
         self._write_audit(record)
 
     def _write_audit(self, record: dict) -> None:

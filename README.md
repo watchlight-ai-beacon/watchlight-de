@@ -263,6 +263,21 @@ It mirrors the Python package feature-for-feature:
   `govern.tool(fn, { intent, principal?, resource?, context?, onNeedsApproval?, onResult? })`
   — runtime facts into Cedar `context.*`, per-call `principal`, and a three-state
   `Allow` / `Deny` / **`NeedsApproval`** verdict with a single-use approval token.
+  Approval tokens are signed with a **random per-process key** and recorded as
+  used in an **in-process map** unless you configure otherwise — so by default a
+  token cannot cross a process boundary, a restart invalidates outstanding
+  approvals, and behind two replicas the same token can be consumed once on
+  *each*. `approvalSecret` / `approval_secret` (or `WATCHLIGHT_APPROVAL_SECRET`,
+  or the existing `tokenSecret`, from which the approval key is derived with a
+  distinct domain separator) makes a token portable; an `approvalStore` /
+  `approval_store` (`has(id)` / `add(id, expiresAt)`) backed by a shared store
+  makes single-use hold across replicas. A store that fails **refuses** the
+  approval — it never admits one.
+  **Breaking in 0.8.0:** the signed payload is now length-prefixed and versioned,
+  so no two different `(principal, action, resource)` triples can sign the same
+  bytes — approval tokens minted by an earlier version do not verify against
+  0.8.0. The tokens are short-lived, so drain in-flight approvals across the
+  upgrade.
 - **Govern what a tool returns:** `onResult(result, { intent, resource, principal,
   decisionId, obligations? })` (Python `on_result`) runs after the body and before
   the caller sees the result — sanitize, screen, honour the decision's
@@ -280,16 +295,23 @@ It mirrors the Python package feature-for-feature:
   See the [allow-but-redact pattern](examples/patterns/allow-but-redact.md).
 - **Frameworks:** `governedHooks()` for the Claude Agent SDK; `governTool()` for
   LangChain / LangGraph.js.
-- **Data minimization:** `govern.sanitize(text, { resource, decisionId, known? })`
+- **Data minimization:** `govern.sanitize(text, { resource, decisionId, principal?, known? })`
   — strip PII before an agent reads a document: structured detectors (email,
   phone, SSN, card, IBAN, IPv4, API key, labelled passport / date of birth), an
   app-supplied `known` dictionary (`KNOWN`; simple case-insensitive match —
   Unicode case folding differs between lanes), and opt-in `PERSON` / `ADDRESS`
   heuristics. Pass the `decisionId` from `authorize` and the `sanitization`
-  audit line joins the decision on `decision_id`.
-- **Content screening:** `govern.screen(text, { resource, decisionId? })` — flag
-  or redact prompt-injection shapes in what a read returns, before it reaches the
-  model; with the `decisionId` the `screening` audit line joins the decision.
+  audit line joins the decision on `decision_id`; pass `principal` (Python
+  `principal=`) and the line names *whose* data was redacted, under the same key
+  the decision line uses — which is the only way to answer that when the
+  sanitization runs *before* any decision exists to join to.
+- **Content screening:** `govern.screen(text, { resource, decisionId?, principal? })`
+  — flag or redact prompt-injection shapes in what a read returns, before it
+  reaches the model; with the `decisionId` the `screening` audit line joins the
+  decision, and `principal` names whom it was screened for. Both fields are
+  identifiers you supply — never anything derived from the content — and carry
+  the same validation (1–128 characters, no control or line-separator
+  characters).
 - **Attenuation & graduation:** `govern.scope().attenuate()`; `scope.toToken()` /
   `govern.scopeFromToken()` carry an attenuated scope to a worker process (HMAC
   integrity; the receiving engine re-proves the subset); every decision returns a
@@ -387,6 +409,26 @@ default); malformed lines are skipped and counted, never echoed.
 c = govern.counters(principal='User::"u1"', intent="read", window="1h")   # {"count": 7, "window": {...}, ...}
 govern.authorize(action="read", principal='User::"u1"', context={"reads_this_hour": c["count"]})
 ```
+
+By default that count comes from the local file, which is per-container and does
+not survive a deploy. `counter_source` / `counterSource` is the **read side** of
+the sink: the same query, answered by the durable store the sink writes to, so
+the quota spans every replica.
+
+```python
+govern = Watchlight(
+    agent="my-agent",
+    audit_sink=lambda record: my_store.insert(record),
+    counter_source=lambda query: my_store.count_decisions(query),
+)
+c = govern.counters(principal='User::"u1"', intent="read", window="1h")   # c["source"] == "external"
+```
+
+The source is handed the validated, resolved query — `principal`, `intent`,
+`resource`, `outcome` and a `window` whose `start` is exclusive and `end`
+inclusive — and must return a non-negative integer. Fail-closed: it never falls
+back to the local file, so a quota can never quietly under-count. An async source
+is read with `counters_async(...)` / `countersAsync(...)`.
 
 The [quotas pattern](examples/patterns/quotas.md) has the policy, the tool
 binding, and the exact counting rules.

@@ -84,6 +84,51 @@ export interface Counters {
   /** True when the file was larger than `maxBytes` and only its tail was
    *  scanned — `count` is then a lower bound. */
   truncated: boolean;
+  /** Where `count` came from: `"local"` (the audit file) or `"external"` (a
+   *  configured {@link CounterSource}). On `"external"`, `records` and
+   *  `skipped` describe the local scan that did not happen and are `0`. */
+  source: CounterSourceKind;
+}
+
+/** Which side produced a {@link Counters}. */
+export type CounterSourceKind = "local" | "external";
+
+/** The query a {@link CounterSource} is asked to answer — the validated,
+ *  resolved form of the caller's {@link CountersOptions}. `window.start` is
+ *  exclusive and `window.end` inclusive, both ISO-8601 UTC, so the source can
+ *  translate them straight into a range query. `intent` / `resource` are absent
+ *  when the caller did not filter on them; when present they match by exact
+ *  string equality, like the local scan. */
+export interface CounterQuery {
+  principal: string;
+  intent?: string;
+  resource?: string;
+  outcome: CounterOutcome;
+  window: CounterWindow;
+}
+
+/**
+ * The read-side counterpart of an `auditSink`: given a {@link CounterQuery},
+ * return how many DECISION records match it in your durable store — the same
+ * records the sink wrote there. Configured via `WatchlightOptions.counterSource`.
+ *
+ * Must return a non-negative safe integer, or a promise of one (an async source
+ * is read with `countersAsync`). Fail-closed: a throw, a rejection, or anything
+ * that is not a count raises {@link CounterSourceError} — the read never falls
+ * back to the local file, because a silently local count is a quota that under-
+ * counts without saying so.
+ */
+export type CounterSource = (query: CounterQuery) => number | Promise<number>;
+
+/** A configured {@link CounterSource} could not produce a count. Fail-closed:
+ *  the quota read fails rather than returning a number from somewhere else. The
+ *  message is fixed and value-free; the source's own error is on `cause`. */
+export class CounterSourceError extends Error {
+  constructor(detail: string, options?: { cause?: unknown }) {
+    super(`counter source failed (fail-closed): ${detail}`);
+    this.name = "CounterSourceError";
+    if (options && "cause" in options) (this as { cause?: unknown }).cause = options.cause;
+  }
 }
 
 /** The audit file exists but could not be read (permissions, a directory, an
@@ -279,12 +324,19 @@ function tallyLine(
   }
 }
 
-/**
- * Count decision records in the audit file at `auditPath`. See the module
- * header for exactly what counts. Synchronous — it is meant to run inside a
- * `context` binding, right before the decision it feeds.
- */
-export function countAuditRecords(auditPath: string, opts: CountersOptions): Counters {
+type Filter = {
+  principal: string;
+  intent?: string;
+  resource?: string;
+  outcome: CounterOutcome;
+  start: number;
+  end: number;
+};
+
+/** Validate the options and resolve the window ONCE — shared by the local scan
+ *  and by a {@link CounterSource}, so both are asked exactly the same question
+ *  and reject exactly the same inputs. @internal */
+function prepareCounters(opts: CountersOptions): { filter: Filter; result: Counters; maxBytes: number } {
   if (typeof opts?.principal !== "string" || opts.principal.length === 0) {
     throw new TypeError("principal must be a non-empty string");
   }
@@ -311,9 +363,82 @@ export function countAuditRecords(auditPath: string, opts: CountersOptions): Cou
     records: 0,
     skipped: 0,
     truncated: false,
+    source: "local",
   };
   if (opts.intent !== undefined) result.intent = opts.intent;
   if (opts.resource !== undefined) result.resource = opts.resource;
+  return { filter, result, maxBytes };
+}
+
+/** The {@link CounterQuery} a source is handed for these options. @internal */
+function queryOf(result: Counters): CounterQuery {
+  const query: CounterQuery = {
+    principal: result.principal,
+    outcome: result.outcome,
+    window: { ...result.window },
+  };
+  if (result.intent !== undefined) query.intent = result.intent;
+  if (result.resource !== undefined) query.resource = result.resource;
+  return query;
+}
+
+/** Turn a source's return value into a `Counters`, or fail closed. @internal */
+function countersFromSourceValue(count: unknown, result: Counters): Counters {
+  if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) {
+    throw new CounterSourceError("a counter source must return a non-negative integer count");
+  }
+  result.count = count;
+  return result;
+}
+
+/**
+ * Count via a {@link CounterSource}, synchronously. The source is validated the
+ * same way the local scan is, and a promise is refused rather than resolved
+ * behind the caller's back: a `context` binding that must stay synchronous
+ * cannot silently become a stale or local number.
+ */
+export function countFromSource(source: CounterSource, opts: CountersOptions): Counters {
+  const { result } = prepareCounters(opts);
+  result.source = "external";
+  let count: unknown;
+  try {
+    count = source(queryOf(result));
+  } catch (err) {
+    throw new CounterSourceError("the counter source threw", { cause: err });
+  }
+  if (count !== null && typeof count === "object" && typeof (count as Promise<number>).then === "function") {
+    // Never leave it unhandled: the caller is getting an error, not this value.
+    (count as Promise<number>).then(undefined, () => {});
+    throw new CounterSourceError(
+      "the counter source is asynchronous — read it with countersAsync()"
+    );
+  }
+  return countersFromSourceValue(count, result);
+}
+
+/** {@link countFromSource} for a source that may return a promise. */
+export async function countFromSourceAsync(
+  source: CounterSource,
+  opts: CountersOptions
+): Promise<Counters> {
+  const { result } = prepareCounters(opts);
+  result.source = "external";
+  let count: unknown;
+  try {
+    count = await source(queryOf(result));
+  } catch (err) {
+    throw new CounterSourceError("the counter source threw", { cause: err });
+  }
+  return countersFromSourceValue(count, result);
+}
+
+/**
+ * Count decision records in the audit file at `auditPath`. See the module
+ * header for exactly what counts. Synchronous — it is meant to run inside a
+ * `context` binding, right before the decision it feeds.
+ */
+export function countAuditRecords(auditPath: string, opts: CountersOptions): Counters {
+  const { filter, result, maxBytes } = prepareCounters(opts);
 
   let fd: number;
   try {
