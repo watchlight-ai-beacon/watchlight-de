@@ -44,12 +44,23 @@ def governed_plugin(
     through this plugin. (``tenant_id`` is the plugin's own and always wins over
     a value passed here.)
 
-    **What it cannot express: an acting subject.** Every decision a framework
-    plugin makes is attributed to the agent it runs — ``Agent::"<agent>"`` —
-    and there is no per-call principal, at construction or on the handle. For a
-    policy that must name the person or tenant a call is made FOR, govern that
-    call with :meth:`watchlight.Watchlight.tool` (which takes ``principal``,
-    ``resource`` and ``context``) instead of, or alongside, this plugin.
+    **The acting subject: also per call, on the handle.** Pass ``principal`` to
+    name the person or tenant a call is made FOR::
+
+        await handle.authorize_action(
+            "read", "tool/read_ticket", principal=f'User::"{user_id}"',
+        )
+
+    Omitted, the subject defaults to the agent that runs — ``Agent::"<agent
+    uuid>"`` — so an existing call is unchanged. Requires
+    ``watchlight-agent-sdk`` 0.7.0 or later.
+
+    **Name the entity type.** ``principal``, ``resource`` and the action reach
+    the engine exactly as given. A typed reference such as ``User::"u-1"``
+    discriminates: a policy naming a different type with the same id does not
+    match it. A BARE name is a wildcard that matches every entity type with
+    that id, which is a convenience for a scratch policy and the wrong thing
+    for a decision you rely on.
 
     :param policies: local Cedar policies — a path to a JSON policy file or an
         in-memory list of ``{"name", "code"}`` objects. ``None`` → fail-closed.

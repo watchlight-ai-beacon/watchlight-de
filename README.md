@@ -374,7 +374,7 @@ Going to production is one environment variable, not a rewrite — set
 service. Runnable examples for all three frameworks are in
 [`examples/`](examples/).
 
-### What a plugin can and cannot express
+### What a plugin can express, and where
 
 `governed_plugin()` is constructor wiring: it builds the published plugin and
 hands it the in-process engine. The governance terms of a single call belong to
@@ -384,15 +384,24 @@ the plugin's own run handle, not to the factory.
   `await handle.authorize_action("read_ticket", "tool/read_ticket", context={"caller": caller, "owner": owner})`
   — a policy that reads `context.*` is satisfiable this way. (`tenant_id` is the
   plugin's own and wins over a value passed here.)
-- **An acting subject: no.** A plugin attributes every decision to the agent it
-  runs — `Agent::"<agent>"` — and there is no per-call principal. For a policy
-  that must name the person or tenant a call is made **for**, govern that call
-  with `Watchlight.tool(..., principal=...)` (or `authorize(principal=...)`),
-  alongside the plugin or instead of it.
+- **An acting subject: yes, per call.**
+  `await handle.authorize_action("read_ticket", "tool/read_ticket", principal=f'User::"{user_id}"')`
+  — a policy that must name the person or tenant a call is made **for** is
+  satisfiable this way. Omitted, the subject defaults to the agent that runs,
+  so an existing call is unchanged. Needs `watchlight-agent-sdk` 0.7.0 or
+  later, which `watchlight[langgraph|pydantic-ai|claude-agent]` requires.
 
 `governed_plugin()` refuses `principal=`, `context=` and `resource=` by name
 rather than forwarding them into a constructor that would drop them — a term you
 believe is reaching the decision, and is not, is a policy that never matches.
+All three belong on the run handle, and the error says so.
+
+**Name the entity type.** On this path `principal`, `resource` and the action
+reach the engine exactly as you write them. A typed reference discriminates:
+`User::"u-1"` is not matched by a policy naming `Agent::"u-1"`. A **bare** name
+is a wildcard that matches every entity type with that id — convenient for a
+scratch policy, wrong for a decision you rely on. The action is always Cedar
+type `Action`; the engine rejects a policy that gives it any other type.
 
 ---
 

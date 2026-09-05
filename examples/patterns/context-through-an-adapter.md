@@ -80,11 +80,29 @@ async with await plugin.start_run("support-agent") as handle:
     )
 ```
 
-A **subject** is not expressible there at all: a plugin attributes every decision
-to the agent it runs. For a policy that must name the person a call is made for,
-govern that call with `Watchlight.tool(..., principal=...)`. The factory refuses
-`principal=`, `context=` and `resource=` by name rather than accepting them and
-dropping them.
+The **subject** goes the same way, per call:
+
+```python
+async with await plugin.start_run("support-agent") as handle:
+    ok = await handle.authorize_action(
+        "read_ticket", "tool/read_ticket",
+        principal=f'User::"{user_id}"',
+        context={"caller": caller, "owner": owner},
+    )
+```
+
+Omitted, it defaults to the agent that runs, so an existing call is unchanged.
+This needs `watchlight-agent-sdk` 0.7.0 or later, which the framework extras
+require.
+
+Write the entity type. These terms reach the engine exactly as given, so
+`User::"u-1"` is not matched by a policy naming `Agent::"u-1"`. A bare name
+matches every entity type with that id, which is the wrong shape for a decision
+you rely on.
+
+The factory still refuses `principal=`, `context=` and `resource=` by name: all
+three belong to a call, not to the constructor, and accepting them there would
+drop them.
 
 Combine with [per-user attribution](./per-user-attribution.md) for the subject
 half on its own, and with [quotas](./quotas.md) to fold a counter into the same

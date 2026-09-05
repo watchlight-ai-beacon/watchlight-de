@@ -1,13 +1,14 @@
-"""What a framework adapter can and cannot express, in the Python lane.
+"""What a framework adapter can express, and where, in the Python lane.
 
 The TypeScript adapters (``governTool`` / ``governedHooks``) wrap a tool
 themselves, so they carry every term ``tool()`` carries — see
 ``ts/test/adapter-parity.test.mjs``. The Python adapters are different in kind:
 ``watchlight.<framework>.governed_plugin`` builds a published framework plugin
 and hands it the in-process engine. It is CONSTRUCTOR wiring. The governance
-terms of a single call — the resource, Cedar ``context`` — belong to the
-plugin's own run handle, and the acting subject is not expressible through a
-plugin at all: every decision a plugin makes is attributed to the agent.
+terms of a single call — the subject, the resource, Cedar ``context`` — belong
+to the plugin's own run handle, not to the factory. The subject became
+expressible there in ``watchlight-agent-sdk`` 0.7.0; omitted, it still defaults
+to the agent that runs.
 
 That distinction has to hold in the code and not only in prose, because the
 failure it prevents is silent: a term a caller believes is reaching the
@@ -97,14 +98,14 @@ def stub_plugins(monkeypatch):
     return built
 
 
-# ── what the factory cannot express, said by name ───────────────────────────
+# ── a per-call term is refused at the factory, and told where it goes ───────
 
 
 @pytest.mark.parametrize("framework", sorted(FACTORIES))
 @pytest.mark.parametrize(
     "term, expected",
     [
-        ("principal", "attributes every decision to the agent"),
+        ("principal", "per-call term"),
         ("context", "per-call term"),
         ("resource", "per-call term"),
     ],
@@ -130,9 +131,10 @@ def test_the_refusal_happens_before_the_plugin_is_built(stub_plugins, framework)
 @pytest.mark.parametrize("framework", sorted(FACTORIES))
 def test_the_limit_is_in_the_docstring_an_integrator_reads(framework):
     doc = inspect.getdoc(FACTORIES[framework]) or ""
-    assert "cannot express" in doc
-    assert "authorize_action" in doc  # where context DOES go
-    assert "Watchlight.tool" in doc  # where a named subject goes
+    assert "authorize_action" in doc  # where every per-call term goes
+    assert "principal=" in doc  # including the subject, since 0.7.0
+    # The entity-type rule is the one that bites silently, so it must be said.
+    assert "bare" in doc.lower() and "wildcard" in doc.lower()
 
 
 # ── what it still forwards, unchanged ───────────────────────────────────────
