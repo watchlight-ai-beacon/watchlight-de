@@ -45,8 +45,11 @@ mints a scope token and a worker that rebuilds it are two processes; so are the
 process that mints an approval and the one that consumes it. Different values, or
 a value in one and none in the other, and the token does not verify.
 
-Minimum thirty-two bytes is a good default; anything under sixteen is refused
-when you construct the governor.
+Minimum thirty-two bytes is a good default; a shorter value is refused when you
+construct the governor. One exception, for the unfilled `.env` placeholder: an
+empty or whitespace-only value is treated as **unset** rather than weak, so the
+governor still constructs — and the first attempt to mint or verify a token
+fails closed with `no_secret` instead.
 
 > **Renamed.** This option used to be called `tokenSecret` / `token_secret`
 > (`WATCHLIGHT_TOKEN_SECRET`). The old name still works and warns once; setting

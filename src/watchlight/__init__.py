@@ -215,6 +215,19 @@ class ReservedContextError(ValueError):
         super().__init__(RESERVED_CONTEXT_MESSAGE)
 
 
+def _same_chain(value: Any, chain: Sequence[str]) -> bool:
+    """Whether a caller-supplied ``actor_chain`` is the chain the SDK derived.
+
+    A value that is not a sequence of its own — an ``int``, a ``dict``, a bare
+    string — is simply NOT that chain, so it is refused as a reserved-key
+    conflict like any other disagreeing value. It must not surface as a
+    ``TypeError`` from coercing it: the guard's answer is the same in both
+    lanes, and so is its error."""
+    if not isinstance(value, (list, tuple)):
+        return False
+    return list(value) == list(chain)
+
+
 def _with_actor_context(context: Optional[dict], actor: str, chain: Sequence[str]) -> dict:
     """The caller's context with the reserved actor keys stamped on it."""
     out = dict(context or {})
@@ -223,7 +236,7 @@ def _with_actor_context(context: Optional[dict], actor: str, chain: Sequence[str
     # through, so a caller can neither supply nor extend one.
     if ACTOR_CONTEXT_KEY in out and out[ACTOR_CONTEXT_KEY] != actor:
         raise ReservedContextError()
-    if ACTOR_CHAIN_CONTEXT_KEY in out and list(out[ACTOR_CHAIN_CONTEXT_KEY] or []) != list(chain):
+    if ACTOR_CHAIN_CONTEXT_KEY in out and not _same_chain(out[ACTOR_CHAIN_CONTEXT_KEY], chain):
         raise ReservedContextError()
     out[ACTOR_CONTEXT_KEY] = actor
     out[ACTOR_CHAIN_CONTEXT_KEY] = list(chain)
@@ -1196,16 +1209,26 @@ class Watchlight:
             returns is scheduled on the running event loop (never awaited
             inline), and an exception or rejection is reported once and never
             blocks or changes a decision.
-        :param token_secret: shared secret (≥ 16 bytes) for
-            :meth:`~watchlight.attenuation.Scope.to_token` /
-            :meth:`scope_from_token` — lets an attenuated scope cross a process
-            boundary with integrity. Defaults to ``$WATCHLIGHT_TOKEN_SECRET``.
-            When unset, minting and verifying scope tokens fail closed; there is
-            no built-in default. Never logged or written.
+        :param signing_secret: shared secret (>= 16 bytes) that lets tokens cross
+            a process boundary: scope tokens
+            (:meth:`~watchlight.attenuation.Scope.to_token` /
+            :meth:`scope_from_token`), and approval tokens unless
+            ``approval_secret`` overrides them for approvals only. Defaults to
+            ``$WATCHLIGHT_SIGNING_SECRET``. When unset, minting and verifying
+            scope tokens fail closed; there is no built-in default. Pass an
+            ORDERED LIST to rotate without a cutover: the first entry signs,
+            every entry verifies. Never logged or written.
+        :param token_secret: DEPRECATED — the former name of ``signing_secret``.
+            Still accepted, at lower precedence (``signing_secret`` →
+            ``$WATCHLIGHT_SIGNING_SECRET`` → ``token_secret`` →
+            ``$WATCHLIGHT_TOKEN_SECRET``), and warns once per process. Setting
+            both names to DIFFERENT values raises
+            :class:`~watchlight.scope_token.ScopeTokenError` at construction
+            rather than resolving one of them silently. Use ``signing_secret``.
         :param approval_secret: shared secret (>= 16 bytes) that approval tokens
             are signed under, so a token minted in one process verifies in
             another and survives a redeploy inside its TTL. Defaults to
-            ``$WATCHLIGHT_APPROVAL_SECRET``, then to ``token_secret`` — one
+            ``$WATCHLIGHT_APPROVAL_SECRET``, then to ``signing_secret`` — one
             secret configures both, because the approval key is
             ``HMAC-SHA256(secret, "watchlight-de:approval-token:v1")`` and never
             the secret itself. With nothing configured a RANDOM PER-PROCESS key
@@ -1821,7 +1844,7 @@ class Watchlight:
         SCOPE OF THE DEFAULTS — both are per-process, and neither is upgraded
         silently:
 
-        * **The signing key.** With no ``approval_secret`` (or ``token_secret``)
+        * **The signing key.** With no ``approval_secret`` (or ``signing_secret``)
           the key is random and per-process: a token minted here is refused by
           any other process, and a redeploy invalidates every outstanding
           approval — indistinguishably from a genuine hold, since the reason is

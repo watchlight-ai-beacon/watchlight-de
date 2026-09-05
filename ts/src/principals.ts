@@ -17,12 +17,16 @@
 // the policy side with `principals.forPolicy` (or `escapeCedarString`). A
 // reference built with one matches a reference built with the other.
 //
-//   principals.user("alice@example.com")   →  User::"alice@example.com"
+//   principals.user("db:4412")             →  User::"db:4412"
 //   principals.agent("research-agent")     →  Agent::"research-agent"
 //   principals.forPolicy("User", sub)      →  User::"…" for policy text
 //
 // The vocabulary the SDK writes and the audit trail carries:
-//   * `User::"<subject>"` — the person a call runs on behalf of (RFC 8693 `sub`)
+//   * `User::"<subject>"` — the person a call runs on behalf of (RFC 8693 `sub`);
+//     a stable, opaque id — a primary key, an account id, a subject claim —
+//     never an email address or a username, both of which move and make an old
+//     audit row point at someone else. Namespace it (`db:`, `sso:`) when more
+//     than one identity source can produce subjects
 //   * `Agent::"<name>"`   — the agent acting on its own behalf; what a call that
 //     names no subject records
 //   * which runtime executed the call is NOT the principal: it is the reserved

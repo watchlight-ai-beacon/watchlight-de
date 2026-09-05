@@ -105,9 +105,9 @@ the Claude `PostToolUse` hook):
 result, the replacement, or anything derived from them:
 
 ```json
-{"ts":"…","agent":"doc-agent","principal":"doc-agent","intent":"read","resource":"doc/42","decision":"Allow","decision_id":"…7f1"}
-{"ts":"…","agent":"doc-agent","principal":"doc-agent","intent":"release","resource":"doc/42","decision":"Deny","decision_id":"…9c2"}
-{"ts":"…","agent":"doc-agent","principal":"doc-agent","intent":"read","event":"egress","resource":"doc/42","replaced":false,"withheld":true,"decision_id":"…7f1"}
+{"ts":"…","agent":"doc-agent","principal":"Agent::\"doc-agent\"","intent":"read","resource":"doc/42","decision":"Allow","decision_id":"…7f1"}
+{"ts":"…","agent":"doc-agent","principal":"Agent::\"doc-agent\"","intent":"release","resource":"doc/42","decision":"Deny","decision_id":"…9c2"}
+{"ts":"…","agent":"doc-agent","principal":"Agent::\"doc-agent\"","intent":"read","event":"egress","resource":"doc/42","replaced":false,"decision_id":"…7f1","withheld":true}
 ```
 
 **Why it's high-stakes.** A prompt-injected or confused agent can ask for a

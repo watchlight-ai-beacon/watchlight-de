@@ -51,9 +51,11 @@ the policy-driven ones ship as runnable suites that
 [`patterns/check.sh`](patterns/check.sh) runs through `watchlight policy test`, so
 the recipes can't drift from the engine.
 
-→ **[`patterns/`](patterns/README.md)** — money-bounded agent, destructive
-actions, external messaging, data egress, kill-switch / quarantine, per-user
-attribution, PII-before-read, sub-agent confinement.
+→ **[`patterns/`](patterns/README.md)** — 13 patterns: money-bounded agent,
+destructive actions, external messaging, data egress, egress-after-read,
+allow-but-redact, kill-switch / quarantine, per-user attribution,
+PII-before-read, screen-before-model, sub-agent confinement, audit sink,
+quotas.
 
 ## Showcase — end-to-end pipelines
 
