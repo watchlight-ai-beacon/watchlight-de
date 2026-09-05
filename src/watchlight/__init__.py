@@ -38,11 +38,13 @@ import os
 import pathlib
 import re
 import secrets
+import sys
 import time
 from typing import Any, Callable, Optional, Sequence, TypeVar, Union
 
 import watchlight_engine as _engine
 
+from . import principals
 from ._audit import AuditSink, AuditTrail
 from ._counters import (
     DEFAULT_COUNTERS_MAX_BYTES,
@@ -59,6 +61,15 @@ from .scope_token import ScopeTokenError, normalize_secret, require_secret, same
 
 __all__ = [
     "Watchlight",
+    "configure_default",
+    "principals",
+    "ACTOR_CONTEXT_KEY",
+    "ACTOR_CHAIN_CONTEXT_KEY",
+    "MAX_ACTOR_CHAIN",
+    "RESERVED_CONTEXT_MESSAGE",
+    "ReservedContextError",
+    "AuthorizeRequestError",
+    "REQUEST_INVALID_MESSAGE",
     "AuditSink",
     "AuditTrailUnreadable",
     "count_audit_records",
@@ -92,6 +103,167 @@ __all__ = [
 ]
 
 _F = TypeVar("_F", bound=Callable[..., Any])
+
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _assert_agent_name(agent: Any, where: str) -> str:
+    """Reject an agent name that cannot be recorded or referenced unambiguously —
+    in the constructor, in :meth:`Watchlight.as_` and in
+    :meth:`Watchlight.delegate` alike, so it fails at the name rather than later,
+    inside the engine."""
+    if not isinstance(agent, str) or not agent.strip():
+        raise TypeError(f"{where}: agent must be a non-empty string")
+    if _CONTROL_CHARS.search(agent):
+        raise TypeError(f"{where}: agent must not contain control characters")
+    return agent
+
+#: The Cedar ``context`` key the SDK reserves for the ACTOR — the runtime that
+#: made the call, as distinct from the subject it acted for. The pair follows
+#: RFC 8693 (OAuth 2.0 Token Exchange), which separates the subject (``sub``,
+#: here ``principal``) from the actor (``act``, here ``context.actor``)::
+#:
+#:     permit(principal, action == Action::"book", resource)
+#:     when { context.actor == "flight-booker" };
+#:
+#: Every governed call carries it, so an agent acting alone
+#: (``principal = Agent::"flight-booker"``) and the same agent acting for a
+#: person (``principal = User::"alice"``) are one policy vocabulary and two
+#: distinct lines in the trail. It is a context key rather than an entity
+#: attribute because ``context.*`` with ``==``, ``is``, ``like`` and set
+#: ``contains`` is the operator surface the engine resolves.
+ACTOR_CONTEXT_KEY = "actor"
+
+#: The Cedar ``context`` key the SDK reserves for the ordered ACTOR CHAIN, root
+#: first — RFC 8693's nested ``act``, flattened into the shape the engine
+#: resolves. A set-valued entry supports ``contains``, so a policy can ask
+#: whether an agent was anywhere in the delegation::
+#:
+#:     permit(principal is User, action == Action::"pick_seat", resource)
+#:     when { context.actor_chain.contains("flight-booker") };
+#:
+#: ``context.actor`` answers a different question — *which* agent made this call
+#: — and remains the leaf, so policies written against it are unaffected. Both
+#: keys are set on every authorization; the chain of a call made outside any
+#: delegation is the single-element ``[agent]``.
+ACTOR_CHAIN_CONTEXT_KEY = "actor_chain"
+
+#: The longest an actor chain can be: the root agent plus one entry per
+#: attenuation level, bounded by the Developer-Edition depth ceiling.
+MAX_ACTOR_CHAIN = DE_MAX_DEPTH + 1
+
+#: Fixed, value-free message of :class:`AuthorizeRequestError`.
+REQUEST_INVALID_MESSAGE = (
+    "the authorization request is not valid for the engine (check the principal "
+    "and resource entity types)"
+)
+
+
+class AuthorizeRequestError(RuntimeError):
+    """Raised when the engine cannot evaluate the request at all — most often an
+    entity type it does not recognise, e.g. ``Service::"x"`` as a principal. The
+    call is refused (fail-closed, the tool body never runs) and the refusal is
+    audited as a ``Deny`` like any other. The engine's own message is never
+    echoed: it is not a caller-facing reason."""
+
+    def __init__(self) -> None:
+        super().__init__(REQUEST_INVALID_MESSAGE)
+
+
+#: Fixed, value-free message of :class:`ReservedContextError`.
+RESERVED_CONTEXT_MESSAGE = (
+    "context keys 'actor' and 'actor_chain' are reserved for the acting agent "
+    "and are set by the SDK"
+)
+
+
+class ReservedContextError(ValueError):
+    """Raised when a caller's ``context`` sets a reserved actor key to a value
+    that differs from the governor's own — the acting agent, or the delegation
+    chain of the scope the call was made through. Refused rather than
+    overwritten, so a policy reading either key can trust it. An identical value
+    is fine."""
+
+    def __init__(self) -> None:
+        super().__init__(RESERVED_CONTEXT_MESSAGE)
+
+
+def _with_actor_context(context: Optional[dict], actor: str, chain: Sequence[str]) -> dict:
+    """The caller's context with the reserved actor keys stamped on it."""
+    out = dict(context or {})
+    # The SDK's values always win — and a caller who disagreed is told, never
+    # silently overruled. The chain is derived from the scope the call was made
+    # through, so a caller can neither supply nor extend one.
+    if ACTOR_CONTEXT_KEY in out and out[ACTOR_CONTEXT_KEY] != actor:
+        raise ReservedContextError()
+    if ACTOR_CHAIN_CONTEXT_KEY in out and list(out[ACTOR_CHAIN_CONTEXT_KEY] or []) != list(chain):
+        raise ReservedContextError()
+    out[ACTOR_CONTEXT_KEY] = actor
+    out[ACTOR_CHAIN_CONTEXT_KEY] = list(chain)
+    return out
+
+
+class _GovernorState:
+    """Everything a governor owns that is NOT its name: the engine and its
+    compiled policies, the audit trail (file + sink), the scope-token secret,
+    and the counters. A view made by :meth:`Watchlight.as_` shares this object
+    by reference, so it is provably the same engine, the same policies and the
+    same trail — only the name stamped on records and decisions differs."""
+
+    __slots__ = (
+        "engine",
+        "trail",
+        "audit_path",
+        "token_secret",
+        "policy_count",
+        "announced",
+        "sources",
+        "strict_principal",
+        "audit_options",
+        "is_default",
+        "wrote_record",
+        "warned_default_sink",
+    )
+
+    def __init__(self) -> None:
+        self.engine: Any = None
+        self.trail: Optional[AuditTrail] = None
+        self.audit_path: Optional[pathlib.Path] = None
+        self.token_secret: Optional[bytes] = None
+        self.policy_count = 0
+        self.announced = False
+        #: Resolved sources already loaded — the key of ``load()``'s idempotence.
+        self.sources: set[str] = set()
+        self.strict_principal = True
+        #: The audit options in force, so ``_configure`` can apply one of them
+        #: without dropping the others.
+        self.audit_options: dict[str, Any] = {}
+        self.is_default = False
+        self.wrote_record = False
+        self.warned_default_sink = False
+
+
+#: One process-wide notice that the bare agent name is standing in for a missing
+#: subject — the transitional ``strict_principal=False`` behaviour.
+_warned_lenient_principal = False
+
+
+def _warn_lenient_principal() -> None:
+    global _warned_lenient_principal
+    if _warned_lenient_principal:
+        return
+    _warned_lenient_principal = True
+    print(
+        "watchlight: strict_principal is off, so the BARE agent name is recorded as the "
+        'acting principal of calls that name none, instead of the typed Agent::"<name>". '
+        "The bare name binds to an unpredictable one of the entity types your policies "
+        "name it with, and the same policy set can decide differently in different "
+        "processes. This is transitional and is removed in a later version: name the "
+        "subject at the "
+        "call site with `principal` (see `principals.user`), and write agent-scoped "
+        'policies against Agent::"<name>" or the reserved `context.actor` key.',
+        file=sys.stderr,
+    )
 
 
 class Denied(PermissionError):
@@ -919,6 +1091,8 @@ class Watchlight:
         audit_sink: Optional[AuditSink] = None,
         *,
         token_secret: Union[str, bytes, None] = None,
+        audit_file: bool = True,
+        strict_principal: bool = True,
     ) -> None:
         """:param agent: stable agent identity for the audit trail (default
             ``$WATCHLIGHT_AGENT`` or ``"my-agent"``).
@@ -937,38 +1111,256 @@ class Watchlight:
             :meth:`scope_from_token` — lets an attenuated scope cross a process
             boundary with integrity. Defaults to ``$WATCHLIGHT_TOKEN_SECRET``.
             When unset, minting and verifying scope tokens fail closed; there is
-            no built-in default. Never logged or written."""
-        self._engine = _engine.PolicyEngine()
-        self.agent = agent or os.environ.get("WATCHLIGHT_AGENT", "my-agent")
-        self._audit_path = pathlib.Path(audit_dir) / "audit.jsonl"
-        self._trail = AuditTrail(self._audit_path, audit_sink)
-        self._announced = False
-        self._policy_count = 0
-        self._token_secret = normalize_secret(
+            no built-in default. Never logged or written.
+        :param audit_file: write the local ``audit.jsonl`` at all (default
+            ``True``). ``False`` makes ``audit_sink`` the SOLE destination: no
+            ``.watchlight`` directory and no file are created, and
+            :meth:`counters` — which reads the local file — raises. With the
+            file off and no sink, records have nowhere to go and the SDK says so
+            once. Every governor pointed at the same directory — concurrent
+            instances in one process included — appends to the same file, so
+            those records interleave and are told apart only by their fields.
+        :param strict_principal: how a call that names no ``principal`` is
+            recorded (default ``True``): the agent is the subject and is
+            recorded as a TYPED entity reference, ``Agent::"<name>"`` (build one
+            with :mod:`watchlight.principals`). ``False`` restores the previous
+            behaviour, where the BARE agent name — untyped, and
+            indistinguishable on sight from a user id — stood in for the missing
+            subject; that is transitional, warns once per process, and is
+            removed in a later version. See "Breaking in 0.8.0" in the identity
+            model: https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/docs/identity-model.md"""
+        state = _GovernorState()
+        self._shared = state
+        # An explicitly passed name is validated as given — an empty one is a
+        # mistake, not a request for the default.
+        if agent is not None:
+            _assert_agent_name(agent, "Watchlight(agent=…)")
+        self.agent = _assert_agent_name(
+            agent or os.environ.get("WATCHLIGHT_AGENT") or "my-agent", "Watchlight(agent=…)"
+        )
+        #: The delegation chain this governor acts under, root first; the last
+        #: entry is :attr:`agent`. A governor that was not delegated to acts
+        #: alone, so its chain is just its own name. Set by :meth:`delegate`
+        #: from the scope the sub-agent was spawned under — never by a caller.
+        self.actor_chain: tuple[str, ...] = (self.agent,)
+        #: The scope a delegated governor acts under (``None`` otherwise).
+        self.delegated_scope: Optional[Scope] = None
+        state.engine = _engine.PolicyEngine()
+        state.audit_options = {"dir": audit_dir, "file": audit_file, "sink": audit_sink}
+        state.audit_path = (pathlib.Path(audit_dir) / "audit.jsonl") if audit_file else None
+        state.trail = AuditTrail(state.audit_path, audit_sink)
+        state.strict_principal = bool(strict_principal)
+        state.token_secret = normalize_secret(
             token_secret if token_secret is not None else os.environ.get("WATCHLIGHT_TOKEN_SECRET")
         )
+
+    # The state below is reached through properties so that a view from
+    # :meth:`as_` and the governor it came from read and write ONE copy of it.
+
+    @property
+    def _engine(self) -> Any:
+        return self._shared.engine
+
+    @_engine.setter
+    def _engine(self, engine: Any) -> None:
+        self._shared.engine = engine
+
+    @property
+    def _trail(self) -> AuditTrail:
+        return self._shared.trail
+
+    @property
+    def _audit_path(self) -> Optional[pathlib.Path]:
+        return self._shared.audit_path
+
+    @property
+    def _token_secret(self) -> Optional[bytes]:
+        return self._shared.token_secret
+
+    @property
+    def _announced(self) -> bool:
+        return self._shared.announced
+
+    @_announced.setter
+    def _announced(self, value: bool) -> None:
+        self._shared.announced = value
+
+    @property
+    def _policy_count(self) -> int:
+        return self._shared.policy_count
+
+    @_policy_count.setter
+    def _policy_count(self, value: int) -> None:
+        self._shared.policy_count = value
+
+    def as_(self, agent: str) -> "Watchlight":
+        """A view of THIS governor acting under a different agent name.
+
+        The view shares the engine, the compiled policies, the audit trail, the
+        sink, the scope-token secret and the policy count by reference — nothing
+        is reloaded, no second engine is constructed, and a policy added through
+        either one is immediately visible to both. Only the name stamped on
+        audit records and passed to the engine differs, so any number of names
+        costs one engine and one policy load::
+
+            billing = govern.as_("billing-agent")
+            research = govern.as_("research-agent")   # same engine
+
+        (``as`` is a Python keyword, hence the trailing underscore; the
+        TypeScript SDK spells it ``govern.as("name")``.)
+        """
+        _assert_agent_name(agent, "as_(agent)")
+        # A delegate's name is what the delegation granted. Renaming it —
+        # directly, or through a per-call ``agent`` override, which lands here —
+        # would drop the actor chain from the context and the record, so it is
+        # refused rather than silently losing the delegation.
+        if len(self.actor_chain) > 1:
+            raise TypeError(
+                "as_(agent): a delegated governor cannot be renamed — its name is part "
+                "of the actor chain. Use delegate(parent, agent) to spawn a sub-agent "
+                "under it."
+            )
+        view = object.__new__(Watchlight)
+        view.agent = agent
+        # A rename is not a delegation: the view acts alone under its own name.
+        view.actor_chain = (agent,)
+        view.delegated_scope = None
+        # Shared BY REFERENCE — the whole point of the view.
+        view._shared = self._shared
+        return view
+
+    def delegate(
+        self,
+        parent: Union[Scope, "Watchlight"],
+        agent: str,
+        *,
+        tools: Sequence[str] | None = None,
+        resources: Sequence[str] | None = None,
+        intents: Sequence[str] | None = None,
+        time_budget_seconds: int | None = None,
+    ) -> "Watchlight":
+        """Spawn a governor for a SUB-AGENT under ``parent``, and record the
+        delegation.
+
+        The sub-agent's authority is ``parent`` narrowed by the dimensions you
+        pass — the engine's strict-subset attenuation, so it can never hold what
+        its parent lacks — and its identity is the parent's
+        :attr:`actor_chain` with ``agent`` appended. Every decision and every
+        record it produces then carries the ordered chain (root first) alongside
+        the leaf actor, and a policy can ask either question:
+        ``context.actor == "seat-picker"`` (who made this call) or
+        ``context.actor_chain.contains("flight-booker")`` (whose delegation is
+        this)::
+
+            root = govern.scope(tools=["search", "book"])
+            picker = govern.delegate(root, "seat-picker", tools=["search"])
+            picker.authorize(action="pick_seat", principal=principals.user("alice"))
+            govern.delegate(picker, "row-checker")      # one level deeper
+
+        ``parent`` is a :class:`~watchlight.attenuation.Scope` or a governor that
+        was itself delegated. The engine, the compiled policies, the audit trail
+        and the sink are shared with this governor, exactly as for :meth:`as_`.
+        Raises :class:`AttenuationDenied` if the request widens the scope and
+        :class:`DevEditionCeiling` past the depth ceiling — which also bounds the
+        chain at :data:`MAX_ACTOR_CHAIN` entries.
+        """
+        _assert_agent_name(agent, "delegate(parent, agent)")
+        scope = parent.delegated_scope if isinstance(parent, Watchlight) else parent
+        if scope is None:
+            raise TypeError(
+                "delegate(parent, agent): `parent` must be a scope, or a governor that "
+                "was itself delegated"
+            )
+        child = scope.attenuate(
+            tools=tools,
+            resources=resources,
+            intents=intents,
+            time_budget_seconds=time_budget_seconds,
+            agent=agent,
+        )
+        view = object.__new__(Watchlight)
+        view.agent = agent
+        view.actor_chain = tuple(child.actor_chain)
+        view.delegated_scope = child
+        view._shared = self._shared
+        return view
+
+    @property
+    def policy_count(self) -> int:
+        """How many policies this governor holds — the count shared with every
+        view from :meth:`as_`. Counts what was added, not what the engine
+        merged."""
+        return self._shared.policy_count
+
+    @property
+    def has_policies(self) -> bool:
+        """Whether any policy is loaded. ``False`` means every call is denied
+        (fail-closed), which is a configuration mistake worth asserting on at
+        start-up."""
+        return self._shared.policy_count > 0
+
+    def _principal(self, explicit: Optional[str] = None) -> str:
+        """The subject of a call that named none: a TYPED reference to this
+        agent, ``Agent::"<name>"`` — when no human is on whose behalf the call
+        runs, the agent is the subject, and typing it says so on sight and in a
+        policy. Transitionally, ``strict_principal=False`` restores the bare,
+        untyped agent name (warned once per process)."""
+        if explicit:
+            return explicit
+        if self._shared.strict_principal:
+            return principals.agent(self.agent)
+        _warn_lenient_principal()
+        return self.agent
 
     # ── policy loading ──────────────────────────────────────────────
 
     def allow(self, cedar_code: str, name: str | None = None) -> "Watchlight":
-        """Add one Cedar policy inline. Returns self for chaining."""
+        """Add one Cedar policy inline. Returns self for chaining. Always
+        additive: calling it twice with the same code adds it twice (use
+        :meth:`load` for a set you may load more than once)."""
         self._engine.add_policy(
             json.dumps({"name": name or f"policy-{self._policy_count}", "code": cedar_code})
         )
         self._policy_count += 1
         return self
 
-    def load(self, path: str | os.PathLike[str]) -> "Watchlight":
+    def load(
+        self,
+        path: str | os.PathLike[str],
+        *,
+        source_id: str | None = None,
+        force: bool = False,
+    ) -> "Watchlight":
         """Load policies from a JSON file — a list of ``{"name", "code"}`` objects
         (or ``{"policies": [...]}``). Fail-closed: a missing file loads nothing,
-        so every governed call is denied until a policy permits it."""
+        so every governed call is denied until a policy permits it.
+
+        IDEMPOTENT PER SOURCE: the source is remembered under its real path
+        (symlinks resolved), or under ``source_id`` when you give one, and
+        loading the same source again is a no-op — priming an engine in a
+        factory and loading the same file again from an initialiser cannot
+        double the set. A file that does not exist is not remembered, so it
+        loads once it appears. Two different paths to the same file are one
+        source; two files with the same content are two, unless you give them a
+        shared ``source_id``. The memo is shared with every view from
+        :meth:`as_`.
+
+        The memo is keyed on identity, not content: EDITING a file already
+        loaded and calling ``load`` again is a no-op, and the new policies do
+        not apply. Pass ``force=True`` to load it again — policies are only ever
+        added, so the previous copy stays and ``policy_count`` grows; construct
+        a fresh governor when you need the old set gone."""
         p = pathlib.Path(path)
+        key = source_id if source_id is not None else str(p.resolve())
+        if key in self._shared.sources and not force:
+            return self
         if not p.exists():
             return self
         data = json.loads(p.read_text())
         entries = data if isinstance(data, list) else data.get("policies", [])
         for entry in entries:
             self.allow(entry["code"], entry.get("name"))
+        self._shared.sources.add(key)
         return self
 
     # ── sub-agent scope attenuation ─────────────────────────────────
@@ -1062,6 +1454,7 @@ class Watchlight:
         context: Union[dict, Callable[..., dict], None] = None,
         on_needs_approval: Optional[Callable[[dict], bool]] = None,
         on_result: Optional[Callable[[Any, dict], Any]] = None,
+        agent: Optional[str] = None,
     ) -> Callable[[_F], _F]:
         """Decorate a function as a governed tool.
 
@@ -1089,12 +1482,16 @@ class Watchlight:
         refused fail-closed: the payload is withheld and ``TypeError`` is raised.
         """
 
+        # A per-tool `agent` is exactly a view of this governor (same engine,
+        # same policies, same trail) with a different name on it.
+        gov = self.as_(agent) if agent else self
+
         def decorator(fn: _F) -> _F:
             name = fn.__name__
 
             @functools.wraps(fn)
             def wrapper(*args: Any, **kwargs: Any) -> Any:
-                prin = _resolve(principal, args, kwargs) or self.agent
+                prin = gov._principal(_resolve(principal, args, kwargs))
                 res = _resolve(resource, args, kwargs) or f"tool/{name}"
                 ctx = context(*args, **kwargs) if callable(context) else (context or {})
 
@@ -1107,16 +1504,16 @@ class Watchlight:
                     if d.get("obligations"):
                         info["obligations"] = d["obligations"]  # only when the Allow carries any
                     if inspect.isawaitable(out):
-                        return self._apply_on_result_async(out, on_result, info)
-                    return self._apply_on_result(out, on_result, info)[0]
+                        return gov._apply_on_result_async(out, on_result, info)
+                    return gov._apply_on_result(out, on_result, info)[0]
 
-                d = self.authorize(action=intent, principal=prin, resource=res, context=ctx)
+                d = gov.authorize(action=intent, principal=prin, resource=res, context=ctx)
                 if d["allowed"]:
                     return run(d)
                 if d["needs_approval"]:
                     if on_needs_approval is not None and on_needs_approval(d):
-                        token = self.mint_approval(action=intent, principal=prin, resource=res)
-                        d2 = self.authorize(
+                        token = gov.mint_approval(action=intent, principal=prin, resource=res)
+                        d2 = gov.authorize(
                             action=intent, principal=prin, resource=res, context=ctx, approval=token
                         )
                         if d2["allowed"]:
@@ -1136,6 +1533,7 @@ class Watchlight:
         resource: Optional[str] = None,
         context: Optional[dict] = None,
         approval: Optional[str] = None,
+        agent: Optional[str] = None,
     ) -> dict:
         """Authorize an action with full control — per-call ``principal``,
         ``resource``, and Cedar ``context`` — returning a three-state verdict and
@@ -1151,10 +1549,36 @@ class Watchlight:
         [raw, ...]}}`` (each key only when set) — constraints the caller must
         honour when acting on the Allow. Never present on ``Deny`` or
         ``NeedsApproval``. An Allow whose known obligations cannot be read raises
-        :class:`AuthorizeError` instead of returning."""
-        result, prin, res, decision_id = self._decide(
-            action=action, principal=principal, resource=resource, context=context, approval=approval
-        )
+        :class:`AuthorizeError` instead of returning.
+
+        ``agent`` names the acting agent for this one call, overriding the
+        governor's — the same view :meth:`as_` returns, applied to a single
+        decision. It is what the record carries and what the policy reads as
+        ``context.actor``."""
+        if agent and agent != self.agent:
+            return self.as_(agent).authorize(
+                action=action,
+                principal=principal,
+                resource=resource,
+                context=context,
+                approval=approval,
+            )
+        try:
+            result, prin, res, decision_id = self._decide(
+                action=action, principal=principal, resource=resource, context=context,
+                approval=approval,
+            )
+        except (ReservedContextError, AuthorizeError):
+            # The caller's own context, refused before anything reached the
+            # engine — raised as-is.
+            raise
+        except Exception:
+            # A request the engine cannot evaluate is a refusal like any other:
+            # it is recorded, then raised typed.
+            self._audit(
+                action, resource or "resource", "Deny", DENY_REASON, principal=principal
+            )
+            raise AuthorizeRequestError() from None
         self._audit(
             action, res, result["decision"], result["reason"],
             principal=prin, decision_id=decision_id, approved=result["approved"],
@@ -1174,11 +1598,17 @@ class Watchlight:
         the approval-token downgrade, and compute the three-state verdict —
         WITHOUT writing to the audit trail. Used by :meth:`authorize` (which then
         audits) and by :meth:`test` (which must not pollute the trail)."""
-        prin = principal or self.agent
+        prin = self._principal(principal)
         res = resource or "resource"
+        # The acting agent is the ACTOR, and its delegation chain the ACTOR
+        # CHAIN — reserved context keys the SDK owns, so a policy can name the
+        # runtime (`context.actor == "…"`) or its delegation
+        # (`context.actor_chain.contains("…")`) independently of the subject it
+        # acts for. A caller value that disagrees with either is refused.
+        ctx = _with_actor_context(context, self.agent, self.actor_chain)
         raw = json.loads(
             self._engine.authorize(
-                json.dumps({"principal": prin, "action": action, "resource": res, "context": context or {}})
+                json.dumps({"principal": prin, "action": action, "resource": res, "context": ctx})
             )
         )
         decision_id = raw.get("request_id")
@@ -1240,7 +1670,9 @@ class Watchlight:
         """Mint a single-use approval token bound to ``(principal, action,
         resource)``, to pass to :meth:`authorize` after a human confirms a
         ``NeedsApproval``. Local HMAC, TTL-bounded (default 2 min)."""
-        return _mint_approval_token(principal or self.agent, action, resource or "resource", ttl_ms)
+        return _mint_approval_token(
+            self._principal(principal), action, resource or "resource", ttl_ms
+        )
 
     def sanitize(
         self,
@@ -1252,6 +1684,7 @@ class Watchlight:
         types: Optional[Sequence[str]] = None,
         decision_id: Optional[str] = None,
         known: Optional[Sequence[str]] = None,
+        agent: Optional[str] = None,
     ) -> dict:
         """Strip PII from text before an agent reads it (governed data
         minimization). Fail-closed; writes a value-free ``sanitization`` audit
@@ -1259,6 +1692,16 @@ class Watchlight:
         Extract a document to text first (never a "redacted PDF").
         Pass the ``decision_id`` returned by :meth:`authorize` to join the
         ``sanitization`` audit line to the decision that governed the read."""
+        if agent and agent != self.agent:
+            return self.as_(agent).sanitize(
+                content,
+                intent=intent,
+                resource=resource,
+                mode=mode,
+                types=types,
+                decision_id=decision_id,
+                known=known,
+            )
         # decision_id is validated (bounded, no control chars) inside sanitize()
         # before it is echoed onto the report and written to the audit line.
         result = sanitize(content, mode=mode, types=types, decision_id=decision_id, known=known)
@@ -1274,11 +1717,21 @@ class Watchlight:
         mode: str = "report",
         families: Optional[Sequence[str]] = None,
         decision_id: Optional[str] = None,
+        agent: Optional[str] = None,
     ) -> dict:
         """Screen text for prompt-injection / output-leak shapes before it
         (re-)enters the model. Fail-closed; writes a value-free ``screening``
         audit record (counts per family + ``flagged`` — never the text). Pass the
         ``decision_id`` returned by :meth:`authorize` to join the two records."""
+        if agent and agent != self.agent:
+            return self.as_(agent).screen(
+                content,
+                intent=intent,
+                resource=resource,
+                mode=mode,
+                families=families,
+                decision_id=decision_id,
+            )
         # decision_id is validated (bounded, no control chars) inside screen()
         # before it is echoed onto the report and written to the audit line.
         result = screen(content, mode=mode, families=families, decision_id=decision_id)
@@ -1311,8 +1764,18 @@ class Watchlight:
         it, and scans at most ``max_bytes`` from its end — ``truncated`` flags a
         lower bound. Malformed lines are skipped and counted in ``skipped``,
         never echoed. A missing file is zero counts; an unreadable one raises
-        :class:`AuditTrailUnreadable`. See :func:`watchlight.count_audit_records`.
+        :class:`AuditTrailUnreadable`. Counters are folded from the LOCAL file;
+        with ``audit_file=False`` there is nothing to fold and this raises,
+        rather than reading as zero and silently widening a quota. See
+        :func:`watchlight.count_audit_records`.
         """
+        if self._audit_path is None:
+            # A quota that cannot be counted must not read as zero — that would
+            # silently widen it. Fail closed instead.
+            raise RuntimeError(
+                "counters() reads the local audit file, which is disabled by "
+                "audit_file=False; count from your own sink's records instead"
+            )
         return count_audit_records(
             self._audit_path,
             principal,
@@ -1379,6 +1842,7 @@ class Watchlight:
         record: dict[str, Any] = {
             "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "agent": self.agent,
+            **self._chain_field(),
             "principal": info["principal"],
             "intent": info["intent"],
             "event": "egress",
@@ -1390,6 +1854,13 @@ class Watchlight:
         if withheld:
             record["withheld"] = True
         self._write_audit(record)
+
+    def _chain_field(self) -> dict:
+        """``actor_chain`` for a record, and nothing at all when this governor is
+        not a delegate — a call outside any delegation keeps the record shape it
+        has always had, and its chain is the single-element ``[agent]``
+        anyway."""
+        return {"actor_chain": list(self.actor_chain)} if len(self.actor_chain) > 1 else {}
 
     def _announce(self) -> None:
         if not self._announced:
@@ -1421,7 +1892,10 @@ class Watchlight:
         record: dict[str, Any] = {
             "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "agent": self.agent,
-            "principal": principal or self.agent,
+            **self._chain_field(),
+            # Never the agent standing in for an unnamed subject: `_principal`
+            # has already resolved it (to the typed Agent::"<name>" by default).
+            "principal": self._principal(principal),
             "intent": intent,
             "resource": resource,
             "decision": decision,
@@ -1443,6 +1917,7 @@ class Watchlight:
         record: dict[str, Any] = {
             "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "agent": self.agent,
+            **self._chain_field(),
             "intent": intent,
             "event": "sanitization",
             "resource": resource,
@@ -1467,6 +1942,7 @@ class Watchlight:
         record: dict[str, Any] = {
             "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "agent": self.agent,
+            **self._chain_field(),
             "intent": intent,
             "event": "screening",
             "resource": resource,
@@ -1485,10 +1961,103 @@ class Watchlight:
         """The single funnel for every audit record this governor produces: the
         local ``audit.jsonl`` append, then the optional ``audit_sink``
         (fire-and-forget). See :mod:`watchlight._audit`."""
+        state = self._shared
+        if not state.wrote_record:
+            state.wrote_record = True
+            # The module-level default governor is pre-constructed, so nothing
+            # has had a chance to give it a durable destination. Say it once,
+            # the first time it writes — a trail that exists only in the working
+            # directory is a configuration choice, not an accident.
+            if state.is_default and not self._trail.has_sink and not state.warned_default_sink:
+                state.warned_default_sink = True
+                print(
+                    "watchlight: the default governor writes only to the local audit file — "
+                    "no audit_sink is configured. Call configure_default(audit_sink=...) "
+                    "before the first governed call to send records to a durable destination.",
+                    file=sys.stderr,
+                )
         self._trail.write(record)
+
+    def _configure(
+        self,
+        *,
+        agent: Optional[str] = None,
+        audit_dir: Union[str, "os.PathLike[str]", None] = None,
+        audit_sink: Optional[AuditSink] = None,
+        audit_file: Optional[bool] = None,
+        token_secret: Union[str, bytes, None] = None,
+        strict_principal: Optional[bool] = None,
+    ) -> None:
+        """Apply options to a governor that has not written an audit record yet.
+        Behind :func:`configure_default`; not part of the public surface."""
+        state = self._shared
+        if state.wrote_record:
+            raise RuntimeError(
+                "configure_default must run before the default governor writes its first "
+                "audit record — the records already written would not reach the new "
+                "destination"
+            )
+        if agent is not None:
+            self.agent = _assert_agent_name(agent, "configure_default(agent=…)")
+            self.actor_chain = (self.agent,)
+        if audit_dir is not None or audit_sink is not None or audit_file is not None:
+            # MERGE: a later call that names only one audit option must not drop
+            # the sink (or the directory) an earlier one configured.
+            audit = state.audit_options
+            if audit_dir is not None:
+                audit["dir"] = audit_dir
+            if audit_file is not None:
+                audit["file"] = audit_file
+            if audit_sink is not None:
+                audit["sink"] = audit_sink
+            keep_file = audit.get("file", True) is not False
+            directory = pathlib.Path(audit.get("dir") or ".watchlight")
+            state.audit_path = (directory / "audit.jsonl") if keep_file else None
+            state.trail = AuditTrail(state.audit_path, audit.get("sink"))
+        if token_secret is not None:
+            state.token_secret = normalize_secret(token_secret)
+        if strict_principal is not None:
+            state.strict_principal = bool(strict_principal)
 
 
 # A ready-to-use default governor so `from watchlight import govern` just works.
 # It starts with NO policies — fail-closed by default — until you `govern.load(...)`
-# a policy file or `govern.allow(...)` a policy inline.
+# a policy file or `govern.allow(...)` a policy inline, and with no audit sink
+# until `configure_default(...)` gives it one.
 govern = Watchlight()
+# Marked so the first record it writes can point out that it has no sink.
+govern._shared.is_default = True
+
+
+def configure_default(
+    *,
+    agent: Optional[str] = None,
+    audit_dir: Union[str, "os.PathLike[str]", None] = None,
+    audit_sink: Optional[AuditSink] = None,
+    audit_file: Optional[bool] = None,
+    token_secret: Union[str, bytes, None] = None,
+    strict_principal: Optional[bool] = None,
+) -> "Watchlight":
+    """Configure the module-level :data:`govern` — the one governor an
+    application never constructs, and therefore the one that could not otherwise
+    be given an ``audit_sink``, an ``audit_dir``, a ``token_secret`` or a name::
+
+        from watchlight import govern, configure_default
+
+        configure_default(agent="billing-agent", audit_sink=ship)
+
+    Call it once, before the first governed call. It raises ``RuntimeError`` if
+    the default governor has already written an audit record: records written
+    before the sink existed cannot be sent to it, and a trail split across two
+    destinations reads like a data bug. Only the options you pass are applied,
+    and they MERGE with any earlier call's — configuring ``audit_dir`` after an
+    ``audit_sink`` keeps the sink. Policies already added survive."""
+    govern._configure(
+        agent=agent,
+        audit_dir=audit_dir,
+        audit_sink=audit_sink,
+        audit_file=audit_file,
+        token_secret=token_secret,
+        strict_principal=strict_principal,
+    )
+    return govern

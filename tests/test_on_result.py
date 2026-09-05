@@ -38,7 +38,7 @@ def test_replacement_reaches_caller_and_joins_decision(tmp_path):
 
     assert read_doc("7") == "<REDACTED>-7"
     info = seen[0]
-    assert info["intent"] == "read" and info["resource"] == "doc/7" and info["principal"] == "egress-agent"
+    assert info["intent"] == "read" and info["resource"] == "doc/7" and info["principal"] == 'Agent::"egress-agent"'
     assert isinstance(info["decision_id"], str) and info["decision_id"]
     assert "obligations" not in info  # an unannotated permit carries none: no key
 
@@ -47,7 +47,7 @@ def test_replacement_reaches_caller_and_joins_decision(tmp_path):
     egress = next(r for r in recs if r.get("event") == "egress" and r.get("resource") == "doc/7")
     assert egress["decision_id"] == decision["decision_id"] == info["decision_id"]
     assert egress["replaced"] is True and "withheld" not in egress
-    assert egress["principal"] == "egress-agent" and egress["intent"] == "read"
+    assert egress["principal"] == 'Agent::"egress-agent"' and egress["intent"] == "read"
 
 
 def test_none_return_passes_payload_through(tmp_path):

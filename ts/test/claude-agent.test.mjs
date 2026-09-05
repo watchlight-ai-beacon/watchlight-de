@@ -88,7 +88,7 @@ async function main() {
   ok("replaced output reaches the model via updatedToolOutput",
     post1.hookSpecificOutput?.hookEventName === "PostToolUse" && post1.hookSpecificOutput?.updatedToolOutput === "<redacted>", JSON.stringify(post1));
   ok("onResult info joined to the PreToolUse decision",
-    infos[0]?.intent === "research" && infos[0]?.resource === "tool/WebSearch" && infos[0]?.principal === "claude-agent" && typeof infos[0]?.decisionId === "string",
+    infos[0]?.intent === "research" && infos[0]?.resource === "tool/WebSearch" && infos[0]?.principal === 'Agent::"claude-agent"' && typeof infos[0]?.decisionId === "string",
     JSON.stringify(infos[0]));
 
   ok("an unannotated permit puts no obligations key on the hook info", infos.length >= 1 && !("obligations" in infos[0]));

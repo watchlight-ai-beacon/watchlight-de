@@ -18,7 +18,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomBytes, createHmac, timingSafeEqual } from "node:crypto";
-import { Scope, DE_MAX_DEPTH } from "./attenuation";
+import { Scope, DE_MAX_DEPTH, type AttenuateOptions } from "./attenuation";
 import { AuditTrail, type AuditSink } from "./audit";
 import {
   ScopeTokenError,
@@ -28,9 +28,10 @@ import {
   verifyScopeToken,
 } from "./scope-token";
 import { countAuditRecords, type Counters, type CountersOptions } from "./counters";
-import { selectBackend, type GovernanceBackend, type Obligations } from "./backend";
+import { AuthorizeError, selectBackend, type GovernanceBackend, type Obligations } from "./backend";
 import { sanitize as sanitizeText, type SanitizeOptions, type SanitizeResult } from "./sanitize";
 import { screen as screenText, type ScreenOptions, type ScreenResult } from "./screen";
+import { principals } from "./principals";
 import {
   runPolicyTests,
   type PolicyTestCase,
@@ -40,7 +41,7 @@ import {
 
 export { Scope, DE_MAX_DEPTH, AttenuationDenied, DevEditionCeiling } from "./attenuation";
 export type { AuditRecord, AuditSink } from "./audit";
-export type { ScopeTokenOptions } from "./attenuation";
+export type { ScopeTokenOptions, AttenuateOptions } from "./attenuation";
 export { ScopeTokenError, SCOPE_TOKEN_PREFIX, MAX_TOKEN_LENGTH } from "./scope-token";
 export type { ScopeTokenClaims, ScopeTokenErrorCode } from "./scope-token";
 export {
@@ -69,13 +70,15 @@ export type {
   SanitizeReport,
   SanitizeResult,
 } from "./sanitize";
+export { principals, entityRef, policyEntityRef, escapeCedarString } from "./principals";
 export { screen, ScreenError, SCREEN_DETECTOR_VERSION, SCREEN_FAMILIES } from "./screen";
 export type { ScreenFamily, ScreenMode, ScreenOptions, ScreenReport, ScreenResult } from "./screen";
 export type { GovernanceBackend, Decision, AuthorizeRequest } from "./backend";
 export { InProcessBackend, NetworkedBackend } from "./backend";
 export { runPolicyTests, loadTestSuite } from "./policytest";
 export type { Obligations } from "./backend";
-export { AuthorizeError, OBLIGATIONS_INVALID_MESSAGE, MAX_REDACT_ENTRIES } from "./backend";
+export { AuthorizeError };
+export { OBLIGATIONS_INVALID_MESSAGE, MAX_REDACT_ENTRIES } from "./backend";
 export type {
   ExpectedObligations,
   PolicyTestCase,
@@ -264,8 +267,16 @@ export interface WatchlightOptions {
    *  `WATCHLIGHT_AGENT` env or `"my-agent"`. */
   agent?: string;
   /** Directory for the audit trail. `audit.jsonl` is written inside it.
-   *  Defaults to `.watchlight`. */
+   *  Defaults to `.watchlight`. Every governor pointed at the same directory —
+   *  concurrent instances in one process included — appends to the same file,
+   *  so those records interleave and are told apart only by their fields. */
   auditDir?: string;
+  /** Write the local `audit.jsonl` at all. Defaults to `true`. Set `false` to
+   *  make {@link WatchlightOptions.auditSink} the SOLE destination: no
+   *  `.watchlight` directory and no file are created, and {@link
+   *  Watchlight.counters} — which reads the local file — throws. With the file
+   *  off and no sink, records have nowhere to go and the SDK says so once. */
+  auditFile?: boolean;
   /** Additive destination for every audit record — decisions, sanitizations
    *  and attenuations (including those of scopes derived via {@link
    *  Watchlight.scope}). Receives a frozen copy with exactly the fields the
@@ -289,6 +300,208 @@ export interface WatchlightOptions {
    *  minting and verifying scope tokens fail closed; there is no built-in
    *  default. Never logged or written. */
   tokenSecret?: string | Uint8Array;
+  /** How a call that names no `principal` is recorded. Defaults to `true`: the
+   *  agent is the subject and is recorded as a TYPED entity reference,
+   *  `Agent::"<name>"` (build one with {@link principals}). Set `false` to
+   *  restore the previous behaviour, where the BARE agent name — untyped, and
+   *  indistinguishable on sight from a user id — stood in for the missing
+   *  subject; that is transitional, warns once per process, and is removed in a
+   *  later version. See "Breaking in 0.8.0" in the identity model:
+   *  https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/docs/identity-model.md */
+  strictPrincipal?: boolean;
+}
+
+/**
+ * The Cedar `context` key the SDK reserves for the ACTOR — the runtime that
+ * made the call, as distinct from the subject it acted for. The pair follows
+ * RFC 8693 (OAuth 2.0 Token Exchange), which separates the subject (`sub`, here
+ * `principal`) from the actor (`act`, here `context.actor`):
+ *
+ *     // this agent may book, whoever it is acting for
+ *     permit(principal, action == Action::"book", resource)
+ *     when { context.actor == "flight-booker" };
+ *
+ * Every governed call carries it, so an agent acting alone
+ * (`principal = Agent::"flight-booker"`) and the same agent acting for a person
+ * (`principal = User::"alice"`) are one policy vocabulary and two distinct
+ * lines in the trail.
+ *
+ * It is a context key rather than an entity attribute because `context.*` with
+ * `==`, `is`, `like` and set `contains` is the operator surface the engine
+ * resolves; an entity attribute would silently deny.
+ */
+export const ACTOR_CONTEXT_KEY = "actor";
+
+/**
+ * The Cedar `context` key the SDK reserves for the ordered ACTOR CHAIN, root
+ * first — RFC 8693's nested `act`, flattened into the shape the engine
+ * resolves. A set-valued entry supports `contains`, so a policy can ask whether
+ * an agent was anywhere in the delegation:
+ *
+ *     // this booking agent's delegation may pick seats, at any depth
+ *     permit(principal is User, action == Action::"pick_seat", resource)
+ *     when { context.actor_chain.contains("flight-booker") };
+ *
+ * `context.actor` answers a different question — *which* agent made this call —
+ * and remains the leaf, so policies written against it are unaffected. Both
+ * keys are set on every authorization; the chain of a call made outside any
+ * delegation is the single-element `[agent]`.
+ */
+export const ACTOR_CHAIN_CONTEXT_KEY = "actor_chain";
+
+/** The longest an actor chain can be: the root agent plus one entry per
+ *  attenuation level, bounded by the Developer-Edition depth ceiling. */
+export const MAX_ACTOR_CHAIN = DE_MAX_DEPTH + 1;
+
+/** Fixed, value-free message of {@link AuthorizeRequestError}. */
+export const REQUEST_INVALID_MESSAGE =
+  "the authorization request is not valid for the engine (check the principal " +
+  "and resource entity types)";
+
+/** Thrown when the engine cannot evaluate the request at all — most often an
+ *  entity type it does not recognise, e.g. `Service::"x"` as a principal. The
+ *  call is refused (fail-closed, the tool body never runs) and the refusal is
+ *  audited as a `Deny` like any other. The engine's own message is never
+ *  echoed: it is not a caller-facing reason. */
+export class AuthorizeRequestError extends Error {
+  constructor() {
+    super(REQUEST_INVALID_MESSAGE);
+    this.name = "AuthorizeRequestError";
+  }
+}
+
+/** Fixed, value-free message of {@link ReservedContextError}. */
+export const RESERVED_CONTEXT_MESSAGE =
+  "context keys 'actor' and 'actor_chain' are reserved for the acting agent and are set by the SDK";
+
+/** Thrown when a caller's `context` sets a reserved actor key to a value that
+ *  differs from the governor's own — the acting agent, or the delegation chain
+ *  of the scope the call was made through. Refused rather than overwritten, so
+ *  a policy reading either key can trust it. An identical value is fine. */
+export class ReservedContextError extends Error {
+  constructor() {
+    super(RESERVED_CONTEXT_MESSAGE);
+    this.name = "ReservedContextError";
+  }
+}
+
+const sameChain = (a: unknown, b: readonly string[]): boolean =>
+  Array.isArray(a) && a.length === b.length && a.every((v, i) => v === b[i]);
+
+const hasOwn = (o: object, k: string): boolean => Object.prototype.hasOwnProperty.call(o, k);
+
+/** Reject an agent name that cannot be recorded or referenced unambiguously —
+ *  in the constructor, in {@link Watchlight.as} and in
+ *  {@link Watchlight.delegate} alike, so it fails at the name rather than
+ *  later, inside the engine. */
+function assertAgentName(agent: unknown, where: string): asserts agent is string {
+  if (typeof agent !== "string" || !agent.trim()) {
+    throw new TypeError(`${where}: agent must be a non-empty string`);
+  }
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(agent)) {
+    throw new TypeError(`${where}: agent must not contain control characters`);
+  }
+}
+
+/** The caller's context with the reserved actor keys stamped on it. */
+function withActorContext(
+  context: Record<string, unknown> | undefined,
+  actor: string,
+  chain: readonly string[]
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...(context ?? {}) };
+  // The SDK's values always win — and a caller who disagreed is told, never
+  // silently overruled. The chain is derived from the scope the call was made
+  // through, so a caller can neither supply nor extend one.
+  // `hasOwn`, not `in`: an inherited property is not a caller-supplied key.
+  if (hasOwn(out, ACTOR_CONTEXT_KEY) && out[ACTOR_CONTEXT_KEY] !== actor) {
+    throw new ReservedContextError();
+  }
+  if (hasOwn(out, ACTOR_CHAIN_CONTEXT_KEY) && !sameChain(out[ACTOR_CHAIN_CONTEXT_KEY], chain)) {
+    throw new ReservedContextError();
+  }
+  out[ACTOR_CONTEXT_KEY] = actor;
+  out[ACTOR_CHAIN_CONTEXT_KEY] = [...chain];
+  return out;
+}
+
+/** Everything a governor owns that is NOT its name: the engine and its compiled
+ *  policies, the audit trail (file + sink), the scope-token secret, and the
+ *  counters. A view made by {@link Watchlight.as} shares this object by
+ *  reference, so it is provably the same engine, the same policies and the same
+ *  trail — only the name stamped on records and decisions differs.
+ *  @internal */
+interface GovernorState {
+  trail: AuditTrail;
+  backend: GovernanceBackend;
+  tokenSecret?: Uint8Array;
+  policyCount: number;
+  announced: boolean;
+  /** Resolved sources already loaded — the key of {@link Watchlight.load}'s
+   *  idempotence. */
+  sources: Set<string>;
+  strictPrincipal: boolean;
+  /** The audit options in force, so {@link Watchlight._configure} can apply one
+   *  of them without dropping the others. */
+  auditOptions: { dir?: string; file?: boolean; sink?: AuditSink };
+  /** Set on the exported default governor, for the "no sink configured"
+   *  notice. */
+  isDefault: boolean;
+  wroteRecord: boolean;
+  warnedDefaultSink: boolean;
+}
+
+/** The memo key of a policy source: its real path, so two names for one file
+ *  (a symlink included) are one source. Falls back to the resolved path when
+ *  the file cannot be realpath'd — a missing file is not remembered anyway. */
+function resolveSource(file: string): string {
+  try {
+    return fs.realpathSync(file);
+  } catch {
+    return path.resolve(file);
+  }
+}
+
+function newState(opts: WatchlightOptions): GovernorState {
+  return {
+    trail: new AuditTrail(
+      opts.auditFile === false ? null : path.join(opts.auditDir ?? ".watchlight", "audit.jsonl"),
+      opts.auditSink
+    ),
+    backend: selectBackend({
+      apdpUrl: opts.apdpUrl,
+      token: opts.token,
+      tenantId: opts.tenantId,
+    }),
+    tokenSecret: normalizeSecret(opts.tokenSecret ?? process.env.WATCHLIGHT_TOKEN_SECRET),
+    policyCount: 0,
+    announced: false,
+    sources: new Set<string>(),
+    strictPrincipal: opts.strictPrincipal !== false,
+    auditOptions: { dir: opts.auditDir, file: opts.auditFile, sink: opts.auditSink },
+    isDefault: false,
+    wroteRecord: false,
+    warnedDefaultSink: false,
+  };
+}
+
+/** One process-wide notice that the agent name is standing in for a missing
+ *  subject — the transitional `strictPrincipal: false` behaviour. */
+let warnedLenientPrincipal = false;
+function warnLenientPrincipal(): void {
+  if (warnedLenientPrincipal) return;
+  warnedLenientPrincipal = true;
+  // eslint-disable-next-line no-console
+  console.warn(
+    "watchlight: strictPrincipal is off, so the BARE agent name is recorded as the acting " +
+      "principal of calls that name none, instead of the typed Agent::\"<name>\". The bare " +
+      "name binds to an unpredictable one of the entity types your policies name it with, " +
+      "and the same policy set can decide differently in different processes. This is " +
+      "transitional and is removed in a later version: name the subject at the call site " +
+      "with `principal` (see `principals.user`), and write agent-scoped policies against " +
+      "Agent::\"<name>\" or the reserved `context.actor` key."
+  );
 }
 
 export interface ScopeOptions {
@@ -307,24 +520,118 @@ export interface ScopeOptions {
  */
 export class Watchlight {
   readonly agent: string;
-  private readonly _trail: AuditTrail;
-  private readonly _backend: GovernanceBackend;
-  private _policyCount = 0;
-  private _announced = false;
-  private readonly _tokenSecret?: Uint8Array;
+  /** The delegation chain this governor acts under, root first; the last entry
+   *  is {@link agent}. A governor that was not delegated to acts alone, so its
+   *  chain is just its own name. Set by {@link delegate} from the scope the
+   *  sub-agent was spawned under — never by a caller. */
+  readonly actorChain: readonly string[];
+  /** The scope a delegated governor acts under — the one {@link delegate}
+   *  derived. Pass this governor (or this scope) to {@link delegate} again to
+   *  go one level deeper. Undefined on a governor that is not a delegate. */
+  readonly delegatedScope?: Scope;
+  /** Shared with every view made by {@link as} — see {@link GovernorState}. */
+  private readonly _shared: GovernorState;
+
+  // The state below is reached through accessors so that a view and the
+  // governor it came from read and write ONE copy of it.
+  private get _trail(): AuditTrail {
+    return this._shared.trail;
+  }
+  private get _backend(): GovernanceBackend {
+    return this._shared.backend;
+  }
+  private get _tokenSecret(): Uint8Array | undefined {
+    return this._shared.tokenSecret;
+  }
+  private get _announced(): boolean {
+    return this._shared.announced;
+  }
+  private set _announced(v: boolean) {
+    this._shared.announced = v;
+  }
 
   constructor(opts: WatchlightOptions = {}) {
-    this.agent = opts.agent ?? process.env.WATCHLIGHT_AGENT ?? "my-agent";
-    this._trail = new AuditTrail(
-      path.join(opts.auditDir ?? ".watchlight", "audit.jsonl"),
-      opts.auditSink
-    );
-    this._backend = selectBackend({
-      apdpUrl: opts.apdpUrl,
-      token: opts.token,
-      tenantId: opts.tenantId,
+    const agent = opts.agent ?? process.env.WATCHLIGHT_AGENT ?? "my-agent";
+    assertAgentName(agent, "new Watchlight({ agent })");
+    this.agent = agent;
+    this.actorChain = Object.freeze([this.agent]);
+    this._shared = newState(opts);
+  }
+
+  /**
+   * A view of THIS governor acting under a different agent name. The view
+   * shares the engine, the compiled policies, the audit trail, the sink, the
+   * scope-token secret and the policy count by reference — nothing is
+   * reloaded, no second engine is constructed, and a policy added through
+   * either one is immediately visible to both. Only the name stamped on audit
+   * records and passed to the engine differs. Any number of names therefore
+   * costs one engine and one policy load.
+   *
+   *     const billing = govern.as("billing-agent");
+   *     const research = govern.as("research-agent");   // same engine
+   */
+  as(agent: string): Watchlight {
+    assertAgentName(agent, "as(agent)");
+    // A delegate's name is what the delegation granted. Renaming it — directly,
+    // or through a per-call `agent` override, which lands here — would drop the
+    // actor chain from the context and the record, so it is refused rather than
+    // silently losing the delegation.
+    if (this.actorChain.length > 1) {
+      throw new TypeError(
+        "as(agent): a delegated governor cannot be renamed — its name is part of the " +
+          "actor chain. Use delegate(from, agent) to spawn a sub-agent under it."
+      );
+    }
+    const view = Object.create(Watchlight.prototype) as Watchlight;
+    // Shared BY REFERENCE — the whole point of the view. A rename is not a
+    // delegation: the view acts alone under its own name.
+    Object.assign(view, {
+      agent,
+      actorChain: Object.freeze([agent]),
+      _shared: this._shared,
     });
-    this._tokenSecret = normalizeSecret(opts.tokenSecret ?? process.env.WATCHLIGHT_TOKEN_SECRET);
+    return view;
+  }
+
+  /**
+   * Spawn a governor for a SUB-AGENT under `scope`, and record the delegation.
+   *
+   * The sub-agent's authority is `scope` narrowed by `opts` — the engine's
+   * strict-subset attenuation, so it can never hold what its parent lacks — and
+   * its identity is the parent's {@link actorChain} with `agent` appended.
+   * Every decision and every record it produces then carries the ordered chain
+   * (root first) alongside the leaf actor, and a policy can ask either
+   * question: `context.actor == "seat-picker"` (who made this call) or
+   * `context.actor_chain.contains("flight-booker")` (whose delegation is this).
+   *
+   *     const root = await govern.scope({ tools: ["search", "book"] });
+   *     const picker = govern.delegate(root, "seat-picker", { tools: ["search"] });
+   *     await picker.authorize({ action: "pick_seat", principal: principals.user("alice") });
+   *     govern.delegate(picker, "row-checker");          // one level deeper
+   *
+   * The engine, the compiled policies, the audit trail and the sink are shared
+   * with this governor, exactly as for {@link as}. Throws
+   * {@link AttenuationDenied} if `opts` widens the scope and
+   * {@link DevEditionCeiling} past the depth ceiling — which also bounds the
+   * chain at {@link MAX_ACTOR_CHAIN} entries.
+   */
+  delegate(from: Scope | Watchlight, agent: string, opts: AttenuateOptions = {}): Watchlight {
+    assertAgentName(agent, "delegate(from, agent)");
+    const parent = from instanceof Watchlight ? from.delegatedScope : from;
+    if (!parent) {
+      throw new TypeError(
+        "delegate(from, agent): `from` must be a scope, or a governor that was itself delegated"
+      );
+    }
+    const child = parent.attenuate({ ...opts, agent });
+    const view = Object.create(Watchlight.prototype) as Watchlight;
+    Object.assign(view, {
+      agent,
+      actorChain: child.actorChain,
+      delegatedScope: child,
+      _shared: this._shared,
+    });
+    return view;
   }
 
   /** `"in-process"` (Developer Edition) or `"networked"` (graduated to the
@@ -335,25 +642,75 @@ export class Watchlight {
 
   // ── policy loading ────────────────────────────────────────────────
 
-  /** Add one Cedar policy inline. Chainable. (In networked mode policies are
-   *  managed by the control plane and this is ignored, with a one-time warning.) */
+  /** How many policies this governor holds — the count shared with every view
+   *  from {@link as}. Counts what was added, not what the engine merged. */
+  get policyCount(): number {
+    return this._shared.policyCount;
+  }
+
+  /** Whether any policy is loaded. `false` means every call is denied
+   *  (fail-closed), which is a configuration mistake worth asserting on at
+   *  start-up. */
+  get hasPolicies(): boolean {
+    return this._shared.policyCount > 0;
+  }
+
+  /** Add one Cedar policy inline. Chainable. Always additive: calling it twice
+   *  with the same code adds it twice (use {@link load} for a set you may load
+   *  more than once). (In networked mode policies are managed by the control
+   *  plane and this is ignored, with a one-time warning.) */
   allow(cedarCode: string, name?: string): this {
-    this._backend.addPolicy({ name: name ?? `policy-${this._policyCount}`, code: cedarCode });
-    this._policyCount += 1;
+    this._backend.addPolicy({
+      name: name ?? `policy-${this._shared.policyCount}`,
+      code: cedarCode,
+    });
+    this._shared.policyCount += 1;
     return this;
   }
 
   /** Load policies from a JSON file — a list of `{name, code}` (or
    *  `{policies:[...]}`). Fail-closed: a missing file loads nothing, so every
-   *  governed call is denied until a policy permits it. Chainable. */
-  load(file: string): this {
+   *  governed call is denied until a policy permits it. Chainable.
+   *
+ *  IDEMPOTENT PER SOURCE: the source is remembered under its real path
+   *  (symlinks resolved), or under `sourceId` when you give one, and loading the
+   *  same source again is a no-op — priming an engine in a factory and loading
+   *  the same file again from an initialiser cannot double the set. A file that
+   *  does not exist is not remembered, so it loads once it appears. Two
+   *  different paths to the same file are one source; two files with the same
+   *  content are two, unless you give them a shared `sourceId`. The memo is
+   *  shared with every view from {@link as}.
+   *
+   *  The memo is keyed on identity, not content: EDITING a file already loaded
+   *  and calling `load` again is a no-op, and the new policies do not apply.
+   *  Pass `{ force: true }` to load it again — policies are only ever added, so
+   *  the previous copy stays and `policyCount` grows; construct a fresh
+   *  governor when you need the old set gone. */
+  load(file: string, opts: { sourceId?: string; force?: boolean } = {}): this {
+    const key = opts.sourceId ?? resolveSource(file);
+    if (!opts.force && this._shared.sources.has(key)) return this;
     if (!fs.existsSync(file)) return this;
     const data = JSON.parse(fs.readFileSync(file, "utf8"));
     const entries: { name?: string; code: string }[] = Array.isArray(data)
       ? data
       : (data.policies ?? []);
     for (const e of entries) this.allow(e.code, e.name);
+    this._shared.sources.add(key);
     return this;
+  }
+
+  /** The subject of a call that named none: a TYPED reference to this agent,
+   *  `Agent::"<name>"` — when no human is on whose behalf the call runs, the
+   *  agent is the subject, and typing it says so on sight and in a policy.
+   *  Transitionally, `strictPrincipal: false` restores the bare, untyped agent
+   *  name (warned once per process). Framework adapters use this so their
+   *  `egress` records carry the same subject as the decision they join.
+   *  @internal */
+  _principal(explicit?: string): string {
+    if (explicit !== undefined && explicit !== null && explicit !== "") return explicit;
+    if (this._shared.strictPrincipal) return principals.agent(this.agent);
+    warnLenientPrincipal();
+    return this.agent;
   }
 
   // ── sub-agent scope attenuation ───────────────────────────────────
@@ -447,9 +804,13 @@ export class Watchlight {
     fn: (...args: A) => R,
     opts: {
       intent: string;
-      /** Acting principal, e.g. `User::"u1"` — value or `(args) => value`.
-       *  Defaults to the agent. */
+      /** Acting principal — value or `(args) => value`; build it with
+       *  {@link principals} (`principals.user(sub)`). With none, the agent is
+       *  the subject and is recorded as `Agent::"<name>"`. */
       principal?: Binding<A>;
+      /** Agent name for this tool, overriding the governor's — the same view
+       *  {@link as} returns, applied to one tool. */
+      agent?: string;
       /** Cedar resource entity — value or `(args) => value`. Defaults to
        *  `tool/<name>`. */
       resource?: Binding<A>;
@@ -477,8 +838,11 @@ export class Watchlight {
   ): Governed<A, R> {
     const intent = opts.intent;
     const name = fn.name || "anonymous";
+    // A per-tool `agent` is exactly a view of this governor (same engine, same
+    // policies, same trail) with a different name on it.
+    const gov = opts.agent ? this.as(opts.agent) : this;
     return async (...args: A): Promise<Awaited<R>> => {
-      const principal = resolveBinding(opts.principal, args) ?? this.agent;
+      const principal = gov._principal(resolveBinding(opts.principal, args));
       const resource = resolveBinding(opts.resource, args) ?? `tool/${name}`;
       const context =
         typeof opts.context === "function" ? opts.context(...args) : opts.context ?? {};
@@ -489,11 +853,11 @@ export class Watchlight {
         if (!opts.onResult) return out;
         const info: EgressInfo = { intent, resource, principal, decisionId: d.decisionId };
         if (d.obligations) info.obligations = d.obligations;
-        const { value } = await this._applyOnResult(out, opts.onResult, info);
+        const { value } = await gov._applyOnResult(out, opts.onResult, info);
         return value;
       };
 
-      const d = await this.authorize({ principal, action: intent, resource, context });
+      const d = await gov.authorize({ principal, action: intent, resource, context });
       if (d.allowed) return run(d);
       if (d.needsApproval) {
         if (opts.onNeedsApproval) {
@@ -505,8 +869,8 @@ export class Watchlight {
             reason: d.reason,
           });
           if (ok) {
-            const token = this.mintApproval({ principal, action: intent, resource });
-            const d2 = await this.authorize({ principal, action: intent, resource, context, approval: token });
+            const token = gov.mintApproval({ principal, action: intent, resource });
+            const d2 = await gov.authorize({ principal, action: intent, resource, context, approval: token });
             if (d2.allowed) return run(d2);
           }
         }
@@ -525,10 +889,14 @@ export class Watchlight {
   async check(
     intent: string,
     toolName: string
-  ): Promise<{ allowed: boolean; decision: string; reason: string; decisionId?: string; obligations?: Obligations }> {
+  ): Promise<{ allowed: boolean; decision: string; reason: string; principal: string; decisionId?: string; obligations?: Obligations }> {
     const d = await this.authorize({ action: intent, resource: `tool/${toolName}` });
-    const out: { allowed: boolean; decision: string; reason: string; decisionId?: string; obligations?: Obligations } = {
-      allowed: d.allowed, decision: d.decision, reason: d.reason, decisionId: d.decisionId,
+    const out: { allowed: boolean; decision: string; reason: string; principal: string; decisionId?: string; obligations?: Obligations } = {
+      allowed: d.allowed, decision: d.decision, reason: d.reason,
+      // The subject the decision was recorded against — no acting subject was
+      // named, so adapters report exactly what the decision record carries.
+      principal: this._principal(),
+      decisionId: d.decisionId,
     };
     if (d.obligations) out.obligations = d.obligations;
     return out;
@@ -552,8 +920,29 @@ export class Watchlight {
     context?: Record<string, unknown>;
     /** A token from {@link mintApproval} (after human confirmation). */
     approval?: string;
+    /** Agent name for this one call, overriding the governor's — the same view
+     *  {@link as} returns, applied to a single decision. It is what the record
+     *  carries and what the policy reads as `context.actor`. */
+    agent?: string;
   }): Promise<AuthorizeResult> {
-    const { result, principal, resource, decisionId } = await this._decide(req);
+    if (req.agent && req.agent !== this.agent) {
+      const { agent, ...rest } = req;
+      return this.as(agent).authorize(rest);
+    }
+    let decided;
+    try {
+      decided = await this._decide(req);
+    } catch (e) {
+      // A request the engine cannot evaluate is a refusal like any other: it is
+      // recorded, then raised typed. (A `ReservedContextError` is the caller's
+      // own context and is raised before anything reaches the engine.)
+      if (e instanceof ReservedContextError || e instanceof AuthorizeError) throw e;
+      this._audit(req.action, req.resource ?? "resource", "Deny", DENY_REASON, {
+        principal: req.principal,
+      });
+      throw new AuthorizeRequestError();
+    }
+    const { result, principal, resource, decisionId } = decided;
     this._audit(req.action, resource, result.decision, result.reason, {
       principal,
       decisionId,
@@ -580,13 +969,18 @@ export class Watchlight {
     resource: string;
     decisionId?: string;
   }> {
-    const principal = req.principal ?? this.agent;
+    const principal = this._principal(req.principal);
     const resource = req.resource ?? "resource";
     const raw = await this._backend.authorize({
       principal,
       action: req.action,
       resource,
-      context: req.context ?? {},
+      // The acting agent is the ACTOR, and its delegation chain the ACTOR
+      // CHAIN — reserved context keys the SDK owns, so a policy can name the
+      // runtime (`context.actor == "…"`) or its delegation
+      // (`context.actor_chain.contains("…")`) independently of the subject it
+      // acts for. A caller value that disagrees with either is refused.
+      context: withActorContext(req.context, this.agent, this.actorChain),
     });
     let allowed = raw.decision === "Allow";
     let needsApproval = allowed && !!raw.needsApproval;
@@ -650,7 +1044,7 @@ export class Watchlight {
     opts: { ttlMs?: number } = {}
   ): string {
     return mintApprovalToken(
-      challenge.principal ?? this.agent,
+      this._principal(challenge.principal),
       challenge.action,
       challenge.resource ?? "resource",
       opts.ttlMs ?? 120_000
@@ -665,7 +1059,11 @@ export class Watchlight {
    * Operates on extracted text — extract a document to text first (never hand
    * the agent a "redacted PDF").
    */
-  sanitize(content: string, opts: SanitizeOptions = {}): SanitizeResult {
+  sanitize(content: string, opts: SanitizeOptions & { agent?: string } = {}): SanitizeResult {
+    if (opts.agent && opts.agent !== this.agent) {
+      const { agent, ...rest } = opts;
+      return this.as(agent).sanitize(content, rest);
+    }
     const { intent = "read", resource = "document", mode, types, decisionId, known } = opts;
     // `decisionId` is validated (bounded, no control chars) inside sanitizeText
     // before it is echoed onto the report and written to the audit line; `known`
@@ -686,8 +1084,12 @@ export class Watchlight {
    */
   screen(
     content: string,
-    opts: ScreenOptions & { intent?: string; resource?: string } = {}
+    opts: ScreenOptions & { intent?: string; resource?: string; agent?: string } = {}
   ): ScreenResult {
+    if (opts.agent && opts.agent !== this.agent) {
+      const { agent, ...rest } = opts;
+      return this.as(agent).screen(content, rest);
+    }
     const { intent = "read", resource = "content", mode, families, decisionId } = opts;
     // `decisionId` is validated (bounded, no control chars) inside screenText
     // before it is echoed onto the report and written to the audit line.
@@ -712,7 +1114,17 @@ export class Watchlight {
    * binding right before the decision it feeds.
    */
   counters(opts: CountersOptions): Counters {
-    return countAuditRecords(this._trail.path, opts);
+    const trailPath = this._trail.path;
+    // Counters are folded from the LOCAL file; with `auditFile: false` there is
+    // nothing to fold, and a quota that cannot be counted must not read as
+    // zero (that would silently widen it). Fail closed instead.
+    if (trailPath === null) {
+      throw new Error(
+        "counters() reads the local audit file, which is disabled by `auditFile: false`; " +
+          "count from your own sink's records instead"
+      );
+    }
+    return countAuditRecords(trailPath, opts);
   }
 
   // ── internals ─────────────────────────────────────────────────────
@@ -728,6 +1140,7 @@ export class Watchlight {
     const record: Record<string, unknown> = {
       ts: new Date().toISOString(),
       agent: this.agent,
+      ...this._chainField(),
       intent,
       event: "sanitization",
       resource,
@@ -792,6 +1205,7 @@ export class Watchlight {
     const record: Record<string, unknown> = {
       ts: new Date().toISOString(),
       agent: this.agent,
+      ...this._chainField(),
       principal: info.principal,
       intent: info.intent,
       event: "egress",
@@ -814,6 +1228,7 @@ export class Watchlight {
     const record: Record<string, unknown> = {
       ts: new Date().toISOString(),
       agent: this.agent,
+      ...this._chainField(),
       intent,
       event: "screening",
       resource,
@@ -826,6 +1241,13 @@ export class Watchlight {
     // Same key as the `authorize` line, so the two records join on `decision_id`.
     if (report.decisionId) record.decision_id = report.decisionId;
     this._writeAudit(record);
+  }
+
+  /** `actor_chain` for a record, and nothing at all when this governor is not
+   *  a delegate — a call outside any delegation keeps the record shape it has
+   *  always had, and its chain is the single-element `[agent]` anyway. */
+  private _chainField(): { actor_chain?: string[] } {
+    return this.actorChain.length > 1 ? { actor_chain: [...this.actorChain] } : {};
   }
 
   private _announce(): void {
@@ -854,7 +1276,10 @@ export class Watchlight {
     const record: Record<string, unknown> = {
       ts: new Date().toISOString(),
       agent: this.agent,
-      principal: extra.principal ?? this.agent,
+      ...this._chainField(),
+      // Never the agent standing in for an unnamed subject: `_principal` has
+      // already resolved it (to the typed Agent::"<name>" by default).
+      principal: this._principal(extra.principal),
       intent,
       resource,
       decision,
@@ -867,11 +1292,94 @@ export class Watchlight {
   /** The single funnel for every audit record this governor produces: the local
    *  `audit.jsonl` append, then the optional `auditSink` (fire-and-forget). */
   private _writeAudit(record: Record<string, unknown>): void {
+    if (!this._shared.wroteRecord) {
+      this._shared.wroteRecord = true;
+      // The exported default governor is pre-constructed, so nothing has had a
+      // chance to give it a durable destination. Say it once, the first time it
+      // writes — a trail that exists only in the working directory is a
+      // configuration choice, not an accident.
+      if (this._shared.isDefault && !this._trail.hasSink && !this._shared.warnedDefaultSink) {
+        this._shared.warnedDefaultSink = true;
+        // eslint-disable-next-line no-console
+        console.warn(
+          "watchlight: the default governor writes only to the local audit file — " +
+            "no auditSink is configured. Call configureDefault({ auditSink }) before the " +
+            "first governed call to send records to a durable destination."
+        );
+      }
+    }
     this._trail.write(record);
+  }
+
+  /** Apply options to a governor that has not written an audit record yet.
+   *  Behind {@link configureDefault}; not part of the public surface.
+   *  @internal */
+  _configure(opts: WatchlightOptions): void {
+    if (this._shared.wroteRecord) {
+      throw new Error(
+        "configureDefault must run before the default governor writes its first audit " +
+          "record — the records already written would not reach the new destination"
+      );
+    }
+    const shared = this._shared;
+    if (opts.agent !== undefined) {
+      assertAgentName(opts.agent, "configureDefault({ agent })");
+      Object.assign(this, { agent: opts.agent, actorChain: Object.freeze([opts.agent]) });
+    }
+    if (opts.auditDir !== undefined || opts.auditFile !== undefined || opts.auditSink !== undefined) {
+      // MERGE: a later call that names only one audit option must not drop the
+      // sink (or the directory) an earlier one configured.
+      const audit = shared.auditOptions;
+      if (opts.auditDir !== undefined) audit.dir = opts.auditDir;
+      if (opts.auditFile !== undefined) audit.file = opts.auditFile;
+      if (opts.auditSink !== undefined) audit.sink = opts.auditSink;
+      shared.trail = new AuditTrail(
+        audit.file === false ? null : path.join(audit.dir ?? ".watchlight", "audit.jsonl"),
+        audit.sink
+      );
+    }
+    if (opts.tokenSecret !== undefined) shared.tokenSecret = normalizeSecret(opts.tokenSecret);
+    if (opts.strictPrincipal !== undefined) shared.strictPrincipal = opts.strictPrincipal !== false;
+    if (opts.apdpUrl !== undefined || opts.token !== undefined || opts.tenantId !== undefined) {
+      // A different backend is a different policy holder: the policies added to
+      // the old one do not move with it.
+      shared.backend = selectBackend({
+        apdpUrl: opts.apdpUrl,
+        token: opts.token,
+        tenantId: opts.tenantId,
+      });
+      shared.policyCount = 0;
+      shared.sources.clear();
+    }
   }
 }
 
 /** A ready-to-use default governor so `import { govern } from "@watchlight/sdk"`
  *  just works. Starts with NO policies — fail-closed — until you `govern.load()`
- *  a file or `govern.allow()` a policy inline. */
+ *  a file or `govern.allow()` a policy inline, and with no audit sink until
+ *  {@link configureDefault} gives it one. */
 export const govern = new Watchlight();
+// Marked so the first record it writes can point out that it has no sink.
+(govern as unknown as { _shared: GovernorState })._shared.isDefault = true;
+
+/**
+ * Configure the exported {@link govern} — the one governor an application never
+ * constructs, and therefore the one that could not otherwise be given an
+ * `auditSink`, an `auditDir`, a `tokenSecret` or a name.
+ *
+ *     import { govern, configureDefault } from "@watchlight/sdk";
+ *     configureDefault({ agent: "billing-agent", auditSink: (r) => ship(r) });
+ *
+ * Call it once, before the first governed call. It throws if the default
+ * governor has already written an audit record: records written before the sink
+ * existed cannot be sent to it, and a trail split across two destinations reads
+ * like a data bug. Only the options you pass are applied, and they MERGE with
+ * any earlier call's — configuring `auditDir` after an `auditSink` keeps the
+ * sink. Policies already added survive — except when `apdpUrl` / `token` /
+ * `tenantId` switch the backend, which replaces the policy holder and resets
+ * the count.
+ */
+export function configureDefault(opts: WatchlightOptions): Watchlight {
+  govern._configure(opts);
+  return govern;
+}

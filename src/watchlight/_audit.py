@@ -3,9 +3,13 @@
 Decisions (:meth:`Watchlight.authorize`), sanitizations (:meth:`Watchlight.sanitize`)
 and attenuations (:meth:`Scope.attenuate`) all end up here. Two destinations:
 
-1. the local ``.watchlight/audit.jsonl`` file (always on, best-effort), and
+1. the local ``.watchlight/audit.jsonl`` file (on by default, best-effort;
+   ``audit_file=False`` turns it off and makes the sink the sole destination), and
 2. an optional application-supplied ``audit_sink`` callable, which receives
    exactly the fields the file line carries — nothing more.
+
+With BOTH destinations off a record has nowhere to go; the trail says so once
+rather than discarding records silently.
 
 The sink is ADDITIVE and FIRE-AND-FORGET: it is called synchronously after the
 file append, an awaitable it returns is scheduled on the running event loop (never
@@ -49,9 +53,12 @@ def _error_kind(exc: BaseException) -> str:
 class AuditTrail:
     """The audit trail shared by a governor and every scope derived from it."""
 
-    def __init__(self, path: str | pathlib.Path, sink: Optional[AuditSink] = None) -> None:
-        self.path = pathlib.Path(path)
+    def __init__(self, path: str | pathlib.Path | None, sink: Optional[AuditSink] = None) -> None:
+        #: The local file every record is appended to, or ``None`` when the file
+        #: is disabled (``audit_file=False``) and the sink is the sole destination.
+        self.path = pathlib.Path(path) if path is not None else None
         self._sink = sink
+        self._warned_no_destination = False
         # Sanitized error kinds already reported — one warning per kind, so a
         # "no running loop" condition never silences a later real failure.
         self._warned_kinds: set[str] = set()
@@ -59,8 +66,16 @@ class AuditTrail:
         # and a GC'd task would drop the record silently mid-await.
         self._tasks: set[asyncio.Future[Any]] = set()
 
+    @property
+    def has_sink(self) -> bool:
+        """True when an application-supplied sink is attached to this trail."""
+        return self._sink is not None
+
     def write(self, record: dict[str, Any]) -> None:
         """Append ``record`` to the local file, then hand the same fields to the sink."""
+        if self.path is None and self._sink is None:
+            self._warn_no_destination()
+            return
         # The funnel can never raise out of authorize/sanitize/attenuate —
         # including for a record that fails to serialize.
         try:
@@ -68,13 +83,15 @@ class AuditTrail:
         except (TypeError, ValueError):
             return
         # 1. The file, first — the sink can never influence what lands on disk.
-        try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with self.path.open("a", encoding="utf-8") as fh:
-                fh.write(line + "\n")
-        except OSError:
-            # Audit is best-effort in dev mode; never let it break the app.
-            pass
+        #    Skipped entirely when the file is disabled: nothing is created.
+        if self.path is not None:
+            try:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                with self.path.open("a", encoding="utf-8") as fh:
+                    fh.write(line + "\n")
+            except OSError:
+                # Audit is best-effort in dev mode; never let it break the app.
+                pass
         # 2. The sink, fire-and-forget. It receives a fresh copy built from the
         #    exact serialized line, so it sees precisely the file's fields and
         #    cannot mutate the caller's record.
@@ -113,6 +130,18 @@ class AuditTrail:
         exc = task.exception()
         if exc is not None:
             self._warn_once(exc)
+
+    def _warn_no_destination(self) -> None:
+        # Both destinations are off, so this record has nowhere to go. Said once
+        # — a discarded trail is a configuration mistake, never a silent one.
+        if self._warned_no_destination:
+            return
+        self._warned_no_destination = True
+        print(
+            "watchlight: the audit file is disabled and no audit_sink is configured — "
+            "audit records are discarded. Configure `audit_sink`, or leave `audit_file` on.",
+            file=sys.stderr,
+        )
 
     def _warn_once(self, exc: BaseException) -> None:
         # Only the error TYPE is reported — never the record, never a message

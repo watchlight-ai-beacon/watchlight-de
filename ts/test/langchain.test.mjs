@@ -82,7 +82,7 @@ async function main() {
   ok("governTool onResult replacement reaches the caller", (await govFetch.invoke({ id: 1 })) === "[redacted-doc]");
   ok("underlying tool ran once before egress", fetchDoc.ranCount() === 1);
   ok("onResult info carries intent/resource/principal/decisionId",
-    infos[0]?.intent === "research" && infos[0]?.resource === "tool/fetch_doc" && infos[0]?.principal === "lc-agent" && typeof infos[0]?.decisionId === "string",
+    infos[0]?.intent === "research" && infos[0]?.resource === "tool/fetch_doc" && infos[0]?.principal === 'Agent::"lc-agent"' && typeof infos[0]?.decisionId === "string",
     JSON.stringify(infos[0]));
 
   ok("an unannotated permit puts no obligations key on the hook info", infos.length >= 1 && !("obligations" in infos[0]));

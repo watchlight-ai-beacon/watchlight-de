@@ -81,7 +81,7 @@ async function main() {
   const redacted = await govRead("7");
   ok("onResult replacement reaches the caller", redacted === "<REDACTED>-7", redacted);
   ok("onResult info carries intent/resource/principal/decisionId",
-    seen[0]?.intent === "read" && seen[0]?.resource === "doc/7" && seen[0]?.principal === "egress-agent" && typeof seen[0]?.decisionId === "string",
+    seen[0]?.intent === "read" && seen[0]?.resource === "doc/7" && seen[0]?.principal === 'Agent::"egress-agent"' && typeof seen[0]?.decisionId === "string",
     JSON.stringify(seen[0]));
 
   async function plain() { return "plain"; }
@@ -113,7 +113,7 @@ async function main() {
   const egRec = egRecs.find((r) => r.event === "egress" && r.resource === "doc/7");
   ok("egress record joined to its decision record by decision_id",
     egRec && decRec && egRec.decision_id === decRec.decision_id && egRec.decision_id === seen[0].decisionId, JSON.stringify([egRec, decRec]));
-  ok("egress record marks replacement", egRec?.replaced === true && egRec?.principal === "egress-agent" && egRec?.intent === "read");
+  ok("egress record marks replacement", egRec?.replaced === true && egRec?.principal === 'Agent::"egress-agent"' && egRec?.intent === "read");
   ok("passthrough egress record replaced:false",
     egRecs.some((r) => r.event === "egress" && r.resource === "tool/plain" && r.replaced === false && !r.withheld));
   ok("withheld egress record on hook failure",
