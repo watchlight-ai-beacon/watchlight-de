@@ -1,0 +1,8 @@
+{
+  "name": "watchlight-example-web-backend",
+  "private": true,
+  "description": "Optional extras for the Node lane of this example only — @watchlight/sdk itself does not depend on a web framework. Run `npm install` in this folder.",
+  "dependencies": {
+    "express": "^4.19.0 || ^5.0.0"
+  }
+}

@@ -79,6 +79,7 @@ __all__ = [
     "DEFAULT_PII_TYPES",
     "HEURISTIC_PII_TYPES",
     "screen",
+    "SCREEN_FAMILIES",
     "ScreenError",
     "govern",
     "Scope",

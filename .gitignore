@@ -47,3 +47,7 @@ wheels/
 
 # Internal design notes / release checklist — never in the public product repo
 internal/
+
+# ── Node (example folders that install their own optional extras) ──
+node_modules/
+package-lock.json

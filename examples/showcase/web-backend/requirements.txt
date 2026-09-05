@@ -1,0 +1,5 @@
+# Optional extras for the Python lane of this example only — the `watchlight`
+# package itself does not depend on a web framework.
+#   pip install -r examples/showcase/web-backend/requirements.txt
+fastapi>=0.100
+uvicorn>=0.23

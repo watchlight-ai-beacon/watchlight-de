@@ -1,0 +1,18 @@
+{
+  "policies": [
+    { "name": "alice-may-read-her-own-statement",
+      "code": "permit(principal == User::\"alice\", action == Action::\"read_statement\", resource == Resource::\"account/acct-100\");" }
+  ],
+  "tests": [
+    { "name": "the account owner may read her statement", "action": "read_statement",
+      "principal": "User::\"alice\"", "resource": "account/acct-100", "expect": "Allow" },
+    { "name": "another authenticated user may not", "action": "read_statement",
+      "principal": "User::\"bob\"", "resource": "account/acct-100", "expect": "Deny" },
+    { "name": "the owner may not read someone else's account", "action": "read_statement",
+      "principal": "User::\"alice\"", "resource": "account/acct-200", "expect": "Deny" },
+    { "name": "an unattributed call (the service itself) may not", "action": "read_statement",
+      "resource": "account/acct-100", "expect": "Deny" },
+    { "name": "no policy permits exporting a statement", "action": "export_statement",
+      "principal": "User::\"alice\"", "resource": "account/acct-100", "expect": "Deny" }
+  ]
+}

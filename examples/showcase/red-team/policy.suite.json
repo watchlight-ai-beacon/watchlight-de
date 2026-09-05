@@ -1,0 +1,18 @@
+{
+  "policies": [
+    { "name": "untrusted-input-may-be-ingested-for-screening",
+      "code": "permit(principal, action == Action::\"ingest\", resource) when { context.source == \"untrusted\" };" },
+    { "name": "the-agent-may-answer",
+      "code": "permit(principal, action == Action::\"answer\", resource);" }
+  ],
+  "tests": [
+    { "name": "untrusted input may be ingested (the egress hook screens it)", "action": "ingest",
+      "resource": "prompt/io-01", "context": { "source": "untrusted" }, "expect": "Allow" },
+    { "name": "input that names no source is not ingested (fail-closed)", "action": "ingest",
+      "resource": "prompt/io-01", "context": {}, "expect": "Deny" },
+    { "name": "the agent may answer", "action": "answer", "resource": "chat/reply", "expect": "Allow" },
+    { "name": "no policy permits exporting a table", "action": "export", "resource": "table/customers", "expect": "Deny" },
+    { "name": "no policy permits sending mail outside", "action": "send_email", "resource": "mailbox/external", "expect": "Deny" },
+    { "name": "no policy permits deleting anything", "action": "delete", "resource": "log/audit", "expect": "Deny" }
+  ]
+}
