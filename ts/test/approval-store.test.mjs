@@ -48,6 +48,14 @@ const govAny = () => {
   return g;
 };
 
+/** `govAny` on the DEFAULT (process-wide, in-memory) store. */
+const govAnyDefault = () => {
+  const auditDir = fs.mkdtempSync(join(os.tmpdir(), "wl-appr-"));
+  const g = new Watchlight({ agent: "appr-agent", auditDir });
+  g.allow(ANY, "any");
+  return g;
+};
+
 const challenge = { action: "wire", resource: "acct/1" };
 const held = async (g, approval) =>
   g.authorize({ action: "wire", resource: "acct/1", ...(approval ? { approval } : {}) });
@@ -296,6 +304,34 @@ async function main() {
     const results = await Promise.all(Array.from({ length: 8 }, () => held(g, token)));
     ok("8 parallel consumes against a latency-injected async store yield exactly one Allow",
       results.filter((d) => d.decision === "Allow").length === 1);
+  }
+
+  {
+    // The default store prunes expired rows on every reservation. Many
+    // concurrent reservations must all succeed while that sweep runs — a sweep
+    // that threw would be caught and the approval refused, which is fail-closed
+    // but denies a VALID approval.
+    const warns = await withWarnSpy(async (w) => {
+      const g = govAnyDefault();
+      // Expired reservations first, so every later add() does real sweeping.
+      await Promise.all(
+        Array.from({ length: 200 }, (_, i) =>
+          g.authorize({ principal: "U", action: "a", resource: `old${i}`,
+            approval: g.mintApproval({ principal: "U", action: "a", resource: `old${i}` }, { ttlMs: 5 }) })
+        )
+      );
+      await new Promise((r) => setTimeout(r, 20)); // let them expire
+      const fresh = await Promise.all(
+        Array.from({ length: 12 }, (_, i) =>
+          g.authorize({ principal: "U", action: "a", resource: `new${i}`,
+            approval: g.mintApproval({ principal: "U", action: "a", resource: `new${i}` }) })
+        )
+      );
+      ok("12 distinct valid approvals all succeed while the expiry sweep runs",
+        fresh.every((d) => d.decision === "Allow"));
+      return w;
+    });
+    ok("…and nothing warns", warns.length === 0);
   }
 
   console.log("a store that never answers");

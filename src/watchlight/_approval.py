@@ -38,6 +38,7 @@ import hashlib
 import hmac
 import secrets
 import sys
+import threading
 import time
 from typing import Any, Optional, Protocol, Union, runtime_checkable
 
@@ -138,7 +139,7 @@ class _MemoryApprovalStore:
     """The default seen-token store: an in-process dict of id -> expiry.
 
     Atomic WITHIN this process — of N consumes of one token, exactly one is
-    approved — and PER-PROCESS ONLY. It is shared by every governor in one
+    approved, under threads as well as coroutines — and PER-PROCESS ONLY. It is shared by every governor in one
     process, and by nothing else: behind two replicas the same approval token can
     be consumed once on each, and a restart forgets every consumed id (harmless, since the
     same restart also invalidates the random per-process key — unless an
@@ -149,19 +150,31 @@ class _MemoryApprovalStore:
 
     def __init__(self) -> None:
         self._seen: dict[str, int] = {}
+        # The reservation and the expiry sweep are BOTH under this lock, so the
+        # guarantee is structural rather than a property of when the interpreter
+        # happens to switch threads. `dict.setdefault` alone would make the
+        # check-and-set atomic but would leave the sweep racing another thread's
+        # sweep — and a sweep that raised would refuse a VALID approval, which is
+        # fail-closed but wrong. One lock covers both; it is held for a few dict
+        # operations and never across I/O.
+        self._lock = threading.Lock()
 
     def add(self, id: str, expires_at: int) -> bool:  # noqa: A002
-        """Test-and-set in ONE step, with nothing that yields between the lookup
-        and the write: of N consumes of the same token, exactly one sees
-        ``True``."""
+        """Test-and-set in ONE step: of N concurrent consumes of the same token,
+        exactly one sees ``True``."""
         now = int(time.time() * 1000)
-        seen_at = self._seen.get(id)
-        if seen_at is not None and now <= seen_at:
-            return False  # already reserved
-        for key in [k for k, exp in self._seen.items() if now > exp]:
-            del self._seen[key]
-        self._seen[id] = expires_at
-        return True
+        with self._lock:
+            seen_at = self._seen.get(id)
+            if seen_at is not None and now <= seen_at:
+                return False  # already reserved
+            # Drop rows whose token has expired, so the dict stays bounded by the
+            # approvals live inside one TTL. `pop(..., None)` rather than `del`:
+            # tolerant of a key that is already gone, whoever removed it.
+            if self._seen:
+                for key in [k for k, exp in self._seen.items() if now > exp]:
+                    self._seen.pop(key, None)
+            self._seen[id] = expires_at
+            return True
 
 
 # Process-wide default store, so the in-memory single-use registry behaves

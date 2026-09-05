@@ -234,6 +234,69 @@ def test_parallel_consumes_of_one_token_yield_exactly_one_allow(tmp_path):
     assert results.count("NeedsApproval") == 7
 
 
+def test_the_expiry_sweep_under_contention_never_refuses_a_valid_approval(tmp_path):
+    """The default store prunes expired rows on every reservation. Two threads
+    sweeping at once must not trip over each other: a sweep that raised would be
+    caught and the approval REFUSED — fail-closed, but a valid approval denied.
+    """
+    import concurrent.futures
+    import sys
+
+    from watchlight._approval import _MemoryApprovalStore
+
+    store = _MemoryApprovalStore()
+    stale = int(time.time() * 1000) - 60_000
+    # Thousands of expired rows, so every reservation does real sweeping work
+    # and threads are very likely to be inside the sweep together.
+    store._seen.update({f"stale-{i}": stale for i in range(5_000)})
+
+    fresh = int(time.time() * 1000) + 120_000
+    switch = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)  # maximise interleaving
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
+            reserved = list(pool.map(lambda i: store.add(f"fresh-{i}", fresh), range(12)))
+    finally:
+        sys.setswitchinterval(switch)
+
+    # Every id is distinct, so every reservation is new: none may be refused.
+    assert reserved == [True] * 12
+    assert all(f"fresh-{i}" in store._seen for i in range(12))
+    assert not any(k.startswith("stale-") for k in store._seen)  # the sweep still ran
+
+
+def test_the_sweep_runs_on_the_governed_path_without_spurious_denials(tmp_path, capsys):
+    """The same, end to end: distinct valid approvals across threads, with the
+    process-wide default store already holding expired rows."""
+    import concurrent.futures
+    import sys
+
+    from watchlight._approval import _DEFAULT_STORE
+
+    stale = int(time.time() * 1000) - 60_000
+    _DEFAULT_STORE._seen.update({f"swept-{i}": stale for i in range(2_000)})
+
+    g = _gov(tmp_path, "a", policy=ANY)
+    tokens = [g.mint_approval(principal="U", action="a", resource=f"r{i}") for i in range(12)]
+    switch = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
+            decisions = list(
+                pool.map(
+                    lambda it: g.authorize(
+                        principal="U", action="a", resource=f"r{it[0]}", approval=it[1]
+                    )["decision"],
+                    enumerate(tokens),
+                )
+            )
+    finally:
+        sys.setswitchinterval(switch)
+
+    assert decisions == ["Allow"] * 12          # no valid approval spuriously denied
+    assert "approval store" not in capsys.readouterr().err  # and nothing warned
+
+
 def test_parallel_consumes_against_a_latency_injected_store(tmp_path):
     """Same guarantee when the store itself is slow, provided its `add` is the
     atomic check-and-set the contract requires."""

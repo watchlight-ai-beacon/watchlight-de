@@ -270,7 +270,7 @@ It mirrors the Python package feature-for-feature:
   *each*. `approvalSecret` / `approval_secret` (or `WATCHLIGHT_APPROVAL_SECRET`,
   or the existing `tokenSecret`, from which the approval key is derived with a
   distinct domain separator) makes a token portable; an `approvalStore` /
-  `approval_store` (`has(id)` / `add(id, expiresAt)`) backed by a shared store
+  `approval_store` (one method: `add(id, expiresAt)`) backed by a shared store
   makes single-use hold across replicas. `add` must be an **atomic
   check-and-set** — reserve the id only if absent, and say whether the
   reservation was new; a read followed by an unconditional write cannot enforce
