@@ -162,7 +162,7 @@ def test_no_secret_fails_closed(tmp_path):
     bare = Watchlight(agent="test-agent", audit_dir=str(tmp_path / ".watchlight"))
     with pytest.raises(ScopeTokenError) as ei:
         bare.scope(tools=["read"]).to_token()
-    assert ei.value.code == "no_secret" and "token_secret" in str(ei.value)
+    assert ei.value.code == "no_secret" and "signing_secret" in str(ei.value)
     with pytest.raises(ScopeTokenError) as ei:
         bare.scope_from_token("wls1.x.y")
     assert ei.value.code == "no_secret"

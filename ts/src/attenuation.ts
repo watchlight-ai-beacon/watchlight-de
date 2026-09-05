@@ -13,7 +13,7 @@ import { AuditTrail } from "./audit";
 import {
   ScopeTokenError,
   nowSeconds,
-  requireSecret,
+  signingSecret,
   signScopeToken,
   type ScopeRootClaim,
   type ScopeStepClaim,
@@ -90,9 +90,10 @@ interface ScopeInit {
   /** The scope this one was attenuated from (undefined for a root). Lets
    *  {@link Scope.toToken} serialise the full chain for engine replay. */
   parent?: Scope;
-  /** HMAC key for {@link Scope.toToken}; inherited by children. Unset ⇒ minting
+  /** Signing secrets for {@link Scope.toToken}, newest first; inherited by
+   *  children. The first entry signs, every entry verifies. Unset ⇒ minting
    *  fails closed. Never logged or written. */
-  tokenSecret?: Uint8Array;
+  signingSecrets?: Uint8Array[];
   /** Epoch seconds this scope came into force (defaults to now). */
   issuedAt?: number;
   /** The ordered actor chain, root first, that a call made through this scope
@@ -131,7 +132,7 @@ export class Scope {
   readonly issuedAt: number;
   private _expiresAt: number;
   private readonly _parent?: Scope;
-  private readonly _tokenSecret?: Uint8Array;
+  private readonly _signingSecrets?: Uint8Array[];
   private readonly _engine: Engine;
   private readonly _audit: AuditTrail;
 
@@ -150,7 +151,7 @@ export class Scope {
     this.parentId = init.parentId;
     this.actorChain = Object.freeze([...(init.actorChain ?? [init.agent])]);
     this._parent = init.parent;
-    this._tokenSecret = init.tokenSecret;
+    this._signingSecrets = init.signingSecrets;
     this.issuedAt = init.issuedAt ?? nowSeconds();
     // A scope never outlives its parent, whatever its own budget says.
     this._expiresAt = this.issuedAt + this.timeBudgetSeconds;
@@ -201,12 +202,14 @@ export class Scope {
    * The receiving `Watchlight.scopeFromToken()` verifies the signature and time
    * window, then re-runs the engine's strict-subset attenuation level by level
    * — the token is integrity across processes sharing the secret, never
-   * authority. Fails closed with {@link ScopeTokenError} when no `tokenSecret`
+   * authority. Fails closed with {@link ScopeTokenError} when no `signingSecret`
    * was configured or the scope has no remaining lifetime. The token never
    * carries argument values, audit paths, or the secret.
    */
   toToken(opts: ScopeTokenOptions = {}): string {
-    const secret = requireSecret(this._tokenSecret);
+    // The FIRST configured secret signs; the rest exist so a token signed under
+    // a previous one still verifies while it is listed.
+    const secret = signingSecret(this._signingSecrets);
     this.assertActive();
     const now = nowSeconds();
     const remaining = this.expiresAt - now;
@@ -307,7 +310,7 @@ export class Scope {
       depth: granted.depth ?? childDepth,
       parentId: this.nodeId,
       parent: this,
-      tokenSecret: this._tokenSecret,
+      signingSecrets: this._signingSecrets,
       // Naming the sub-agent this scope is spawned for extends the delegation
       // chain; narrowing without a name leaves the acting identity unchanged.
       actorChain: opts.agent ? [...this.actorChain, opts.agent] : this.actorChain,

@@ -140,11 +140,13 @@ it server-side.
 
 To hand a scope to another process (a queue worker, a scheduler) without trusting
 the job payload, serialise it as a **scope token**. Configure a shared secret
-(≥ 16 bytes; `tokenSecret` or `WATCHLIGHT_TOKEN_SECRET` — there is no default,
-minting and verifying fail closed without one):
+(>= 16 bytes; `signingSecret` or `WATCHLIGHT_SIGNING_SECRET` — there is no default,
+minting and verifying fail closed without one; see
+[the signing secret](../docs/signing-secret.md), including how to rotate it
+without a cutover):
 
 ```ts
-const govern = new Watchlight({ tokenSecret: process.env.WATCHLIGHT_TOKEN_SECRET });
+const govern = new Watchlight({ signingSecret: process.env.WATCHLIGHT_SIGNING_SECRET });
 const token = child.toToken();                 // wls1.<canonical claims>.<HMAC-SHA256>
 // ...in the worker (same agent identity, same secret):
 const scope = await govern.scopeFromToken(token);
@@ -259,7 +261,7 @@ if (d.decision === "NeedsApproval") {
   `(principal, action, resource)`.** Both defaults are **per-process**:
   - the token is signed with a **random per-process key**, so it cannot cross a
     process boundary and a restart invalidates every outstanding approval. Set
-    `approvalSecret` (or `WATCHLIGHT_APPROVAL_SECRET`, or `tokenSecret` — one
+    `approvalSecret` (or `WATCHLIGHT_APPROVAL_SECRET`, or `signingSecret` — one
     secret configures both, the approval key being
     `HMAC-SHA256(secret, "watchlight-de:approval-token:v1")`, never the secret
     itself) to mint in one process and consume in another.

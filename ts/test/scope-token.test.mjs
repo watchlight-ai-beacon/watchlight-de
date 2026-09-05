@@ -103,7 +103,7 @@ async function main() {
   // ── fail-closed: no secret ──
   const bare = new Watchlight({ agent: "test-agent", auditDir: tmp() });
   const bareRoot = await bare.scope({ tools: ["read"] });
-  await rejects("toToken without a secret fails closed", () => bareRoot.toToken(), "no_secret", (e) => e.message.includes("tokenSecret"));
+  await rejects("toToken without a secret fails closed", () => bareRoot.toToken(), "no_secret", (e) => e.message.includes("signingSecret"));
   await rejects("scopeFromToken without a secret fails closed", () => bare.scopeFromToken(token), "no_secret");
   let weak = null;
   try { new Watchlight({ agent: "x", auditDir: tmp(), tokenSecret: "short" }); } catch (e) { weak = e; }

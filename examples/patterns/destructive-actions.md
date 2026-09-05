@@ -66,8 +66,8 @@ more than one replica:
 ```ts
 const govern = new Watchlight({
   approvalSecret: process.env.APPROVAL_SECRET,   // >= 16 bytes; or WATCHLIGHT_APPROVAL_SECRET,
-                                                 // or reuse tokenSecret — the approval key is
-                                                 // derived from it with a distinct separator
+                                                 // or reuse signingSecret, which
+                                                 // covers approvals too
   approvalStore: {
     // SET … NX is the atomic step; a null reply means the id was already there
     add: (id, expiresAt) =>

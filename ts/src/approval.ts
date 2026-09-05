@@ -6,8 +6,8 @@
 //
 //   1. the KEY it is signed with — by default a random per-process key, so a
 //      token never leaves the process that minted it and a restart invalidates
-//      every outstanding approval. Configure `approvalSecret` (or `tokenSecret`,
-//      from which the approval key is derived) and a token minted in one process
+//      every outstanding approval. Configure `approvalSecret` (or `signingSecret`,
+//      which also covers approvals) and a token minted in one process
 //      verifies in another, and survives a redeploy inside its TTL.
 //   2. the SEEN-TOKEN STORE that makes it single-use — by default an in-process
 //      map, so "used once" holds only within one process: behind two replicas
@@ -35,12 +35,16 @@ import { randomBytes, createHmac, timingSafeEqual } from "node:crypto";
  *  scope-token secret bound. */
 export const APPROVAL_MIN_SECRET_BYTES = 16;
 
+/** One configured secret, or an ordered list of them — the first signs, every
+ *  one verifies. */
+export type SecretInput = string | Uint8Array | readonly (string | Uint8Array)[];
+
 /**
  * Domain separator for the approval key.
  *
  * The approval key is never the configured secret itself: it is
  * `HMAC-SHA256(secret, APPROVAL_KEY_LABEL)`. So one secret can configure both
- * halves of the SDK — `tokenSecret` signs scope tokens with the raw secret and
+ * halves of the SDK — `signingSecret` signs scope tokens with the raw secret and
  * approval tokens with this derived key — and the two keys stay independent: a
  * scope token can never be replayed as an approval, nor the reverse, and
  * disclosure of one derived key does not yield the other.
@@ -174,6 +178,12 @@ export function normalizeApprovalSecret(
   return Buffer.from(secret); // copy: a later mutation must not change the key
 }
 
+/** Derive one approval key per configured secret, in order — the first signs,
+ *  every one verifies, so a rotation is two ordinary deploys. */
+export function deriveApprovalKeys(secrets: Uint8Array[]): Uint8Array[] {
+  return secrets.map(deriveApprovalKey);
+}
+
 /** Derive the approval key from a configured secret. See {@link APPROVAL_KEY_LABEL}. */
 export function deriveApprovalKey(secret: Uint8Array): Uint8Array {
   if (secret.length < APPROVAL_MIN_SECRET_BYTES) {
@@ -188,19 +198,49 @@ export function deriveApprovalKey(secret: Uint8Array): Uint8Array {
 /**
  * Resolve the key approval tokens are signed with, in order of precedence:
  * an explicit `approvalSecret`, `WATCHLIGHT_APPROVAL_SECRET`, the already
- * normalized `tokenSecret` (which also covers `WATCHLIGHT_TOKEN_SECRET`), and
- * finally the random per-process key. A configured secret is never used raw —
+ * resolved signing secrets, and finally the random per-process key. A configured secret is never used raw —
  * see {@link deriveApprovalKey}.
  */
-export function resolveApprovalKey(
-  approvalSecret: string | Uint8Array | undefined,
-  tokenSecret: Uint8Array | undefined
-): Uint8Array {
+export function resolveApprovalKeys(
+  approvalSecret: SecretInput | undefined,
+  signingSecrets: Uint8Array[] | undefined
+): Uint8Array[] {
   const configured =
-    normalizeApprovalSecret(approvalSecret) ??
-    normalizeApprovalSecret(process.env.WATCHLIGHT_APPROVAL_SECRET) ??
-    tokenSecret;
-  return configured === undefined ? PROCESS_KEY : deriveApprovalKey(configured);
+    normalizeApprovalSecrets(approvalSecret) ??
+    normalizeApprovalSecrets(splitEnvSecrets(process.env.WATCHLIGHT_APPROVAL_SECRET)) ??
+    signingSecrets;
+  return configured === undefined ? [PROCESS_KEY] : deriveApprovalKeys(configured);
+}
+
+/** An environment variable carries one secret, or several separated by commas —
+ *  newest first, as in the option. A secret that itself contains a comma has to
+ *  be supplied through the option instead; the generated secrets this SDK
+ *  documents (hex or base64) never do. */
+export function splitEnvSecrets(value: string | undefined): string[] | undefined {
+  if (value === undefined) return undefined;
+  const parts = value.split(",").map((v) => v.trim()).filter((v) => v.length > 0);
+  return parts.length === 0 ? undefined : parts;
+}
+
+/** {@link normalizeApprovalSecret} over one value or an ordered list. */
+export function normalizeApprovalSecrets(
+  secret: SecretInput | undefined
+): Uint8Array[] | undefined {
+  if (secret === undefined || secret === null) return undefined;
+  if (Array.isArray(secret)) {
+    const entries = (secret as readonly (string | Uint8Array)[])
+      .map((entry) => normalizeApprovalSecret(entry))
+      .filter((entry): entry is Uint8Array => entry !== undefined);
+    if (entries.length === 0) {
+      throw new ApprovalError(
+        "invalid_secret",
+        "an approval-secret list must hold at least one usable secret"
+      );
+    }
+    return entries;
+  }
+  const one = normalizeApprovalSecret(secret as string | Uint8Array);
+  return one === undefined ? undefined : [one];
 }
 
 /**
@@ -238,12 +278,14 @@ function payloadFor(
 
 /** Mints and consumes approval tokens for one governor. */
 export class ApprovalTokens {
-  private readonly _key: Uint8Array;
+  /** Newest first. `_keys[0]` signs; every entry verifies, so a token minted
+   *  under the previous secret is honoured while that secret is still listed. */
+  private readonly _keys: Uint8Array[];
   private readonly _store: ApprovalStore;
   private _warned = false;
 
-  constructor(key: Uint8Array, store?: ApprovalStore) {
-    this._key = key;
+  constructor(keys: Uint8Array[], store?: ApprovalStore) {
+    this._keys = keys;
     this._store = store ?? DEFAULT_STORE;
   }
 
@@ -254,7 +296,7 @@ export class ApprovalTokens {
     // (principal, action, resource) minted in the same millisecond never collide
     // — and "single-use" is genuinely per-mint, not per-(challenge, exp).
     const nonce = randomBytes(8).toString("hex");
-    const sig = createHmac("sha256", Buffer.from(this._key))
+    const sig = createHmac("sha256", Buffer.from(this._keys[0]))
       .update(payloadFor(principal, action, resource, exp, nonce))
       .digest("hex");
     return `${exp}.${nonce}.${sig}`;
@@ -278,19 +320,25 @@ export class ApprovalTokens {
     const [expStr, nonce, sig] = parts;
     const exp = Number(expStr);
     if (!Number.isFinite(exp) || Date.now() > exp) return false;
-    const expected = createHmac("sha256", Buffer.from(this._key))
-      .update(payloadFor(principal, action, resource, exp, nonce))
-      .digest("hex");
-    if (sig.length !== expected.length) return false;
+    const payload = payloadFor(principal, action, resource, exp, nonce);
     let sigBytes: Buffer;
     try {
       sigBytes = Buffer.from(sig, "hex");
     } catch {
       return false;
     }
-    const expectedBytes = Buffer.from(expected, "hex");
-    if (sigBytes.length !== expectedBytes.length) return false;
-    if (!timingSafeEqual(sigBytes, expectedBytes)) return false;
+    // Every configured key, in order, so a token signed under the previous
+    // secret verifies while that secret is still listed. Which one matched is
+    // never reported: the caller sees the same hold either way.
+    let authentic = false;
+    for (const key of this._keys) {
+      const expected = createHmac("sha256", Buffer.from(key)).update(payload).digest("hex");
+      if (sig.length !== expected.length) continue;
+      const expectedBytes = Buffer.from(expected, "hex");
+      if (sigBytes.length !== expectedBytes.length) continue;
+      if (timingSafeEqual(sigBytes, expectedBytes)) authentic = true;
+    }
+    if (!authentic) return false;
     // Only an authentic token reaches the store, so an unauthenticated caller
     // can never burn an id or drive load into it.
     const id = `${exp}.${nonce}`;

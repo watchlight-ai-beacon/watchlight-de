@@ -49,7 +49,8 @@ from ._approval import (
     ApprovalError,
     ApprovalStore,
     ApprovalTokens,
-    resolve_approval_key,
+    resolve_approval_keys,
+    split_env_secrets,
 )
 from ._audit import AuditSink, AuditTrail
 from ._counters import (
@@ -68,7 +69,13 @@ from ._counters import (
 )
 from .attenuation import DE_MAX_DEPTH, AttenuationDenied, DevEditionCeiling, Scope
 from .policytest import load_test_suite, run_policy_tests
-from .scope_token import ScopeTokenError, normalize_secret, require_secret, same_set, verify_scope_token
+from .scope_token import (
+    ScopeTokenError,
+    normalize_secrets,
+    require_secrets,
+    same_set,
+    verify_scope_token_any,
+)
 
 __all__ = [
     "Watchlight",
@@ -90,6 +97,7 @@ __all__ = [
     "APPROVAL_PAYLOAD_VERSION",
     "CounterSource",
     "CounterSourceError",
+    "SIGNING_SECRET_CONFLICT_MESSAGE",
     "MAX_COUNTER_VALUE",
     "count_audit_records",
     "parse_window_seconds",
@@ -234,7 +242,7 @@ class _GovernorState:
         "engine",
         "trail",
         "audit_path",
-        "token_secret",
+        "signing_secrets",
         "approval",
         "counter_source",
         "policy_count",
@@ -251,7 +259,8 @@ class _GovernorState:
         self.engine: Any = None
         self.trail: Optional[AuditTrail] = None
         self.audit_path: Optional[pathlib.Path] = None
-        self.token_secret: Optional[bytes] = None
+        #: Signing secrets, newest first: the first signs, every one verifies.
+        self.signing_secrets: Optional[list[bytes]] = None
         #: The approval signing key + seen-token store. On the SHARED state, so
         #: an approval minted through one view is consumed — and, once consumed,
         #: refused — through every other view of the same governor. A view with
@@ -271,6 +280,61 @@ class _GovernorState:
         self.is_default = False
         self.wrote_record = False
         self.warned_default_sink = False
+
+
+#: Fixed, value-free message when the new and old secret names disagree.
+SIGNING_SECRET_CONFLICT_MESSAGE = (
+    "signing_secret and token_secret are both set to different values; token_secret is "
+    "the former name of signing_secret — set one of them (the same applies to "
+    "WATCHLIGHT_SIGNING_SECRET and WATCHLIGHT_TOKEN_SECRET)"
+)
+
+_warned_token_secret_name = False
+
+
+def _warn_token_secret_name() -> None:
+    global _warned_token_secret_name
+    if _warned_token_secret_name:
+        return
+    _warned_token_secret_name = True
+    print(
+        "watchlight: `token_secret` / WATCHLIGHT_TOKEN_SECRET is the former name of "
+        "`signing_secret` / WATCHLIGHT_SIGNING_SECRET, which is what it is called now "
+        "that it signs approval tokens as well as scope tokens. The old name still "
+        "works; rename it.",
+        file=sys.stderr,
+    )
+
+
+def _resolve_signing_secrets(signing_secret: Any, token_secret: Any) -> Optional[list[bytes]]:
+    """The signing secrets in force, newest first. In order: ``signing_secret``,
+    ``$WATCHLIGHT_SIGNING_SECRET``, ``token_secret``, ``$WATCHLIGHT_TOKEN_SECRET``,
+    then nothing (scope tokens fail closed). The last two are the former name:
+    they still work, warn once, and are refused when they contradict the new name
+    rather than being resolved silently."""
+    from_new = normalize_secrets(signing_secret)
+    from_old = normalize_secrets(token_secret)
+    if from_new is not None and from_old is not None and from_new != from_old:
+        raise ScopeTokenError("mismatch", SIGNING_SECRET_CONFLICT_MESSAGE)
+    if from_new is not None:
+        if from_old is not None:
+            _warn_token_secret_name()
+        return from_new
+    if from_old is not None:
+        _warn_token_secret_name()
+        return from_old
+    env_new = normalize_secrets(split_env_secrets(os.environ.get("WATCHLIGHT_SIGNING_SECRET")))
+    env_old = normalize_secrets(split_env_secrets(os.environ.get("WATCHLIGHT_TOKEN_SECRET")))
+    if env_new is not None and env_old is not None and env_new != env_old:
+        raise ScopeTokenError("mismatch", SIGNING_SECRET_CONFLICT_MESSAGE)
+    if env_new is not None:
+        if env_old is not None:
+            _warn_token_secret_name()
+        return env_new
+    if env_old is not None:
+        _warn_token_secret_name()
+        return env_old
+    return None
 
 
 #: One process-wide notice that the bare agent name is standing in for a missing
@@ -1105,8 +1169,9 @@ class Watchlight:
         audit_dir: str | os.PathLike[str] = ".watchlight",
         audit_sink: Optional[AuditSink] = None,
         *,
-        token_secret: Union[str, bytes, None] = None,
-        approval_secret: Union[str, bytes, None] = None,
+        signing_secret: Any = None,
+        token_secret: Any = None,
+        approval_secret: Any = None,
         approval_store: Optional[ApprovalStore] = None,
         counter_source: Optional[CounterSource] = None,
         audit_file: bool = True,
@@ -1206,12 +1271,12 @@ class Watchlight:
         state.audit_path = (pathlib.Path(audit_dir) / "audit.jsonl") if audit_file else None
         state.trail = AuditTrail(state.audit_path, audit_sink)
         state.strict_principal = bool(strict_principal)
-        state.token_secret = normalize_secret(
-            token_secret if token_secret is not None else os.environ.get("WATCHLIGHT_TOKEN_SECRET")
-        )
+        state.signing_secrets = _resolve_signing_secrets(signing_secret, token_secret)
         state.approval = ApprovalTokens(
-            resolve_approval_key(
-                approval_secret, state.token_secret, os.environ.get("WATCHLIGHT_APPROVAL_SECRET")
+            resolve_approval_keys(
+                approval_secret,
+                state.signing_secrets,
+                os.environ.get("WATCHLIGHT_APPROVAL_SECRET"),
             ),
             approval_store,
         )
@@ -1237,8 +1302,8 @@ class Watchlight:
         return self._shared.audit_path
 
     @property
-    def _token_secret(self) -> Optional[bytes]:
-        return self._shared.token_secret
+    def _signing_secrets(self) -> Optional[list[bytes]]:
+        return self._shared.signing_secrets
 
     @property
     def _approval(self) -> ApprovalTokens:
@@ -1464,7 +1529,7 @@ class Watchlight:
             max_depth=min(int(max_depth), DE_MAX_DEPTH),
             time_budget_seconds=time_budget_seconds,
             depth=0,
-            token_secret=self._token_secret,
+            signing_secrets=self._signing_secrets,
         )
         root._emit_root()  # record the tree's starting authority for `watchlight dev`
         return root
@@ -1480,11 +1545,13 @@ class Watchlight:
         engine, not the token, decides whether each level is a subset: a widened
         chain raises :class:`AttenuationDenied` even with a valid signature, and
         a chain whose engine-granted result differs from the token's claim is
-        rejected. Raises :class:`ScopeTokenError` when ``token_secret`` is unset
+        rejected. Raises :class:`ScopeTokenError` when ``signing_secret`` is unset
         (fail-closed) or the token is malformed, tampered, expired, or bound to a
         different agent. The returned scope cannot outlive the token's ``exp``."""
-        secret = require_secret(self._token_secret)
-        claims = verify_scope_token(token, secret, agent=self.agent)
+        # Any configured secret may have signed it — a rotation is two deploys,
+        # not a cutover. Which one verified is never reported.
+        secrets = require_secrets(self._signing_secrets)
+        claims = verify_scope_token_any(token, secrets, agent=self.agent)
         root = claims["root"]
         scope = self.scope(
             tools=root["tools"],
@@ -2184,7 +2251,8 @@ class Watchlight:
         audit_dir: Union[str, "os.PathLike[str]", None] = None,
         audit_sink: Optional[AuditSink] = None,
         audit_file: Optional[bool] = None,
-        token_secret: Union[str, bytes, None] = None,
+        signing_secret: Any = None,
+        token_secret: Any = None,
         strict_principal: Optional[bool] = None,
     ) -> None:
         """Apply options to a governor that has not written an audit record yet.
@@ -2213,8 +2281,8 @@ class Watchlight:
             directory = pathlib.Path(audit.get("dir") or ".watchlight")
             state.audit_path = (directory / "audit.jsonl") if keep_file else None
             state.trail = AuditTrail(state.audit_path, audit.get("sink"))
-        if token_secret is not None:
-            state.token_secret = normalize_secret(token_secret)
+        if signing_secret is not None or token_secret is not None:
+            state.signing_secrets = _resolve_signing_secrets(signing_secret, token_secret)
         if strict_principal is not None:
             state.strict_principal = bool(strict_principal)
 
@@ -2234,12 +2302,13 @@ def configure_default(
     audit_dir: Union[str, "os.PathLike[str]", None] = None,
     audit_sink: Optional[AuditSink] = None,
     audit_file: Optional[bool] = None,
-    token_secret: Union[str, bytes, None] = None,
+    signing_secret: Any = None,
+    token_secret: Any = None,
     strict_principal: Optional[bool] = None,
 ) -> "Watchlight":
     """Configure the module-level :data:`govern` — the one governor an
     application never constructs, and therefore the one that could not otherwise
-    be given an ``audit_sink``, an ``audit_dir``, a ``token_secret`` or a name::
+    be given an ``audit_sink``, an ``audit_dir``, a ``signing_secret`` or a name::
 
         from watchlight import govern, configure_default
 
@@ -2256,6 +2325,7 @@ def configure_default(
         audit_dir=audit_dir,
         audit_sink=audit_sink,
         audit_file=audit_file,
+        signing_secret=signing_secret,
         token_secret=token_secret,
         strict_principal=strict_principal,
     )

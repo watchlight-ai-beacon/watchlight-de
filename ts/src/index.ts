@@ -20,13 +20,19 @@ import * as path from "node:path";
 import { randomBytes, createHmac, timingSafeEqual } from "node:crypto";
 import { Scope, DE_MAX_DEPTH, type AttenuateOptions } from "./attenuation";
 import { AuditTrail, type AuditSink } from "./audit";
-import { ApprovalTokens, resolveApprovalKey, type ApprovalStore } from "./approval";
+import {
+  ApprovalTokens,
+  resolveApprovalKeys,
+  splitEnvSecrets,
+  type ApprovalStore,
+} from "./approval";
 import {
   ScopeTokenError,
-  normalizeSecret,
-  requireSecret,
+  normalizeSecrets,
+  requireSecrets,
   sameSet,
-  verifyScopeToken,
+  verifyScopeTokenAny,
+  type SecretInput,
 } from "./scope-token";
 import {
   countAuditRecords,
@@ -264,12 +270,23 @@ export interface WatchlightOptions {
   /** Tenant id (`X-Wl-Tenant-Id`) for the networked control plane. Defaults to
    *  `WATCHLIGHT_TENANT_ID`. Ignored in-process. */
   tenantId?: string;
-  /** Shared secret (≥ 16 bytes) for {@link Scope.toToken} /
-   *  {@link Watchlight.scopeFromToken} — lets an attenuated scope cross a process
-   *  boundary with integrity. Defaults to `WATCHLIGHT_TOKEN_SECRET`. When unset,
-   *  minting and verifying scope tokens fail closed; there is no built-in
-   *  default. Never logged or written. */
-  tokenSecret?: string | Uint8Array;
+  /** Shared secret (>= 16 bytes) that lets tokens cross a process boundary:
+   *  scope tokens ({@link Scope.toToken} / {@link Watchlight.scopeFromToken}),
+   *  and approval tokens unless {@link approvalSecret} overrides them. Defaults
+   *  to `WATCHLIGHT_SIGNING_SECRET`. Unset, minting and verifying scope tokens
+   *  fail closed; there is no built-in default.
+   *
+   *  Pass an ORDERED LIST to rotate without a cutover: the first entry signs,
+   *  every entry verifies. Add the new secret at the front, deploy, wait out
+   *  the longest token lifetime, then drop the old one and deploy again.
+   *  Never logged or written. */
+  signingSecret?: SecretInput;
+  /** Former name of {@link signingSecret}. Still accepted, at lower precedence,
+   *  and warns once per process. Supplying both a `signingSecret` and a
+   *  `tokenSecret` that differ is refused at construction rather than resolved
+   *  silently.
+   *  @deprecated Use `signingSecret` (and `WATCHLIGHT_SIGNING_SECRET`). */
+  tokenSecret?: SecretInput;
   /** How a call that names no `principal` is recorded. Defaults to `true`: the
    *  agent is the subject and is recorded as a TYPED entity reference,
    *  `Agent::"<name>"` (build one with {@link principals}). Set `false` to
@@ -282,15 +299,15 @@ export interface WatchlightOptions {
   /** Shared secret (>= 16 bytes) that approval tokens are signed under, so a
    *  token minted in one process verifies in another and survives a redeploy
    *  inside its TTL. Defaults to `WATCHLIGHT_APPROVAL_SECRET`, then to
-   *  `tokenSecret` — one secret configures both, because the approval key is
-   *  `HMAC-SHA256(secret, "watchlight-de:approval-token:v1")` and never the
-   *  secret itself. With nothing configured a RANDOM PER-PROCESS key is used:
+   *  {@link signingSecret} — one value configures both kinds of token, under
+   *  separate keys. Takes an ordered list, and rotates, exactly as
+   *  `signingSecret` does. With nothing configured a RANDOM PER-PROCESS key is used:
    *  tokens then never cross a process boundary, and a restart invalidates
    *  every outstanding approval. A token presented to a governor holding a
    *  different key is refused exactly like an expired one — the decision stays
    *  `NeedsApproval` with the uniform `approval required` reason. Never logged
    *  or written. Shared with every view made by {@link Watchlight.as}. */
-  approvalSecret?: string | Uint8Array;
+  approvalSecret?: SecretInput;
   /** Where consumed approval-token ids are reserved, which is what makes an
    *  approval single-use. Defaults to an IN-PROCESS map shared by every
    *  governor in this process and by nothing else — atomic within the process
@@ -439,7 +456,8 @@ function withActorContext(
 interface GovernorState {
   trail: AuditTrail;
   backend: GovernanceBackend;
-  tokenSecret?: Uint8Array;
+  /** Signing secrets, newest first: the first signs, every one verifies. */
+  signingSecrets?: Uint8Array[];
   /** The approval signing key + seen-token store. On the SHARED state, so an
    *  approval minted through one view is consumed — and, once consumed, refused
    *  — through every other view of the same governor. A view that had its own
@@ -475,10 +493,79 @@ function resolveSource(file: string): string {
   }
 }
 
+/** Fixed, value-free message when the new and old names disagree. */
+export const SIGNING_SECRET_CONFLICT_MESSAGE =
+  "signingSecret and tokenSecret are both set to different values; tokenSecret is the " +
+  "former name of signingSecret — set one of them (the same applies to " +
+  "WATCHLIGHT_SIGNING_SECRET and WATCHLIGHT_TOKEN_SECRET)";
+
+let warnedTokenSecretName = false;
+
+/** Clear the once-per-process deprecation notice. Test-only; the Python package
+ *  exposes the same flag for the same reason. @internal */
+export function __resetSigningSecretWarning(): void {
+  warnedTokenSecretName = false;
+}
+
+function warnTokenSecretName(): void {
+  if (warnedTokenSecretName) return;
+  warnedTokenSecretName = true;
+  // eslint-disable-next-line no-console
+  console.warn(
+    "watchlight: `tokenSecret` / WATCHLIGHT_TOKEN_SECRET is the former name of " +
+      "`signingSecret` / WATCHLIGHT_SIGNING_SECRET, which is what it is called now that it " +
+      "signs approval tokens as well as scope tokens. The old name still works; rename it."
+  );
+}
+
+/** Same bytes, in the same order? Two spellings of one secret are not a conflict. */
+function sameSecrets(a: Uint8Array[] | undefined, b: Uint8Array[] | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  if (a.length !== b.length) return false;
+  return a.every((entry, i) => Buffer.from(entry).equals(Buffer.from(b[i])));
+}
+
+/**
+ * The signing secrets in force, newest first. In order:
+ * `signingSecret`, `WATCHLIGHT_SIGNING_SECRET`, `tokenSecret`,
+ * `WATCHLIGHT_TOKEN_SECRET`, then nothing (scope tokens fail closed). The last
+ * two are the former name: they still work, warn once, and are refused when
+ * they contradict the new name rather than being resolved silently.
+ */
+function resolveSigningSecrets(opts: WatchlightOptions): Uint8Array[] | undefined {
+  const fromNew = normalizeSecrets(opts.signingSecret);
+  const fromOld = normalizeSecrets(opts.tokenSecret);
+  if (fromNew !== undefined && fromOld !== undefined && !sameSecrets(fromNew, fromOld)) {
+    throw new ScopeTokenError("mismatch", SIGNING_SECRET_CONFLICT_MESSAGE);
+  }
+  if (fromNew !== undefined) {
+    if (fromOld !== undefined) warnTokenSecretName();
+    return fromNew;
+  }
+  if (fromOld !== undefined) {
+    warnTokenSecretName();
+    return fromOld;
+  }
+  const envNew = normalizeSecrets(splitEnvSecrets(process.env.WATCHLIGHT_SIGNING_SECRET));
+  const envOld = normalizeSecrets(splitEnvSecrets(process.env.WATCHLIGHT_TOKEN_SECRET));
+  if (envNew !== undefined && envOld !== undefined && !sameSecrets(envNew, envOld)) {
+    throw new ScopeTokenError("mismatch", SIGNING_SECRET_CONFLICT_MESSAGE);
+  }
+  if (envNew !== undefined) {
+    if (envOld !== undefined) warnTokenSecretName();
+    return envNew;
+  }
+  if (envOld !== undefined) {
+    warnTokenSecretName();
+    return envOld;
+  }
+  return undefined;
+}
+
 function newState(opts: WatchlightOptions): GovernorState {
   // Resolved once: the approval key falls back to the scope-token secret, so
   // both are derived from the same configured value.
-  const tokenSecret = normalizeSecret(opts.tokenSecret ?? process.env.WATCHLIGHT_TOKEN_SECRET);
+  const signingSecrets = resolveSigningSecrets(opts);
   return {
     trail: new AuditTrail(
       opts.auditFile === false ? null : path.join(opts.auditDir ?? ".watchlight", "audit.jsonl"),
@@ -489,9 +576,9 @@ function newState(opts: WatchlightOptions): GovernorState {
       token: opts.token,
       tenantId: opts.tenantId,
     }),
-    tokenSecret: tokenSecret,
+    signingSecrets,
     approval: new ApprovalTokens(
-      resolveApprovalKey(opts.approvalSecret, tokenSecret),
+      resolveApprovalKeys(opts.approvalSecret, signingSecrets),
       opts.approvalStore
     ),
     counterSource: opts.counterSource,
@@ -560,8 +647,8 @@ export class Watchlight {
   private get _backend(): GovernanceBackend {
     return this._shared.backend;
   }
-  private get _tokenSecret(): Uint8Array | undefined {
-    return this._shared.tokenSecret;
+  private get _signingSecrets(): Uint8Array[] | undefined {
+    return this._shared.signingSecrets;
   }
   private get _approval(): ApprovalTokens {
     return this._shared.approval;
@@ -764,7 +851,7 @@ export class Watchlight {
       maxDepth: Math.min(opts.maxDepth ?? DE_MAX_DEPTH, DE_MAX_DEPTH),
       timeBudgetSeconds: opts.timeBudgetSeconds ?? 3600,
       depth: 0,
-      tokenSecret: this._tokenSecret,
+      signingSecrets: this._signingSecrets,
     });
     root.emitRoot();
     return root;
@@ -779,13 +866,15 @@ export class Watchlight {
    * whether each level is a subset: a widened chain throws
    * {@link AttenuationDenied} even with a valid signature, and a chain whose
    * engine-granted result differs from the token's claim is rejected. Throws
-   * {@link ScopeTokenError} when `tokenSecret` is unset (fail-closed) or the
+   * {@link ScopeTokenError} when `signingSecret` is unset (fail-closed) or the
    * token is malformed, tampered, expired, or bound to a different agent. The
    * returned scope cannot outlive the token's `exp`.
    */
   async scopeFromToken(token: string): Promise<Scope> {
-    const secret = requireSecret(this._tokenSecret);
-    const claims = verifyScopeToken(token, secret, { agent: this.agent });
+    // Any configured secret may have signed it — a rotation is two deploys, not
+    // a cutover. Which one verified is never reported.
+    const secrets = requireSecrets(this._signingSecrets);
+    const claims = verifyScopeTokenAny(token, secrets, { agent: this.agent });
     const root = await this.scope({
       tools: claims.root.tools,
       resources: claims.root.resources,
@@ -1068,7 +1157,7 @@ export class Watchlight {
    * SCOPE OF THE DEFAULTS — both are per-process, and neither is upgraded
    * silently:
    *
-   * * **The signing key.** With no `approvalSecret` (or `tokenSecret`) the key
+   * * **The signing key.** With no `approvalSecret` (or `signingSecret`) the key
    *   is random and per-process: a token minted here is refused by any other
    *   process, and a redeploy invalidates every outstanding approval —
    *   indistinguishably from a genuine hold, since the reason is uniform.
@@ -1437,7 +1526,9 @@ export class Watchlight {
         audit.sink
       );
     }
-    if (opts.tokenSecret !== undefined) shared.tokenSecret = normalizeSecret(opts.tokenSecret);
+    if (opts.signingSecret !== undefined || opts.tokenSecret !== undefined) {
+      shared.signingSecrets = resolveSigningSecrets(opts);
+    }
     if (opts.strictPrincipal !== undefined) shared.strictPrincipal = opts.strictPrincipal !== false;
     if (opts.apdpUrl !== undefined || opts.token !== undefined || opts.tenantId !== undefined) {
       // A different backend is a different policy holder: the policies added to
@@ -1464,7 +1555,7 @@ export const govern = new Watchlight();
 /**
  * Configure the exported {@link govern} — the one governor an application never
  * constructs, and therefore the one that could not otherwise be given an
- * `auditSink`, an `auditDir`, a `tokenSecret` or a name.
+ * `auditSink`, an `auditDir`, a `signingSecret` or a name.
  *
  *     import { govern, configureDefault } from "@watchlight/sdk";
  *     configureDefault({ agent: "billing-agent", auditSink: (r) => ship(r) });

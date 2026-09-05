@@ -268,8 +268,8 @@ It mirrors the Python package feature-for-feature:
   token cannot cross a process boundary, a restart invalidates outstanding
   approvals, and behind two replicas the same token can be consumed once on
   *each*. `approvalSecret` / `approval_secret` (or `WATCHLIGHT_APPROVAL_SECRET`,
-  or the existing `tokenSecret`, from which the approval key is derived with a
-  distinct domain separator) makes a token portable; an `approvalStore` /
+  or the existing `signingSecret`, which covers both kinds of token — see
+  [the signing secret](docs/signing-secret.md)) makes a token portable; an `approvalStore` /
   `approval_store` (one method: `add(id, expiresAt)`) backed by a shared store
   makes single-use hold across replicas. `add` must be an **atomic
   check-and-set** — reserve the id only if absent, and say whether the

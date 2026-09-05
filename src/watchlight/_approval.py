@@ -6,8 +6,8 @@ resource) it was minted for. Two things decide whether it is honoured:
 
 1. the KEY it is signed with — by default a random per-process key, so a token
    never leaves the process that minted it and a restart invalidates every
-   outstanding approval. Configure ``approval_secret`` (or ``token_secret``,
-   from which the approval key is derived) and a token minted in one process
+   outstanding approval. Configure ``approval_secret`` (or ``signing_secret``,
+   which also covers approvals) and a token minted in one process
    verifies in another, and survives a redeploy inside its TTL.
 2. the SEEN-TOKEN STORE that makes it single-use — by default an in-process
    dict, so "used once" holds only within one process: behind two replicas the
@@ -50,7 +50,11 @@ __all__ = [
     "ApprovalStore",
     "ApprovalTokens",
     "derive_approval_key",
+    "derive_approval_keys",
     "normalize_approval_secret",
+    "normalize_approval_secrets",
+    "resolve_approval_keys",
+    "split_env_secrets",
 ]
 
 #: Minimum length of a configured approval secret, in bytes. Matches the
@@ -61,7 +65,7 @@ APPROVAL_MIN_SECRET_BYTES = 16
 #:
 #: The approval key is never the configured secret itself: it is
 #: ``HMAC-SHA256(secret, APPROVAL_KEY_LABEL)``. So one secret can configure both
-#: halves of the SDK — ``token_secret`` signs scope tokens with the raw secret
+#: halves of the SDK — ``signing_secret`` signs scope tokens with the raw secret
 #: and approval tokens with this derived key — and the two keys stay
 #: independent: a scope token can never be replayed as an approval, nor the
 #: reverse, and disclosure of one derived key does not yield the other.
@@ -216,22 +220,56 @@ def derive_approval_key(secret: bytes) -> bytes:
     return hmac.new(secret, APPROVAL_KEY_LABEL.encode("utf-8"), hashlib.sha256).digest()
 
 
-def resolve_approval_key(
-    approval_secret: Union[str, bytes, bytearray, None],
-    token_secret: Optional[bytes],
-    env_secret: Union[str, bytes, bytearray, None] = None,
-) -> bytes:
-    """Resolve the key approval tokens are signed with, in order of precedence:
+def split_env_secrets(value: Optional[str]) -> Optional[list[str]]:
+    """An environment variable carries one secret, or several separated by
+    commas — newest first, as in the option. A secret that itself contains a
+    comma has to be supplied through the option instead; the generated secrets
+    this SDK documents (hex or base64) never do."""
+    if value is None:
+        return None
+    parts = [v.strip() for v in value.split(",")]
+    parts = [v for v in parts if v]
+    return parts or None
+
+
+def normalize_approval_secrets(secret: Any) -> Optional[list[bytes]]:
+    """:func:`normalize_approval_secret` over one value or an ordered list."""
+    if secret is None:
+        return None
+    if isinstance(secret, (str, bytes, bytearray)):
+        one = normalize_approval_secret(secret)
+        return None if one is None else [one]
+    if isinstance(secret, (list, tuple)):
+        entries = [e for e in (normalize_approval_secret(v) for v in secret) if e is not None]
+        if not entries:
+            raise ApprovalError(
+                "invalid_secret", "an approval-secret list must hold at least one usable secret"
+            )
+        return entries
+    raise ApprovalError("invalid_secret", "approval secret must be a string, bytes, or a list of them")
+
+
+def derive_approval_keys(secrets: list[bytes]) -> list[bytes]:
+    """One approval key per configured secret, in order — the first signs, every
+    one verifies, so a rotation is two ordinary deploys."""
+    return [derive_approval_key(s) for s in secrets]
+
+
+def resolve_approval_keys(
+    approval_secret: Any,
+    signing_secrets: Optional[list[bytes]],
+    env_secret: Optional[str] = None,
+) -> list[bytes]:
+    """Resolve the keys approval tokens are signed under, in order of precedence:
     an explicit ``approval_secret``, ``$WATCHLIGHT_APPROVAL_SECRET``, the already
-    normalized ``token_secret`` (which also covers ``$WATCHLIGHT_TOKEN_SECRET``),
-    and finally the random per-process key. A configured secret is never used raw
-    — see :func:`derive_approval_key`."""
-    configured = normalize_approval_secret(approval_secret)
+    resolved signing secrets, and finally the random per-process key. A
+    configured secret is never used raw — see :func:`derive_approval_key`."""
+    configured = normalize_approval_secrets(approval_secret)
     if configured is None:
-        configured = normalize_approval_secret(env_secret)
+        configured = normalize_approval_secrets(split_env_secrets(env_secret))
     if configured is None:
-        configured = token_secret
-    return _PROCESS_KEY if configured is None else derive_approval_key(configured)
+        configured = signing_secrets
+    return [_PROCESS_KEY] if configured is None else derive_approval_keys(configured)
 
 
 def _payload_for(principal: str, action: str, resource: str, exp: int, nonce: str) -> bytes:
@@ -259,8 +297,10 @@ def _payload_for(principal: str, action: str, resource: str, exp: int, nonce: st
 class ApprovalTokens:
     """Mints and consumes approval tokens for one governor."""
 
-    def __init__(self, key: bytes, store: Optional[ApprovalStore] = None) -> None:
-        self._key = key
+    def __init__(self, keys: list[bytes], store: Optional[ApprovalStore] = None) -> None:
+        #: Newest first. ``_keys[0]`` signs; every entry verifies, so a token
+        #: minted under the previous secret is honoured while it is still listed.
+        self._keys = keys
         self._store: Any = _DEFAULT_STORE if store is None else store
         self._warned = False
 
@@ -273,7 +313,7 @@ class ApprovalTokens:
         # collide — and "single-use" is genuinely per-mint, not per-(challenge, exp).
         nonce = secrets.token_hex(8)
         sig = hmac.new(
-            self._key, _payload_for(principal, action, resource, exp, nonce), hashlib.sha256
+            self._keys[0], _payload_for(principal, action, resource, exp, nonce), hashlib.sha256
         ).hexdigest()
         return f"{exp}.{nonce}.{sig}"
 
@@ -293,10 +333,15 @@ class ApprovalTokens:
             return False
         if int(time.time() * 1000) > exp:
             return False
-        expected = hmac.new(
-            self._key, _payload_for(principal, action, resource, exp, nonce), hashlib.sha256
-        ).hexdigest()
-        if not hmac.compare_digest(sig, expected):
+        payload = _payload_for(principal, action, resource, exp, nonce)
+        # Every configured key, in order, so a token signed under the previous
+        # secret verifies while that secret is still listed. Which one matched is
+        # never reported: the caller sees the same hold either way.
+        authentic = False
+        for key in self._keys:
+            if hmac.compare_digest(sig, hmac.new(key, payload, hashlib.sha256).hexdigest()):
+                authentic = True
+        if not authentic:
             return False
         # Only an authentic token reaches the store, so an unauthenticated caller
         # can never burn an id or drive load into it.

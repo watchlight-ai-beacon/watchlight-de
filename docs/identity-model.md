@@ -52,7 +52,7 @@ decisions differs. Naming six agents costs one engine and one policy load.
 ```python
 from watchlight import Watchlight, configure_default, principals
 
-govern = Watchlight(agent="platform", audit_sink=ship, token_secret=SECRET)
+govern = Watchlight(agent="platform", audit_sink=ship, signing_secret=SECRET)
 govern.load("watchlight.policy.json")          # compiled once
 
 broker = govern.as_("context-broker")
@@ -65,7 +65,7 @@ broker.authorize(action="read", principal=principals.user("db:4412"))
 ```ts
 import { Watchlight, principals } from "@watchlight/sdk";
 
-const govern = new Watchlight({ agent: "platform", auditSink: ship, tokenSecret: SECRET });
+const govern = new Watchlight({ agent: "platform", auditSink: ship, signingSecret: SECRET });
 govern.load("watchlight.policy.json");         // compiled once
 
 const broker = govern.as("context-broker");
@@ -74,6 +74,10 @@ const assistant = govern.as("wendell-assistant");
 
 await broker.authorize({ action: "read", principal: principals.user("db:4412") });
 ```
+
+`SECRET` is the signing secret: what to set it to, which processes need the same
+value, and how to rotate it without a cutover are on
+[its own page](./signing-secret.md).
 
 Four ways to name an agent without a second engine:
 
