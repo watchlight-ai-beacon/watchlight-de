@@ -504,14 +504,15 @@ accepted.
 
 #### Configuring it from the environment
 
-Two variables configure the default governor's audit destination without
-touching code, for the cases where the code is not yours to change — a test run,
+Three variables configure the default governor without touching code, for the
+cases where the code is not yours to change — a test run,
 a container, a CI job:
 
 | Variable | Effect |
 |---|---|
 | `WATCHLIGHT_AUDIT_DIR` | the directory `audit.jsonl` is written into (default `.watchlight`) |
 | `WATCHLIGHT_AUDIT_FILE` | `0` / `false` / `no` / `off` writes no local file at all; `1` / `true` / `yes` / `on` keeps it |
+| `WATCHLIGHT_AGENT` | the agent name, when the `agent` option does not give one; blank counts as unset |
 
 `WATCHLIGHT_AUDIT_FILE=0` is `audit_file=False` by another route, with the same
 consequences: no `.watchlight` directory is created, `govern.counters(...)`

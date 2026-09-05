@@ -125,7 +125,11 @@ Save this as `agent.py` and run `python agent.py`:
 
 ```python
 # agent.py — a complete, runnable program (copy, paste, run).
-from watchlight import govern, Denied
+from watchlight import govern, configure_default, Denied
+
+# Name the agent: it is what the audit trail records and what a policy reads as
+# `context.actor`. Unnamed, the governor still runs but asserts no actor at all.
+configure_default(agent="research-agent")
 
 # Permit ONLY the "research" intent. Fail-closed: everything else is denied.
 govern.allow('permit(principal, action == Action::"research", resource);')
@@ -147,7 +151,7 @@ except Denied as e:
 
 ```text
 $ python agent.py
-watchlight: governing 'my-agent' (dev mode, in-process engine)
+watchlight: governing 'research-agent' (dev mode, in-process engine)
 watchlight: ALLOW  research  tool/web_search
 results for: watchlight docs
 watchlight: DENY   transfer  tool/transfer_funds     not authorized
@@ -255,7 +259,11 @@ Then, in an ES-module / TypeScript file (`await` at top level needs `"type":
 
 ```ts
 // agent.ts — the same DENY line, in Node.
-import { govern, Denied } from "@watchlight/sdk";
+import { govern, configureDefault, Denied } from "@watchlight/sdk";
+
+// Name the agent: it is what the audit trail records and what a policy reads as
+// `context.actor`. Unnamed, the governor still runs but asserts no actor at all.
+configureDefault({ agent: "research-agent" });
 
 // Permit ONLY the "research" intent. Fail-closed: everything else is denied.
 govern.allow('permit(principal, action == Action::"research", resource);');
@@ -275,7 +283,7 @@ try {
 ```
 
 ```text
-watchlight: governing 'my-agent' (dev mode, in-process engine)
+watchlight: governing 'research-agent' (dev mode, in-process engine)
 watchlight: ALLOW  research  tool/webSearch
 results for: watchlight docs
 watchlight: DENY   transfer  tool/transferFunds     not authorized
@@ -499,13 +507,14 @@ if can_configure_default():
     configure_default(audit_sink=my_store.insert)
 ```
 
-Two environment variables configure the default governor's trail where the code
+Three environment variables configure the default governor where the code
 is not yours to change — a test run, a container, a CI job:
 
 | Variable | Effect |
 |---|---|
 | `WATCHLIGHT_AUDIT_DIR` | the directory `audit.jsonl` is written into (default `.watchlight`) |
 | `WATCHLIGHT_AUDIT_FILE` | `0` / `false` / `no` / `off` writes no local file at all |
+| `WATCHLIGHT_AGENT` | the agent name, when the `agent` option does not give one; blank counts as unset |
 
 ```bash
 WATCHLIGHT_AUDIT_FILE=0 pytest    # this run adds nothing to the application's audit.jsonl
@@ -783,7 +792,7 @@ Want the **engine source** or an **air-gapped build**? That's Enterprise — [em
 
 ## A note on identity
 
-The Developer Edition authorizes the **principal you assert** — the `agent` you construct the governor with, or the `Watchlight-Agent-Id` a governed MCP request carries. It does **not** cryptographically *prove* the caller: on your own machine, running both sides, that's the right trade — zero setup, no IdP, no signup. **Bind any non-loopback listener behind something that authenticates the caller** (a reverse proxy doing mTLS/OIDC, or the Enterprise plane).
+The Developer Edition authorizes the **principal you assert** — the `agent` you construct the governor with, or the `Watchlight-Agent-Id` a governed MCP request carries. (There is no default name: a governor you never named still runs, but it asserts no actor and is recorded as the reserved `<unconfigured>` placeholder.) It does **not** cryptographically *prove* the caller: on your own machine, running both sides, that's the right trade — zero setup, no IdP, no signup. **Bind any non-loopback listener behind something that authenticates the caller** (a reverse proxy doing mTLS/OIDC, or the Enterprise plane).
 
 Identity hardens as you grow, **without changing your policies**:
 

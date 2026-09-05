@@ -38,6 +38,7 @@ The vocabulary the SDK writes and the audit trail carries:
 from __future__ import annotations
 
 import re
+from typing import Any, Callable
 
 __all__ = ["escape_cedar_string", "entity", "for_policy", "user", "agent"]
 
@@ -88,6 +89,41 @@ def for_policy(entity_type: str, entity_id: str) -> str:
     if not isinstance(entity_id, str) or entity_id == "":
         raise TypeError("entity reference: id must be a non-empty string")
     return f'{entity_type}::"{escape_cedar_string(entity_id)}"'
+
+
+#: What a caller-supplied ``principal`` must satisfy at EVERY boundary that takes
+#: one — the same two rules :func:`entity` already applies to an id, applied to
+#: the whole reference. The message is fixed and never echoes the value.
+PRINCIPAL_EMPTY_MESSAGE = "principal must be a non-empty string"
+PRINCIPAL_CONTROL_MESSAGE = "principal must not contain control characters"
+
+
+def assert_principal(value: Any, make_error: Callable[[str], BaseException] = TypeError) -> str:
+    """Check a caller-supplied ``principal`` and return it unchanged.
+
+    The principal is recorded verbatim and is the subject of every audit row, so
+    a value that cannot be a subject is refused at the boundary rather than
+    written. Two rules, the ones :func:`user` has always applied:
+
+    * it must be a non-empty string — blank (or whitespace-only) is a mistake,
+      never a request for the default. ``user.id or ""`` reaching a governed call
+      used to be recorded as the AGENT, attributing a person's action to the
+      runtime;
+    * it must carry no control characters, which no reference can represent
+      unambiguously.
+
+    It is deliberately NOT parsed: a bare identifier is a valid, opaque principal
+    (see ``docs/identity-model.md``), and only a typed ``Type::"id"`` reference
+    discriminates by type.
+
+    ``make_error`` lets a primitive raise its own typed error; the default is the
+    :class:`TypeError` the identity builders raise.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise make_error(PRINCIPAL_EMPTY_MESSAGE)
+    if _CONTROL.search(value):
+        raise make_error(PRINCIPAL_CONTROL_MESSAGE)
+    return value
 
 
 def user(subject: str) -> str:

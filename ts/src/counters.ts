@@ -37,6 +37,7 @@
 // being buffered or parsed — one oversized line cannot cost more than the cap.
 
 import * as fs from "node:fs";
+import { assertPrincipal } from "./principals";
 
 export type CounterOutcome = "allowed" | "denied" | "all";
 
@@ -337,9 +338,9 @@ type Filter = {
  *  and by a {@link CounterSource}, so both are asked exactly the same question
  *  and reject exactly the same inputs. @internal */
 function prepareCounters(opts: CountersOptions): { filter: Filter; result: Counters; maxBytes: number } {
-  if (typeof opts?.principal !== "string" || opts.principal.length === 0) {
-    throw new TypeError("principal must be a non-empty string");
-  }
+  // The ONE principal rule, so a filter cannot be a shape a decision record
+  // could never carry.
+  assertPrincipal(opts?.principal);
   if (opts.intent !== undefined && typeof opts.intent !== "string") throw new TypeError("intent must be a string");
   if (opts.resource !== undefined && typeof opts.resource !== "string") {
     throw new TypeError("resource must be a string");

@@ -53,9 +53,14 @@ import {
   type CounterSource,
 } from "./counters";
 import { AuthorizeError, selectBackend, type GovernanceBackend, type Obligations } from "./backend";
-import { sanitize as sanitizeText, type SanitizeOptions, type SanitizeResult } from "./sanitize";
-import { screen as screenText, type ScreenOptions, type ScreenResult } from "./screen";
-import { principals } from "./principals";
+import {
+  sanitize as sanitizeText,
+  SanitizeError,
+  type SanitizeOptions,
+  type SanitizeResult,
+} from "./sanitize";
+import { screen as screenText, ScreenError, type ScreenOptions, type ScreenResult } from "./screen";
+import { assertPrincipal, principals } from "./principals";
 import { checkPolicyAnnotations } from "./annotations";
 import {
   runPolicyTests,
@@ -299,8 +304,13 @@ export type Governed<A extends unknown[], R> = (...args: A) => Promise<Awaited<R
 const norm = (x?: readonly string[] | null): string[] => (x ? [...x] : []);
 
 export interface WatchlightOptions {
-  /** Stable agent identity for the audit trail. Defaults to
-   *  `WATCHLIGHT_AGENT` env or `"my-agent"`. */
+  /** Stable agent identity for the audit trail and the reserved
+   *  `context.actor` key. Falls back to the {@link AGENT_ENV}
+   *  (`WATCHLIGHT_AGENT`) environment variable; a blank one counts as unset.
+   *  With NEITHER, the governor is {@link Watchlight.unconfigured}: it runs, it
+   *  is recorded as the reserved {@link UNCONFIGURED_AGENT} placeholder, and it
+   *  asserts NO actor, so no policy can match it by name. `null` is a value,
+   *  not an absent option, and raises like `""`. */
   agent?: string;
   /** Directory for the audit trail. `audit.jsonl` is written inside it.
    *  Defaults to `.watchlight`. Every governor pointed at the same directory —
@@ -494,10 +504,28 @@ const sameChain = (a: unknown, b: readonly string[]): boolean =>
 
 const hasOwn = (o: object, k: string): boolean => Object.prototype.hasOwnProperty.call(o, k);
 
+/**
+ * The name a governor carries when NO agent name was configured — neither the
+ * `agent` option nor {@link AGENT_ENV}.
+ *
+ * It is a placeholder, not a name: it is RESERVED (passing it as `agent` is a
+ * `TypeError`), so `"agent": "<unconfigured>"` on an audit row proves the agent
+ * was never configured rather than looking like somebody's real agent. An
+ * unconfigured governor also asserts NO actor — it sets neither
+ * {@link ACTOR_CONTEXT_KEY} nor {@link ACTOR_CHAIN_CONTEXT_KEY} — so no policy
+ * naming it can match. Name the agent and both keys appear.
+ */
+export const UNCONFIGURED_AGENT = "<unconfigured>";
+
+/** The environment variable that names the agent when the `agent` option does
+ *  not. A blank value counts as unset. */
+export const AGENT_ENV = "WATCHLIGHT_AGENT";
+
 /** Reject an agent name that cannot be recorded or referenced unambiguously —
  *  in the constructor, in {@link Watchlight.as} and in
  *  {@link Watchlight.delegate} alike, so it fails at the name rather than
- *  later, inside the engine. */
+ *  later, inside the engine. `null` is a value, not an absent option: a caller
+ *  who passed one meant to pass a name. */
 function assertAgentName(agent: unknown, where: string): asserts agent is string {
   if (typeof agent !== "string" || !agent.trim()) {
     throw new TypeError(`${where}: agent must be a non-empty string`);
@@ -506,12 +534,57 @@ function assertAgentName(agent: unknown, where: string): asserts agent is string
   if (/[\u0000-\u001f\u007f]/.test(agent)) {
     throw new TypeError(`${where}: agent must not contain control characters`);
   }
+  if (agent === UNCONFIGURED_AGENT) {
+    throw new TypeError(
+      `${where}: '${UNCONFIGURED_AGENT}' is reserved for a governor whose agent name was ` +
+        "never configured — it must not name a real agent"
+    );
+  }
 }
 
-/** The caller's context with the reserved actor keys stamped on it. */
+/** One process-wide notice that no agent name was configured. Said once, on the
+ *  first record an unconfigured governor writes, and it names both ways to fix
+ *  it. The governor still runs — the first five minutes must work with no
+ *  configuration — but it asserts no actor while it does. */
+let warnedUnconfiguredAgent = false;
+function warnUnconfiguredAgent(): void {
+  if (warnedUnconfiguredAgent) return;
+  warnedUnconfiguredAgent = true;
+  // eslint-disable-next-line no-console
+  console.warn(
+    `watchlight: no agent name configured — recorded as '${UNCONFIGURED_AGENT}', and it ` +
+      `asserts no actor (context.${ACTOR_CONTEXT_KEY} and context.${ACTOR_CHAIN_CONTEXT_KEY} ` +
+      "are unset), so a policy naming it cannot match. Name it: " +
+      'new Watchlight({ agent: "…" }), configureDefault({ agent: "…" }) for the exported ' +
+      `\`govern\`, or ${AGENT_ENV}.`
+  );
+}
+
+/** The configured agent name, or `undefined` when none was configured. `null`
+ *  is a value and is rejected; a blank environment variable counts as unset,
+ *  because an exported-but-empty variable is how a shell says "not set". */
+function resolveAgentName(opts: WatchlightOptions, where: string): string | undefined {
+  if (opts.agent !== undefined) {
+    assertAgentName(opts.agent, where);
+    return opts.agent;
+  }
+  const fromEnv = process.env[AGENT_ENV];
+  if (fromEnv === undefined || !fromEnv.trim()) return undefined;
+  assertAgentName(fromEnv, AGENT_ENV);
+  return fromEnv;
+}
+
+/** The caller's context with the reserved actor keys stamped on it — or, when
+ *  the governor has no configured name (`actor` is `undefined`), with NEITHER
+ *  key set. Both stay reserved either way: a caller-supplied value is refused,
+ *  and with no actor to agree with, ANY supplied value disagrees. An absent
+ *  `context.actor` makes `context has actor` false and makes a policy that
+ *  READS `context.actor` fail — closed, in both directions: an erroring permit
+ *  does not grant and an erroring forbid still denies — so no policy naming the
+ *  unconfigured placeholder can allow anything. */
 function withActorContext(
   context: Record<string, unknown> | undefined,
-  actor: string,
+  actor: string | undefined,
   chain: readonly string[]
 ): Record<string, unknown> {
   // Checked BEFORE the spread: `{...promise}` yields an object with none of
@@ -531,8 +604,10 @@ function withActorContext(
   if (hasOwn(out, ACTOR_CHAIN_CONTEXT_KEY) && !sameChain(out[ACTOR_CHAIN_CONTEXT_KEY], chain)) {
     throw new ReservedContextError();
   }
-  out[ACTOR_CONTEXT_KEY] = actor;
-  out[ACTOR_CHAIN_CONTEXT_KEY] = [...chain];
+  if (actor !== undefined) {
+    out[ACTOR_CONTEXT_KEY] = actor;
+    out[ACTOR_CHAIN_CONTEXT_KEY] = [...chain];
+  }
   return out;
 }
 
@@ -794,6 +869,12 @@ export interface ScopeOptions {
  */
 export class Watchlight {
   readonly agent: string;
+  /** `true` when NO agent name was configured — neither the `agent` option nor
+   *  {@link AGENT_ENV} — so {@link agent} is the reserved
+   *  {@link UNCONFIGURED_AGENT} placeholder and this governor asserts no actor.
+   *  `as`, `delegate` and `configureDefault({ agent })` all name it, and clear
+   *  this. */
+  readonly unconfigured: boolean;
   /** The delegation chain this governor acts under, root first; the last entry
    *  is {@link agent}. A governor that was not delegated to acts alone, so its
    *  chain is just its own name. Set by {@link delegate} from the scope the
@@ -832,9 +913,12 @@ export class Watchlight {
   }
 
   constructor(opts: WatchlightOptions = {}) {
-    const agent = opts.agent ?? process.env.WATCHLIGHT_AGENT ?? "my-agent";
-    assertAgentName(agent, "new Watchlight({ agent })");
-    this.agent = agent;
+    const configured = resolveAgentName(opts, "new Watchlight({ agent })");
+    // No name anywhere is not an error — the first five minutes must work with
+    // no configuration — but it is not a name either: the governor carries the
+    // reserved placeholder, asserts no actor, and says so once.
+    this.unconfigured = configured === undefined;
+    this.agent = configured ?? UNCONFIGURED_AGENT;
     this.actorChain = Object.freeze([this.agent]);
     this._shared = newState(opts);
   }
@@ -868,6 +952,9 @@ export class Watchlight {
     // delegating: it acts alone under its own name.
     Object.assign(renamed, {
       agent,
+      // A rename NAMES it: the renamed governor is configured even when the one
+      // it came from never was.
+      unconfigured: false,
       actorChain: Object.freeze([agent]),
       _shared: this._shared,
     });
@@ -908,6 +995,8 @@ export class Watchlight {
     const sub = Object.create(Watchlight.prototype) as Watchlight;
     Object.assign(sub, {
       agent,
+      // `delegate(from, agent)` names the sub-agent explicitly.
+      unconfigured: false,
       actorChain: child.actorChain,
       delegatedScope: child,
       _shared: this._shared,
@@ -1008,8 +1097,11 @@ export class Watchlight {
    *  name (warned once per process). Framework adapters use this so their
    *  `egress` records carry the same subject as the decision they join.
    *  @internal */
-  _principal(explicit?: string): string {
-    if (explicit !== undefined && explicit !== null && explicit !== "") return explicit;
+  _principal(explicit?: string, makeError?: (message: string) => Error): string {
+    // An explicitly supplied principal is CHECKED, never quietly replaced.
+    // `""` (from `user?.id ?? ""`) used to fall through to the agent here, so a
+    // person's action was attributed to the runtime; it now raises.
+    if (explicit !== undefined) return assertPrincipal(explicit, makeError);
     if (this._shared.strictPrincipal) return principals.agent(this.agent);
     warnLenientPrincipal();
     return this.agent;
@@ -1232,6 +1324,11 @@ export class Watchlight {
       const { agent, ...rest } = req;
       return this.as(agent).authorize(rest);
     }
+    // Before the try, so a malformed principal raises as itself rather than
+    // being recorded and re-raised as an engine refusal — the same place a
+    // ReservedContextError is raised, and for the same reason: it is the
+    // caller's own input, not a verdict.
+    if (req.principal !== undefined) assertPrincipal(req.principal);
     let decided;
     try {
       decided = await this._decide(req);
@@ -1288,7 +1385,11 @@ export class Watchlight {
       // runtime (`context.actor == "…"`) or its delegation
       // (`context.actor_chain.contains("…")`) independently of the subject it
       // acts for. A caller value that disagrees with either is refused.
-      context: withActorContext(req.context, this.agent, this.actorChain),
+      context: withActorContext(
+        req.context,
+        this.unconfigured ? undefined : this.agent,
+        this.actorChain
+      ),
     });
     let allowed = raw.decision === "Allow";
     let needsApproval = allowed && !!raw.needsApproval;
@@ -1404,7 +1505,9 @@ export class Watchlight {
     // The subject the redaction was performed FOR. A call that names none has
     // this agent as its subject — recorded as the TYPED `Agent::"<name>"`, the
     // same reference the decision line carries, never a bare name.
-    const principal = this._principal(opts.principal);
+    // The primitive's own error type, so a bad principal fails as a
+    // SanitizeError here exactly as it does on the module function.
+    const principal = this._principal(opts.principal, (m) => new SanitizeError(m));
     // `decisionId` and `principal` are validated (bounded, no control chars)
     // inside sanitizeText before they are echoed onto the report and written to
     // the audit line; `known` values are redacted in-process and never reach the
@@ -1436,7 +1539,8 @@ export class Watchlight {
     const { intent = "read", resource = "content", mode, families, decisionId } = opts;
     // As in `sanitize`: the subject the screening was performed for, typed when
     // the call names none.
-    const principal = this._principal(opts.principal);
+    // As above: the primitive's own error type.
+    const principal = this._principal(opts.principal, (m) => new ScreenError(m));
     // `decisionId` and `principal` are validated (bounded, no control chars)
     // inside screenText before they are echoed onto the report and written to
     // the audit line.
@@ -1633,6 +1737,7 @@ export class Watchlight {
   }
 
   private _announce(): void {
+    if (this.unconfigured) warnUnconfiguredAgent();
     if (!this._announced) {
       // eslint-disable-next-line no-console
       console.log(`watchlight: governing '${this.agent}' (${this._backend.label})`);
@@ -1724,7 +1829,11 @@ export class Watchlight {
     }
     if (opts.agent !== undefined) {
       assertAgentName(opts.agent, "configureDefault({ agent })");
-      Object.assign(this, { agent: opts.agent, actorChain: Object.freeze([opts.agent]) });
+      Object.assign(this, {
+        agent: opts.agent,
+        unconfigured: false,
+        actorChain: Object.freeze([opts.agent]),
+      });
     }
     if (opts.auditDir !== undefined || opts.auditFile !== undefined || opts.auditSink !== undefined) {
       // MERGE: a later call that names only one audit option must not drop the

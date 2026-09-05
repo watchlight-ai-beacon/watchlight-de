@@ -12,7 +12,7 @@ Expected output:
 
     Research agent — 5 tools, 2 intents permitted (research, read):
 
-    watchlight: governing 'my-agent' (dev mode, in-process engine)
+    watchlight: governing 'research-agent' (dev mode, in-process engine)
     watchlight: ALLOW  research  tool/web_search
         ↳ ran: top results for 'watchlight developer edition'
     watchlight: ALLOW  read      tool/read_file
@@ -39,7 +39,11 @@ local dashboard as this runs.
 
 import pathlib
 
-from watchlight import Denied, govern
+from watchlight import Denied, configure_default, govern
+
+# Name the agent: it is what the audit trail records and what a policy reads as
+# `context.actor`. Without it the governor asserts no actor at all.
+configure_default(agent="research-agent")
 
 govern.load(pathlib.Path(__file__).parent / "research.policy.json")
 

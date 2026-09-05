@@ -135,6 +135,7 @@ source answers the same question over them.
 import { Watchlight } from "@watchlight/sdk";
 
 const govern = new Watchlight({
+  agent: "doc-agent",
   auditSink: (record) => db.insert("agent_audit", record),
   counterSource: (q) =>
     db.countDecisions({                       // your query, your index
@@ -157,6 +158,7 @@ const govern = new Watchlight({
 from watchlight import Watchlight
 
 govern = Watchlight(
+    agent="doc-agent",
     audit_sink=lambda record: db.insert("agent_audit", record),
     counter_source=lambda q: db.count_decisions(
         event_is_null=True,                   # decision rows only — see the note above
@@ -221,6 +223,7 @@ so the durable count is what the policy evaluates, and the quota works through
 import { Watchlight } from "@watchlight/sdk";
 
 const govern = new Watchlight({
+  agent: "doc-agent",
   auditSink: (record) => db.insert("agent_audit", record),
   // The read side above — a network call, so it returns a promise.
   counterSource: (q) => db.countDecisions({
@@ -252,6 +255,7 @@ const readDoc = govern.tool(fetchDocument, {
 from watchlight import CounterSourceError, Watchlight
 
 govern = Watchlight(
+    agent="doc-agent",
     audit_sink=lambda record: db.insert("agent_audit", record),
     # The read side above — a network call, so it returns an awaitable.
     counter_source=lambda q: db.count_decisions(

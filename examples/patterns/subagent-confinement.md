@@ -58,7 +58,7 @@ re-prove the subset:
 
 ```ts
 // orchestrator — needs a shared secret (≥ 16 bytes); there is no default
-const govern = new Watchlight({ signingSecret: process.env.WATCHLIGHT_SIGNING_SECRET });
+const govern = new Watchlight({ agent: "orchestrator", signingSecret: process.env.WATCHLIGHT_SIGNING_SECRET });
 const root = await govern.scope({ tools: ["read_file", "web_search", "send_email"], timeBudgetSeconds: 600 });
 const summarizer = root.attenuate({ tools: ["read_file"] });
 queue.push({ job, scope: summarizer.toToken() });     // wls1.<claims>.<hmac>
@@ -69,7 +69,7 @@ scope.attenuate({ tools: ["send_email"] });            // ❌ still throws — n
 ```
 
 ```python
-govern = Watchlight(signing_secret=os.environ["WATCHLIGHT_SIGNING_SECRET"])
+govern = Watchlight(agent="orchestrator", signing_secret=os.environ["WATCHLIGHT_SIGNING_SECRET"])
 summarizer = govern.scope(tools=["read_file", "web_search", "send_email"]).attenuate(tools=["read_file"])
 queue.push({"job": job, "scope": summarizer.to_token()})
 

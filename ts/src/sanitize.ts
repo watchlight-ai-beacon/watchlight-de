@@ -21,6 +21,7 @@
 // adversarial 100k-character inputs complete in well under 100 ms.
 
 import { createHash } from "node:crypto";
+import { assertPrincipal } from "./principals";
 
 /** PII categories the deterministic detector recognizes. */
 export type PiiType =
@@ -481,7 +482,11 @@ export function sanitize(text: string, opts: SanitizeOptions = {}): SanitizeResu
     throw new SanitizeError("input must be a string (extract document text first)");
   }
   const decisionId = validateOpaqueId(opts.decisionId, "decisionId", sanitizeError);
-  const principal = validateOpaqueId(opts.principal, "principal", sanitizeError);
+  // Length-bounded first (an audit field), then the ONE principal rule every
+  // boundary applies — non-empty, no control characters.
+  const principalId = validateOpaqueId(opts.principal, "principal", sanitizeError);
+  const principal =
+    principalId === undefined ? undefined : assertPrincipal(principalId, sanitizeError);
   const known = opts.known ?? [];
   if (!Array.isArray(known) || known.some((v) => typeof v !== "string")) {
     // Value-free by design: the message never echoes the offending entry.
