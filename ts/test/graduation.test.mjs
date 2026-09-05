@@ -68,7 +68,7 @@ async function main() {
   ok("APDP received the request", seen.hits >= 1);
   ok("bearer token forwarded", seen.auth === "Bearer plugin-token-abc", String(seen.auth));
   ok("tenant header forwarded", seen.tenant === "tenant-xyz", String(seen.tenant));
-  ok("request carried principal/action/resource", seen.body.principal === "grad-agent"
+  ok("request carried principal/action/resource", seen.body.principal === 'Agent::"grad-agent"'
     && seen.body.action === "research" && seen.body.resource === "tool/research", JSON.stringify(seen.body));
 
   let denied = false;

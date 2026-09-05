@@ -69,7 +69,7 @@ export function governTool<T extends LangChainToolLike>(tool: T, opts: GovernToo
     get(target, prop, receiver) {
       if (prop === "invoke") {
         return async (input: unknown, config?: unknown): Promise<unknown> => {
-          const { allowed, reason, decisionId, obligations } = await governor.check(intent, name);
+          const { allowed, reason, decisionId, obligations, principal } = await governor.check(intent, name);
           if (!allowed) {
             throw new Denied(name, intent, reason || DENY_REASON);
           }
@@ -77,7 +77,7 @@ export function governTool<T extends LangChainToolLike>(tool: T, opts: GovernToo
           if (!opts.onResult) return out;
           // Egress: govern what the tool RETURNS, joined to the call's decision
           // and carrying that decision's obligations.
-          const info: EgressInfo = { intent, resource: `tool/${name}`, principal: governor.agent, decisionId };
+          const info: EgressInfo = { intent, resource: `tool/${name}`, principal, decisionId };
           if (obligations) info.obligations = obligations;
           const { value } = await governor._applyOnResult(out, opts.onResult, info);
           return value;

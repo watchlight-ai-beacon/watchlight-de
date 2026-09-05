@@ -3,9 +3,14 @@
 // Decisions (`Watchlight.authorize`), sanitizations (`Watchlight.sanitize`) and
 // attenuations (`Scope.attenuate`) all end up here. Two destinations:
 //
-//   1. the local `.watchlight/audit.jsonl` file (always on, best-effort), and
+//   1. the local `.watchlight/audit.jsonl` file (on by default, best-effort;
+//      `auditFile: false` turns it off and makes the sink the sole
+//      destination), and
 //   2. an optional application-supplied `auditSink` callback, which receives
 //      exactly the fields the file line carries — nothing more.
+//
+// With BOTH destinations off a record has nowhere to go; the trail says so once
+// rather than discarding records silently.
 //
 // The sink is ADDITIVE and FIRE-AND-FORGET: it is invoked synchronously after the
 // file append, its return value is never awaited, and any failure (a throw or a
@@ -56,19 +61,31 @@ function deepFreeze<T>(value: T): T {
 
 /** The audit trail shared by a governor and every scope derived from it. */
 export class AuditTrail {
-  readonly path: string;
+  /** The local file every record is appended to, or `null` when the file is
+   *  disabled (`auditFile: false`) and the sink is the sole destination. */
+  readonly path: string | null;
   private readonly _sink?: AuditSink;
   /** Sanitized error kinds already reported — one warning per kind, so a
    *  "no running loop"-style condition never silences a later real failure. */
   private readonly _warnedKinds = new Set<string>();
+  private _warnedNoDestination = false;
 
-  constructor(auditPath: string, sink?: AuditSink) {
+  constructor(auditPath: string | null, sink?: AuditSink) {
     this.path = auditPath;
     this._sink = sink;
   }
 
+  /** True when an application-supplied sink is attached to this trail. */
+  get hasSink(): boolean {
+    return !!this._sink;
+  }
+
   /** Append `record` to the local file, then hand the same fields to the sink. */
   write(record: Record<string, unknown>): void {
+    if (this.path === null && !this._sink) {
+      this._warnNoDestination();
+      return;
+    }
     // The funnel can never throw out of authorize/sanitize/attenuate — including
     // for a record that fails to serialize (nothing to write, nothing to send).
     let line: string;
@@ -78,11 +95,14 @@ export class AuditTrail {
       return;
     }
     // 1. The file, first — the sink can never influence what lands on disk.
-    try {
-      fs.mkdirSync(path.dirname(this.path), { recursive: true });
-      fs.appendFileSync(this.path, line + "\n", "utf8");
-    } catch {
-      // Audit is best-effort in dev mode; never let it break the app.
+    //    Skipped entirely when the file is disabled: nothing is created.
+    if (this.path !== null) {
+      try {
+        fs.mkdirSync(path.dirname(this.path), { recursive: true });
+        fs.appendFileSync(this.path, line + "\n", "utf8");
+      } catch {
+        // Audit is best-effort in dev mode; never let it break the app.
+      }
     }
     // 2. The sink, fire-and-forget. It receives a frozen deep copy built from
     //    the exact serialized line, so it sees precisely the file's fields and
@@ -97,6 +117,18 @@ export class AuditTrail {
     } catch (err) {
       this._warnOnce(err);
     }
+  }
+
+  /** Both destinations are off, so this record has nowhere to go. Said once —
+   *  a discarded trail is a configuration mistake, never a silent one. */
+  private _warnNoDestination(): void {
+    if (this._warnedNoDestination) return;
+    this._warnedNoDestination = true;
+    // eslint-disable-next-line no-console
+    console.warn(
+      "watchlight: the audit file is disabled and no auditSink is configured — " +
+        "audit records are discarded. Configure `auditSink`, or leave `auditFile` on."
+    );
   }
 
   private _warnOnce(err: unknown): void {

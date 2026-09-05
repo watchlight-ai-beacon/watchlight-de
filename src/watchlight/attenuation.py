@@ -108,7 +108,7 @@ class Scope:
         self,
         *,
         engine: Any,
-        audit_path: str | pathlib.Path,
+        audit_path: str | pathlib.Path | None,
         agent: str,
         allowed_tools: Sequence[str] | None,
         allowed_resources: Sequence[str] | None,
@@ -128,7 +128,8 @@ class Scope:
         by children; unset ⇒ minting fails closed. Never logged or written.
         ``issued_at`` is the epoch second this scope came into force (now)."""
         self._engine = engine
-        self._audit_path = pathlib.Path(audit_path)
+        # ``None`` when the governor writes no local file (``audit_file=False``).
+        self._audit_path = pathlib.Path(audit_path) if audit_path is not None else None
         # The governor's audit trail (file + optional ``audit_sink``) — shared by
         # every scope in the tree, so attenuations report through the same sink.
         self._audit = audit if audit is not None else AuditTrail(self._audit_path)

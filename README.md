@@ -143,6 +143,50 @@ account — is the product.** The `transfer_funds` body never ran.
 
 ---
 
+## Who is acting, and on whose behalf
+
+A governed call answers three questions, and they are separate inputs:
+
+| Question | Where it goes | Example |
+|---|---|---|
+| On whose behalf does this run? | `principal` — the subject | `User::"alice"` |
+| Which runtime is acting? | the reserved `actor` context key, set by the SDK | `context.actor == "flight-booker"` |
+| Under what narrowed authority? | the attenuation scope | `govern.scope(tools=[...])` |
+
+```python
+from watchlight import govern, principals
+
+# the agent acting for a person
+govern.authorize(action="book", principal=principals.user("alice"))
+# the agent acting on its own behalf — an omitted principal is Agent::"<name>"
+govern.authorize(action="cache")
+```
+
+```cedar
+// this runtime may book for any user — whoever it acts for
+permit(principal is User, action == Action::"book", resource)
+when { context.actor == "flight-booker" };
+```
+
+`principal` is always a typed entity reference; build it with `principals.user`
+/ `principals.agent`, which escape an identifier that came from outside. The
+SDK sets `context.actor` on every call from the governor's agent name, and
+refuses a caller-supplied value that disagrees, so a policy can trust it.
+
+Run several named agents on one engine with a view — it shares the engine, the
+compiled policies, the audit trail and the sink, and only changes the name:
+
+```python
+billing = govern.as_("billing-agent")     # no second engine, no second policy load
+research = govern.as_("research-agent")
+```
+
+**→ Full reference: [The identity model](docs/identity-model.md)** — the three
+cases with exact values, worked policies, the RFC 8693 (`sub` / `act.sub`)
+mapping, and the 0.8.0 migration note.
+
+---
+
 ## TypeScript / Node
 
 Same governance, in your Node app — no Python sidecar.
@@ -285,6 +329,29 @@ govern = Watchlight(agent="my-agent", audit_sink=lambda record: my_store.insert(
 Reference sinks — a Postgres row, an OTLP log record, a webhook — are in
 [`examples/patterns/audit-sink.md`](examples/patterns/audit-sink.md).
 
+`audit_file=False` makes the sink the **sole** destination: no `.watchlight`
+directory, no file, and `govern.counters(...)` — which reads the local file —
+raises rather than counting zero. With neither a file nor a sink the SDK says so
+once instead of discarding records silently. Note that the file is shared: every
+governor pointed at the same directory, including concurrent instances in one
+process and a test run in the same working directory, appends to the same
+`audit.jsonl`, so those records interleave and are told apart only by their
+fields.
+
+The module-level `govern` is pre-constructed, so configure it before its first
+governed call — otherwise it has no sink, and it says so the first time it
+writes:
+
+```python
+from watchlight import govern, configure_default
+
+configure_default(agent="billing-agent", audit_sink=my_store.insert)
+```
+
+`configure_default(...)` raises once the default governor has written a record:
+records already written cannot reach a sink added later, and a trail split
+across two destinations reads like a data bug.
+
 The trail is also an input: `govern.counters(...)` folds it into a number for a
 quota policy — decisions for exactly this principal (and intent / resource) in
 the last `window`, from the record timestamps — so `context.reads_this_hour < 100`
@@ -308,10 +375,19 @@ it like any other code. Golden fixtures assert the expected verdict
 (`Allow` / `Deny` / `NeedsApproval`) for a `(principal, action, resource, context)`;
 a wrong expectation fails the suite. Run it in CI.
 
+`govern.load(path)` is **idempotent per source**: the resolved path (or an
+explicit `source_id=`) is remembered, so priming an engine in a factory and
+loading the same file again from an initialiser cannot double the set. A missing
+file is not remembered, so it loads once it appears. `govern.allow(code)` is
+always additive — the same code twice is two policies. `govern.policy_count` and
+`govern.has_policies` report what an engine holds, which is worth asserting at
+start-up: no policies means every call is denied.
+
 ```python
 from watchlight import govern
 
 govern.load("watchlight.policy.json")
+assert govern.has_policies, "no policies loaded — every call would be denied"
 report = govern.test([
     {"name": "under limit allows", "action": "book",
      "context": {"amount": 200, "limit": 500, "refundable": True}, "expect": "Allow"},
@@ -482,6 +558,9 @@ Identity hardens as you grow, **without changing your policies**:
 - **Enterprise** — identity is **attested**: federated (OIDC) and workload (mTLS) identity, cryptographically verified across the fleet.
 
 Only *how strongly the principal is proven* changes between these — the policies you write do not.
+
+What the principal *contains* — the subject, the acting runtime, and how a
+policy names each — is [The identity model](docs/identity-model.md).
 
 ---
 

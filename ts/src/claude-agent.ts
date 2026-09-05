@@ -127,7 +127,7 @@ export function governedHooks(options: GovernedHooksOptions = {}): GovernedHooks
     const toolName = ev.tool_name ?? "unknown";
     try {
       const intent = intentFor(toolName);
-      const { allowed, reason, decisionId, obligations } = await governor.check(intent, toolName);
+      const { allowed, reason, decisionId, obligations, principal } = await governor.check(intent, toolName);
       const key = pendingKey(ev, toolUseID);
       if (allowed && onResult && key !== undefined) {
         if (pending.size >= PENDING_CAP) {
@@ -135,7 +135,9 @@ export function governedHooks(options: GovernedHooksOptions = {}): GovernedHooks
           if (oldest !== undefined) pending.delete(oldest);
         }
         // The PostToolUse hook receives the decision's id AND its obligations.
-        const info: EgressInfo = { intent, resource: `tool/${toolName}`, principal: governor.agent, decisionId };
+        // `principal` is the subject the decision was recorded against, so the
+        // egress record joins the decision record on both id and subject.
+        const info: EgressInfo = { intent, resource: `tool/${toolName}`, principal, decisionId };
         if (obligations) info.obligations = obligations;
         pending.set(key, info);
       }
@@ -179,7 +181,7 @@ export function governedHooks(options: GovernedHooksOptions = {}): GovernedHooks
         // and the egress record is written honestly without a decision_id.
         intent: intentFor(toolName),
         resource: `tool/${toolName}`,
-        principal: governor.agent,
+        principal: governor._principal(),
       };
       const { value, replaced } = await governor._applyOnResult(ev.tool_response, onResult, egress, {
         timeoutMs,
