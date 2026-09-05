@@ -65,8 +65,8 @@ approved — grant written to .watchlight/hitl/grant.json
 ```
 
 **resume** — the hook verifies and consumes the grant and returns `true`; the
-SDK mints a single-use approval token in-process, re-authorizes, and runs the
-body once. The two decision records and how they join:
+SDK mints a single-use approval token — here in-process, since this example
+configures no secret — re-authorizes, and runs the body once. The two decision records and how they join:
 
 ```
 attempt: delete record/rec-42 (grant on disk for pending bbbd176c-…)
@@ -113,12 +113,19 @@ the agent removes `pending.json` and `grant.json` together.
 
 ## Why the approver signs a grant, not the SDK token — and what that does not give you
 
-The DE's approval tokens (`mint_approval` / `mintApproval`) are HMAC-signed
-under a random secret generated when the *process* starts, and used tokens are
-remembered in that process's memory. That makes them single-use and
-tamper-proof, but also process-local: a token minted by `approve.py` cannot be
-verified by `agent.py` (observed in both lanes: the agent answers
-`NeedsApproval`, `approved: false`).
+The DE's approval tokens (`mint_approval` / `mintApproval`) are HMAC-signed and
+recorded as used, which makes them single-use and tamper-proof. **This example
+configures no secret and no store**, so both defaults apply: the signing key is
+random per process and the used-token record is that process's memory. A token
+minted by `approve.py` therefore cannot be verified by `agent.py` (observed in
+both lanes: the agent answers `NeedsApproval`, `approved: false`).
+
+Configure a [signing secret](../../../docs/signing-secret.md) — or an
+`approval_secret` / `approvalSecret` — and a token does verify in another
+process; add an `approval_store` / `approvalStore` over a shared store and
+single use holds across replicas too. The grant below is what this example uses
+*instead*, and it stays useful either way: it is signed by the approver, so the
+agent can tell an approval apart from anything it could have minted itself.
 
 The example therefore separates the two roles:
 
@@ -154,7 +161,7 @@ check approvals it could never mint. That is not implemented here.
 | A correctly signed grant for a request that is not the outstanding one (e.g. approved for an earlier request, planted for a later one with the same principal/action/resource) | Refused: `grant does not match the outstanding pending request`. The agent compares `pending_decision_id`, principal, action and resource against the `pending.json` it wrote itself; `approve` leaves that file in place and the agent removes it only when a grant is consumed. |
 | A grant for a different `(principal, action, resource)` | Refused: `grant is bound to a different request`. |
 | The same SDK approval token passed to `authorize` twice | First call `Allow, approved: true`; second call `NeedsApproval`. Single use per mint. |
-| An SDK token minted in another process | `NeedsApproval` — the verifying process has a different secret. |
+| An SDK token minted in another process | `NeedsApproval` — with no signing secret configured (as here) each process has its own random key. Configure one and it verifies. |
 | `resume` with `APPROVER_SECRET` unset | Exits 2 before reading the grant, which stays on disk. |
 
 ## Notes

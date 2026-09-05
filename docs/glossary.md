@@ -49,9 +49,9 @@ any delegation it is just `[agent]`.
   you are about to pass on; screening decides whether text is safe to use at
   all. Sanitize what leaves; screen what arrives.
 - **Approval token versus scope token** — an approval token records that a human
-  confirmed one specific action, once; mint it and consume it in the same
-  process. A scope token carries a sub-agent's narrowed authority to another
-  process. Different lifetimes, different jobs.
+  confirmed one specific action, once. A scope token carries a sub-agent's
+  narrowed authority. Different lifetimes, different jobs; both are signed with
+  the signing secret.
 
 ## Terms
 
@@ -70,9 +70,17 @@ and is what a policy reads as `context.actor`.
 → [identity model](identity-model.md#one-engine-many-named-agents)
 
 **Approval token** — a single-use grant, minted after a person confirms, that
-turns one `NeedsApproval` verdict into an `Allow`. It is bound to that subject,
-action and resource; mint and consume it within one process.
-→ [human in the loop](../examples/showcase/human-in-the-loop/README.md)
+turns one `NeedsApproval` verdict into an `Allow`, bound to that subject, action
+and resource. With no secret configured it is keyed per process and cannot leave
+it; configure a signing secret and it verifies elsewhere, and add an approval
+store for single use across replicas.
+→ [human in the loop](../examples/showcase/human-in-the-loop/README.md),
+[the signing secret](signing-secret.md)
+
+**Approval store** — a shared store you supply so a used approval token is
+recorded once for every replica, not once per process. One method, `add`, which
+must reserve the id atomically; a store that fails refuses the approval.
+→ [destructive actions](../examples/patterns/destructive-actions.md)
 
 **Attenuation** — narrowing a scope for a sub-agent. Strictly a subset: a child
 can never hold what its parent lacked.
@@ -95,8 +103,14 @@ appends to, and the stream every renamed agent and delegate writes into.
 or a document class. `actor` and `actor_chain` are reserved within it.
 → [identity model](identity-model.md#writing-policies-against-them)
 
-**Counter** — a count of past decisions read back from the trail, for a subject
-and a window. What a quota is built from.
+**Counter** — a count of past decisions for a subject and a window, read back
+from the local trail or from a counter source you configure. What a quota is
+built from.
+→ [quotas](../examples/patterns/quotas.md)
+
+**Counter source** — the read side of your audit sink: the same count query,
+answered by the durable store the sink writes to, so a quota spans every replica
+and survives a deploy. Without one, counts come from the local trail file.
 → [quotas](../examples/patterns/quotas.md)
 
 **Decision id** — the correlation id on a verdict and on every record that
@@ -163,6 +177,11 @@ reading counters from the trail.
 Another `Watchlight` under a different name, backed by the same engine.
 → [identity model](identity-model.md#one-engine-many-named-agents)
 
+**Rotation** — replacing a signing secret without breaking tokens already in
+flight: pass an ordered list, newest first, wait out the longest token lifetime,
+then drop the old value. Swapping a single value is an immediate cutover.
+→ [the signing secret](signing-secret.md)
+
 **Resource** — what the action is being taken on, matched by a policy. A string
 you choose, such as `trip/AX8821`.
 → [README](../README.md)
@@ -184,10 +203,14 @@ re-established in another process. It does not carry the actor chain.
 it when it is not.
 → [screen before model](../examples/patterns/screen-before-model.md)
 
-**Signing secret** (`token_secret` / `tokenSecret`) — the secret that gives
-**scope tokens** their integrity, so a narrowed scope can be re-established in
-another of your processes. It is never logged or written.
-→ [sub-agent confinement](../examples/patterns/subagent-confinement.md)
+**Signing secret** (`signing_secret` / `signingSecret`, or
+`WATCHLIGHT_SIGNING_SECRET`) — the value that makes a scope token or an approval
+token verifiable in another of your processes. Give the same one to every
+process that exchanges tokens; it is never logged, written or echoed in an
+error. It takes an ordered list for rotation, and `approval_secret` /
+`approvalSecret` overrides it for approvals only. The former names
+`token_secret` / `tokenSecret` still work and warn once.
+→ [the signing secret](signing-secret.md)
 
 **Subject** — see above.
 → [identity model](identity-model.md#what-principal-contains)

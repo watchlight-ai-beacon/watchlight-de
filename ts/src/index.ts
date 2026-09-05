@@ -306,7 +306,7 @@ export interface WatchlightOptions {
    *  every outstanding approval. A token presented to a governor holding a
    *  different key is refused exactly like an expired one — the decision stays
    *  `NeedsApproval` with the uniform `approval required` reason. Never logged
-   *  or written. Shared with every view made by {@link Watchlight.as}. */
+   *  or written. Shared with every governor made by {@link Watchlight.as}. */
   approvalSecret?: SecretInput;
   /** Where consumed approval-token ids are reserved, which is what makes an
    *  approval single-use. Defaults to an IN-PROCESS map shared by every
@@ -319,7 +319,7 @@ export interface WatchlightOptions {
    *  already present — a read followed by an unconditional write cannot enforce
    *  single use. Fail-closed: `false`, a throw, a timeout, or a non-boolean
    *  return all refuse the approval; none of them admits one. Shared with every
-   *  view made by {@link Watchlight.as}. */
+   *  governor made by {@link Watchlight.as}. */
   approvalStore?: ApprovalStore;
   /** Read side of {@link auditSink}: where {@link Watchlight.counters} gets its
    *  number. Defaults to folding the local `audit.jsonl`. Configure it and
@@ -328,7 +328,7 @@ export interface WatchlightOptions {
    *  source that throws, or returns anything but a non-negative integer, fails
    *  the read closed ({@link CounterSourceError}); it never falls back to the
    *  local file. An async source is read with {@link Watchlight.countersAsync}.
-   *  Shared with every view made by {@link Watchlight.as}. */
+   *  Shared with every governor made by {@link Watchlight.as}. */
   counterSource?: CounterSource;
 }
 
@@ -459,8 +459,8 @@ interface GovernorState {
   /** Signing secrets, newest first: the first signs, every one verifies. */
   signingSecrets?: Uint8Array[];
   /** The approval signing key + seen-token store. On the SHARED state, so an
-   *  approval minted through one view is consumed — and, once consumed, refused
-   *  — through every other view of the same governor. A view that had its own
+   *  approval minted through one name is consumed — and, once consumed, refused
+   *  — through every other name of the same governor. A governor that had its own
    *  store would let one token be spent once per name. */
   approval: ApprovalTokens;
   /** The approval options in force, so {@link Watchlight._configure} can apply
@@ -1170,7 +1170,7 @@ export class Watchlight {
    *   Configure `approvalStore` with a store every replica shares and
    *   single-use holds across all of them.
    *
-   * Both live on the state a view made by {@link as} shares, so a token minted
+   * Both live on the state a governor made by {@link as} shares, so a token minted
    * through one name and consumed through another is the SAME token: the second
    * use is refused as a replay, not admitted a second time.
    */
@@ -1272,7 +1272,7 @@ export class Watchlight {
    * source that throws or returns a non-count throws {@link CounterSourceError};
    * an asynchronous source throws too, naming {@link countersAsync}, rather than
    * quietly handing back a local number. The source is on the shared state, so
-   * every view made by {@link as} counts from the same place.
+   * every governor made by {@link as} counts from the same place.
    */
   counters(opts: CountersOptions): Counters {
     if (this._counterSource) return countFromSource(this._counterSource, opts);

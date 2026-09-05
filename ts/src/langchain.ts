@@ -55,7 +55,7 @@ export interface GovernToolsOptions {
 
 /**
  * Wrap a LangChain / LangGraph.js tool so its `invoke` is authorized by the
- * in-process engine before it runs. Returns a governed view of the tool (a
+ * in-process engine before it runs. Returns a governed copy of the tool (a
  * Proxy) — pass it to your agent / `ToolNode` exactly like the original. The
  * original tool is not mutated. Fail-closed: on anything but ALLOW, `invoke`
  * throws `Denied` and the underlying tool never executes.

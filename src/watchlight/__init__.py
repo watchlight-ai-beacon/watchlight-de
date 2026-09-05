@@ -263,8 +263,8 @@ class _GovernorState:
         #: Signing secrets, newest first: the first signs, every one verifies.
         self.signing_secrets: Optional[list[bytes]] = None
         #: The approval signing key + seen-token store. On the SHARED state, so
-        #: an approval minted through one view is consumed — and, once consumed,
-        #: refused — through every other view of the same governor. A view with
+        #: an approval minted through one name is consumed — and, once consumed,
+        #: refused — through every other name of the same governor. A governor with
         #: its own store would let one token be spent once per name.
         self.approval: Any = None
         #: The approval options in force, so ``_configure`` can apply one of them
@@ -1214,7 +1214,7 @@ class Watchlight:
             governor holding a different key is refused exactly like an expired
             one — the decision stays ``NeedsApproval`` with the uniform
             ``approval required`` reason. Never logged or written. Shared with
-            every view made by :meth:`as_`.
+            every governor made by :meth:`as_`.
         :param approval_store: where consumed approval-token ids are reserved,
             which is what makes an approval single-use. Defaults to an
             IN-PROCESS dict shared by every governor in this process and by
@@ -1227,7 +1227,7 @@ class Watchlight:
             ``False`` when the id was already present — a read followed by an
             unconditional write cannot enforce single use. Fail-closed:
             ``False``, a raise, or a non-boolean return all refuse the approval;
-            none of them admits one. Shared with every view made by
+            none of them admits one. Shared with every governor made by
             :meth:`as_`, so a token minted through one name and consumed through
             another is refused as a replay rather than admitted twice.
         :param counter_source: read side of ``audit_sink``: where
@@ -1239,7 +1239,7 @@ class Watchlight:
             returns anything but a non-negative ``int``, fails the read closed
             (:class:`CounterSourceError`); it never falls back to the local file.
             An async source is read with :meth:`counters_async`. Shared with
-            every view made by :meth:`as_`.
+            every governor made by :meth:`as_`.
         :param audit_file: write the local ``audit.jsonl`` at all (default
             ``True``). ``False`` makes ``audit_sink`` the SOLE destination: no
             ``.watchlight`` directory and no file are created, and
@@ -1835,7 +1835,7 @@ class Watchlight:
           routine scaling change. Configure ``approval_store`` with a store every replica
           shares and single-use holds across all of them.
 
-        Both live on the state a view made by :meth:`as_` shares, so a token
+        Both live on the state a governor made by :meth:`as_` shares, so a token
         minted through one name and consumed through another is the SAME token:
         the second use is refused as a replay, not admitted twice.
         """
@@ -1977,7 +1977,7 @@ class Watchlight:
         raises or returns a non-count raises :class:`CounterSourceError`; an
         asynchronous source raises too, naming :meth:`counters_async`, rather
         than quietly handing back a local number. The source lives on the shared
-        state, so every view made by :meth:`as_` counts from the same place.
+        state, so every governor made by :meth:`as_` counts from the same place.
         """
         if self._counter_source is not None:
             return count_from_source(
