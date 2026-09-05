@@ -30,8 +30,9 @@ node examples/showcase/red-team/run.mjs
 watchlight policy test examples/showcase/red-team/policy.suite.json
 ```
 
-Runs offline — no API key, no model call. Run `watchlight dev` in a second
-terminal to watch the decisions live.
+Runs offline — no API key, no model call. Each run writes its on-disk trail to
+a scratch directory that is removed at exit (the in-memory copy is what the
+assertions read), so repeated runs never accumulate in `.watchlight/`.
 
 ## The two layers
 
@@ -97,6 +98,8 @@ corpus: corpus.json — 30 prompts in 10 families (7 screening, 2 policy, 1 cont
   total                            30       22       8      5        3
 
 === assertions ===
+  ✓ the corpus covers every family this runner expects — each SCREEN_FAMILIES entry, each policy family, the control group
+  ✓ prompt ids are unique
   ✓ every corpus family is handled by a layer this runner knows (screening, policy) or is the control group
   ✓ no screening-family prompt reached the model
   ✓ no adversarial prompt executed its induced action — both layers missed nothing
@@ -126,14 +129,17 @@ Append an entry to a family's list in `corpus.json`:
 { "id": "io-05", "text": "…", "induces": { "intent": "export", "resource": "table/customers" } }
 ```
 
-- `id` — unique; it is what the runner prints when a prompt misses its
-  expectation, so keep it opaque.
+- `id` — unique (the runner asserts it); it is what the runner prints when a
+  prompt misses its expectation, so keep it opaque.
 - `text` — the prompt. Synthetic only.
 - `induces` — the tool call the prompt is trying to get the agent to make. The
   intent must be one of `answer`, `export`, `send_email`, `delete` (the governed
   tools the stub can call); the runner refuses an unknown one.
 
-Then run. A screening-family prompt the screener does *not* flag shows up as
+Then run. The first two assertions are about the corpus itself: every family
+the runner expects — each `SCREEN_FAMILIES` entry, each policy family, `BENIGN`
+— must have at least one prompt (an empty or trimmed corpus cannot pass), and
+ids must be unique. A screening-family prompt the screener does *not* flag shows up as
 `reached` and fails **no screening-family prompt reached the model**; one
 flagged for a different family than its label fails the labelling assertion; a
 `BENIGN` prompt that trips the screener fails the control-group assertion.
@@ -159,15 +165,18 @@ corpus: corpus.unhandled.json — 3 prompts in 2 families (0 screening, 0 policy
   total                             3        0       3      2        1
 
 === assertions ===
+  ✗ the corpus covers every family this runner expects — each SCREEN_FAMILIES entry, each policy family, the control group — no prompts for: INSTRUCTION_OVERRIDE, …
+  ✓ prompt ids are unique
   ✗ every corpus family is handled by a layer this runner knows (screening, policy) or is the control group — unhandled: ENCODED_PAYLOAD
   ✓ no screening-family prompt reached the model
   …
-1 CHECK(S) FAILED
+2 CHECK(S) FAILED
 ```
 
 The two encoded prompts passed screening and *reached the model*; the induced
 `export` and `delete` were denied by policy — but the runner has no expectation
-for the family, so it will not report it green. To handle it, either add a
+for the family, so it will not report it green (and, being a three-prompt
+corpus, it also fails coverage). To handle it, either add a
 detector (the SDK's `SCREEN_FAMILIES` is the source of truth for screening
 families) or, if the family is by nature a plain request that policy must stop,
 add it to `POLICY_FAMILIES` in the runner and make sure the policy denies what

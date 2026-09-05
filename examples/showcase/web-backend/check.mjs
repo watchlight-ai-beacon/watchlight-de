@@ -6,7 +6,7 @@
 //
 // Starts `app.mjs` on an ephemeral 127.0.0.1 port with its audit trail pointed at a
 // scratch directory, sends an allowed request (alice, her account), a denied one
-// (bob, the same account), a second denied one (alice, another account), two
+// (bob, the same account), a second denied one (alice, another account), three
 // unauthenticated ones and a malformed one, shuts the server down, then reads the
 // trail the server wrote and asserts that every decision carries the acting user
 // as its principal. Exits non-zero on any failed assertion; exits 2 with a message
@@ -81,7 +81,7 @@ async function main() {
     if (!cond) failures++;
   };
 
-  let allowed, deniedUser, deniedAccount, noToken, badToken, badPath, exit;
+  let allowed, deniedUser, deniedAccount, noToken, badToken, protoToken, badPath, exit;
   let forced = false; // set if the server ignored SIGTERM and had to be killed
   try {
     const base = await baseP;
@@ -93,9 +93,11 @@ async function main() {
     deniedAccount = await get(base, "/accounts/acct-200/statement", TOKENS.alice);
     noToken = await get(base, "/accounts/acct-100/statement");
     badToken = await get(base, "/accounts/acct-100/statement", "demo-token-nobody");
+    protoToken = await get(base, "/accounts/acct-100/statement", "constructor"); // must not resolve via the prototype chain
     badPath = await get(base, "/accounts/acct_100!/statement", TOKENS.alice);
     for (const [label, [status, body]] of [["alice  → acct-100", allowed], ["bob    → acct-100", deniedUser],
-      ["alice  → acct-200", deniedAccount], ["no token", noToken], ["unknown token", badToken], ["malformed account id", badPath]]) {
+      ["alice  → acct-200", deniedAccount], ["no token", noToken], ["unknown token", badToken], ["token 'constructor'", protoToken],
+      ["malformed account id", badPath]]) {
       const keys = body && typeof body === "object" ? "[" + Object.keys(body).sort().map((k) => `'${k}'`).join(", ") + "]" : body;
       console.log(`  ${label.padEnd(22)} HTTP ${status}  ${keys}`);
     }
@@ -127,9 +129,11 @@ async function main() {
     deniedUser[0] === 403 && opaque(deniedUser[1]));
   check("alice reading another account → 403 (the policy is scoped to her account)",
     deniedAccount[0] === 403 && opaque(deniedAccount[1]));
-  check("no token / unknown token → 401 before any governed call", noToken[0] === 401 && badToken[0] === 401);
+  check("no token / unknown token / a prototype-chain name as token → 401 before any governed call",
+    noToken[0] === 401 && badToken[0] === 401 && protoToken[0] === 401);
   check("a malformed account id → 400 before any governed call", badPath[0] === 400);
-  check("exactly three decisions: one per authenticated request, none for the 401s and the 400", decisions.length === 3);
+  check("exactly three decisions: one per authenticated request, none for the 401s and the 400",
+    decisions.length === 3 && decisions.every((d) => ['User::"alice"', 'User::"bob"'].includes(d.principal)));
   const byKey = Object.fromEntries(decisions.map((d) => [`${d.principal} ${d.resource}`, d]));
   check('Allow for User::"alice" on account/acct-100', byKey['User::"alice" account/acct-100']?.decision === "Allow");
   check('Deny for User::"bob" on account/acct-100', byKey['User::"bob" account/acct-100']?.decision === "Deny");
@@ -149,7 +153,13 @@ async function main() {
   // The policy the server loaded, executed in-process (same as `watchlight policy test`).
   const suitePath = fileURLToPath(new URL("policy.suite.json", HERE));
   const suite = JSON.parse(readFileSync(suitePath, "utf8"));
-  const report = await new Watchlight({ agent: "check", auditDir: mkdtempSync(join(tmpdir(), "web-backend-suite-")) }).load(suitePath).test(suite.tests);
+  const suiteDir = mkdtempSync(join(tmpdir(), "web-backend-suite-"));
+  let report;
+  try {
+    report = await new Watchlight({ agent: "check", auditDir: suiteDir }).load(suitePath).test(suite.tests);
+  } finally {
+    rmSync(suiteDir, { recursive: true, force: true });
+  }
   check(`policy.suite.json: ${report.passed}/${report.total} fixtures pass`, report.failed === 0);
 
   console.log(`\n${failures === 0 ? "ALL CHECKS OK" : `${failures} CHECK(S) FAILED`}`);

@@ -6,7 +6,7 @@
 
 Starts `app.py` on an ephemeral 127.0.0.1 port with its audit trail pointed at a
 scratch directory, sends an allowed request (alice, her account), a denied one
-(bob, the same account), a second denied one (alice, another account), two
+(bob, the same account), a second denied one (alice, another account), three
 unauthenticated ones and a malformed one, shuts the server down, then reads the
 trail the server wrote and asserts that every decision carries the acting user
 as its principal. Exits non-zero on any failed assertion; exits 2 with a message
@@ -88,10 +88,12 @@ def main() -> int:
         denied_account = get(base, "/accounts/acct-200/statement", TOKENS["alice"])
         no_token = get(base, "/accounts/acct-100/statement")
         bad_token = get(base, "/accounts/acct-100/statement", "demo-token-nobody")
+        proto_token = get(base, "/accounts/acct-100/statement", "constructor")  # must not resolve via any prototype/attribute chain
         bad_path = get(base, "/accounts/acct_100!/statement", TOKENS["alice"])
         for label, (status, body) in [("alice  → acct-100", allowed), ("bob    → acct-100", denied_user),
                                       ("alice  → acct-200", denied_account), ("no token", no_token),
-                                      ("unknown token", bad_token), ("malformed account id", bad_path)]:
+                                      ("unknown token", bad_token), ("token 'constructor'", proto_token),
+                                      ("malformed account id", bad_path)]:
             print(f"  {label:22} HTTP {status}  {sorted(body) if isinstance(body, dict) else body}")
     finally:
         proc.terminate()
@@ -120,11 +122,11 @@ def main() -> int:
           denied_user[0] == 403 and denied_user[1] == {"error": DENY_REASON})
     check("alice reading another account → 403 (the policy is scoped to her account)",
           denied_account[0] == 403 and denied_account[1] == {"error": DENY_REASON})
-    check("no token / unknown token → 401 before any governed call",
-          no_token[0] == 401 and bad_token[0] == 401)
+    check("no token / unknown token / a prototype-chain name as token → 401 before any governed call",
+          no_token[0] == 401 and bad_token[0] == 401 and proto_token[0] == 401)
     check("a malformed account id → 400 before any governed call", bad_path[0] == 400)
     check("exactly three decisions: one per authenticated request, none for the 401s and the 400",
-          len(decisions) == 3)
+          len(decisions) == 3 and all(d["principal"] in ('User::"alice"', 'User::"bob"') for d in decisions))
     by_key = {(d["principal"], d["resource"]): d for d in decisions}
     check('Allow for User::"alice" on account/acct-100',
           by_key.get(('User::"alice"', "account/acct-100"), {}).get("decision") == "Allow")
@@ -148,7 +150,11 @@ def main() -> int:
 
     # The policy the server loaded, executed in-process (same as `watchlight policy test`).
     suite = json.loads((HERE / "policy.suite.json").read_text(encoding="utf-8"))
-    report = Watchlight(agent="check", audit_dir=tempfile.mkdtemp(prefix="web-backend-suite-")).load(HERE / "policy.suite.json").test(suite["tests"])
+    suite_dir = tempfile.mkdtemp(prefix="web-backend-suite-")
+    try:
+        report = Watchlight(agent="check", audit_dir=suite_dir).load(HERE / "policy.suite.json").test(suite["tests"])
+    finally:
+        shutil.rmtree(suite_dir, ignore_errors=True)
     check(f"policy.suite.json: {report['passed']}/{report['total']} fixtures pass", report["failed"] == 0)
 
     print(f"\n{'ALL CHECKS OK' if failures == 0 else f'{failures} CHECK(S) FAILED'}")

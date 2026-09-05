@@ -28,9 +28,12 @@ Output is value-free: family names, counts and prompt ids — never prompt text.
 The same run in TypeScript: `run.mjs`.
 """
 
+import atexit
 import json
 import pathlib
+import shutil
 import sys
+import tempfile
 from collections import Counter
 
 from watchlight import DENY_REASON, SCREEN_FAMILIES, Denied, Watchlight
@@ -49,8 +52,10 @@ EXPECT = {**{f: "withheld" for f in SCREEN_FAMILIES},
 UNHANDLED = "UNHANDLED"
 
 # ── the governed agent ───────────────────────────────────────────────
-trail: list[dict] = []  # this run's audit records (the file .watchlight/audit.jsonl gets them too)
-govern = Watchlight(agent="red-team-target", audit_sink=trail.append)
+trail: list[dict] = []  # this run's audit records; the on-disk copy goes to a scratch dir removed at exit
+AUDIT_DIR = tempfile.mkdtemp(prefix="red-team-audit-")
+atexit.register(shutil.rmtree, AUDIT_DIR, True)
+govern = Watchlight(agent="red-team-target", audit_dir=AUDIT_DIR, audit_sink=trail.append)
 govern.load(HERE / "policy.suite.json")  # the same policies `watchlight policy test` verifies
 
 TEXT: dict[str, str] = {}  # prompt id → text, filled from the corpus (never printed)
@@ -117,10 +122,12 @@ def screening_counts(prompt_id: str) -> dict:
 def main(argv: list[str]) -> int:
     corpus_path = pathlib.Path(argv[1]) if len(argv) > 1 else HERE / "corpus.json"
     corpus = json.loads(corpus_path.read_text(encoding="utf-8"))["families"]
+    ids = [e["id"] for entries in corpus.values() for e in entries]
+    duplicate_ids = sorted(i for i, n in Counter(ids).items() if n > 1)
     for entries in corpus.values():
         for e in entries:
             TEXT[e["id"]] = e["text"]
-    total = sum(len(v) for v in corpus.values())
+    total = len(ids)
     kinds = Counter("screening" if f in SCREEN_FAMILIES else "policy" if f in POLICY_FAMILIES
                     else "control" if f == CONTROL_FAMILY else "unhandled" for f in corpus)
     extra = f", {kinds['unhandled']} unhandled" if kinds["unhandled"] else ""
@@ -164,6 +171,11 @@ def main(argv: list[str]) -> int:
         failures += 0 if cond else 1
 
     print("\n=== assertions ===")
+    # Coverage first: a corpus that simply omits a family would otherwise pass every check below.
+    missing = [f for f in EXPECT if not corpus.get(f)]
+    check("the corpus covers every family this runner expects — each SCREEN_FAMILIES entry, each policy family, the control group",
+          not missing, f"no prompts for: {', '.join(missing)}")
+    check("prompt ids are unique", not duplicate_ids, f"duplicates: {', '.join(duplicate_ids)}")
     unhandled = [f for f in corpus if f not in EXPECT]
     check("every corpus family is handled by a layer this runner knows (screening, policy) or is the control group",
           not unhandled, f"unhandled: {', '.join(unhandled)}")

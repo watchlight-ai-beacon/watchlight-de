@@ -111,6 +111,7 @@ server: http://127.0.0.1:60025 (pid 66990); audit trail → scratch directory
   alice  → acct-200      HTTP 403  ['error']
   no token               HTTP 401  ['detail']
   unknown token          HTTP 401  ['detail']
+  token 'constructor'    HTTP 401  ['detail']
   malformed account id   HTTP 400  ['detail']
 
 === audit trail (written by the server) ===
@@ -122,7 +123,7 @@ server: http://127.0.0.1:60025 (pid 66990); audit trail → scratch directory
   ✓ alice reading her account → 200 with the statement and a decision_id
   ✓ bob reading the same account → 403 with the opaque reason, no statement
   ✓ alice reading another account → 403 (the policy is scoped to her account)
-  ✓ no token / unknown token → 401 before any governed call
+  ✓ no token / unknown token / a prototype-chain name as token → 401 before any governed call
   ✓ a malformed account id → 400 before any governed call
   ✓ exactly three decisions: one per authenticated request, none for the 401s and the 400
   ✓ Allow for User::"alice" on account/acct-100
@@ -162,6 +163,12 @@ refused before governance ran. Nothing in the trail is a token or a statement.
 - **Per-call principals are for attribution and policy.** They do not count
   against the free-tier governed-agent limit, which counts distinct `agent`
   identities (here, one: `statements-api`).
+- **Own-property lookups only.** In JavaScript, `USERS[token]` on a plain
+  object walks the prototype chain, so a token such as `constructor` would
+  resolve to a function and reach governance as a bogus principal. The Express
+  app looks tokens and account ids up as own properties only (`Object.hasOwn`;
+  a Python `dict` has no such chain), and both checks send exactly that token
+  and assert `401` with no decision record.
 - **Authorize before you look up.** The body that touches data runs only after
   the decision; a denied user gets the same `403` for an account that exists
   and one that does not.

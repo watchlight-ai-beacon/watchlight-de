@@ -73,7 +73,7 @@ function attachDecisionId(text, { resource, decisionId }) {
 class NotFound extends Error {}
 
 const readStatement = govern.tool(function readStatement(user, accountId) {
-  if (!(accountId in STATEMENTS)) throw new NotFound(accountId); // only reachable AFTER the principal was authorized
+  if (!Object.hasOwn(STATEMENTS, accountId)) throw new NotFound(accountId); // only reachable AFTER the principal was authorized
   return STATEMENTS[accountId];
 }, {
   intent: "read_statement",
@@ -83,10 +83,13 @@ const readStatement = govern.tool(function readStatement(user, accountId) {
 });
 
 // ── the web app ──────────────────────────────────────────────────────
-/** Bearer token → user id, or null. Anything else is 401 — before any governed call. */
+/** Bearer token → user id, or null. Anything else is 401 — before any governed call.
+ *  Own-property lookup only: a token such as `constructor` must not resolve through
+ *  the object's prototype chain and reach governance as a bogus principal. */
 function authenticate(authorization) {
   const [scheme, ...rest] = (authorization ?? "").split(" ");
-  return scheme.toLowerCase() === "bearer" ? USERS[rest.join(" ").trim()] ?? null : null;
+  const token = rest.join(" ").trim();
+  return scheme.toLowerCase() === "bearer" && Object.hasOwn(USERS, token) ? USERS[token] : null;
 }
 
 const app = express();

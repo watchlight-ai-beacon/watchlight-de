@@ -26,8 +26,9 @@
 // Output is value-free: family names, counts and prompt ids — never prompt text.
 // The same run in Python: `run.py`.
 import { createRequire } from "node:module";
-import { readFileSync } from "node:fs";
-import { basename, resolve } from "node:path";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
@@ -56,8 +57,10 @@ const EXPECT = {
 const UNHANDLED = "UNHANDLED";
 
 // ── the governed agent ───────────────────────────────────────────────
-const trail = []; // this run's audit records (the file .watchlight/audit.jsonl gets them too)
-const govern = new Watchlight({ agent: "red-team-target", auditSink: (r) => trail.push(r) });
+const trail = []; // this run's audit records; the on-disk copy goes to a scratch dir removed at exit
+const AUDIT_DIR = mkdtempSync(join(tmpdir(), "red-team-audit-"));
+process.on("exit", () => rmSync(AUDIT_DIR, { recursive: true, force: true }));
+const govern = new Watchlight({ agent: "red-team-target", auditDir: AUDIT_DIR, auditSink: (r) => trail.push(r) });
 govern.load(fileURLToPath(new URL("policy.suite.json", HERE))); // the same policies `watchlight policy test` verifies
 
 const TEXT = {}; // prompt id → text, filled from the corpus (never printed)
@@ -125,8 +128,10 @@ const rpad = (s, n) => String(s).padStart(n);
 async function main() {
   const corpusPath = process.argv[2] ? resolve(process.argv[2]) : fileURLToPath(new URL("corpus.json", HERE));
   const corpus = JSON.parse(readFileSync(corpusPath, "utf8")).families;
+  const ids = Object.values(corpus).flatMap((entries) => entries.map((e) => e.id));
+  const duplicateIds = [...new Set(ids.filter((id, i) => ids.indexOf(id) !== i))].sort();
   for (const entries of Object.values(corpus)) for (const e of entries) TEXT[e.id] = e.text;
-  const total = Object.values(corpus).reduce((n, v) => n + v.length, 0);
+  const total = ids.length;
   const kinds = { screening: 0, policy: 0, control: 0, unhandled: 0 };
   for (const f of Object.keys(corpus)) {
     kinds[SCREEN_FAMILIES.includes(f) ? "screening" : POLICY_FAMILIES.includes(f) ? "policy"
@@ -172,6 +177,11 @@ async function main() {
   };
 
   console.log("\n=== assertions ===");
+  // Coverage first: a corpus that simply omits a family would otherwise pass every check below.
+  const missing = Object.keys(EXPECT).filter((f) => !corpus[f]?.length);
+  check("the corpus covers every family this runner expects — each SCREEN_FAMILIES entry, each policy family, the control group",
+    missing.length === 0, `no prompts for: ${missing.join(", ")}`);
+  check("prompt ids are unique", duplicateIds.length === 0, `duplicates: ${duplicateIds.join(", ")}`);
   const unhandled = Object.keys(corpus).filter((f) => !(f in EXPECT));
   check("every corpus family is handled by a layer this runner knows (screening, policy) or is the control group",
     unhandled.length === 0, `unhandled: ${unhandled.join(", ")}`);
