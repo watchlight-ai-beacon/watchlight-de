@@ -4,18 +4,22 @@
 //   node examples/showcase/identity/identity.mjs
 //
 // Runs offline: no API key, no network, no identity provider. ONE governor and
-// ONE policy set for the whole example; every named agent is a view of the same
-// engine. The script prints, for each call, the verdict and the identity fields
-// of the audit record it produced, and exits non-zero if any verdict or record
-// shape changes.
+// ONE policy set for the whole example; every named agent is another Watchlight
+// backed by the same engine. The script prints, for each call, the verdict and
+// the identity fields of the audit record it produced, and exits non-zero if any
+// verdict or record shape changes.
 //
 // It makes the three cases of docs/identity-model.md concrete:
 //
 //   1. an agent acting alone        principal = Agent::"flight-booker"
-//   2. the same agent for a person  principal = User::"…", same actor
+//   2. the same agent for a person  principal = User::"db:4412", same actor
 //   3. a sub-agent under a parent   principal unchanged, ordered actor chain
 //
-// then shows the four things a caller cannot do (supply the actor key, extend
+// then answers the question that follows: where does the actor come from? It is
+// the identity of the GOVERNOR YOU CALLED THROUGH — you choose it by choosing
+// the handle, not by passing a field. The same call is made four ways to show it.
+//
+// It also shows the four things a caller cannot do (supply the actor key, extend
 // the chain, rename a delegate, rename it through a per-call override), and the
 // two identity sources — a verified token's subject claim and a local session
 // lookup — producing the identical call.
@@ -37,10 +41,11 @@ function loadSdk() {
   }
   throw new Error("@watchlight/sdk not found — 'npm i -g @watchlight/sdk' or build it with 'cd ts && npm run build'");
 }
-const { Watchlight, ReservedContextError, principals } = loadSdk();
+const { Watchlight, ReservedContextError, RESERVED_CONTEXT_MESSAGE, principals } = loadSdk();
 
 const here = dirname(fileURLToPath(import.meta.url));
 const auditDir = join(here, ".watchlight");
+const POLICY_FILE = join(here, "policy.suite.json");
 
 // Resources this example authorizes against. Nothing here is a real system:
 // the point is which identity the engine reads, not what the action does.
@@ -51,12 +56,19 @@ const TRACE = "trace/AX8821";
 const NOTES = "memory/traveller-notes";
 const ROUTE = "route/AMS-LIS";
 
+// Every action some policy in this example permits. Asserted at the end to have
+// been ALLOWED at least once, so deleting any single permit fails the run.
+const GRANTED_ACTIONS = [
+  "book", "cache", "cancel_trip", "check_in", "pick_seat", "read_itinerary",
+  "trace", "write_memory",
+];
+
 // ── one engine, one policy set, many named agents ────────────────────────────
 
 // Every audit record — from every named agent and every delegate — arrives
-// here, because a view shares the trail and the sink with the governor it came
-// from. That shared stream, told apart by `agent` and `actor_chain`, is what
-// makes the three cases comparable below.
+// here, because a renamed governor shares the trail and the sink with the one
+// it came from. That shared stream, told apart by `agent` and `actor_chain`, is
+// what makes the three cases comparable below.
 const records = [];
 
 const govern = new Watchlight({
@@ -64,17 +76,16 @@ const govern = new Watchlight({
   auditDir,
   auditSink: (record) => { records.push(record); },
 });
-govern.load(join(here, "policy.suite.json")); // {"policies": [...]} — the file the suite tests
+govern.load(POLICY_FILE); // {"policies": [...]} — the file the suite tests
 
 const POLICIES_AFTER_LOAD = govern.policyCount;
 
-// Naming agents costs nothing: `as` returns a VIEW of this governor — same
-// engine, same compiled policies, same trail, same sink — with a different name
-// stamped on the records and read by the policies as `context.actor`.
+// Naming agents costs nothing: `as` returns another Watchlight — the same
+// engine, the same compiled policies, the same audit trail and sink, the same
+// secrets — with a different name stamped on the records and read by the
+// policies as `context.actor`.
 const booker = govern.as("flight-booker");
 const memory = govern.as("memory-writer");
-
-const POLICIES_AFTER_NAMING = govern.policyCount;
 
 // ── assertions ───────────────────────────────────────────────────────────────
 
@@ -85,25 +96,32 @@ function check(condition, what) {
   if (!condition) failures.push(what);
 }
 
+/** The delegation chain a record was produced under. `actor_chain` is recorded
+ *  only under a delegation; outside one the chain is the single-element
+ *  `[agent]`. */
+function chainOf(record) {
+  return [...(record.actor_chain ?? [record.agent])];
+}
+
 /** The identity fields of an audit record, in one line: who acted, through
  *  whose delegation, and on whose behalf. */
 function identityOf(record) {
-  const chain = record.actor_chain;
-  const shown = chain ? `[${chain.join(" > ")}]` : "(none)";
-  return `agent=${(record.agent ?? "-").padEnd(14)} chain=${shown.padEnd(34)} principal=${record.principal ?? "-"}`;
+  const chain = `[${chainOf(record).join(" > ")}]`;
+  return `agent=${(record.agent ?? "-").padEnd(17)} chain=${chain.padEnd(34)} principal=${record.principal ?? "-"}`;
 }
 
 /** One governed decision, plus the audit record it wrote. */
-async function decide(gov, action, resource, { principal, context } = {}) {
+async function decide(gov, action, resource, { principal, context, agent } = {}) {
   const before = records.length;
-  const result = await gov.authorize({ action, principal, resource, context });
+  const result = await gov.authorize({ action, principal, resource, context, agent });
   const record = records.length > before ? records.at(-1) : {};
   console.log(`    ${action.padEnd(14)} -> ${result.decision.padEnd(6)} ${identityOf(record)}`);
   return { result, record };
 }
 
-/** Assert that a call the SDK must refuse throws, and writes nothing. */
-async function refused(what, thunk, expected) {
+/** Assert that a call the SDK must refuse throws the RIGHT error with the RIGHT
+ *  message, and writes nothing. */
+async function refused(what, thunk, expected, message) {
   const before = records.length;
   try {
     await thunk();
@@ -113,8 +131,48 @@ async function refused(what, thunk, expected) {
   } catch (error) {
     if (!(error instanceof expected)) throw error;
     console.log(`    ${what}\n      -> ${error.name}: ${error.message}`);
+    check(error.message.includes(message), `${what} — refused with the guard's own message`);
   }
   check(records.length === before, `${what} — refused before the engine, so no record was written`);
+}
+
+// ── one engine behind every name ─────────────────────────────────────────────
+
+/** Prove the names really are backed by one engine — not two engines holding
+ *  the same file, which is the anti-pattern this example exists to retire. */
+async function oneEngine() {
+  console.log("one engine, one policy set, many named agents");
+  console.log(`    policies loaded              ${POLICIES_AFTER_LOAD}`);
+  console.log("    named agents                 flight-booker, memory-writer (one engine, renamed)");
+  console.log(`    policies after naming them   ${govern.policyCount}`);
+  check(POLICIES_AFTER_LOAD === 7, "the policy set is the 7 policies in policy.suite.json");
+  check(govern.policyCount === POLICIES_AFTER_LOAD,
+    "naming agents did not reload or recompile a single policy");
+  check(booker.policyCount === memory.policyCount && memory.policyCount === govern.policyCount,
+    "every name reports the same policy count");
+
+  // Loading the same source again is a memo hit, not a second compile.
+  govern.load(POLICY_FILE);
+  check(govern.policyCount === POLICIES_AFTER_LOAD,
+    "loading the same policy source again added nothing — the memo is shared too");
+
+  // The claim that survives mutation: a policy added through ONE name is
+  // immediately in force for EVERY other, which is only true of a shared
+  // engine. Two governors each loading the same file would fail here.
+  console.log("\n    a policy added through one name is in force for all of them");
+  booker.allow(
+    'permit(principal is User, action == Action::"check_in", resource)'
+      + ' when { context.actor == "memory-writer" };',
+    "added-at-runtime-through-the-flight-booker-name"
+  );
+  check(govern.policyCount === booker.policyCount && booker.policyCount === memory.policyCount
+    && memory.policyCount === POLICIES_AFTER_LOAD + 1,
+    "every name sees the added policy in its count");
+  const { result: added } = await decide(memory, "check_in", TRIP, { principal: principals.user("db:4412") });
+  check(added.decision === "Allow",
+    "a policy added through flight-booker decided a call made through memory-writer "
+      + "— one engine, not two holding the same file");
+  return govern.policyCount;
 }
 
 // ── the three cases ──────────────────────────────────────────────────────────
@@ -162,6 +220,8 @@ async function threeCases() {
   check(sub.decision === "Allow", "case 3: the sub-agent may pick a seat for the person");
   check(subBook.decision === "Deny", "case 3: the sub-agent may not book");
   check(subRecord.agent === "seat-picker", "case 3: the leaf actor is the sub-agent");
+  check("actor_chain" in subRecord,
+    "case 3: the record carries an actor_chain — a delegated call always does");
   check(JSON.stringify(subRecord.actor_chain) === JSON.stringify(["flight-booker", "seat-picker"]),
     "case 3: the ordered chain is [flight-booker > seat-picker], root first");
   check(subRecord.principal === personRecord.principal,
@@ -170,6 +230,62 @@ async function threeCases() {
     "case 3: the governor carries the same chain the record does");
 
   return { picker, cases: { alone: aloneRecord, "for a person": personRecord, "sub-agent": subRecord } };
+}
+
+// ── where the actor comes from ───────────────────────────────────────────────
+
+/** The actor is the identity of the GOVERNOR YOU CALLED THROUGH. You choose it
+ *  by choosing the handle, not by passing a field — there is no request
+ *  parameter for it, which is exactly why a policy can rely on it.
+ *
+ *  The same call, made four ways. */
+async function whereTheActorComesFrom(picker) {
+  const traveller = principals.user("db:4412");
+  console.log("\nwhere the actor comes from — the same call (trace), made four ways");
+
+  const base = await decide(govern, "trace", TRACE, { principal: traveller });
+  const named = await decide(booker, "trace", TRACE, { principal: traveller });
+  // A per-call `agent` override is the same rename applied to one call — made
+  // here THROUGH flight-booker, to show a rename never inherits a chain.
+  const oneoff = await decide(booker, "trace", TRACE, { principal: traveller, agent: "itinerary-mailer" });
+  const delegated = await decide(picker, "trace", TRACE, { principal: traveller });
+
+  const rows = [
+    ["the governor as constructed", base],
+    ['.as("flight-booker")', named],
+    ['authorize(..., agent="itinerary-mailer")', oneoff],
+    ['delegate(scope, "seat-picker")', delegated],
+  ];
+  console.log(`\n    ${"called through".padEnd(42)} ${"actor".padEnd(18)} ${"chain".padEnd(32)} verdict`);
+  for (const [label, { result, record }] of rows) {
+    const chain = `[${chainOf(record).join(" > ")}]`;
+    console.log(`    ${label.padEnd(42)} ${(record.agent ?? "-").padEnd(18)} ${chain.padEnd(32)} ${result.decision}`);
+  }
+
+  const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  check(eq(chainOf(base.record), ["trip-platform"]) && base.record.agent === "trip-platform",
+    "the base governor acts under the name it was constructed with");
+  check(eq(chainOf(named.record), ["flight-booker"]),
+    "a renamed governor acts under its own name, in a one-element chain");
+  check(eq(chainOf(oneoff.record), ["itinerary-mailer"]),
+    "a rename REPLACES the chain — the override through flight-booker did not inherit it");
+  check(chainOf(named.record).length === 1 && chainOf(oneoff.record).length === 1,
+    "renaming always produces a fresh single-element chain");
+  check(eq(chainOf(delegated.record), ["flight-booker", "seat-picker"]),
+    "only delegate appends — parent first, then child");
+  check(eq([base.result.decision, named.result.decision, oneoff.result.decision, delegated.result.decision],
+    ["Deny", "Allow", "Deny", "Allow"]),
+    "the verdict follows the chain, and the chain follows the handle you called through");
+
+  // Merged, not trusted: the values the SDK derived, supplied verbatim by the
+  // caller, are accepted. A differing value raises — asserted further down.
+  console.log("\n    the derived values, supplied verbatim by the caller");
+  const { result: echoed } = await decide(picker, "trace", TRACE, {
+    principal: traveller,
+    context: { actor: "seat-picker", actor_chain: ["flight-booker", "seat-picker"] },
+  });
+  check(echoed.decision === "Allow",
+    "a context that agrees with the derived actor and chain is accepted");
 }
 
 // ── one policy per identity field ────────────────────────────────────────────
@@ -208,27 +324,28 @@ async function policiesPerField(picker) {
  *  extend one through the context, and cannot rename a delegate. */
 async function callerCannot(picker) {
   const traveller = principals.user("db:4412");
+  const RENAME = "a delegated governor cannot be renamed";
 
   console.log("\nsupplying the actor key through context");
   await refused('context={ actor: "memory-writer" } on a flight-booker call',
     () => booker.authorize({ action: "write_memory", resource: NOTES, principal: traveller,
       context: { actor: "memory-writer" } }),
-    ReservedContextError);
+    ReservedContextError, RESERVED_CONTEXT_MESSAGE);
 
   console.log("\nextending the chain through context");
   await refused("context={ actor_chain: [...] } claiming a delegation that did not happen",
     () => memory.authorize({ action: "trace", resource: TRACE, principal: traveller,
       context: { actor_chain: ["flight-booker", "memory-writer"] } }),
-    ReservedContextError);
+    ReservedContextError, RESERVED_CONTEXT_MESSAGE);
 
   console.log("\nrenaming a delegate");
-  await refused('picker.as("row-checker")', () => picker.as("row-checker"), TypeError);
+  await refused('picker.as("row-checker")', () => picker.as("row-checker"), TypeError, RENAME);
   await refused("the same rename through the per-call agent override",
     () => picker.authorize({ action: "trace", resource: TRACE, principal: traveller,
       agent: "row-checker" }),
-    TypeError);
+    TypeError, RENAME);
 
-  console.log("\n(an identical value is not a conflict — the guard refuses disagreement, not the key)");
+  console.log("\nboth halves of the rule: a value that DISAGREES raises, one that AGREES is accepted");
   const { result: same } =
     await decide(booker, "book", TRIP, { principal: traveller, context: { actor: "flight-booker" } });
   check(same.decision === "Allow", "a context.actor equal to the SDK's own value is accepted");
@@ -278,26 +395,33 @@ async function identitySources() {
     "each subject is namespaced by the source that established it");
 }
 
+// ── every permit is exercised ────────────────────────────────────────────────
+
+/** A deleted permit makes its action unreachable, so this fails if any of the
+ *  policies stops granting what it is here to grant. */
+function everyPermitExercised() {
+  const allowed = [...new Set(records
+    .filter((r) => r.decision === "Allow" && r.intent !== "attenuate")
+    .map((r) => r.intent))].sort();
+  console.log("\nactions this run reached an Allow on");
+  console.log(`    ${allowed.join(", ")}`);
+  check(JSON.stringify(allowed) === JSON.stringify(GRANTED_ACTIONS),
+    "every policy in the set granted something — deleting any permit fails here");
+}
+
 // ── main ─────────────────────────────────────────────────────────────────────
 
 async function main() {
-  console.log("one engine, one policy set, many named agents");
-  console.log(`    policies loaded              ${POLICIES_AFTER_LOAD}`);
-  console.log("    named agents                 flight-booker, memory-writer (views of one engine)");
-  console.log(`    policies after naming them   ${POLICIES_AFTER_NAMING}`);
-  check(POLICIES_AFTER_LOAD === 7, "the policy set is the 7 policies in policy.suite.json");
-  check(POLICIES_AFTER_NAMING === POLICIES_AFTER_LOAD,
-    "naming agents did not reload or recompile a single policy");
-  check(booker.policyCount === memory.policyCount && memory.policyCount === govern.policyCount,
-    "every view reports the same policy count — it is the same engine");
+  const policyCount = await oneEngine();
 
   const { picker, cases } = await threeCases();
-  check(govern.policyCount === POLICIES_AFTER_LOAD,
-    "delegating did not grow the policy set either");
+  check(govern.policyCount === policyCount, "delegating did not grow the policy set either");
 
+  await whereTheActorComesFrom(picker);
   await policiesPerField(picker);
   await callerCannot(picker);
   await identitySources();
+  everyPermitExercised();
 
   console.log("\nthe three cases, side by side in the one audit stream");
   for (const [label, record] of Object.entries(cases)) {

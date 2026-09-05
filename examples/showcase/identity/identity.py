@@ -5,18 +5,22 @@
     python examples/showcase/identity/identity.py
 
 Runs offline: no API key, no network, no identity provider. ONE governor and
-ONE policy set for the whole example; every named agent is a view of the same
-engine. The script prints, for each call, the verdict and the identity fields
+ONE policy set for the whole example; every named agent is another `Watchlight`
+backed by the same engine. The script prints, for each call, the verdict and the identity fields
 of the audit record it produced, and exits non-zero if any verdict or record
 shape changes.
 
 It makes the three cases of `docs/identity-model.md` concrete:
 
   1. an agent acting alone        principal = Agent::"flight-booker"
-  2. the same agent for a person  principal = User::"…", same actor
+  2. the same agent for a person  principal = User::"db:4412", same actor
   3. a sub-agent under a parent   principal unchanged, ordered actor chain
 
-then shows the four things a caller cannot do (supply the actor key, extend
+then answers the question that follows: where does the actor come from? It is
+the identity of the GOVERNOR YOU CALLED THROUGH — you choose it by choosing the
+handle, not by passing a field. The same call is made four ways to show it.
+
+It also shows the four things a caller cannot do (supply the actor key, extend
 the chain, rename a delegate, rename it through a per-call override), and the
 two identity sources — a verified token's subject claim and a local session
 lookup — producing the identical call.
@@ -32,10 +36,11 @@ import json
 import pathlib
 import sys
 
-from watchlight import ReservedContextError, Watchlight, principals
+from watchlight import RESERVED_CONTEXT_MESSAGE, ReservedContextError, Watchlight, principals
 
 HERE = pathlib.Path(__file__).resolve().parent
 AUDIT_DIR = HERE / ".watchlight"
+POLICY_FILE = HERE / "policy.suite.json"
 
 # Resources this example authorizes against. Nothing here is a real system:
 # the point is which identity the engine reads, not what the action does.
@@ -46,27 +51,33 @@ TRACE = "trace/AX8821"
 NOTES = "memory/traveller-notes"
 ROUTE = "route/AMS-LIS"
 
+# Every action some policy in this example permits. Asserted at the end to have
+# been ALLOWED at least once, so deleting any single permit fails the run.
+GRANTED_ACTIONS = {
+    "cancel_trip", "write_memory", "book", "cache", "read_itinerary",
+    "pick_seat", "trace", "check_in",
+}
+
 
 # ── one engine, one policy set, many named agents ────────────────────────────
 
 # Every audit record — from every named agent and every delegate — arrives
-# here, because a view shares the trail and the sink with the governor it came
-# from. That shared stream, told apart by `agent` and `actor_chain`, is what
+# here, because a renamed governor shares the trail and the sink with the one it
+# came from. That shared stream, told apart by `agent` and `actor_chain`, is what
 # makes the three cases comparable below.
 records: list[dict] = []
 
 govern = Watchlight(agent="trip-platform", audit_dir=AUDIT_DIR, audit_sink=records.append)
-govern.load(HERE / "policy.suite.json")  # {"policies": [...]} — the file the suite tests
+govern.load(POLICY_FILE)  # {"policies": [...]} — the file the suite tests
 
 POLICIES_AFTER_LOAD = govern.policy_count
 
-# Naming agents costs nothing: `as_` returns a VIEW of this governor — same
-# engine, same compiled policies, same trail, same sink — with a different name
-# stamped on the records and read by the policies as `context.actor`.
+# Naming agents costs nothing: `as_` returns another `Watchlight` — the same
+# engine, the same compiled policies, the same audit trail and sink, the same
+# secrets — with a different name stamped on the records and read by the
+# policies as `context.actor`.
 booker = govern.as_("flight-booker")
 memory = govern.as_("memory-writer")
-
-POLICIES_AFTER_NAMING = govern.policy_count
 
 
 # ── assertions ───────────────────────────────────────────────────────────────
@@ -80,29 +91,38 @@ def check(condition: bool, what: str) -> None:
         failures.append(what)
 
 
+def chain_of(record: dict) -> list[str]:
+    """The delegation chain a record was produced under. `actor_chain` is
+    recorded only under a delegation; outside one the chain is the
+    single-element `[agent]`."""
+    return list(record.get("actor_chain") or [record.get("agent")])
+
+
 def identity_of(record: dict) -> str:
     """The identity fields of an audit record, in one line: who acted, through
     whose delegation, and on whose behalf."""
-    chain = record.get("actor_chain")
+    chain = "[" + " > ".join(chain_of(record)) + "]"
     return (
-        f"agent={record.get('agent', '-'):<14} "
-        f"chain={'[' + ' > '.join(chain) + ']' if chain else '(none)':<34} "
+        f"agent={record.get('agent', '-'):<17} "
+        f"chain={chain:<34} "
         f"principal={record.get('principal', '-')}"
     )
 
 
 def decide(gov: Watchlight, action: str, resource: str, *, principal: str | None = None,
-           context: dict | None = None) -> tuple[dict, dict]:
+           context: dict | None = None, agent: str | None = None) -> tuple[dict, dict]:
     """One governed decision, plus the audit record it wrote."""
     before = len(records)
-    result = gov.authorize(action=action, principal=principal, resource=resource, context=context)
+    result = gov.authorize(action=action, principal=principal, resource=resource,
+                           context=context, agent=agent)
     record = records[-1] if len(records) > before else {}
     print(f"    {action:<14} -> {result['decision']:<6} {identity_of(record)}")
     return result, record
 
 
-def refused(what: str, thunk, expected: type) -> None:
-    """Assert that a call the SDK must refuse raises, and writes nothing."""
+def refused(what: str, thunk, expected: type, message: str) -> None:
+    """Assert that a call the SDK must refuse raises the RIGHT error with the
+    RIGHT message, and writes nothing."""
     before = len(records)
     try:
         thunk()
@@ -111,12 +131,52 @@ def refused(what: str, thunk, expected: type) -> None:
         return
     except expected as error:
         print(f"    {what}\n      -> {type(error).__name__}: {error}")
+        check(message in str(error), f"{what} — refused with the guard's own message")
     check(len(records) == before, f"{what} — refused before the engine, so no record was written")
+
+
+# ── one engine behind every name ─────────────────────────────────────────────
+
+def one_engine() -> int:
+    """Prove the names really are backed by one engine — not two engines holding
+    the same file, which is the anti-pattern this example exists to retire."""
+    print("one engine, one policy set, many named agents")
+    print(f"    policies loaded              {POLICIES_AFTER_LOAD}")
+    print("    named agents                 flight-booker, memory-writer (one engine, renamed)")
+    print(f"    policies after naming them   {govern.policy_count}")
+    check(POLICIES_AFTER_LOAD == 7, "the policy set is the 7 policies in policy.suite.json")
+    check(govern.policy_count == POLICIES_AFTER_LOAD,
+          "naming agents did not reload or recompile a single policy")
+    check(booker.policy_count == memory.policy_count == govern.policy_count,
+          "every name reports the same policy count")
+
+    # Loading the same source again is a memo hit, not a second compile.
+    govern.load(POLICY_FILE)
+    check(govern.policy_count == POLICIES_AFTER_LOAD,
+          "loading the same policy source again added nothing — the memo is shared too")
+
+    # The claim that survives mutation: a policy added through ONE name is
+    # immediately in force for EVERY other, which is only true of a shared
+    # engine. Two governors each loading the same file would fail here.
+    print("\n    a policy added through one name is in force for all of them")
+    booker.allow(
+        'permit(principal is User, action == Action::"check_in", resource)'
+        ' when { context.actor == "memory-writer" };',
+        "added-at-runtime-through-the-flight-booker-name",
+    )
+    check(govern.policy_count == booker.policy_count == memory.policy_count
+          == POLICIES_AFTER_LOAD + 1,
+          "every name sees the added policy in its count")
+    added, _ = decide(memory, "check_in", TRIP, principal=principals.user("db:4412"))
+    check(added["decision"] == "Allow",
+          "a policy added through flight-booker decided a call made through memory-writer "
+          "— one engine, not two holding the same file")
+    return govern.policy_count
 
 
 # ── the three cases ──────────────────────────────────────────────────────────
 
-def three_cases() -> dict[str, dict]:
+def three_cases() -> tuple[Watchlight, dict[str, dict]]:
     """An agent alone, the same agent for a person, a sub-agent under it."""
     traveller = principals.user("db:4412")
 
@@ -142,30 +202,86 @@ def three_cases() -> dict[str, dict]:
 
     check(alone["decision"] == "Allow", "case 1: the agent alone may warm the cache")
     check(denied_alone["decision"] == "Deny", "case 1: the agent alone may not book")
-    check(alone_record["principal"] == 'Agent::"flight-booker"',
+    check(alone_record.get("principal") == 'Agent::"flight-booker"',
           'case 1: the subject is the typed agent reference Agent::"flight-booker"')
     check("actor_chain" not in alone_record,
           "case 1: no actor_chain on the record — the call is outside any delegation")
 
     check(for_person["decision"] == "Allow", "case 2: the same agent may book for a person")
-    check(person_record["principal"] == 'User::"db:4412"',
+    check(person_record.get("principal") == 'User::"db:4412"',
           'case 2: the subject is the person, User::"db:4412"')
-    check(person_record["agent"] == alone_record["agent"] == "flight-booker",
+    check(person_record.get("agent") == alone_record.get("agent") == "flight-booker",
           "case 2: the actor is unchanged — one runtime, two subjects")
     check("actor_chain" not in person_record, "case 2: still no actor_chain")
 
     check(sub["decision"] == "Allow", "case 3: the sub-agent may pick a seat for the person")
     check(sub_book["decision"] == "Deny", "case 3: the sub-agent may not book")
-    check(sub_record["agent"] == "seat-picker", "case 3: the leaf actor is the sub-agent")
-    check(sub_record["actor_chain"] == ["flight-booker", "seat-picker"],
+    check(sub_record.get("agent") == "seat-picker", "case 3: the leaf actor is the sub-agent")
+    check("actor_chain" in sub_record,
+          "case 3: the record carries an actor_chain — a delegated call always does")
+    check(sub_record.get("actor_chain") == ["flight-booker", "seat-picker"],
           "case 3: the ordered chain is [flight-booker > seat-picker], root first")
-    check(sub_record["principal"] == person_record["principal"],
+    check(sub_record.get("principal") == person_record.get("principal"),
           "case 3: the subject is unchanged — delegation adds an actor, not a subject")
     check(picker.actor_chain == ("flight-booker", "seat-picker"),
           "case 3: the governor carries the same chain the record does")
 
-    return {"alone": alone_record, "for a person": person_record, "sub-agent": sub_record,
-            "picker": picker}
+    return picker, {"alone": alone_record, "for a person": person_record, "sub-agent": sub_record}
+
+
+# ── where the actor comes from ───────────────────────────────────────────────
+
+def where_the_actor_comes_from(picker: Watchlight) -> None:
+    """The actor is the identity of the GOVERNOR YOU CALLED THROUGH. You choose
+    it by choosing the handle, not by passing a field — there is no request
+    parameter for it, which is exactly why a policy can rely on it.
+
+    The same call, made four ways.
+    """
+    traveller = principals.user("db:4412")
+    print("\nwhere the actor comes from — the same call (trace), made four ways")
+
+    base, base_record = decide(govern, "trace", TRACE, principal=traveller)
+    named, named_record = decide(booker, "trace", TRACE, principal=traveller)
+    # A per-call `agent` override is the same rename applied to one call — made
+    # here THROUGH flight-booker, to show a rename never inherits a chain.
+    oneoff, oneoff_record = decide(booker, "trace", TRACE, principal=traveller,
+                                   agent="itinerary-mailer")
+    delegated, delegated_record = decide(picker, "trace", TRACE, principal=traveller)
+
+    rows = [
+        ("the governor as constructed", base_record, base),
+        ('.as_("flight-booker")', named_record, named),
+        ('authorize(..., agent="itinerary-mailer")', oneoff_record, oneoff),
+        ('delegate(scope, "seat-picker")', delegated_record, delegated),
+    ]
+    print(f"\n    {'called through':<42} {'actor':<18} {'chain':<32} verdict")
+    for label, record, result in rows:
+        chain = "[" + " > ".join(chain_of(record)) + "]"
+        print(f"    {label:<42} {record.get('agent', '-'):<18} {chain:<32} {result['decision']}")
+
+    check(chain_of(base_record) == ["trip-platform"] and base_record.get("agent") == "trip-platform",
+          "the base governor acts under the name it was constructed with")
+    check(chain_of(named_record) == ["flight-booker"],
+          "a renamed governor acts under its own name, in a one-element chain")
+    check(chain_of(oneoff_record) == ["itinerary-mailer"],
+          "a rename REPLACES the chain — the override through flight-booker did not inherit it")
+    check(len(chain_of(named_record)) == len(chain_of(oneoff_record)) == 1,
+          "renaming always produces a fresh single-element chain")
+    check(chain_of(delegated_record) == ["flight-booker", "seat-picker"],
+          "only delegate appends — parent first, then child")
+    check([base["decision"], named["decision"], oneoff["decision"], delegated["decision"]]
+          == ["Deny", "Allow", "Deny", "Allow"],
+          "the verdict follows the chain, and the chain follows the handle you called through")
+
+    # Merged, not trusted: the values the SDK derived, supplied verbatim by the
+    # caller, are accepted. A differing value raises — asserted further down.
+    print("\n    the derived values, supplied verbatim by the caller")
+    echoed, _ = decide(picker, "trace", TRACE, principal=traveller,
+                       context={"actor": "seat-picker",
+                                "actor_chain": ["flight-booker", "seat-picker"]})
+    check(echoed["decision"] == "Allow",
+          "a context that agrees with the derived actor and chain is accepted")
 
 
 # ── one policy per identity field ────────────────────────────────────────────
@@ -204,27 +320,28 @@ def caller_cannot(picker: Watchlight) -> None:
     """The actor keys are the SDK's. A caller can neither invent a delegation
     nor extend one through the context, and cannot rename a delegate."""
     traveller = principals.user("db:4412")
+    RENAME = "a delegated governor cannot be renamed"
 
     print("\nsupplying the actor key through context")
     refused("context={'actor': 'memory-writer'} on a flight-booker call",
             lambda: booker.authorize(action="write_memory", resource=NOTES,
                                      principal=traveller, context={"actor": "memory-writer"}),
-            ReservedContextError)
+            ReservedContextError, RESERVED_CONTEXT_MESSAGE)
 
     print("\nextending the chain through context")
     refused("context={'actor_chain': [...]} claiming a delegation that did not happen",
             lambda: memory.authorize(action="trace", resource=TRACE, principal=traveller,
                                      context={"actor_chain": ["flight-booker", "memory-writer"]}),
-            ReservedContextError)
+            ReservedContextError, RESERVED_CONTEXT_MESSAGE)
 
     print("\nrenaming a delegate")
-    refused("picker.as_('row-checker')", lambda: picker.as_("row-checker"), TypeError)
+    refused("picker.as_('row-checker')", lambda: picker.as_("row-checker"), TypeError, RENAME)
     refused("the same rename through the per-call agent override",
             lambda: picker.authorize(action="trace", resource=TRACE, principal=traveller,
                                      agent="row-checker"),
-            TypeError)
+            TypeError, RENAME)
 
-    print("\n(an identical value is not a conflict — the guard refuses disagreement, not the key)")
+    print("\nboth halves of the rule: a value that DISAGREES raises, one that AGREES is accepted")
     same, _ = decide(booker, "book", TRIP, principal=traveller, context={"actor": "flight-booker"})
     check(same["decision"] == "Allow", "a context.actor equal to the SDK's own value is accepted")
 
@@ -266,37 +383,43 @@ def identity_sources() -> None:
 
     check(from_token["decision"] == from_session["decision"] == "Allow",
           "both subjects reach the same Allow")
+
     def shape(record: dict) -> dict:
         return {k: v for k, v in record.items() if k not in ("ts", "decision_id", "principal")}
 
     check(shape(token_record) == shape(session_record),
           "the two records differ in the subject id and nothing else")
-    check(token_record["principal"] == 'User::"sso:8f3c2b7e"'
-          and session_record["principal"] == 'User::"db:4412"',
+    check(token_record.get("principal") == 'User::"sso:8f3c2b7e"'
+          and session_record.get("principal") == 'User::"db:4412"',
           "each subject is namespaced by the source that established it")
+
+
+# ── every permit is exercised ────────────────────────────────────────────────
+
+def every_permit_exercised() -> None:
+    """A deleted permit makes its action unreachable, so this fails if any of
+    the policies stops granting what it is here to grant."""
+    allowed = {r.get("intent") for r in records
+               if r.get("decision") == "Allow" and r.get("intent") != "attenuate"}
+    print("\nactions this run reached an Allow on")
+    print(f"    {', '.join(sorted(allowed))}")
+    check(allowed == GRANTED_ACTIONS,
+          "every policy in the set granted something — deleting any permit fails here")
 
 
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def main() -> int:
-    print("one engine, one policy set, many named agents")
-    print(f"    policies loaded              {POLICIES_AFTER_LOAD}")
-    print("    named agents                 flight-booker, memory-writer (views of one engine)")
-    print(f"    policies after naming them   {POLICIES_AFTER_NAMING}")
-    check(POLICIES_AFTER_LOAD == 7, "the policy set is the 7 policies in policy.suite.json")
-    check(POLICIES_AFTER_NAMING == POLICIES_AFTER_LOAD,
-          "naming agents did not reload or recompile a single policy")
-    check(booker.policy_count == memory.policy_count == govern.policy_count,
-          "every view reports the same policy count — it is the same engine")
+    policy_count = one_engine()
 
-    cases = three_cases()
-    picker = cases.pop("picker")
-    check(govern.policy_count == POLICIES_AFTER_LOAD,
-          "delegating did not grow the policy set either")
+    picker, cases = three_cases()
+    check(govern.policy_count == policy_count, "delegating did not grow the policy set either")
 
+    where_the_actor_comes_from(picker)
     policies_per_field(picker)
     caller_cannot(picker)
     identity_sources()
+    every_permit_exercised()
 
     print("\nthe three cases, side by side in the one audit stream")
     for label, record in cases.items():

@@ -14,6 +14,8 @@ While any example runs, open a second terminal and watch every decision live:
 watchlight dev                  # → http://127.0.0.1:7000
 ```
 
+Unsure what a word means? → **[Glossary](../docs/glossary.md)**.
+
 ## Start here
 
 | Example | What it shows | Install |
@@ -32,7 +34,7 @@ their policy and golden tests in one `policy.suite.json`.
 | Example | What it shows | Run |
 |---|---|---|
 | [`showcase/denied-before-execute/`](showcase/denied-before-execute/README.md) | **Denied before it executed** — a governed transfer against a stub bank with a call counter; a `forbid` above a threshold refuses the call and the counter is asserted `0`; a small transfer runs exactly once. Prints verdict, decision id and the audit line. | `python examples/showcase/denied-before-execute/agent.py` |
-| [`showcase/identity/`](showcase/identity/README.md) | **The identity model, running** — one engine and one policy set; the same agent acting alone, acting for a person, and a sub-agent under it through `delegate()`, printed side by side in one audit stream. Policies keyed on the subject, on `context.actor` and on `context.actor_chain`; four caller refusals asserted; a token claim and a local session lookup producing the identical call. | `python examples/showcase/identity/identity.py` |
+| [`showcase/identity/`](showcase/identity/README.md) | **The identity model, running** — one engine and one policy set; the same agent acting alone, acting for a person, and a sub-agent under it through `delegate()`, printed side by side in one audit stream, plus the same call made four ways to show where the actor comes from. Policies keyed on the subject, on `context.actor` and on `context.actor_chain`; four caller refusals asserted; a token claim and a local session lookup producing the identical call. | `python examples/showcase/identity/identity.py` |
 | [`showcase/human-in-the-loop/`](showcase/human-in-the-loop/README.md) | **Human in the loop** — `NeedsApproval` holds the call and writes a pending request; a separate `approve.py` signs a grant; `resume` runs the action once with an `approved: true` record joined to the pending one. Grant replay and token replay are refused. | `python agent.py request` → `python approve.py` → `python agent.py resume` |
 | [`showcase/policy-tests-ci/`](showcase/policy-tests-ci/README.md) | **Policy tests as a CI gate** — a policy set, an 11-fixture suite (Allow / Deny / NeedsApproval / approved), a GitHub Actions workflow template running `watchlight policy test` in the TypeScript and Python CLIs, and a deliberately widened policy that turns the run red. | `watchlight` or `@watchlight/sdk` |
 | [`showcase/audit-forensics/`](showcase/audit-forensics/README.md) | **Audit forensics** — generate a trail with every record kind (decisions incl. an approved one, sanitizations, egress, attenuations, screenings), then join on `decision_id`, roll up per principal, and list attenuation chains with `forensics.py` or `jq`. Documents every record kind's exact field names. | `watchlight` (+ `jq` for the recipes) |

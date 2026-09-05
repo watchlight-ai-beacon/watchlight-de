@@ -149,7 +149,7 @@ A governed call answers these questions, and they are separate inputs:
 
 | Question | Where it goes | Example |
 |---|---|---|
-| On whose behalf does this run? | `principal` — the subject | `User::"alice"` |
+| On whose behalf does this run? | `principal` — the subject | `User::"db:4412"` |
 | Which runtime is acting? | the reserved `actor` context key, set by the SDK | `context.actor == "flight-booker"` |
 | Through whose delegation? | the reserved `actor_chain` context key | `context.actor_chain.contains("flight-booker")` |
 | Under what narrowed authority? | the attenuation scope | `govern.scope(tools=[...])` |
@@ -158,7 +158,7 @@ A governed call answers these questions, and they are separate inputs:
 from watchlight import govern, principals
 
 # the agent acting for a person
-govern.authorize(action="book", principal=principals.user("alice"))
+govern.authorize(action="book", principal=principals.user("db:4412"))
 # the agent acting on its own behalf — an omitted principal is Agent::"<name>"
 govern.authorize(action="cache")
 ```
@@ -175,18 +175,19 @@ SDK sets `context.actor` on every call from the governor's agent name, and
 refuses a caller-supplied value that disagrees, so a policy can trust it.
 
 **One engine per policy set, many named agents.** Construct once (with the sink
-and the secrets), load the policies once, then name each agent with a view: it
-shares the engine, the compiled policies and their load memo, the audit trail,
-the sink and the secrets, and only changes the stamped name. Construct a second
-governor for a genuinely different policy set — not to give an agent a name.
+and the secrets), load the policies once, then name each agent with `as`: it
+returns another `Watchlight` with a different name, backed by the same engine —
+the same compiled policies and their load memo, the same audit trail, sink and
+secrets, and only the stamped name differs. Construct a second governor for a
+genuinely different policy set — not to give an agent a name.
 
 ```python
 billing = govern.as_("billing-agent")     # no second engine, no second policy load
 research = govern.as_("research-agent")
 ```
 
-Views share the trail, so every named agent's records land in one destination,
-told apart by the `agent` field — which is what makes a single audit stream
+Renamed governors share the trail, so every named agent's records land in one
+destination, told apart by the `agent` field — which is what makes a single audit stream
 readable. Separate governors are how you get a separate trail per agent.
 
 A sub-agent is a *delegation*, not a rename: `delegate` narrows a scope for it
@@ -196,7 +197,7 @@ every record name both the sub-agent and whose delegation it acts under.
 ```python
 root = govern.scope(tools=["search", "book"])
 picker = govern.delegate(root, "seat-picker", tools=["search"])
-picker.authorize(action="pick_seat", principal=principals.user("alice"))
+picker.authorize(action="pick_seat", principal=principals.user("db:4412"))
 # records agent "seat-picker", actor_chain ["flight-booker", "seat-picker"]
 ```
 
@@ -209,6 +210,10 @@ an id that never moves over an email or a username.
 **→ Full reference: [The identity model](https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/docs/identity-model.md)** — the
 one-engine shape, the three cases with exact values, worked policies, where the
 values come from, and the 0.8.0 migration note.
+
+**→ [Glossary](https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/docs/glossary.md)** — governor, subject,
+actor and chain, then every other term this documentation uses, with the
+easy-to-confuse pairs contrasted side by side.
 
 ---
 

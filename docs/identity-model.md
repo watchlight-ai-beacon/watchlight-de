@@ -1,12 +1,13 @@
 # The identity model
 
-What to pass, what gets recorded, and what a policy can name.
+What to pass, what gets recorded, and what a policy can name. Every term used
+here is defined in the [glossary](glossary.md).
 
 ## The questions a governed call answers
 
 | Question | Where it goes | Example value |
 |---|---|---|
-| On whose behalf does this run? | `principal` — the **subject** | `User::"alice"` |
+| On whose behalf does this run? | `principal` — the **subject** | `User::"db:4412"` |
 | Which runtime is acting? | the reserved **actor** context key | `context.actor == "flight-booker"` |
 | Through whose delegation? | the reserved **actor chain** context key | `context.actor_chain.contains("flight-booker")` |
 | Under what narrowed authority? | the attenuation **scope** | `govern.scope(tools=[...])` → `delegate(...)` |
@@ -15,6 +16,128 @@ The subject and the actor are independent inputs. An agent doing something for a
 person has both; an agent doing something for itself has one identity in two
 roles. The scope is orthogonal to both — it bounds what the acting runtime may
 ask for at all (see [sub-agent confinement](../examples/patterns/subagent-confinement.md)).
+
+### Where the actor comes from
+
+The actor is the identity of the **governor you called through** — you choose it
+by choosing the handle, not by passing a field:
+
+| Called through | `context.actor` | `context.actor_chain` |
+|---|---|---|
+| the governor as constructed | its constructed name | `[name]` |
+| `as("flight-booker")` / `as_(…)` | `flight-booker` | `[flight-booker]` |
+| a per-call `agent` override | that name | `[that name]` |
+| `delegate(scope, "seat-picker")` | `seat-picker` | `[flight-booker, seat-picker]` |
+
+```
+  Watchlight(agent="trip-platform")   <- one engine, one policy set
+    |
+    |-- (called directly) --->   actor  trip-platform
+    |                            chain  [trip-platform]
+    |
+    |-- .as("flight-booker") ->  actor  flight-booker
+    |      |                     chain  [flight-booker]
+    |      |
+    |      |-- .authorize(agent="itinerary-mailer")
+    |      |     `--------->     actor  itinerary-mailer
+    |      |                     chain  [itinerary-mailer]
+    |      |
+    |      `-- .delegate(scope, "seat-picker")
+    |            `--------->     actor  seat-picker
+    |                            chain  [flight-booker > seat-picker]
+    |
+    `-- .as("memory-writer") ->  actor  memory-writer
+                                 chain  [memory-writer]
+
+  the request  --X-->  actor / actor_chain
+      no field of the call reaches either key: a differing value
+      raises, an identical one is accepted
+```
+
+There is no request field to set, which is what lets a policy trust the value.
+Renaming — with `as` or with the per-call override — always produces a fresh
+single-element chain; only `delegate` appends.
+
+### The whole flow
+
+A person, the agent acting for them, and a sub-agent it delegated to:
+
+```
+  a traveller signs in         the subject does not change
+        |                      on the way down
+        v
+  User::"db:4412"
+        |
+        v
+  +- flight-booker ----------------------------------------------+
+  | actor  flight-booker    chain  [flight-booker]               |
+  |                                                              |
+  | read_itinerary itinerary/AX8821       ALLOW                  |
+  | book           trip/AX8821            ALLOW                  |
+  | write_memory   memory/traveller-notes DENY   (other runtime) |
+  |                                                              |
+  | delegates seat selection --------------+                     |
+  +----------------------------------------|---------------------+
+                                           v
+  +- seat-picker ------------------------------------------------+
+  | actor  seat-picker  chain  [flight-booker > seat-picker]     |
+  | subject still User::"db:4412"                                |
+  |                                                              |
+  | pick_seat      seat/AX8821            ALLOW                  |
+  | trace          trace/AX8821           ALLOW                  |
+  | book           trip/AX8821            DENY   (narrowed)      |
+  +--------------------------------------------------------------+
+```
+
+- The **subject** answers on whose behalf, and it does not change as work is
+  delegated — the traveller is still the subject when the sub-agent acts.
+- The **actor** answers which runtime made this particular call, and the
+  **chain** shows how it got the authority.
+- A policy can key on any of the three, and the narrowing means a delegate can
+  only ever do less than its parent.
+
+```python
+from watchlight import Watchlight, principals
+
+govern = Watchlight(agent="trip-platform")
+govern.load("policy.suite.json")
+booker = govern.as_("flight-booker")
+traveller = principals.user("db:4412")      # the subject your application established
+
+booker.authorize(action="read_itinerary", resource="itinerary/AX8821", principal=traveller)
+booker.authorize(action="book", resource="trip/AX8821", principal=traveller)
+booker.authorize(action="write_memory", resource="memory/traveller-notes", principal=traveller)
+
+root = booker.scope(tools=["search", "book", "pick_seat", "trace"])
+picker = booker.delegate(root, "seat-picker", tools=["search", "pick_seat", "trace"])
+
+picker.authorize(action="pick_seat", resource="seat/AX8821", principal=traveller)
+picker.authorize(action="trace", resource="trace/AX8821", principal=traveller)
+picker.authorize(action="book", resource="trip/AX8821", principal=traveller)
+```
+
+```ts
+import { Watchlight, principals } from "@watchlight/sdk";
+
+const govern = new Watchlight({ agent: "trip-platform" });
+govern.load("policy.suite.json");
+const booker = govern.as("flight-booker");
+const traveller = principals.user("db:4412");
+
+await booker.authorize({ action: "read_itinerary", resource: "itinerary/AX8821", principal: traveller });
+await booker.authorize({ action: "book", resource: "trip/AX8821", principal: traveller });
+await booker.authorize({ action: "write_memory", resource: "memory/traveller-notes", principal: traveller });
+
+const root = await booker.scope({ tools: ["search", "book", "pick_seat", "trace"] });
+const picker = booker.delegate(root, "seat-picker", { tools: ["search", "pick_seat", "trace"] });
+
+await picker.authorize({ action: "pick_seat", resource: "seat/AX8821", principal: traveller });
+await picker.authorize({ action: "trace", resource: "trace/AX8821", principal: traveller });
+await picker.authorize({ action: "book", resource: "trip/AX8821", principal: traveller });
+```
+
+Both are the calls [`examples/showcase/identity/`](../examples/showcase/identity/README.md)
+makes, and the verdicts above are the ones it prints.
 
 The SDK sets both actor keys on **every** call — the leaf from the governor's
 agent name, the chain from the scope the call was made through. A
@@ -44,10 +167,11 @@ to a string never matches and the call silently denies. `actor` and
 
 ## One engine, many named agents
 
-Construct **one governor per policy set** and give every agent a name with a
-view. A view shares the engine, the compiled policies and their load memo, the
-audit trail, the sink and the secrets; only the name stamped on records and
-decisions differs. Naming six agents costs one engine and one policy load.
+Construct **one governor per policy set** and give every agent a name with
+`as`. It returns another `Watchlight` with a different name, backed by the same
+engine: the same compiled policies and their load memo, the same audit trail and
+sink, and the same secrets; only the stamped name differs. Naming six agents
+costs one engine and one policy load.
 
 ```python
 from watchlight import Watchlight, configure_default, principals
@@ -97,8 +221,8 @@ older examples.
 **A second engine is for a different policy set** — a strict set for one tenant
 and a permissive one for a sandbox, say. Naming is not a reason.
 
-One consequence, stated plainly: views share the trail and the sink, so records
-from every named agent land in the same destination, told apart by the `agent`
+One consequence, stated plainly: renamed governors share the trail and the sink,
+so records from every named agent land in the same destination, told apart by the `agent`
 field (and `actor_chain` under a delegation). That is what makes a single audit
 stream readable. If you need a *separate* trail per agent, that — not naming —
 is the reason to construct separate governors.
@@ -151,37 +275,40 @@ All three run, print their verdicts and their audit records, and assert them in
 | Case | `principal` | `context.actor` | How you make it |
 |---|---|---|---|
 | Agent acting alone | `Agent::"flight-booker"` | `flight-booker` | omit `principal` |
-| Agent acting for a user | `User::"alice"` | `flight-booker` | pass `principal=principals.user("alice")` |
-| Sub-agent under a parent | `User::"alice"` | leaf `seat-picker`, chain `["flight-booker", "seat-picker"]` | `govern.delegate(scope, "seat-picker")` |
+| Agent acting for a user | `User::"db:4412"` | `flight-booker` | pass `principal=principals.user("db:4412")` |
+| Sub-agent under a parent | `User::"db:4412"` | leaf `seat-picker`, chain `["flight-booker", "seat-picker"]` | `govern.delegate(scope, "seat-picker")` |
 
 ```python
 from watchlight import govern, principals
 
 govern.authorize(action="cache")                                     # agent alone
-govern.authorize(action="book", principal=principals.user("alice"))  # for a user
+govern.authorize(action="book", principal=principals.user("db:4412"))  # for a user
 
 seat_picker = govern.as_("seat-picker")     # same engine, same policies, same trail
-seat_picker.authorize(action="pick_seat", principal=principals.user("alice"))
+seat_picker.authorize(action="pick_seat", principal=principals.user("db:4412"))
 ```
 
 ```ts
 import { govern, principals } from "@watchlight/sdk";
 
 await govern.authorize({ action: "cache" });                                    // agent alone
-await govern.authorize({ action: "book", principal: principals.user("alice") }); // for a user
+await govern.authorize({ action: "book", principal: principals.user("db:4412") }); // for a user
 
 const seatPicker = govern.as("seat-picker");   // same engine, same policies, same trail
-await seatPicker.authorize({ action: "pick_seat", principal: principals.user("alice") });
+await seatPicker.authorize({ action: "pick_seat", principal: principals.user("db:4412") });
 ```
 
-`as(name)` / `as_(name)` is a view: it shares the engine, the compiled policies,
-the audit trail, the sink and the token secret, and only stamps a different
-name. Six named agents cost one engine and one policy load. A single call can
-also carry `agent="…"` on `authorize`, `sanitize`, `screen` and `tool`, which is
-the same rename applied to one call. A rename is not a delegation — a view acts
-alone, under its own name — and neither form is allowed on a delegate: its name
-is what the delegation granted, and renaming it would drop the chain. Spawn a
-sub-agent with `delegate` instead.
+`as(name)` / `as_(name)` returns another `Watchlight` backed by the same engine:
+the same compiled policies, the same audit trail, the same sink and the same
+token secret, with a different stamped name. Six named agents cost one engine
+and one policy load. A single call can also carry `agent="…"` on `authorize`,
+`sanitize`, `screen` and `tool`, which is the same rename applied to one call.
+
+**Renaming versus delegating.** A rename acts alone under its own name and
+starts a fresh single-element chain; a delegation narrows a scope and appends to
+the chain. Neither form of rename is allowed on a delegate: its name is what the
+delegation granted, and renaming it would drop the chain. Spawn a sub-agent with
+`delegate` instead.
 
 ### Delegating to a sub-agent
 
@@ -193,7 +320,7 @@ both the confined authority and the delegated identity.
 root = govern.scope(tools=["search", "book"])                  # chain ("flight-booker",)
 picker = govern.delegate(root, "seat-picker", tools=["search"])  # chain (…, "seat-picker")
 
-picker.authorize(action="pick_seat", principal=principals.user("alice"))
+picker.authorize(action="pick_seat", principal=principals.user("db:4412"))
 govern.delegate(picker, "row-checker")                          # one level deeper
 ```
 
@@ -201,12 +328,12 @@ govern.delegate(picker, "row-checker")                          # one level deep
 const root = await govern.scope({ tools: ["search", "book"] });
 const picker = govern.delegate(root, "seat-picker", { tools: ["search"] });
 
-await picker.authorize({ action: "pick_seat", principal: principals.user("alice") });
+await picker.authorize({ action: "pick_seat", principal: principals.user("db:4412") });
 govern.delegate(picker, "row-checker");                         // one level deeper
 ```
 
 A delegate shares the engine, the policies, the trail and the sink like any
-view; `picker.delegated_scope` / `picker.delegatedScope` is the narrowed scope it
+renamed governor; `picker.delegated_scope` / `picker.delegatedScope` is the narrowed scope it
 acts under. It cannot widen what its parent held (`AttenuationDenied`), and each
 level is one attenuation level, so the chain is at most **`MAX_ACTOR_CHAIN` = 6**
 entries — the root agent plus the `DE_MAX_DEPTH` (5) attenuation levels; past
@@ -223,8 +350,8 @@ Each case is distinct in the trail — `principal` and `agent` on the same line:
 
 ```json
 {"agent":"flight-booker","principal":"Agent::\"flight-booker\"","intent":"cache","decision":"Allow"}
-{"agent":"flight-booker","principal":"User::\"alice\"","intent":"book","decision":"Allow"}
-{"agent":"seat-picker","actor_chain":["flight-booker","seat-picker"],"principal":"User::\"alice\"","intent":"pick_seat","decision":"Allow"}
+{"agent":"flight-booker","principal":"User::\"db:4412\"","intent":"book","decision":"Allow"}
+{"agent":"seat-picker","actor_chain":["flight-booker","seat-picker"],"principal":"User::\"db:4412\"","intent":"pick_seat","decision":"Allow"}
 ```
 
 `agent` is the leaf actor on every record. `actor_chain` appears on records
@@ -236,7 +363,7 @@ and is omitted outside any delegation, where the chain is just `[agent]`.
 **A user's own authority — the agent is irrelevant.**
 
 ```cedar
-permit(principal == User::"alice", action == Action::"book", resource);
+permit(principal == User::"db:4412", action == Action::"book", resource);
 ```
 
 **A tool restricted to one runtime — whoever it acts for.**
