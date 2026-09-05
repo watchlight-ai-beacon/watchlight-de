@@ -1751,11 +1751,12 @@ class Watchlight:
           approval — indistinguishably from a genuine hold, since the reason is
           uniform. Configure ``approval_secret`` to mint in one process and
           consume in another.
-        * **Single use.** "Used once" is recorded in the ``approval_store``,
-          which defaults to a dict in THIS process. Behind two replicas the same
-          token can therefore be consumed once on EACH — single-use is
-          per-replica, not per token, and that degrades silently under a routine
-          scaling change. Configure ``approval_store`` with a store every replica
+        * **Single use.** "Used once" is reserved in the ``approval_store``,
+          which defaults to a dict in THIS process. It is atomic there — of N
+          concurrent consumes of one token exactly one is approved — but behind
+          two replicas the same token can be consumed once on EACH: single-use
+          is per-replica, not per token, and that degrades silently under a
+          routine scaling change. Configure ``approval_store`` with a store every replica
           shares and single-use holds across all of them.
 
         Both live on the state a view made by :meth:`as_` shares, so a token
