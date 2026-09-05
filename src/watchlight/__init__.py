@@ -31,6 +31,7 @@ from __future__ import annotations
 import datetime
 import functools
 import hashlib
+import hmac
 import inspect
 import json
 import os
@@ -51,6 +52,7 @@ from ._approval import (
     ApprovalError,
     ApprovalStore,
     ApprovalTokens,
+    normalize_approval_secrets,
     resolve_approval_keys,
     split_env_secrets,
 )
@@ -93,6 +95,9 @@ from .scope_token import (
 __all__ = [
     "Watchlight",
     "configure_default",
+    "can_configure_default",
+    "AUDIT_DIR_ENV",
+    "AUDIT_FILE_ENV",
     "principals",
     "ACTOR_CONTEXT_KEY",
     "ACTOR_CHAIN_CONTEXT_KEY",
@@ -317,6 +322,7 @@ class _GovernorState:
         "sources",
         "strict_principal",
         "audit_options",
+        "audit_env_applied",
         "is_default",
         "wrote_record",
         "warned_default_sink",
@@ -347,9 +353,117 @@ class _GovernorState:
         #: The audit options in force, so ``_configure`` can apply one of them
         #: without dropping the others.
         self.audit_options: dict[str, Any] = {}
+        #: Whether the environment layer (:data:`AUDIT_DIR_ENV` /
+        #: :data:`AUDIT_FILE_ENV`) has already been folded in — it is read once,
+        #: lazily, and only for the default governor.
+        self.audit_env_applied = False
         self.is_default = False
         self.wrote_record = False
         self.warned_default_sink = False
+
+
+#: Directory the DEFAULT governor writes ``audit.jsonl`` into, when nothing named
+#: one in code. ``watchlight dev`` reads the same variable, so the dashboard
+#: follows the trail.
+AUDIT_DIR_ENV = "WATCHLIGHT_AUDIT_DIR"
+#: Whether the DEFAULT governor writes the local ``audit.jsonl`` at all, when
+#: nothing named it in code. Set it to ``0`` and a process — a test run, most
+#: usefully — writes no file into the working directory an application is also
+#: using, with no code change and no ``try``/``except``.
+AUDIT_FILE_ENV = "WATCHLIGHT_AUDIT_FILE"
+
+# Both are read LAZILY, at the default governor's first use, so the variable
+# works whether it is set before or after `import watchlight`. Precedence, the
+# same order every other option in this SDK resolves in:
+#
+#     an explicit configure_default(...) option  >  the environment  >  the default
+#
+# A governor you construct yourself already names its own `audit_dir` /
+# `audit_file` at the call site, so neither variable touches it.
+
+_ENV_TRUE = frozenset({"1", "true", "yes", "on"})
+_ENV_FALSE = frozenset({"0", "false", "no", "off"})
+_warned_env_flags: set[str] = set()
+
+
+def _env_flag(name: str) -> Optional[bool]:
+    """A boolean environment variable: ``True``/``False``, or ``None`` when it is
+    unset, empty, or spelled in a way this SDK does not recognize.
+
+    An unrecognized value is reported once and then IGNORED rather than guessed
+    at. The conservative reading of an audit switch is "keep writing the trail":
+    a typo must never quietly turn a trail off, and must never take an
+    application down either."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    value = raw.strip().lower()
+    if not value:
+        return None
+    if value in _ENV_TRUE:
+        return True
+    if value in _ENV_FALSE:
+        return False
+    if name not in _warned_env_flags:
+        _warned_env_flags.add(name)
+        print(
+            f"watchlight: {name} is set to a value this SDK does not recognize, so it is "
+            "ignored and the default applies — write one of 1/true/yes/on or 0/false/no/off.",
+            file=sys.stderr,
+        )
+    return None
+
+
+def _audit_dir_of(value: Any) -> pathlib.Path:
+    """The audit directory an option value names, defaulting to ``.watchlight``."""
+    return pathlib.Path(value or ".watchlight")
+
+
+def _audit_dir_key(value: Any) -> str:
+    """Two spellings of one directory are one directory. Compared as absolute,
+    normalized paths — never resolved through symlinks, which would touch the
+    filesystem to answer a configuration question."""
+    return os.path.normcase(os.path.abspath(_audit_dir_of(value)))
+
+
+def _rebuild_audit_trail(state: "_GovernorState") -> None:
+    """The one place the ``(dir, file, sink)`` triple becomes a destination."""
+    audit = state.audit_options
+    keep_file = audit.get("file", True) is not False
+    state.audit_path = (_audit_dir_of(audit.get("dir")) / "audit.jsonl") if keep_file else None
+    state.trail = AuditTrail(state.audit_path, audit.get("sink"))
+
+
+def _same_callable(a: Any, b: Any) -> bool:
+    """Whether two configured callables — a sink, an approval store, a counter
+    source — are the SAME one.
+
+    Identity first, then ``==``. A BOUND METHOD is a new object on every
+    attribute access, so ``records.append is records.append`` is ``False`` while
+    ``records.append == records.append`` is ``True``: same function, same
+    instance, and the shape most real sinks take. A plain function or lambda is
+    unaffected, because ``==`` on those IS identity — a second lambda is still a
+    different sink, and reporting it as a conflict is the point.
+
+    A pathological ``__eq__`` cannot break a configuration check: anything that
+    is not exactly ``True`` — a raise, a non-bool, an array-style result — is
+    read as a conflict, and the comparison never propagates."""
+    if a is b:
+        return True
+    try:
+        return (a == b) is True
+    except Exception:  # noqa: BLE001 — an __eq__ must never break configuration
+        return False
+
+
+def _same_secrets(a: Optional[list[bytes]], b: Optional[list[bytes]]) -> bool:
+    """Same bytes in the same order, compared in constant time. Two spellings of
+    one secret are not a conflict, and neither value is ever reported."""
+    if a is None or b is None:
+        return a is None and b is None
+    if len(a) != len(b):
+        return False
+    return all(hmac.compare_digest(x, y) for x, y in zip(a, b))
 
 
 #: Fixed, value-free message when the new and old secret names disagree.
@@ -1415,10 +1529,12 @@ class Watchlight:
 
     @property
     def _trail(self) -> AuditTrail:
+        self._apply_env_defaults()
         return self._shared.trail
 
     @property
     def _audit_path(self) -> Optional[pathlib.Path]:
+        self._apply_env_defaults()
         return self._shared.audit_path
 
     @property
@@ -2385,7 +2501,14 @@ class Watchlight:
             # has had a chance to give it a durable destination. Say it once,
             # the first time it writes — a trail that exists only in the working
             # directory is a configuration choice, not an accident.
-            if state.is_default and not self._trail.has_sink and not state.warned_default_sink:
+            # Only when the local file IS the whole trail: with the file off the
+            # trail says its own, different thing (nothing has a destination).
+            if (
+                state.is_default
+                and self._audit_path is not None
+                and not self._trail.has_sink
+                and not state.warned_default_sink
+            ):
                 state.warned_default_sink = True
                 print(
                     "watchlight: the default governor writes only to the local audit file — "
@@ -2409,14 +2532,38 @@ class Watchlight:
         counter_source: Optional[CounterSource] = None,
         strict_principal: Optional[bool] = None,
     ) -> None:
-        """Apply options to a governor that has not written an audit record yet.
-        Behind :func:`configure_default`; not part of the public surface."""
+        """Apply options to the default governor. Behind :func:`configure_default`;
+        not part of the public surface."""
         state = self._shared
+        # The environment layer lands FIRST, so an explicit option below
+        # overwrites it — option > environment > default, in every order the two
+        # can arrive in.
+        self._apply_env_defaults()
         if state.wrote_record:
+            conflict = self._configuration_conflict(
+                agent=agent,
+                audit_dir=audit_dir,
+                audit_sink=audit_sink,
+                audit_file=audit_file,
+                signing_secret=signing_secret,
+                token_secret=token_secret,
+                approval_secret=approval_secret,
+                approval_store=approval_store,
+                counter_source=counter_source,
+                strict_principal=strict_principal,
+            )
+            if conflict is None:
+                # Every option passed is already in force, so there is nothing to
+                # change and no trail to split. A defensive second call — the
+                # same configuration applied twice, from two entry points into
+                # one process — is not an error.
+                return
             raise RuntimeError(
-                "configure_default must run before the default governor writes its first "
-                "audit record — the records already written would not reach the new "
-                "destination"
+                "configure_default ran after the default governor wrote its first audit "
+                f"record, and {conflict}. The records already written would not reach the "
+                "new destination, and a trail split across two of them reads like a data "
+                "bug. Options identical to the ones already in force are accepted; ask "
+                "can_configure_default() whether a change is still possible."
             )
         if agent is not None:
             self.agent = _assert_agent_name(agent, "configure_default(agent=…)")
@@ -2431,10 +2578,7 @@ class Watchlight:
                 audit["file"] = audit_file
             if audit_sink is not None:
                 audit["sink"] = audit_sink
-            keep_file = audit.get("file", True) is not False
-            directory = pathlib.Path(audit.get("dir") or ".watchlight")
-            state.audit_path = (directory / "audit.jsonl") if keep_file else None
-            state.trail = AuditTrail(state.audit_path, audit.get("sink"))
+            _rebuild_audit_trail(state)
         # The signing secrets and the approval state are rebuilt TOGETHER: the
         # approval key falls back to the signing secret, so changing one without
         # the other would leave approvals on a key nothing else holds.
@@ -2461,6 +2605,103 @@ class Watchlight:
             state.counter_source = counter_source
         if strict_principal is not None:
             state.strict_principal = bool(strict_principal)
+
+    def _apply_env_defaults(self) -> None:
+        """Fold the environment layer — :data:`AUDIT_DIR_ENV` and
+        :data:`AUDIT_FILE_ENV` — into the DEFAULT governor's audit destination,
+        once, at its first use.
+
+        Lazy on purpose: reading it at import time would make the variable's
+        effect depend on whether the application imported ``watchlight`` before
+        or after setting it. A governor constructed by an application names its
+        own audit options at the call site, so neither variable touches it."""
+        state = self._shared
+        if state.audit_env_applied or not state.is_default:
+            return
+        state.audit_env_applied = True
+        audit = state.audit_options
+        env_dir = os.environ.get(AUDIT_DIR_ENV)
+        env_file = _env_flag(AUDIT_FILE_ENV)
+        changed = False
+        if env_dir is not None and env_dir.strip():
+            audit["dir"] = env_dir
+            changed = True
+        if env_file is not None:
+            audit["file"] = env_file
+            changed = True
+        if changed:
+            _rebuild_audit_trail(state)
+
+    def _configuration_conflict(
+        self,
+        *,
+        agent: Optional[str],
+        audit_dir: Union[str, "os.PathLike[str]", None],
+        audit_sink: Optional[AuditSink],
+        audit_file: Optional[bool],
+        signing_secret: Any,
+        token_secret: Any,
+        approval_secret: Any,
+        approval_store: Optional[ApprovalStore],
+        counter_source: Optional[CounterSource],
+        strict_principal: Optional[bool],
+    ) -> Optional[str]:
+        """The first option that would CHANGE the configuration already in force,
+        described without ever naming a secret's value — or ``None`` when every
+        option passed already matches, which makes the call a no-op.
+
+        A callable or an object — ``audit_sink``, ``approval_store``,
+        ``counter_source`` — matches when it is the same function on the same
+        object (:func:`_same_callable`: identity, then ``==``, which is what makes
+        a bound method such as ``records.append`` match itself across two reads).
+        An equivalent callable BUILT a second time — a fresh lambda, a new
+        closure — does not match, and is reported as a conflict: the reverse
+        would silently keep the first one and quietly discard the records the
+        caller believed it had just redirected."""
+        state = self._shared
+        audit = state.audit_options
+        if agent is not None and agent != self.agent:
+            return f"agent would change from {self.agent!r} to {agent!r}"
+        if audit_dir is not None and _audit_dir_key(audit_dir) != _audit_dir_key(audit.get("dir")):
+            return (
+                f"audit_dir would change from {str(_audit_dir_of(audit.get('dir')))!r} "
+                f"to {str(_audit_dir_of(audit_dir))!r}"
+            )
+        in_force_file = audit.get("file", True) is not False
+        if audit_file is not None and bool(audit_file) != in_force_file:
+            return f"audit_file would change from {in_force_file} to {bool(audit_file)}"
+        if audit_sink is not None and not _same_callable(audit_sink, audit.get("sink")):
+            return (
+                "audit_sink would change — a sink matches when it is the same function on "
+                "the same object; a callable built a second time is a different sink"
+            )
+        if (signing_secret is not None or token_secret is not None) and not _same_secrets(
+            _resolve_signing_secrets(signing_secret, token_secret), state.signing_secrets
+        ):
+            return "signing_secret would change (a secret's value is never reported)"
+        if approval_secret is not None and not _same_secrets(
+            normalize_approval_secrets(approval_secret),
+            normalize_approval_secrets(state.approval_options.get("secret")),
+        ):
+            return "approval_secret would change (a secret's value is never reported)"
+        if approval_store is not None and not _same_callable(
+            approval_store, state.approval_options.get("store")
+        ):
+            return (
+                "approval_store would change — a store matches when it is the same object; "
+                "one built a second time is a different store"
+            )
+        if counter_source is not None and not _same_callable(counter_source, state.counter_source):
+            return (
+                "counter_source would change — a source matches when it is the same function "
+                "on the same object; a callable built a second time is a different source"
+            )
+        if strict_principal is not None and bool(strict_principal) != state.strict_principal:
+            return (
+                f"strict_principal would change from {state.strict_principal} "
+                f"to {bool(strict_principal)}"
+            )
+        return None
 
 
 # A ready-to-use default governor so `from watchlight import govern` just works.
@@ -2493,12 +2734,25 @@ def configure_default(
 
         configure_default(agent="billing-agent", audit_sink=ship)
 
-    Call it once, before the first governed call. It raises ``RuntimeError`` if
-    the default governor has already written an audit record: records written
-    before the sink existed cannot be sent to it, and a trail split across two
-    destinations reads like a data bug. Only the options you pass are applied,
-    and they MERGE with any earlier call's — configuring ``audit_dir`` after an
-    ``audit_sink`` keeps the sink. Policies already added survive."""
+    Call it before the first governed call. Only the options you pass are
+    applied, and they MERGE with any earlier call's — configuring ``audit_dir``
+    after an ``audit_sink`` keeps the sink. Policies already added survive.
+
+    Calling it AFTER the default governor has written its first audit record is
+    accepted when every option passed matches what is already in force — a
+    defensive second call is a no-op, not an exception path — and raises
+    ``RuntimeError`` naming the first option that would CHANGE otherwise:
+    records written before a sink existed cannot be sent to it, and a trail
+    split across two destinations reads like a data bug. Ask
+    :func:`can_configure_default` when you want to know first. A callable or an
+    object (``audit_sink``, ``approval_store``, ``counter_source``) matches when
+    it is the same function on the same object — ``audit_sink=records.append``
+    passed twice is one sink, while a lambda written out a second time is a
+    different one and conflicts. Secret values are compared in constant time and
+    never appear in the message.
+
+    An explicit option here always wins over :data:`AUDIT_DIR_ENV` /
+    :data:`AUDIT_FILE_ENV`, which in turn win over the built-in defaults."""
     govern._configure(
         agent=agent,
         audit_dir=audit_dir,
@@ -2512,3 +2766,20 @@ def configure_default(
         strict_principal=strict_principal,
     )
     return govern
+
+
+def can_configure_default() -> bool:
+    """Whether :func:`configure_default` can still CHANGE the default governor's
+    configuration: ``True`` until it has written its first audit record,
+    ``False`` afterwards. It is the question the defensive ``try``/``except`` was
+    really asking, and asking it mutates nothing::
+
+        from watchlight import can_configure_default, configure_default
+
+        if can_configure_default():
+            configure_default(agent="billing-agent", audit_sink=ship)
+
+    ``False`` does not mean every call fails: options identical to the ones
+    already in force are still accepted, because applying them changes nothing.
+    """
+    return not govern._shared.wrote_record

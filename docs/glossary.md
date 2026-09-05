@@ -129,6 +129,14 @@ answered by the durable store the sink writes to, so a quota spans every replica
 and survives a deploy. Without one, counts come from the local trail file.
 → [quotas](../examples/patterns/quotas.md)
 
+**Default governor** — the ready-made `govern` you import instead of
+constructing one. It writes `.watchlight/audit.jsonl` from its first governed
+call so the quickstart needs no configuration; `configure_default` names its
+sink, directory, agent or secret before that first record, `can_configure_default`
+asks whether it still can, and `WATCHLIGHT_AUDIT_DIR` / `WATCHLIGHT_AUDIT_FILE`
+redirect or silence its file from the environment.
+→ [using the governor](using-the-governor.md#the-exported-default-governor)
+
 **Decision id** — the correlation id on a verdict and on every record that
 verdict produced. Join your own logs, tickets and traces to it.
 → [audit forensics](../examples/showcase/audit-forensics/README.md)

@@ -445,10 +445,114 @@ govern.load("watchlight.policy.json");
 await govern.authorize({ action: "read_statement", resource: "account/acct-100", principal: 'User::"db:4412"' });
 ```
 
-Configuring it *after* its first record is written raises, rather than
-splitting the trail between two destinations. Anything with more than one policy
-set — or anything where you would rather be explicit about what a module is
-governing — constructs its own, as at the top of this page.
+Anything with more than one policy set — or anything where you would rather be
+explicit about what a module is governing — constructs its own, as at the top of
+this page.
+
+#### Configuring it twice
+
+Once the default governor has written its first record, its destination is
+fixed: records already written cannot be sent to a sink added afterwards, and a
+trail split across two destinations reads like a data bug. But re-applying the
+configuration that is *already in force* changes nothing, so it is accepted —
+the defensive second call, from a second entry point into one process, is not an
+exception path:
+
+```python
+configure_default(agent="report-cli", audit_sink=records.append)   # again, same options → no-op
+configure_default(agent="other")                                   # RuntimeError: agent would change …
+```
+
+A conflict names the option that would change and what it would change from and
+to. Secret values are compared in constant time and never appear in the message.
+A callable or an object — `audit_sink`, `approval_store`, `counter_source` —
+matches when it is the **same function on the same object**. `audit_sink=records.append`
+or `audit_sink=my_store.insert` passed a second time is one sink, even though
+Python builds a new bound-method object on every attribute access; the same
+`store.insert` read twice in TypeScript is one function reference.
+
+A callable **built** a second time is a different sink and is reported as a
+conflict: a fresh `lambda` or arrow function, a new closure, and in TypeScript a
+new `fn.bind(obj)` — `.bind` returns a new function on every call, so bind once
+and pass the result around. Assuming a rebuilt callable equal to the first would
+silently keep the first one and quietly discard the records you believed you had
+just redirected, which is the failure the check exists to prevent. A class whose
+`__eq__` raises, or answers with anything but `True`, is read as a conflict and
+never allowed to break the configuration call.
+
+To ask before calling, rather than wrapping the call:
+
+```python
+from watchlight import can_configure_default, configure_default
+
+if can_configure_default():
+    configure_default(audit_sink=records.append)
+```
+
+```ts
+import { canConfigureDefault, configureDefault } from "@watchlight/sdk";
+
+if (canConfigureDefault()) {
+  configureDefault({ auditSink: (r) => records.push(r) });
+}
+```
+
+`can_configure_default()` / `canConfigureDefault()` is `true` until the first
+record is written and `false` afterwards; asking mutates nothing. `false` does
+not mean every call fails — options identical to the ones in force are still
+accepted.
+
+#### Configuring it from the environment
+
+Two variables configure the default governor's audit destination without
+touching code, for the cases where the code is not yours to change — a test run,
+a container, a CI job:
+
+| Variable | Effect |
+|---|---|
+| `WATCHLIGHT_AUDIT_DIR` | the directory `audit.jsonl` is written into (default `.watchlight`) |
+| `WATCHLIGHT_AUDIT_FILE` | `0` / `false` / `no` / `off` writes no local file at all; `1` / `true` / `yes` / `on` keeps it |
+
+`WATCHLIGHT_AUDIT_FILE=0` is `audit_file=False` by another route, with the same
+consequences: no `.watchlight` directory is created, `govern.counters(...)`
+raises rather than counting zero, `watchlight dev` has nothing to tail, and with
+no sink configured the SDK says once that records are being discarded. Redirect
+with `WATCHLIGHT_AUDIT_DIR` instead when you want the trail kept, just not here.
+
+```bash
+WATCHLIGHT_AUDIT_FILE=0 pytest              # this run writes no trail into the working directory
+WATCHLIGHT_AUDIT_DIR=.watchlight-test pytest  # …or keeps its own, next to the application's
+```
+
+That is the fix for a test suite sharing a working directory with a running
+application. Policy tests (`govern.test()`, `watchlight policy test`) already
+write nothing — they run the engine's decision core directly — but a test that
+calls `authorize()`, or a governed tool, writes a record like any other governed
+call, under the default agent name, into the same `audit.jsonl` the application
+is appending to. Two views of "the same" trail then disagree, and the
+discrepancy reads as a data bug rather than a configuration one. One variable
+in the test process's environment ends it: no code change, no `try`/`except`, and
+no dependence on whether the SDK was imported before or after the variable was
+set — both are read lazily, at the default governor's first use.
+
+**Precedence — option, then environment, then default.** An explicit
+`configure_default(audit_dir=…)` beats `WATCHLIGHT_AUDIT_DIR`, which beats
+`.watchlight`; the same order every other option in this SDK resolves in. A
+governor you construct yourself (`Watchlight(audit_dir=…)`) already names its
+own options at the call site, so neither variable touches it — the environment
+layer exists for the one governor an application never constructs. A value the
+SDK does not recognize in `WATCHLIGHT_AUDIT_FILE` is reported once and then
+ignored: the conservative reading of an audit switch is "keep writing the
+trail", so a typo can neither quietly turn a trail off nor take an application
+down. `watchlight dev` reads `WATCHLIGHT_AUDIT_DIR` too, so the dashboard
+follows the trail rather than having to be pointed at it twice.
+
+**Why the default still writes a file.** It would be simpler to make the default
+governor write nothing until it is configured, and that would make this class of
+contamination impossible rather than solvable. It would also break the first
+five minutes: `.watchlight/audit.jsonl` appearing with zero configuration *is*
+the quickstart, and `watchlight dev` reads that file and nothing else. So the
+default stays, and the opt-out is one variable away.
 
 ### Loading policies
 

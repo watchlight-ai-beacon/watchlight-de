@@ -31,6 +31,7 @@ import {
 } from "./audit";
 import {
   ApprovalTokens,
+  normalizeApprovalSecrets,
   resolveApprovalKeys,
   splitEnvSecrets,
   type ApprovalStore,
@@ -563,11 +564,87 @@ interface GovernorState {
   /** The audit options in force, so {@link Watchlight._configure} can apply one
    *  of them without dropping the others. */
   auditOptions: { dir?: string; file?: boolean; sink?: AuditSink };
+  /** The backend options in force, for the same reason — and so a repeat
+   *  {@link configureDefault} can tell "the same backend" from a different one. */
+  backendOptions: { apdpUrl?: string; token?: string; tenantId?: string };
+  /** Whether the environment layer ({@link AUDIT_DIR_ENV} / {@link
+   *  AUDIT_FILE_ENV}) has been folded in — read once, lazily, and only for the
+   *  default governor. */
+  auditEnvApplied: boolean;
   /** Set on the exported default governor, for the "no sink configured"
    *  notice. */
   isDefault: boolean;
   wroteRecord: boolean;
   warnedDefaultSink: boolean;
+}
+
+/** Directory the DEFAULT governor writes `audit.jsonl` into, when nothing named
+ *  one in code. The Python lane's `watchlight dev` reads the same variable, so
+ *  the dashboard follows the trail. */
+export const AUDIT_DIR_ENV = "WATCHLIGHT_AUDIT_DIR";
+/** Whether the DEFAULT governor writes the local `audit.jsonl` at all, when
+ *  nothing named it in code. Set it to `0` and a process — a test run, most
+ *  usefully — writes no file into the working directory an application is also
+ *  using, with no code change and no try/catch. */
+export const AUDIT_FILE_ENV = "WATCHLIGHT_AUDIT_FILE";
+
+// Both are read LAZILY, at the default governor's first use, so the variable
+// works whether it is set before or after the SDK is imported. Precedence, the
+// same order every other option in this SDK resolves in:
+//
+//     an explicit configureDefault(...) option  >  the environment  >  the default
+//
+// A governor you construct yourself already names its own `auditDir` /
+// `auditFile` at the call site, so neither variable touches it.
+
+const ENV_TRUE = new Set(["1", "true", "yes", "on"]);
+const ENV_FALSE = new Set(["0", "false", "no", "off"]);
+const warnedEnvFlags = new Set<string>();
+
+/** A boolean environment variable: `true`/`false`, or `undefined` when it is
+ *  unset, empty, or spelled in a way this SDK does not recognize.
+ *
+ *  An unrecognized value is reported once and then IGNORED rather than guessed
+ *  at. The conservative reading of an audit switch is "keep writing the trail":
+ *  a typo must never quietly turn a trail off, and must never take an
+ *  application down either. */
+function envFlag(name: string): boolean | undefined {
+  const raw = process.env[name];
+  if (raw === undefined) return undefined;
+  const value = raw.trim().toLowerCase();
+  if (!value) return undefined;
+  if (ENV_TRUE.has(value)) return true;
+  if (ENV_FALSE.has(value)) return false;
+  if (!warnedEnvFlags.has(name)) {
+    warnedEnvFlags.add(name);
+    // eslint-disable-next-line no-console
+    console.warn(
+      `watchlight: ${name} is set to a value this SDK does not recognize, so it is ` +
+        "ignored and the default applies — write one of 1/true/yes/on or 0/false/no/off."
+    );
+  }
+  return undefined;
+}
+
+/** The audit directory an option value names, defaulting to `.watchlight`. */
+function auditDirOf(value: string | undefined): string {
+  return value && value.length > 0 ? value : ".watchlight";
+}
+
+/** Two spellings of one directory are one directory. Compared as absolute,
+ *  normalized paths — never resolved through symlinks, which would touch the
+ *  filesystem to answer a configuration question. */
+function auditDirKey(value: string | undefined): string {
+  return path.resolve(auditDirOf(value));
+}
+
+/** The one place the `(dir, file, sink)` triple becomes a destination. */
+function rebuildAuditTrail(state: GovernorState): void {
+  const audit = state.auditOptions;
+  state.trail = new AuditTrail(
+    audit.file === false ? null : path.join(auditDirOf(audit.dir), "audit.jsonl"),
+    audit.sink
+  );
 }
 
 /** The memo key of a policy source: its real path, so two names for one file
@@ -672,6 +749,8 @@ function newState(opts: WatchlightOptions): GovernorState {
     sources: new Set<string>(),
     strictPrincipal: opts.strictPrincipal !== false,
     auditOptions: { dir: opts.auditDir, file: opts.auditFile, sink: opts.auditSink },
+    backendOptions: { apdpUrl: opts.apdpUrl, token: opts.token, tenantId: opts.tenantId },
+    auditEnvApplied: false,
     isDefault: false,
     wroteRecord: false,
     warnedDefaultSink: false,
@@ -727,6 +806,7 @@ export class Watchlight {
   // The state below is reached through accessors so that a renamed governor and the
   // governor it came from read and write ONE copy of it.
   private get _trail(): AuditTrail {
+    this._applyEnvDefaults();
     return this._shared.trail;
   }
   private get _backend(): GovernanceBackend {
@@ -1576,7 +1656,14 @@ export class Watchlight {
       // chance to give it a durable destination. Say it once, the first time it
       // writes — a trail that exists only in the working directory is a
       // configuration choice, not an accident.
-      if (this._shared.isDefault && !this._trail.hasSink && !this._shared.warnedDefaultSink) {
+      // Only when the local file IS the whole trail: with the file off the trail
+      // says its own, different thing (nothing has a destination).
+      if (
+        this._shared.isDefault &&
+        this._trail.path !== null &&
+        !this._trail.hasSink &&
+        !this._shared.warnedDefaultSink
+      ) {
         this._shared.warnedDefaultSink = true;
         // eslint-disable-next-line no-console
         console.warn(
@@ -1593,13 +1680,24 @@ export class Watchlight {
    *  Behind {@link configureDefault}; not part of the public surface.
    *  @internal */
   _configure(opts: WatchlightOptions): void {
-    if (this._shared.wroteRecord) {
+    const shared = this._shared;
+    // The environment layer lands FIRST, so an explicit option below overwrites
+    // it — option > environment > default, in every order the two can arrive in.
+    this._applyEnvDefaults();
+    if (shared.wroteRecord) {
+      const conflict = this._configurationConflict(opts);
+      // Every option passed is already in force, so there is nothing to change
+      // and no trail to split. A defensive second call — the same configuration
+      // applied twice, from two entry points into one process — is not an error.
+      if (conflict === undefined) return;
       throw new Error(
-        "configureDefault must run before the default governor writes its first audit " +
-          "record — the records already written would not reach the new destination"
+        "configureDefault ran after the default governor wrote its first audit record, " +
+          `and ${conflict}. The records already written would not reach the new ` +
+          "destination, and a trail split across two of them reads like a data bug. " +
+          "Options identical to the ones already in force are accepted; ask " +
+          "canConfigureDefault() whether a change is still possible."
       );
     }
-    const shared = this._shared;
     if (opts.agent !== undefined) {
       assertAgentName(opts.agent, "configureDefault({ agent })");
       Object.assign(this, { agent: opts.agent, actorChain: Object.freeze([opts.agent]) });
@@ -1611,10 +1709,7 @@ export class Watchlight {
       if (opts.auditDir !== undefined) audit.dir = opts.auditDir;
       if (opts.auditFile !== undefined) audit.file = opts.auditFile;
       if (opts.auditSink !== undefined) audit.sink = opts.auditSink;
-      shared.trail = new AuditTrail(
-        audit.file === false ? null : path.join(audit.dir ?? ".watchlight", "audit.jsonl"),
-        audit.sink
-      );
+      rebuildAuditTrail(shared);
     }
     // The signing secrets and the approval state are rebuilt TOGETHER: the
     // approval key falls back to the signing secret, so changing one without the
@@ -1644,14 +1739,117 @@ export class Watchlight {
     if (opts.apdpUrl !== undefined || opts.token !== undefined || opts.tenantId !== undefined) {
       // A different backend is a different policy holder: the policies added to
       // the old one do not move with it.
-      shared.backend = selectBackend({
+      shared.backendOptions = {
         apdpUrl: opts.apdpUrl,
         token: opts.token,
         tenantId: opts.tenantId,
-      });
+      };
+      shared.backend = selectBackend(shared.backendOptions);
       shared.policyCount = 0;
       shared.sources.clear();
     }
+  }
+
+  /** Fold the environment layer — {@link AUDIT_DIR_ENV} and {@link
+   *  AUDIT_FILE_ENV} — into the DEFAULT governor's audit destination, once, at
+   *  its first use.
+   *
+   *  Lazy on purpose: reading it at import time would make the variable's effect
+   *  depend on whether the application imported the SDK before or after setting
+   *  it. A governor constructed by an application names its own audit options at
+   *  the call site, so neither variable touches it.
+   *  @internal */
+  private _applyEnvDefaults(): void {
+    const state = this._shared;
+    if (state.auditEnvApplied || !state.isDefault) return;
+    state.auditEnvApplied = true;
+    const envDir = process.env[AUDIT_DIR_ENV];
+    const envFile = envFlag(AUDIT_FILE_ENV);
+    let changed = false;
+    if (envDir !== undefined && envDir.trim().length > 0) {
+      state.auditOptions.dir = envDir;
+      changed = true;
+    }
+    if (envFile !== undefined) {
+      state.auditOptions.file = envFile;
+      changed = true;
+    }
+    if (changed) rebuildAuditTrail(state);
+  }
+
+  /** The first option that would CHANGE the configuration already in force,
+   *  described without ever naming a secret's value — or `undefined` when every
+   *  option passed already matches, which makes the call a no-op.
+   *
+   *  A callable or an object — `auditSink`, `approvalStore`, `counterSource` —
+   *  matches only when it is the SAME function reference (`===`). A method read
+   *  off an object twice (`store.insert`) is one reference and matches; anything
+   *  BUILT a second time does not — a fresh arrow function, a new closure, and
+   *  `fn.bind(obj)`, which returns a new function on every call, so bind once and
+   *  pass the result. An equivalent callable built again is reported as a
+   *  conflict rather than assumed equal: the reverse would silently keep the
+   *  first one and quietly discard the records the caller believed it had just
+   *  redirected. (The Python lane compares identity then `==`, so a bound method
+   *  such as `records.append` — a new object on every attribute access — matches
+   *  itself; the two lanes agree on every case a caller can observe.)
+   *  @internal */
+  private _configurationConflict(opts: WatchlightOptions): string | undefined {
+    const shared = this._shared;
+    const audit = shared.auditOptions;
+    if (opts.agent !== undefined && opts.agent !== this.agent) {
+      return `agent would change from "${this.agent}" to "${opts.agent}"`;
+    }
+    if (opts.auditDir !== undefined && auditDirKey(opts.auditDir) !== auditDirKey(audit.dir)) {
+      return `auditDir would change from "${auditDirOf(audit.dir)}" to "${auditDirOf(opts.auditDir)}"`;
+    }
+    const inForceFile = audit.file !== false;
+    const requestedFile = opts.auditFile !== false;
+    if (opts.auditFile !== undefined && requestedFile !== inForceFile) {
+      return `auditFile would change from ${inForceFile} to ${requestedFile}`;
+    }
+    if (opts.auditSink !== undefined && opts.auditSink !== audit.sink) {
+      return (
+        "auditSink would change — a sink matches only when it is the SAME object, which " +
+        "is the only way two functions can be compared"
+      );
+    }
+    if (
+      (opts.signingSecret !== undefined || opts.tokenSecret !== undefined) &&
+      !sameSecrets(resolveSigningSecrets(opts), shared.signingSecrets)
+    ) {
+      return "signingSecret would change (a secret's value is never reported)";
+    }
+    if (
+      opts.approvalSecret !== undefined &&
+      !sameSecrets(
+        normalizeApprovalSecrets(opts.approvalSecret),
+        normalizeApprovalSecrets(shared.approvalOptions.secret)
+      )
+    ) {
+      return "approvalSecret would change (a secret's value is never reported)";
+    }
+    if (opts.approvalStore !== undefined && opts.approvalStore !== shared.approvalOptions.store) {
+      return "approvalStore would change — a store matches only when it is the SAME object";
+    }
+    if (opts.counterSource !== undefined && opts.counterSource !== shared.counterSource) {
+      return "counterSource would change — a source matches only when it is the SAME object";
+    }
+    if (
+      opts.strictPrincipal !== undefined &&
+      (opts.strictPrincipal !== false) !== shared.strictPrincipal
+    ) {
+      return `strictPrincipal would change from ${shared.strictPrincipal} to ${opts.strictPrincipal !== false}`;
+    }
+    for (const key of ["apdpUrl", "tenantId"] as const) {
+      if (opts[key] !== undefined && opts[key] !== shared.backendOptions[key]) {
+        return `${key} would change from ${JSON.stringify(shared.backendOptions[key])} to ${JSON.stringify(opts[key])}`;
+      }
+    }
+    // The bearer token is a credential: compared, never echoed.
+    if (opts.token !== undefined && opts.token !== shared.backendOptions.token) {
+      return "token would change (a credential's value is never reported)";
+    }
+    return undefined;
   }
 }
 
@@ -1671,16 +1869,47 @@ export const govern = new Watchlight();
  *     import { govern, configureDefault } from "@watchlight/sdk";
  *     configureDefault({ agent: "billing-agent", auditSink: (r) => ship(r) });
  *
- * Call it once, before the first governed call. It throws if the default
- * governor has already written an audit record: records written before the sink
+ * Call it before the first governed call. Only the options you pass are
+ * applied, and they MERGE with any earlier call's — configuring `auditDir`
+ * after an `auditSink` keeps the sink. Policies already added survive — except
+ * when `apdpUrl` / `token` / `tenantId` switch the backend, which replaces the
+ * policy holder and resets the count.
+ *
+ * Calling it AFTER the default governor has written its first audit record is
+ * accepted when every option passed matches what is already in force — a
+ * defensive second call is a no-op, not an exception path — and throws naming
+ * the first option that would CHANGE otherwise: records written before a sink
  * existed cannot be sent to it, and a trail split across two destinations reads
- * like a data bug. Only the options you pass are applied, and they MERGE with
- * any earlier call's — configuring `auditDir` after an `auditSink` keeps the
- * sink. Policies already added survive — except when `apdpUrl` / `token` /
- * `tenantId` switch the backend, which replaces the policy holder and resets
- * the count.
+ * like a data bug. Ask {@link canConfigureDefault} when you want to know first.
+ * A callable or an object (`auditSink`, `approvalStore`, `counterSource`)
+ * matches only when it is the same function reference — `store.insert` read
+ * twice is one reference, while a fresh arrow function or a new `fn.bind(obj)`
+ * is a different sink and conflicts. Secret values are compared in constant time
+ * and never appear in the message.
+ *
+ * An explicit option here always wins over {@link AUDIT_DIR_ENV} / {@link
+ * AUDIT_FILE_ENV}, which in turn win over the built-in defaults.
  */
 export function configureDefault(opts: WatchlightOptions): Watchlight {
   govern._configure(opts);
   return govern;
+}
+
+/**
+ * Whether {@link configureDefault} can still CHANGE the default governor's
+ * configuration: `true` until it has written its first audit record, `false`
+ * afterwards. It is the question the defensive try/catch was really asking, and
+ * asking it mutates nothing.
+ *
+ *     import { canConfigureDefault, configureDefault } from "@watchlight/sdk";
+ *
+ *     if (canConfigureDefault()) {
+ *       configureDefault({ agent: "billing-agent", auditSink: ship });
+ *     }
+ *
+ * `false` does not mean every call fails: options identical to the ones already
+ * in force are still accepted, because applying them changes nothing.
+ */
+export function canConfigureDefault(): boolean {
+  return !(govern as unknown as { _shared: GovernorState })._shared.wroteRecord;
 }
