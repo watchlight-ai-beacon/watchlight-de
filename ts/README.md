@@ -230,7 +230,8 @@ back, and route the risky ones to a **human**.
 ```ts
 import { govern, NeedsApproval } from "@watchlight/sdk";
 
-// principal / resource / context can each be a value or (args) => value
+// principal / resource / context can each be a value or (args) => value;
+// a context binding may also be async — it is awaited before the decision
 const book = govern.tool(bookTrip, {
   intent: "book",
   principal: (o) => `User::"${o.userId}"`,
@@ -589,12 +590,29 @@ only**: the trail also carries `sanitization`, `screening`, `egress` and
 `principal`, so a query filtered on principal and window alone over-counts and
 the quota denies early. Fail-closed: a throw or a
 non-count raises `CounterSourceError`; it never falls back to the local file,
-because a silently local count is a quota that under-counts without saying so. An
-**async** source is read with `await govern.countersAsync(...)`; calling the
-synchronous `counters()` on one raises rather than answering from the file (the
-`context` binding it feeds is synchronous, so resolve the number before the
-call). With no source configured, everything above is unchanged and
+because a silently local count is a quota that under-counts without saying so.
+With no source configured, everything above is unchanged and
 `c.source === "local"`.
+
+An **async** source — a durable store is a network call — is read with `await
+govern.countersAsync(...)`, and a `context` binding may itself be `async`:
+it is awaited before the decision, so the durable count is what the policy
+evaluates and the quota works through `tool()`.
+
+```ts
+const readDoc = govern.tool(fetchDocument, {
+  intent: "read",
+  principal: (o) => `User::"${o.userId}"`,
+  context: async (o) => {
+    const c = await govern.countersAsync({ principal: `User::"${o.userId}"`, intent: "read", window: "1h" });
+    return c.truncated ? {} : { reads_this_hour: c.count };
+  },
+});
+```
+
+A synchronous binding reads the local file or a synchronous source; an async
+source needs the async binding — calling the synchronous `counters()` on one
+raises, naming `countersAsync`, rather than answering from the file.
 
 ## Graduation to Enterprise
 

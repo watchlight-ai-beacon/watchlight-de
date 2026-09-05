@@ -394,8 +394,9 @@ def _counters_from_source_value(count: Any, result: dict) -> dict:
 def count_from_source(source: CounterSource, /, **kwargs: Any) -> dict:
     """Count via a :data:`CounterSource`, synchronously. The source is validated
     the same way the local scan is, and an awaitable is refused rather than
-    resolved behind the caller's back: a ``context`` binding that must stay
-    synchronous cannot silently become a stale or local number."""
+    resolved behind the caller's back: a synchronous caller cannot silently get
+    a stale or local number. An async source belongs on an async path —
+    ``counters_async``, awaited inside an ``async def`` ``context`` binding."""
     _f, result = _prepare_counters(**kwargs)
     result["source"] = "external"
     try:

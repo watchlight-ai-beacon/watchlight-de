@@ -157,10 +157,15 @@ export class NeedsApproval extends Error {
 /** A per-call binding: a fixed value, or a function of the tool's arguments. */
 export type Binding<A extends unknown[]> = string | ((...args: A) => string);
 
-/** A record of attributes passed into Cedar `context.*`, or a function of args. */
+/** A record of attributes passed into Cedar `context.*`, or a function of the
+ *  tool's arguments. The function may be `async` (or return a promise): it is
+ *  awaited BEFORE the decision, so a value that takes a round trip — a count
+ *  from a durable store read with {@link Watchlight.countersAsync}, a lookup, a
+ *  feature flag — can be part of the context the policy evaluates. The
+ *  synchronous form behaves exactly as before. */
 export type ContextBinding<A extends unknown[]> =
   | Record<string, unknown>
-  | ((...args: A) => Record<string, unknown>);
+  | ((...args: A) => Record<string, unknown> | Promise<Record<string, unknown>>);
 
 /** What a result hook learns about the call whose result it is inspecting.
  *  `decisionId` is the SAME id written on that call's decision record, so the
@@ -230,6 +235,17 @@ function resolveBinding<A extends unknown[]>(
 ): string | undefined {
   if (b === undefined) return undefined;
   return typeof b === "function" ? b(...args) : b;
+}
+
+/** Resolve a {@link ContextBinding} — awaiting an asynchronous one — into the
+ *  attributes the decision is made against. Every path that resolves a context
+ *  is async, so an awaited binding is never skipped or partially applied. */
+async function resolveContext<A extends unknown[]>(
+  b: ContextBinding<A> | undefined,
+  args: A
+): Promise<Record<string, unknown>> {
+  if (b === undefined) return {};
+  return typeof b === "function" ? await b(...args) : b;
 }
 
 /** A function governed by {@link Watchlight.tool} — always async (the engine's
@@ -399,6 +415,25 @@ export const RESERVED_CONTEXT_MESSAGE =
  *  differs from the governor's own — the acting agent, or the delegation chain
  *  of the scope the call was made through. Refused rather than overwritten, so
  *  a policy reading either key can trust it. An identical value is fine. */
+/** Fixed, value-free message of {@link UnresolvedContextError}. */
+export const UNRESOLVED_CONTEXT_MESSAGE =
+  "`context` is an unresolved promise. Resolve it before the call — " +
+  "`context: await govern.countersAsync(...)` — or use an async `context` " +
+  "binding on a governed tool, where the SDK awaits it before the decision";
+
+/** Thrown when `context` is a promise that was never awaited.
+ *
+ *  Spreading one yields an object without the caller's attributes, so the
+ *  policy would be evaluated against a context the caller never produced —
+ *  which reads as an ordinary Deny. This refuses instead, before anything
+ *  reaches the engine and without writing a decision record. */
+export class UnresolvedContextError extends TypeError {
+  constructor() {
+    super(UNRESOLVED_CONTEXT_MESSAGE);
+    this.name = "UnresolvedContextError";
+  }
+}
+
 export class ReservedContextError extends Error {
   constructor() {
     super(RESERVED_CONTEXT_MESSAGE);
@@ -431,6 +466,12 @@ function withActorContext(
   actor: string,
   chain: readonly string[]
 ): Record<string, unknown> {
+  // Checked BEFORE the spread: `{...promise}` yields an object with none of
+  // the caller's attributes, which the engine would evaluate as an ordinary
+  // Deny. Not disposed of — the caller made this promise, not the SDK.
+  if (context !== undefined && typeof (context as { then?: unknown }).then === "function") {
+    throw new UnresolvedContextError();
+  }
   const out: Record<string, unknown> = { ...(context ?? {}) };
   // The SDK's values always win — and a caller who disagreed is told, never
   // silently overruled. The chain is derived from the scope the call was made
@@ -929,7 +970,10 @@ export class Watchlight {
       /** Cedar resource entity — value or `(args) => value`. Defaults to
        *  `tool/<name>`. */
       resource?: Binding<A>;
-      /** Attributes for Cedar `context.*` — object or `(args) => object`. */
+      /** Attributes for Cedar `context.*` — object, `(args) => object`, or an
+       *  async `(args) => Promise<object>` awaited before the decision, so a
+       *  quota read from a durable store (`await govern.countersAsync(...)`)
+       *  can feed the policy. */
       context?: ContextBinding<A>;
       /** Human-in-the-loop hook. Called when the decision is `NeedsApproval`;
        *  return `true` to proceed (records an approval), `false`/absent to hold
@@ -959,8 +1003,9 @@ export class Watchlight {
     return async (...args: A): Promise<Awaited<R>> => {
       const principal = gov._principal(resolveBinding(opts.principal, args));
       const resource = resolveBinding(opts.resource, args) ?? `tool/${name}`;
-      const context =
-        typeof opts.context === "function" ? opts.context(...args) : opts.context ?? {};
+      // Awaited before the decision: an async binding (a durable counter, a
+      // lookup) is part of the context the policy evaluates, never dropped.
+      const context = await resolveContext(opts.context, args);
       // Run the body, then the egress hook (if any) over its result. `decisionId`
       // is the id of the decision that authorized THIS run.
       const run = async (d: AuthorizeResult): Promise<Awaited<R>> => {
@@ -1051,7 +1096,12 @@ export class Watchlight {
       // A request the engine cannot evaluate is a refusal like any other: it is
       // recorded, then raised typed. (A `ReservedContextError` is the caller's
       // own context and is raised before anything reaches the engine.)
-      if (e instanceof ReservedContextError || e instanceof AuthorizeError) throw e;
+      if (
+        e instanceof ReservedContextError ||
+        e instanceof UnresolvedContextError ||
+        e instanceof AuthorizeError
+      )
+        throw e;
       this._audit(req.action, req.resource ?? "resource", "Deny", DENY_REASON, {
         principal: req.principal,
       });
@@ -1284,8 +1334,9 @@ export class Watchlight {
    * one that returns a promise. Identical in every other respect, and identical
    * to `counters` when no source is configured (the local file is read
    * synchronously either way), so a caller can use it unconditionally. Await it
-   * BEFORE the call whose `context` it feeds; a `context` binding itself is
-   * synchronous.
+   * inside an async `context` binding — `context: async (...) => ({
+   * reads_this_hour: (await govern.countersAsync(...)).count })` — or before the
+   * `authorize` whose `context` it feeds.
    */
   async countersAsync(opts: CountersOptions): Promise<Counters> {
     if (this._counterSource) return countFromSourceAsync(this._counterSource, opts);

@@ -450,8 +450,34 @@ integer. It has to count **decision rows only**, exactly as the local scan does:
 the trail also carries `sanitization`, `screening`, `egress` and `attenuation`
 records, so a query filtered on principal and window alone over-counts and the
 quota denies early. Fail-closed: it never falls back to the local file, so a
-quota can never quietly under-count. An async source is read with
-`counters_async(...)` / `countersAsync(...)`.
+quota can never quietly under-count.
+
+An async source — a durable store is a network call — is read with
+`counters_async(...)` / `countersAsync(...)`, and a `context` binding may itself
+be async: it is awaited before the decision, so the durable count is what the
+policy evaluates and the quota works through a governed tool.
+
+```python
+async def quota(o):
+    c = await govern.counters_async(principal=user(o), intent="read", window="1h")
+    return {} if c["truncated"] else {"reads_this_hour": c["count"]}
+
+# An async binding needs an `async def` body: the decision is made before the
+# body runs, so a synchronous tool cannot await one and raises `TypeError`.
+@govern.tool("read", principal=user, context=quota)
+async def fetch_document(o): ...
+```
+
+A synchronous binding reads the local file or a synchronous source; an async
+source needs the async binding — calling the synchronous `counters()` on one
+raises, naming `counters_async`, rather than answering from the file.
+
+The async form is a property of the tool binding, not of `authorize`, which
+takes a context you have already resolved. Handing `authorize` an unresolved
+awaitable raises `UnresolvedContextError` before anything reaches the engine,
+and records no decision — the attributes it was going to carry are not there
+yet, and a policy evaluated without them denies for a reason that has nothing
+to do with the caller.
 
 The [quotas pattern](examples/patterns/quotas.md) has the policy, the tool
 binding, and the exact counting rules.
