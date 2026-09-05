@@ -564,6 +564,53 @@ Watchlight(agent="my-agent", strict_principal=False)   # transitional
 new Watchlight({ agent: "my-agent", strictPrincipal: false });   // transitional
 ```
 
+**The reserved actor keys.** From 0.8.0 the SDK stamps `context.actor` (the
+acting runtime) and `context.actor_chain` (its delegation chain, root first) on
+every authorize, and refuses a caller-supplied value that differs from the one
+it derived:
+
+```text
+ReservedContextError: context keys 'actor' and 'actor_chain' are reserved for the acting agent and are set by the SDK
+```
+
+An identical value is still accepted, so handing the derived actor back verbatim
+is fine. What breaks is an application that already used `actor` for a value of
+its own — it is an ordinary word, and the natural name for "who is doing this".
+That value reached the policy before; now the call raises at the call site. It
+fails loudly rather than changing a verdict, but it fails on a path that worked.
+
+The migration is a rename: move your value to a key of your own, and update the
+policies that read it.
+
+```python
+govern.authorize(action="refund", context={"actor": "billing-console"})         # before
+govern.authorize(action="refund", context={"requested_by": "billing-console"})  # after
+```
+
+```ts
+await govern.authorize({ action: "refund", context: { actor: "billing-console" } });         // before
+await govern.authorize({ action: "refund", context: { requested_by: "billing-console" } });  // after
+```
+
+```cedar
+// before
+permit(principal, action == Action::"refund", resource)
+when { context.actor == "billing-console" };
+
+// after
+permit(principal, action == Action::"refund", resource)
+when { context.requested_by == "billing-console" };
+```
+
+There is no transitional flag for this one, and that is deliberate. The key is
+worth naming in a policy only because the value is the SDK's and not the
+caller's; a flag that let a caller supply it would make every `context.actor`
+and `context.actor_chain` rule in the set forgeable for as long as it was on —
+it would suspend the guarantee, not the migration. The principal opt-out can be
+narrower because it degrades a value the SDK derives either way. This change
+also announces itself: a typed error at the call site names the sites to rename,
+where an unannounced Allow-to-Deny flip does not.
+
 ## See also
 
 - [`examples/showcase/identity/`](../examples/showcase/identity/README.md) — this page as a runnable
