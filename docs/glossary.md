@@ -41,15 +41,17 @@ any delegation it is just `[agent]`.
   under a different name, acting alone with a fresh single-element chain.
   `delegate(scope, "name")` narrows authority *and* appends to the chain. Rename
   to label; delegate to hand over narrowed authority.
-- **Scope versus policy** — a scope bounds what a sub-agent may ask for at all;
-  a policy decides each request that gets asked. A scope cannot grant what no
-  policy permits, and a policy is not narrowed by spawning a sub-agent.
+- **Scope versus policy** — a scope is what `delegate` may hand a sub-agent,
+  checked when you delegate and only ever narrowing. A policy decides each call
+  that is authorized. The scope is not consulted at authorize time, so confining
+  a sub-agent means narrowing the scope *and* writing the policy.
 - **Sanitizing versus screening** — sanitizing removes personal data from text
   you are about to pass on; screening decides whether text is safe to use at
   all. Sanitize what leaves; screen what arrives.
 - **Approval token versus scope token** — an approval token records that a human
-  confirmed one specific action, once. A scope token carries a sub-agent's
-  narrowed authority to another process. Different lifetimes, different jobs.
+  confirmed one specific action, once; mint it and consume it in the same
+  process. A scope token carries a sub-agent's narrowed authority to another
+  process. Different lifetimes, different jobs.
 
 ## Terms
 
@@ -69,7 +71,7 @@ and is what a policy reads as `context.actor`.
 
 **Approval token** — a single-use grant, minted after a person confirms, that
 turns one `NeedsApproval` verdict into an `Allow`. It is bound to that subject,
-action and resource.
+action and resource; mint and consume it within one process.
 → [human in the loop](../examples/showcase/human-in-the-loop/README.md)
 
 **Attenuation** — narrowing a scope for a sub-agent. Strictly a subset: a child
@@ -169,8 +171,9 @@ you choose, such as `trip/AX8821`.
 recording that it happened.
 → [PII before read](../examples/patterns/pii-before-read.md)
 
-**Scope** — the authority a sub-agent may act within: which tools, resources and
-intents, and for how long.
+**Scope** — the authority `delegate` may hand a sub-agent: which tools,
+resources and intents, and for how long. Checked when you delegate — a child can
+only narrow what its parent held — not when a call is authorized.
 → [sub-agent confinement](../examples/patterns/subagent-confinement.md)
 
 **Scope token** — a signed carrier for a narrowed scope, so it can be
@@ -181,9 +184,9 @@ re-established in another process. It does not carry the actor chain.
 it when it is not.
 → [screen before model](../examples/patterns/screen-before-model.md)
 
-**Signing secret** (token secret) — the shared secret that gives scope tokens and
-approval tokens integrity between your own processes. It is never logged or
-written.
+**Signing secret** (`token_secret` / `tokenSecret`) — the secret that gives
+**scope tokens** their integrity, so a narrowed scope can be re-established in
+another of your processes. It is never logged or written.
 → [sub-agent confinement](../examples/patterns/subagent-confinement.md)
 
 **Subject** — see above.

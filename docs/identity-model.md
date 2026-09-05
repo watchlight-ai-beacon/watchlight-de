@@ -74,7 +74,7 @@ A person, the agent acting for them, and a sub-agent it delegated to:
   |                                                              |
   | read_itinerary itinerary/AX8821       ALLOW                  |
   | book           trip/AX8821            ALLOW                  |
-  | write_memory   memory/traveller-notes DENY   (other runtime) |
+  | write_memory   memory/traveller-notes DENY   (wrong actor)   |
   |                                                              |
   | delegates seat selection --------------+                     |
   +----------------------------------------|---------------------+
@@ -85,7 +85,8 @@ A person, the agent acting for them, and a sub-agent it delegated to:
   |                                                              |
   | pick_seat      seat/AX8821            ALLOW                  |
   | trace          trace/AX8821           ALLOW                  |
-  | book           trip/AX8821            DENY   (narrowed)      |
+  | book           trip/AX8821            DENY   (wrong actor)   |
+  | cache          route/AMS-LIS          DENY   (wrong subject) |
   +--------------------------------------------------------------+
 ```
 
@@ -93,8 +94,11 @@ A person, the agent acting for them, and a sub-agent it delegated to:
   delegated — the traveller is still the subject when the sub-agent acts.
 - The **actor** answers which runtime made this particular call, and the
   **chain** shows how it got the authority.
-- A policy can key on any of the three, and the narrowing means a delegate can
-  only ever do less than its parent.
+- A policy can key on any of the three. The two denials above show two of them:
+  `write_memory` and `book` fail an **actor** rule, `cache` fails a **subject**
+  rule. Neither is the narrowed scope — a scope limits what `delegate` may hand
+  a sub-agent and is checked when you delegate, never when a call is authorized,
+  so confining a sub-agent means narrowing the scope *and* writing the policy.
 
 ```python
 from watchlight import Watchlight, principals
@@ -114,6 +118,7 @@ picker = booker.delegate(root, "seat-picker", tools=["search", "pick_seat", "tra
 picker.authorize(action="pick_seat", resource="seat/AX8821", principal=traveller)
 picker.authorize(action="trace", resource="trace/AX8821", principal=traveller)
 picker.authorize(action="book", resource="trip/AX8821", principal=traveller)
+picker.authorize(action="cache", resource="route/AMS-LIS", principal=traveller)
 ```
 
 ```ts
@@ -134,6 +139,7 @@ const picker = booker.delegate(root, "seat-picker", { tools: ["search", "pick_se
 await picker.authorize({ action: "pick_seat", resource: "seat/AX8821", principal: traveller });
 await picker.authorize({ action: "trace", resource: "trace/AX8821", principal: traveller });
 await picker.authorize({ action: "book", resource: "trip/AX8821", principal: traveller });
+await picker.authorize({ action: "cache", resource: "route/AMS-LIS", principal: traveller });
 ```
 
 Both are the calls [`examples/showcase/identity/`](../examples/showcase/identity/README.md)

@@ -196,9 +196,13 @@ def three_cases() -> tuple[Watchlight, dict[str, dict]]:
     root = booker.scope(tools=["search", "book", "pick_seat", "trace"])
     picker = booker.delegate(root, "seat-picker", tools=["search", "pick_seat", "trace"])
     sub, sub_record = decide(picker, "pick_seat", SEAT, principal=traveller)
-    # The delegate is not the booking runtime, so the booking policy — which
-    # names the LEAF actor — does not match it.
+    # Two denials for the delegate, for two different reasons. The booking
+    # permit names the LEAF ACTOR, and the leaf here is seat-picker...
     sub_book, _ = decide(picker, "book", TRIP, principal=traveller)
+    # ...while the cache permit names an AGENT SUBJECT, and the subject here is
+    # a person. Neither denial comes from the narrowed scope: a scope is checked
+    # when you delegate, never when a call is authorized.
+    sub_cache, _ = decide(picker, "cache", ROUTE, principal=traveller)
 
     check(alone["decision"] == "Allow", "case 1: the agent alone may warm the cache")
     check(denied_alone["decision"] == "Deny", "case 1: the agent alone may not book")
@@ -215,7 +219,10 @@ def three_cases() -> tuple[Watchlight, dict[str, dict]]:
     check("actor_chain" not in person_record, "case 2: still no actor_chain")
 
     check(sub["decision"] == "Allow", "case 3: the sub-agent may pick a seat for the person")
-    check(sub_book["decision"] == "Deny", "case 3: the sub-agent may not book")
+    check(sub_book["decision"] == "Deny",
+          "case 3: the sub-agent may not book — the booking permit names the leaf actor")
+    check(sub_cache["decision"] == "Deny",
+          "case 3: nor warm the cache — that permit names an Agent subject, not a person")
     check(sub_record.get("agent") == "seat-picker", "case 3: the leaf actor is the sub-agent")
     check("actor_chain" in sub_record,
           "case 3: the record carries an actor_chain — a delegated call always does")

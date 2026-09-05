@@ -199,9 +199,13 @@ async function threeCases() {
   const picker = booker.delegate(root, "seat-picker", { tools: ["search", "pick_seat", "trace"] });
   const { result: sub, record: subRecord } =
     await decide(picker, "pick_seat", SEAT, { principal: traveller });
-  // The delegate is not the booking runtime, so the booking policy — which
-  // names the LEAF actor — does not match it.
+  // Two denials for the delegate, for two different reasons. The booking permit
+  // names the LEAF ACTOR, and the leaf here is seat-picker...
   const { result: subBook } = await decide(picker, "book", TRIP, { principal: traveller });
+  // ...while the cache permit names an AGENT SUBJECT, and the subject here is a
+  // person. Neither denial comes from the narrowed scope: a scope is checked
+  // when you delegate, never when a call is authorized.
+  const { result: subCache } = await decide(picker, "cache", ROUTE, { principal: traveller });
 
   check(alone.decision === "Allow", "case 1: the agent alone may warm the cache");
   check(deniedAlone.decision === "Deny", "case 1: the agent alone may not book");
@@ -218,7 +222,10 @@ async function threeCases() {
   check(!("actor_chain" in personRecord), "case 2: still no actor_chain");
 
   check(sub.decision === "Allow", "case 3: the sub-agent may pick a seat for the person");
-  check(subBook.decision === "Deny", "case 3: the sub-agent may not book");
+  check(subBook.decision === "Deny",
+    "case 3: the sub-agent may not book — the booking permit names the leaf actor");
+  check(subCache.decision === "Deny",
+    "case 3: nor warm the cache — that permit names an Agent subject, not a person");
   check(subRecord.agent === "seat-picker", "case 3: the leaf actor is the sub-agent");
   check("actor_chain" in subRecord,
     "case 3: the record carries an actor_chain — a delegated call always does");

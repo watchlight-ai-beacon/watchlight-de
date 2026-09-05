@@ -233,10 +233,10 @@ def _with_actor_context(context: Optional[dict], actor: str, chain: Sequence[str
 class _GovernorState:
     """Everything a governor owns that is NOT its name: the engine and its
     compiled policies, the audit trail (file + sink), the scope-token secret,
-    and the counters. A view made by :meth:`Watchlight.as_` shares this object
-    by reference, so it is provably the same engine, the same policies, the same
-    trail, the same approval store and the same counter source — only the name
-    stamped on records and decisions differs."""
+    and the counters. Another governor made by :meth:`Watchlight.as_` shares this
+    object by reference, so it is provably the same engine, the same policies, the
+    same trail, the same approval store and the same counter source — only the
+    name stamped on records and decisions differs."""
 
     __slots__ = (
         "engine",
@@ -1290,7 +1290,7 @@ class Watchlight:
         )
         state.counter_source = counter_source
 
-    # The state below is reached through properties so that a view from
+    # The state below is reached through properties so that a governor from
     # :meth:`as_` and the governor it came from read and write ONE copy of it.
 
     @property
@@ -1338,11 +1338,12 @@ class Watchlight:
         self._shared.policy_count = value
 
     def as_(self, agent: str) -> "Watchlight":
-        """A view of THIS governor acting under a different agent name.
+        """Another :class:`Watchlight` acting under a different agent name,
+        backed by THIS governor's engine.
 
-        The view shares the engine, the compiled policies, the audit trail, the
-        sink, the scope-token secret and the policy count by reference — nothing
-        is reloaded, no second engine is constructed, and a policy added through
+        It shares the engine, the compiled policies, the audit trail, the sink,
+        the scope-token secret and the policy count by reference — nothing is
+        reloaded, no second engine is constructed, and a policy added through
         either one is immediately visible to both. Only the name stamped on
         audit records and passed to the engine differs, so any number of names
         costs one engine and one policy load::
@@ -1364,14 +1365,14 @@ class Watchlight:
                 "of the actor chain. Use delegate(parent, agent) to spawn a sub-agent "
                 "under it."
             )
-        view = object.__new__(Watchlight)
-        view.agent = agent
-        # A rename is not a delegation: the view acts alone under its own name.
-        view.actor_chain = (agent,)
-        view.delegated_scope = None
-        # Shared BY REFERENCE — the whole point of the view.
-        view._shared = self._shared
-        return view
+        renamed = object.__new__(Watchlight)
+        renamed.agent = agent
+        # Renaming is not delegating: it acts alone under its own name.
+        renamed.actor_chain = (agent,)
+        renamed.delegated_scope = None
+        # Shared BY REFERENCE — the whole point of the rename.
+        renamed._shared = self._shared
+        return renamed
 
     def delegate(
         self,
@@ -1422,17 +1423,17 @@ class Watchlight:
             time_budget_seconds=time_budget_seconds,
             agent=agent,
         )
-        view = object.__new__(Watchlight)
-        view.agent = agent
-        view.actor_chain = tuple(child.actor_chain)
-        view.delegated_scope = child
-        view._shared = self._shared
-        return view
+        sub = object.__new__(Watchlight)
+        sub.agent = agent
+        sub.actor_chain = tuple(child.actor_chain)
+        sub.delegated_scope = child
+        sub._shared = self._shared
+        return sub
 
     @property
     def policy_count(self) -> int:
         """How many policies this governor holds — the count shared with every
-        view from :meth:`as_`. Counts what was added, not what the engine
+        governor from :meth:`as_`. Counts what was added, not what the engine
         merged."""
         return self._shared.policy_count
 
@@ -1486,7 +1487,7 @@ class Watchlight:
         double the set. A file that does not exist is not remembered, so it
         loads once it appears. Two different paths to the same file are one
         source; two files with the same content are two, unless you give them a
-        shared ``source_id``. The memo is shared with every view from
+        shared ``source_id``. The memo is shared with every governor from
         :meth:`as_`.
 
         The memo is keyed on identity, not content: EDITING a file already
@@ -1628,7 +1629,7 @@ class Watchlight:
         refused fail-closed: the payload is withheld and ``TypeError`` is raised.
         """
 
-        # A per-tool `agent` is exactly a view of this governor (same engine,
+        # A per-tool `agent` is exactly a rename of this governor (same engine,
         # same policies, same trail) with a different name on it.
         gov = self.as_(agent) if agent else self
 
@@ -1698,7 +1699,7 @@ class Watchlight:
         :class:`AuthorizeError` instead of returning.
 
         ``agent`` names the acting agent for this one call, overriding the
-        governor's — the same view :meth:`as_` returns, applied to a single
+        governor's — the same rename :meth:`as_` returns, applied to a single
         decision. It is what the record carries and what the policy reads as
         ``context.actor``."""
         if agent and agent != self.agent:
