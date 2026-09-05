@@ -211,6 +211,55 @@ async function main() {
       warns.length === 1 && warns[0].includes("newly reserved"));
   }
 
+  console.log("views share one approval store");
+  {
+    // `as()` is a view of the SAME governor, so an approval is spent once
+    // across every name — not once per name.
+    const g = govAny();
+    const view = g.as("billing-agent");
+    const ch = { principal: "U", action: "a", resource: "r" };
+    const token = g.mintApproval(ch);
+    const first = await view.authorize({ ...ch, approval: token });
+    const second = await g.authorize({ ...ch, approval: token });
+    ok("a token minted by the parent is spent by the view", first.decision === "Allow");
+    ok("…and refused as a replay afterwards", second.decision === "NeedsApproval");
+  }
+  {
+    const g = govAny();
+    const view = g.as("billing-agent");
+    const ch = { principal: "U", action: "a", resource: "r" };
+    const token = view.mintApproval(ch);
+    ok("a token minted by the view is spent by the parent",
+      (await g.authorize({ ...ch, approval: token })).decision === "Allow");
+    ok("…and refused on the view afterwards",
+      (await view.authorize({ ...ch, approval: token })).decision === "NeedsApproval");
+  }
+  {
+    // The documented guarantee: a view shares the engine, policies, trail, sink
+    // and secrets — so nothing added here is silently not inherited.
+    const auditDir = fs.mkdtempSync(join(os.tmpdir(), "wl-appr-"));
+    const g = new Watchlight({
+      agent: "appr-agent", auditDir,
+      approvalSecret: SECRET_A, approvalStore: sharedStore(), counterSource: () => 7,
+    });
+    g.allow(ANY, "any");
+    const view = g.as("billing-agent");
+    ok("a view counts from the same source", view.counters({ principal: "U" }).count === 7);
+    // A separately CONSTRUCTED governor does not share the store — which is
+    // exactly what `approvalStore` is for.
+    const other = new Watchlight({ agent: "other", auditDir, approvalSecret: SECRET_A });
+    other.allow(ANY, "any");
+    const ch = { principal: "U", action: "a", resource: "r" };
+    const token = g.mintApproval(ch);
+    ok("the view spends it against the shared store",
+      (await view.authorize({ ...ch, approval: token })).decision === "Allow");
+    ok("…so the parent refuses the replay",
+      (await g.authorize({ ...ch, approval: token })).decision === "NeedsApproval");
+    ok("a separately CONSTRUCTED governor has its own store and admits it — which " +
+      "is exactly what a shared approvalStore is for",
+      (await other.authorize({ ...ch, approval: token })).decision === "Allow");
+  }
+
   console.log("seen-token store: fail closed");
   {
     const boom = () => { throw new Error("store down"); };

@@ -181,6 +181,52 @@ def test_the_in_memory_default_is_still_single_use_within_one_process(tmp_path):
     assert _held(g, token)["decision"] == "NeedsApproval"
 
 
+# ── views share one approval store ──────────────────────────────────────────
+
+
+def test_a_view_and_its_parent_share_one_approval(tmp_path):
+    """`as_()` is a view of the SAME governor, so an approval is spent once
+    across every name — not once per name."""
+    g = _gov(tmp_path, "a", policy=ANY)
+    view = g.as_("billing-agent")
+    token = g.mint_approval(principal="U", action="a", resource="r")
+    first = view.authorize(principal="U", action="a", resource="r", approval=token)
+    second = g.authorize(principal="U", action="a", resource="r", approval=token)
+    assert first["decision"] == "Allow"          # minted by the parent, spent by the view
+    assert second["decision"] == "NeedsApproval"  # …and refused as a replay afterwards
+
+
+def test_a_token_minted_by_a_view_is_spent_by_the_parent(tmp_path):
+    g = _gov(tmp_path, "a", policy=ANY)
+    view = g.as_("billing-agent")
+    token = view.mint_approval(principal="U", action="a", resource="r")
+    assert g.authorize(principal="U", action="a", resource="r", approval=token)["decision"] == "Allow"
+    assert (
+        view.authorize(principal="U", action="a", resource="r", approval=token)["decision"]
+        == "NeedsApproval"
+    )
+
+
+def test_views_share_the_secret_the_store_and_the_counter_source(tmp_path):
+    """The documented guarantee: a view shares the engine, policies, trail, sink
+    and secrets — so nothing added here is silently not inherited."""
+    store = SharedStore()
+    g = _gov(
+        tmp_path, "a", policy=ANY,
+        approval_secret=SECRET_A, approval_store=store, counter_source=lambda q: 7,
+    )
+    view = g.as_("billing-agent")
+    assert view._approval is g._approval
+    assert view._counter_source is g._counter_source
+    assert view.counters(principal="U")["count"] == 7
+    # A separately constructed governor with the same secret does NOT share the
+    # store, which is what `approval_store=` is for.
+    other = _gov(tmp_path, "b", policy=ANY, approval_secret=SECRET_A, approval_store=store)
+    token = g.mint_approval(principal="U", action="a", resource="r")
+    assert other.authorize(principal="U", action="a", resource="r", approval=token)["decision"] == "Allow"
+    assert view.authorize(principal="U", action="a", resource="r", approval=token)["decision"] == "NeedsApproval"
+
+
 # ── fail closed ─────────────────────────────────────────────────────────────
 
 
