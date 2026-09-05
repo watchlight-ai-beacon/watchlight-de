@@ -54,8 +54,10 @@ def charge_card(o): ...
 
 **Guarantees.** Fail-closed — no matching policy denies. The tool body never runs
 on `Deny`/`NeedsApproval`. Each decision returns a `decisionId` you can store next
-to the charge record. Graduate to the control plane with `WATCHLIGHT_APDP_URL` —
-same policy, same code.
+to the charge record. The `@enforcement_effect` value is checked when the policy
+loads: a misspelling raises `PolicyError` naming the accepted set, instead of
+loading a permit that would quietly charge without asking a human. Graduate to the
+control plane with `WATCHLIGHT_APDP_URL` — same policy, same code.
 
 See also: [Enforcement effects](https://docs.watchlight.ai/de/enforcement-effects)
 · [Testing & rollout](https://docs.watchlight.ai/de/testing).

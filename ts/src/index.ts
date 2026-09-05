@@ -56,6 +56,7 @@ import { AuthorizeError, selectBackend, type GovernanceBackend, type Obligations
 import { sanitize as sanitizeText, type SanitizeOptions, type SanitizeResult } from "./sanitize";
 import { screen as screenText, type ScreenOptions, type ScreenResult } from "./screen";
 import { principals } from "./principals";
+import { checkPolicyAnnotations } from "./annotations";
 import {
   runPolicyTests,
   type PolicyTestCase,
@@ -115,6 +116,8 @@ export type {
   SanitizeResult,
 } from "./sanitize";
 export { principals, entityRef, policyEntityRef, escapeCedarString } from "./principals";
+export { PolicyError, ENFORCEMENT_EFFECTS, ENFORCEMENT_EFFECT_ANNOTATION } from "./annotations";
+export type { EnforcementEffect } from "./annotations";
 export { screen, ScreenError, SCREEN_DETECTOR_VERSION, SCREEN_FAMILIES } from "./screen";
 export type { ScreenFamily, ScreenMode, ScreenOptions, ScreenReport, ScreenResult } from "./screen";
 export type { GovernanceBackend, Decision, AuthorizeRequest } from "./backend";
@@ -936,12 +939,20 @@ export class Watchlight {
   /** Add one Cedar policy inline. Chainable. Always additive: calling it twice
    *  with the same code adds it twice (use {@link load} for a set you may load
    *  more than once). (In networked mode policies are managed by the control
-   *  plane and this is ignored, with a one-time warning.) */
+   *  plane and this is ignored, with a one-time warning.)
+   *
+   *  CHECKED BEFORE IT LOADS: a policy carrying an `@enforcement_effect` value
+   *  the engine does not implement throws {@link PolicyError} naming the value
+   *  and the accepted set ({@link ENFORCEMENT_EFFECTS}), rather than loading and
+   *  quietly deciding without the effect — which on a `permit` would turn an
+   *  approval hold into a plain allow. An annotation NAME that is a near miss
+   *  for `@enforcement_effect` warns on the console; any other annotation is
+   *  your own and passes without comment. Every policy entry point goes through
+   *  here, {@link load} and the CLI included. */
   allow(cedarCode: string, name?: string): this {
-    this._backend.addPolicy({
-      name: name ?? `policy-${this._shared.policyCount}`,
-      code: cedarCode,
-    });
+    const policyName = name ?? `policy-${this._shared.policyCount}`;
+    checkPolicyAnnotations(cedarCode, policyName);
+    this._backend.addPolicy({ name: policyName, code: cedarCode });
     this._shared.policyCount += 1;
     return this;
   }
@@ -963,7 +974,13 @@ export class Watchlight {
    *  and calling `load` again is a no-op, and the new policies do not apply.
    *  Pass `{ force: true }` to load it again — policies are only ever added, so
    *  the previous copy stays and `policyCount` grows; construct a fresh
-   *  governor when you need the old set gone. */
+   *  governor when you need the old set gone.
+   *
+   *  CHECKED BEFORE IT LOADS: the whole file is checked first, so a policy
+   *  carrying an `@enforcement_effect` the engine does not implement throws
+   *  {@link PolicyError} and NOTHING from that file is added — the governor is
+   *  left exactly as it was, and the source is not remembered. See
+   *  {@link allow}. */
   load(file: string, opts: { sourceId?: string; force?: boolean } = {}): this {
     const key = opts.sourceId ?? resolveSource(file);
     if (!opts.force && this._shared.sources.has(key)) return this;
@@ -972,6 +989,13 @@ export class Watchlight {
     const entries: { name?: string; code: string }[] = Array.isArray(data)
       ? data
       : (data.policies ?? []);
+    // Check the whole file before adding any of it, so one refused policy leaves
+    // the governor exactly as it was rather than half-loaded.
+    entries.forEach((e, offset) =>
+      checkPolicyAnnotations(e.code, e.name ?? `policy-${this._shared.policyCount + offset}`, {
+        warn: false,
+      })
+    );
     for (const e of entries) this.allow(e.code, e.name);
     this._shared.sources.add(key);
     return this;

@@ -153,6 +153,14 @@ The specific reason stays in the trail, never in the refusal.
 whether it was withheld or rewritten.
 → [data egress](../examples/patterns/data-egress.md)
 
+**Enforcement effect** — what a matched policy does beyond allowing or denying,
+declared as `@enforcement_effect("<verb>")` on the policy. `require_approval` on
+a `permit` is the one the Developer Edition acts on: it yields `NeedsApproval`
+instead of `Allow`. The verb is checked when the policy loads — an unrecognised
+one is refused with `PolicyError` rather than dropped, because a dropped hold on
+a `permit` is a plain allow.
+→ [using the governor](using-the-governor.md#the-enforcement-effect-is-checked-when-the-policy-loads)
+
 **Fail closed** — no matching policy means Deny, and an evaluation that cannot
 be reached means Deny. Uncertainty never becomes permission.
 → [README](../README.md)

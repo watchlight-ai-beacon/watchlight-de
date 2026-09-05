@@ -231,7 +231,7 @@ def _print_report(file: str, report: dict) -> None:
 
 def _cmd_policy_test(args: argparse.Namespace) -> int:
     # Imported here so `watchlight dev` never pays for loading the engine.
-    from . import Watchlight
+    from . import PolicyError, Watchlight
     from .policytest import load_test_suite
 
     file = pathlib.Path(args.suite)
@@ -244,11 +244,18 @@ def _cmd_policy_test(args: argparse.Namespace) -> int:
     # Fresh, policy-free governor (fail-closed); load only what the suite declares.
     # No audit is written — `test()` uses the engine's decision core directly.
     gov = Watchlight(agent="policy-test")
-    policy_file = suite.get("policy_file")
-    if policy_file:
-        gov.load(file.parent / policy_file)
-    for policy in suite.get("policies") or []:
-        gov.allow(policy["code"], policy.get("name"))
+    try:
+        policy_file = suite.get("policy_file")
+        if policy_file:
+            gov.load(file.parent / policy_file)
+        for policy in suite.get("policies") or []:
+            gov.allow(policy["code"], policy.get("name"))
+    except PolicyError as exc:
+        # A policy the engine could not honour as written — reported here rather
+        # than run, since the suite would otherwise be testing a different policy
+        # from the one on the page.
+        print(f"watchlight: {exc}", file=sys.stderr)
+        return 2
 
     tests = suite.get("tests") or []
     if not tests:

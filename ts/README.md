@@ -344,6 +344,15 @@ if (d.decision === "NeedsApproval") {
 
 - **Three-state verdict** — `NeedsApproval` is surfaced when a matched permit is
   annotated `@enforcement_effect("require_approval")`.
+- **The effect is checked when the policy loads.** `allow` and `load` throw
+  `PolicyError` on an `@enforcement_effect` value the engine does not implement,
+  naming the value and the accepted set (`ENFORCEMENT_EFFECTS`: `attenuate`,
+  `escalate`, `observe`, `quarantine`, `require_approval`, `revoke`,
+  `sever_subtree`, `terminate`). An unrecognised effect used to be dropped —
+  harmless on a `forbid`, which stays a deny, but on a `permit` it turned an
+  approval hold into an unconditional allow. A misspelling of the annotation
+  NAME cannot be told from an annotation of your own, so a near miss for
+  `@enforcement_effect` warns and still loads.
 - **Approval tokens are single-use, TTL-bounded and bound to the exact
   `(principal, action, resource)`.** Both defaults are **per-process**:
   - the token is signed with a **random per-process key**, so it cannot cross a

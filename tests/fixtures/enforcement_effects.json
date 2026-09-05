@@ -1,0 +1,39 @@
+{
+  "_comment": "Cross-lane parity for @enforcement_effect validation. Both the Python suite (tests/test_policy_annotations.py) and the TypeScript suite (ts/test/policy-annotations.test.mjs) render these TEMPLATES and assert their own message builder produces the same string, so the two lanes cannot drift in wording. The accepted VERB LIST is deliberately not repeated here: it lives in exactly two places (src/watchlight/_annotations.py and ts/src/annotations.ts) and each lane's suite reads the other lane's source to prove they match.",
+  "annotation": "enforcement_effect",
+  "error_template": "{where}: @{annotation}(\"{value}\") is not an effect this engine implements. Accepted: {accepted}. An effect the engine does not implement is dropped, and on a `permit` that turns an approval hold into an unconditional allow — so the policy is refused here rather than deciding differently from what it says.",
+  "warning_template": "watchlight: {where}: `@{written}` is not an annotation Watchlight reads, and it is a near miss for `@{annotation}`. As written it is inert — the policy decides as if the effect were absent, so an approval gate would be a plain allow. Fix the spelling, or ignore this if the annotation is your own.",
+  "near_miss_names": [
+    "enforcment_effect",
+    "enforcement_efect",
+    "enforcement_effct",
+    "enforcementEffect",
+    "enforcementeffect",
+    "enforcement_effects",
+    "Enforcement_Effect",
+    "enfrocement_effect",
+    "enforcement__effect"
+  ],
+  "not_near_miss_names": [
+    "description",
+    "owner",
+    "severity",
+    "advice",
+    "effect",
+    "enforcement",
+    "obligate_redact",
+    "obligate_max_items",
+    "enforcement_action",
+    "enforcement_effect_reason"
+  ],
+  "rejected_values": [
+    "needs_approval",
+    "not_a_real_value",
+    "REQUIRE_APPROVAL",
+    "require approval",
+    "requireApproval",
+    "",
+    "terminate "
+  ],
+  "where": "policy \"{policy}\""
+}
