@@ -73,6 +73,10 @@ try {
 
   // Crossing a process boundary: a scope token carries the chain, the receiving
   // engine re-proves it. Illustrative secret — a real one comes from a secret store.
+  // The extra governors below stand in for SEPARATE PROCESSES, which is the one
+  // reason to construct more than one over the same policy set — an application
+  // names several agents from a single governor with `as()`
+  // (see docs/using-the-governor.md).
   const secret = "example-shared-secret-0123456789";
   const orchestrator = new Watchlight({ agent: "orchestrator", auditDir, signingSecret: secret });
   const worker = new Watchlight({ agent: "orchestrator", auditDir, signingSecret: secret });

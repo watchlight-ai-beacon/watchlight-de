@@ -563,5 +563,7 @@ new Watchlight({ agent: "my-agent", strictPrincipal: false });   // transitional
   example in both lanes: the three cases printed side by side, a policy per field, every refusal
   asserted, and a `policy.suite.json` the CLI verifies
 - [`README.md`](../README.md) — quickstart, the audit trail, the identity ladder
+- [`docs/using-the-governor.md`](using-the-governor.md) — where the governor lives in an
+  application, how many you need, and the request-handler / worker / test shapes
 - [`examples/patterns/per-user-attribution.md`](../examples/patterns/per-user-attribution.md) — a policy that requires a named subject
 - [`examples/patterns/subagent-confinement.md`](../examples/patterns/subagent-confinement.md) — scope attenuation

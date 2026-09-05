@@ -207,6 +207,10 @@ claim, and no identity provider is required. Derive it from something you
 authenticated, never from a request header or body a caller can set, and prefer
 an id that never moves over an email or a username.
 
+**→ [Using the governor](https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/docs/using-the-governor.md)** — where the
+governor lives in an application: construct it once at start-up, how many you
+need, what every name shares, and the request-handler / worker / test shapes.
+
 **→ Full reference: [The identity model](https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/docs/identity-model.md)** — the
 one-engine shape, the three cases with exact values, worked policies, where the
 values come from, and the 0.8.0 migration note.

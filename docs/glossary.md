@@ -16,7 +16,7 @@ What a governor is *not*: a **sandbox** — it cannot stop code that never asks;
 a **verifier** — it authorizes the identities your application asserts; an
 **attestation mechanism** — a shared signing secret gives integrity across your
 own processes, not proof of who they are.
-→ [README](../README.md), [identity model](identity-model.md)
+→ [using the governor](using-the-governor.md), [README](../README.md), [identity model](identity-model.md)
 
 **Subject** — on whose behalf the call runs. You pass it as the `principal`:
 `User::"db:4412"` for a person, `Agent::"…"` when the agent acts for itself.
@@ -138,7 +138,7 @@ the body runs. On Deny the body is never entered.
 → [denied before execute](../examples/showcase/denied-before-execute/README.md)
 
 **Governor** — see above.
-→ [README](../README.md)
+→ [using the governor](using-the-governor.md)
 
 **Intent** — the purpose you declare for a governed tool, and the action a
 policy matches. Declared, never inferred from the function's name or body.
@@ -154,7 +154,7 @@ and a resource, optionally guarded by a `when` clause over context.
 
 **Policy set** — the policies one governor holds. Load it once; every name that
 governor answers to decides against the same set.
-→ [identity model](identity-model.md#one-engine-many-named-agents)
+→ [using the governor](using-the-governor.md), [identity model](identity-model.md#one-engine-many-named-agents)
 
 **Policy suite** — a JSON file holding policies *and* their golden tests, run by
 `watchlight policy test` so a policy change is verified before it gates a real
