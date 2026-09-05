@@ -60,6 +60,8 @@ both lanes and exits non-zero if any assertion fails.
 | Example | What it shows |
 |---|---|
 | [`showcase/poisoned-rag/`](showcase/poisoned-rag/README.md) | **Poisoned-document RAG** — a retrieved document hides a prompt injection and personal data; `screen()` withholds it, the permit's `@obligate_redact` obligation strips personal data from what passes, and every step joins the decision on one `decision_id`. |
+| [`showcase/web-backend/`](showcase/web-backend/README.md) | **Governed web backend** — a FastAPI app and an Express app with one governed endpoint; the request's authenticated user becomes the acting principal, the policy is scoped to that user and her account, and `check.py` / `check.mjs` start the server on an ephemeral loopback port, drive allowed / denied / unauthenticated requests and assert every decision in the trail carries the acting user. Web frameworks are optional extras. |
+| [`showcase/red-team/`](showcase/red-team/README.md) | **Red-team corpus** — 30 synthetic adversarial prompts in 10 families driven through a governed agent with a screening `on_result` hook and a deny-by-default policy; prints per-family counts of withheld / reached / denied / executed and exits non-zero if a prompt gets further than its family allows, or if a family is one neither layer handles. |
 
 ## Govern an existing framework agent
 
