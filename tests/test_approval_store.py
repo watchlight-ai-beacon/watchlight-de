@@ -21,7 +21,14 @@ import pytest
 
 pytest.importorskip("watchlight_engine")
 
-from watchlight import APPROVAL_KEY_LABEL, APPROVAL_PAYLOAD_VERSION, ApprovalError, Watchlight
+from watchlight import (
+    APPROVAL_KEY_LABEL,
+    APPROVAL_PAYLOAD_VERSION,
+    APPROVAL_PRUNE_GRACE_MS,
+    APPROVAL_PRUNE_INTERVAL_MS,
+    ApprovalError,
+    Watchlight,
+)
 from watchlight._approval import derive_approval_key, normalize_approval_secret
 
 WIRE = '@enforcement_effect("require_approval")\npermit(principal, action == Action::"wire", resource);'
@@ -264,6 +271,264 @@ def test_an_async_store_refuses_rather_than_admitting(tmp_path, capsys, recwarn)
     assert not [w for w in recwarn if "never awaited" in str(w.message)]
 
 
+# ── expiry belongs to the store ─────────────────────────────────────────────
+
+
+class RecordingStore:
+    """Records every attribute the SDK so much as READS, not only the ones this
+    fixture happened to define — so an added call cannot slip past unnoticed."""
+
+    def __init__(self):
+        object.__setattr__(self, "touched", [])
+        object.__setattr__(self, "calls", [])
+        object.__setattr__(self, "seen", {})
+
+    def __getattribute__(self, name):
+        if not name.startswith("__"):
+            object.__getattribute__(self, "touched").append(name)
+        return object.__getattribute__(self, name)
+
+    def add(self, id, expires_at):  # noqa: A002
+        calls = object.__getattribute__(self, "calls")
+        seen = object.__getattribute__(self, "seen")
+        calls.append(("add", id, expires_at))
+        if id in seen:
+            return False
+        seen[id] = expires_at
+        return True
+
+
+class PruningStore:
+    """The shape the contract asks for: an atomic `add`, plus a `prune` that
+    deletes every reservation at or before the cutoff it is handed."""
+
+    def __init__(self):
+        self.seen = {}
+        self.calls = []
+
+    def add(self, id, expires_at):  # noqa: A002
+        self.calls.append(("add", id, expires_at))
+        if id in self.seen:
+            return False
+        self.seen[id] = expires_at
+        return True
+
+    def prune(self, before):
+        self.calls.append(("prune", before))
+        for key in [k for k, exp in self.seen.items() if exp <= before]:
+            self.seen.pop(key, None)
+
+
+def test_the_default_store_implements_no_prune(tmp_path):
+    """Its sweep is already inside `add`, so the SDK has nothing to ask it for —
+    and the default path stays exactly the one call it has always been."""
+    from watchlight._approval import _DEFAULT_STORE
+
+    assert not hasattr(_DEFAULT_STORE, "prune")
+
+
+def test_a_store_without_prune_is_interacted_with_exactly_as_before(tmp_path):
+    """THE REGRESSION GUARD for the optional `prune`."""
+    store = RecordingStore()
+    g = _gov(tmp_path, "a", approval_secret=SECRET_A, approval_store=store)
+    token = g.mint_approval(action="wire", resource="acct/1")
+    first = _held(g, token)
+    second = _held(g, token)
+    assert first["decision"] == "Allow" and first["approved"] is True
+    assert second["decision"] == "NeedsApproval"
+    calls = object.__getattribute__(store, "calls")
+    touched = object.__getattribute__(store, "touched")
+    # `add` is still the only method called, once per consume.
+    assert [op for op, *_ in calls] == ["add", "add"]
+    # …and the only other attribute read is the optional `prune`, which is absent.
+    assert set(touched) <= {"add", "prune"}
+    assert not hasattr(RecordingStore, "prune")
+
+
+def test_prune_runs_after_the_reservation_on_the_same_path(tmp_path):
+    store = PruningStore()
+    g = _gov(tmp_path, "a", approval_secret=SECRET_A, approval_store=store)
+    started = int(time.time() * 1000)
+    assert _held(g, g.mint_approval(action="wire", resource="acct/1"))["decision"] == "Allow"
+    assert [op for op, *_ in store.calls] == ["add", "prune"]
+    cutoff = store.calls[1][1]
+    # Epoch milliseconds, one grace margin BEHIND now — never ahead of it, so a
+    # live reservation is never swept.
+    assert isinstance(cutoff, int)
+    assert started - APPROVAL_PRUNE_GRACE_MS <= cutoff
+    assert cutoff <= int(time.time() * 1000) - APPROVAL_PRUNE_GRACE_MS
+
+
+def test_the_fresh_reservation_survives_the_prune_that_follows_it(tmp_path):
+    """The security property the lagging cutoff protects: sweeping the id just
+    reserved would let the token it belongs to be consumed a second time."""
+    store = PruningStore()
+    g = _gov(tmp_path, "a", approval_secret=SECRET_A, approval_store=store)
+    token = g.mint_approval(action="wire", resource="acct/1")
+    assert _held(g, token)["decision"] == "Allow"
+    assert len(store.seen) == 1
+    assert _held(g, token)["decision"] == "NeedsApproval"
+
+
+def test_many_approvals_do_at_most_one_prune(tmp_path):
+    """Opportunistic, not per-call: an authorize never becomes unbounded work."""
+    prunes = []
+
+    class CountingStore:
+        def add(self, id, expires_at):  # noqa: A002
+            return True
+
+        def prune(self, before):
+            prunes.append(before)
+
+    g = _gov(tmp_path, "a", approval_secret=SECRET_A, approval_store=CountingStore())
+    for _ in range(20):
+        _held(g, g.mint_approval(action="wire", resource="acct/1"))
+    assert len(prunes) == 1
+    assert APPROVAL_PRUNE_INTERVAL_MS == 60_000 and APPROVAL_PRUNE_GRACE_MS == 60_000
+
+
+def test_concurrent_approvals_never_run_two_prunes_at_once(tmp_path):
+    """The interval is claimed under a lock, so a fan-out cannot start N prunes
+    and pile cleanup up behind the decisions."""
+    import concurrent.futures
+    import threading
+
+    state = {"in_flight": 0, "max": 0, "prunes": 0}
+    lock = threading.Lock()
+
+    class SlowPruneStore:
+        def add(self, id, expires_at):  # noqa: A002
+            return True
+
+        def prune(self, before):
+            with lock:
+                state["prunes"] += 1
+                state["in_flight"] += 1
+                state["max"] = max(state["max"], state["in_flight"])
+            time.sleep(0.01)
+            with lock:
+                state["in_flight"] -= 1
+
+    g = _gov(tmp_path, "a", approval_secret=SECRET_A, approval_store=SlowPruneStore())
+    tokens = [g.mint_approval(action="wire", resource="acct/1") for _ in range(8)]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(lambda t: _held(g, t)["decision"], tokens))
+    assert state["max"] <= 1
+    assert state["prunes"] == 1
+
+
+def test_a_forged_token_drives_no_prune_either(tmp_path):
+    """The store is consulted only for an AUTHENTIC token, and that includes the
+    cleanup: an unauthenticated caller can drive no load into it at all."""
+    store = PruningStore()
+    g = _gov(tmp_path, "a", approval_secret=SECRET_A, approval_store=store)
+    token = g.mint_approval(action="wire", resource="acct/1")
+    exp, nonce, _sig = token.split(".")
+    assert _held(g, f"{exp}.{nonce}.{'0' * 64}")["decision"] == "NeedsApproval"
+    assert store.calls == []
+
+
+def test_a_store_whose_add_failed_is_not_asked_to_prune(tmp_path, capsys):
+    prunes = []
+
+    class BrokenStore:
+        def add(self, id, expires_at):  # noqa: A002
+            raise RuntimeError("store down")
+
+        def prune(self, before):
+            prunes.append(before)
+
+    g = _gov(tmp_path, "a", approval_secret=SECRET_A, approval_store=BrokenStore())
+    assert _held(g, g.mint_approval(action="wire", resource="acct/1"))["decision"] == "NeedsApproval"
+    assert prunes == []
+    assert WARNING in capsys.readouterr().err
+
+
+# ── a failed prune never moves a decision ───────────────────────────────────
+
+
+def test_a_raising_prune_still_allows_the_approval_it_rode_on(tmp_path, capsys):
+    """The OPPOSITE direction to ``add``. ``add`` fails closed because a
+    reservation it cannot confirm might admit a replay. A prune failure can only
+    leave rows behind, and a row that stays refuses a replay — it never admits
+    one. Failing that closed would deny a VALID approval for no security gain."""
+    seen = set()
+
+    class RaisingPruneStore:
+        def add(self, id, expires_at):  # noqa: A002
+            if id in seen:
+                return False
+            seen.add(id)
+            return True
+
+        def prune(self, before):
+            raise RuntimeError("delete failed")
+
+    g = _gov(tmp_path, "a", approval_secret=SECRET_A, approval_store=RaisingPruneStore())
+    token = g.mint_approval(action="wire", resource="acct/1")
+    d = _held(g, token)
+    assert d["decision"] == "Allow" and d["approved"] is True
+    # …and single use still holds afterwards.
+    assert _held(g, token)["decision"] == "NeedsApproval"
+    err = capsys.readouterr().err
+    assert "prune failed" in err
+    assert "delete failed" not in err  # never the error text
+    assert "no approval was affected" in err and "accumulating" in err
+
+
+def test_a_broken_prune_is_reported_once(tmp_path, capsys):
+    class RaisingPruneStore:
+        def add(self, id, expires_at):  # noqa: A002
+            return True
+
+        def prune(self, before):
+            raise RuntimeError("x")
+
+    g = _gov(tmp_path, "a", approval_secret=SECRET_A, approval_store=RaisingPruneStore())
+    # The interval alone would hold this to one call, so rewind it between
+    # approvals: three real prune failures, reported once.
+    for _ in range(3):
+        _held(g, g.mint_approval(action="wire", resource="acct/1"))
+        g._shared.approval._last_prune_at = 0
+    assert capsys.readouterr().err.count("prune failed") == 1
+
+
+def test_a_broken_prune_never_suppresses_a_broken_add(tmp_path, capsys):
+    """Only one of the two refuses approvals, so they are reported separately."""
+
+    class DoublyBrokenStore:
+        def add(self, id, expires_at):  # noqa: A002
+            return None  # not a bool → refuses
+
+        def prune(self, before):
+            raise RuntimeError("x")
+
+    g = _gov(tmp_path, "a", approval_secret=SECRET_A, approval_store=DoublyBrokenStore())
+    assert _held(g, g.mint_approval(action="wire", resource="acct/1"))["decision"] == "NeedsApproval"
+    err = capsys.readouterr().err
+    assert "newly reserved" in err and "prune failed" in err
+
+
+def test_an_async_prune_is_refused_without_moving_the_decision(tmp_path, capsys, recwarn):
+    """A coroutine would never run on the synchronous decision path — same rule
+    as ``add`` — but nothing was deleted, so it is a prune failure, not a
+    refusal."""
+
+    class AsyncPruneStore:
+        def add(self, id, expires_at):  # noqa: A002
+            return True
+
+        async def prune(self, before):  # never awaited: the path is synchronous
+            return None
+
+    g = _gov(tmp_path, "a", approval_secret=SECRET_A, approval_store=AsyncPruneStore())
+    d = _held(g, g.mint_approval(action="wire", resource="acct/1"))
+    assert d["decision"] == "Allow" and d["approved"] is True
+    assert "prune failed" in capsys.readouterr().err
+    assert not [w for w in recwarn if "never awaited" in str(w.message)]
+
+
 # ── concurrency: one token, one Allow ───────────────────────────────────────
 
 
@@ -367,6 +632,21 @@ def test_parallel_consumes_against_a_latency_injected_store(tmp_path):
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
         results = list(pool.map(lambda _: _held(g, token)["decision"], range(8)))
     assert results.count("Allow") == 1
+
+
+def test_parallel_consumes_against_a_pruning_store(tmp_path):
+    """The single-use property is unchanged when the store ALSO prunes."""
+    import concurrent.futures
+
+    store = PruningStore()
+    g = _gov(tmp_path, "a", approval_secret=SECRET_A, approval_store=store)
+    token = g.mint_approval(action="wire", resource="acct/1")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(lambda _: _held(g, token)["decision"], range(8)))
+    assert results.count("Allow") == 1
+    # …and the prune ran without taking the reservation with it.
+    assert [op for op, *_ in store.calls].count("prune") == 1
+    assert len(store.seen) == 1
 
 
 def test_a_forged_token_never_reaches_the_store(tmp_path):

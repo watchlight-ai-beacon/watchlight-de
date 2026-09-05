@@ -123,7 +123,10 @@ both lanes: the agent answers `NeedsApproval`, `approved: false`).
 Configure a [signing secret](../../../docs/signing-secret.md) — or an
 `approval_secret` / `approvalSecret` — and a token does verify in another
 process; add an `approval_store` / `approvalStore` over a shared store and
-single use holds across replicas too. The grant below is what this example uses
+single use holds across replicas too. Expiry of those reservations is the
+store's own job — the SDK never deletes one — so give the row a TTL or implement
+the optional `prune(before)`; see
+[destructive actions](../../patterns/destructive-actions.md). The grant below is what this example uses
 *instead*, and it stays useful either way: it is signed by the approver, so the
 agent can tell an approval apart from anything it could have minted itself.
 

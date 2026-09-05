@@ -46,6 +46,8 @@ from ._approval import (
     APPROVAL_KEY_LABEL,
     APPROVAL_MIN_SECRET_BYTES,
     APPROVAL_PAYLOAD_VERSION,
+    APPROVAL_PRUNE_GRACE_MS,
+    APPROVAL_PRUNE_INTERVAL_MS,
     ApprovalError,
     ApprovalStore,
     ApprovalTokens,
@@ -98,6 +100,8 @@ __all__ = [
     "APPROVAL_KEY_LABEL",
     "APPROVAL_MIN_SECRET_BYTES",
     "APPROVAL_PAYLOAD_VERSION",
+    "APPROVAL_PRUNE_GRACE_MS",
+    "APPROVAL_PRUNE_INTERVAL_MS",
     "CounterSource",
     "CounterSourceError",
     "SIGNING_SECRET_CONFLICT_MESSAGE",
@@ -1312,7 +1316,11 @@ class Watchlight:
             ``False`` when the id was already present — a read followed by an
             unconditional write cannot enforce single use. Fail-closed:
             ``False``, a raise, or a non-boolean return all refuse the approval;
-            none of them admits one. Shared with every governor made by
+            none of them admits one. The reservations are YOURS — the SDK never
+            deletes one, and ``expires_at`` is the epoch-millisecond deadline
+            after which an id is safe to drop; give the row a TTL, or implement
+            the optional ``prune(before)`` and the SDK will ask for the deletion
+            on the same code path as the reservation. Shared with every governor made by
             :meth:`as_`, so a token minted through one name and consumed through
             another is refused as a replay rather than admitted twice.
         :param counter_source: read side of ``audit_sink``: where

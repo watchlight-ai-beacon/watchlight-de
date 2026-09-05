@@ -14,7 +14,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 
 const require = createRequire(import.meta.url);
-const { Watchlight, ApprovalError, APPROVAL_KEY_LABEL, APPROVAL_PAYLOAD_VERSION } = require("../dist/index.js");
+const { Watchlight, ApprovalError, APPROVAL_KEY_LABEL, APPROVAL_PAYLOAD_VERSION,
+        APPROVAL_PRUNE_INTERVAL_MS, APPROVAL_PRUNE_GRACE_MS } = require("../dist/index.js");
 const { deriveApprovalKey, normalizeApprovalSecret } = require("../dist/approval.js");
 const { createHmac } = require("node:crypto");
 
@@ -310,6 +311,217 @@ async function main() {
     ok("an expired token is refused", (await held(g, expired)).decision === "NeedsApproval");
   }
 
+  console.log("expiry belongs to the store");
+  {
+    // THE REGRESSION GUARD for the optional `prune`: a store that does not
+    // implement it must be interacted with EXACTLY as before. Recorded through a
+    // Proxy, so this counts every property the SDK so much as reads — not only
+    // the methods this fixture happened to define.
+    const touched = [];
+    const called = [];
+    const seen = new Map();
+    const bare = {
+      add(id, expiresAt) {
+        called.push(["add", id, expiresAt]);
+        if (seen.has(id)) return false;
+        seen.set(id, expiresAt);
+        return true;
+      },
+    };
+    const store = new Proxy(bare, {
+      get(target, prop) { touched.push(String(prop)); return Reflect.get(target, prop); },
+    });
+    const g = gov({ approvalSecret: SECRET_A, approvalStore: store });
+    const token = g.mintApproval(challenge);
+    const first = await held(g, token);
+    const second = await held(g, token);
+    ok("a store with no `prune` approves once and refuses the replay, unchanged",
+      first.decision === "Allow" && first.approved === true && second.decision === "NeedsApproval");
+    ok("…`add` is still the ONLY method the SDK calls, once per consume",
+      called.length === 2 && called.every(([op]) => op === "add"));
+    ok("…the only other property it reads is the optional `prune`, and it is absent",
+      touched.filter((p) => p !== "add" && p !== "prune").length === 0 &&
+      bare.prune === undefined);
+    ok("…so an absent `prune` produces no call at all",
+      !called.some(([op]) => op === "prune"));
+  }
+  {
+    // With `prune` implemented, cleanup rides the reservation: same code path,
+    // after the verdict, one extra call.
+    const calls = [];
+    const seen = new Map();
+    const store = {
+      add(id, expiresAt) {
+        calls.push(["add", id, expiresAt]);
+        if (seen.has(id)) return false;
+        seen.set(id, expiresAt);
+        return true;
+      },
+      prune(before) {
+        calls.push(["prune", before]);
+        for (const [k, exp] of seen) if (exp <= before) seen.delete(k);
+      },
+    };
+    const g = gov({ approvalSecret: SECRET_A, approvalStore: store });
+    const startedAt = Date.now();
+    const d = await held(g, g.mintApproval(challenge));
+    ok("the approval itself is unaffected", d.decision === "Allow" && d.approved === true);
+    ok("`prune` runs on the same code path, AFTER the reservation",
+      calls.length === 2 && calls[0][0] === "add" && calls[1][0] === "prune");
+    const cutoff = calls[1][1];
+    ok("the cutoff is epoch milliseconds, one grace margin behind now",
+      Number.isInteger(cutoff) &&
+      cutoff >= startedAt - APPROVAL_PRUNE_GRACE_MS &&
+      cutoff <= Date.now() - APPROVAL_PRUNE_GRACE_MS);
+    ok("…so it is NEVER ahead of the current instant — a live row is never swept",
+      Date.now() - cutoff >= APPROVAL_PRUNE_GRACE_MS);
+  }
+  {
+    // The security property the lagging cutoff protects: the id just reserved
+    // must survive the prune that immediately follows it, or the token it
+    // belongs to could be consumed a second time.
+    const seen = new Map();
+    const store = {
+      add(id, expiresAt) {
+        if (seen.has(id)) return false;
+        seen.set(id, expiresAt);
+        return true;
+      },
+      prune(before) { for (const [k, exp] of seen) if (exp <= before) seen.delete(k); },
+    };
+    const g = gov({ approvalSecret: SECRET_A, approvalStore: store });
+    const token = g.mintApproval(challenge);
+    ok("the first consumption is approved", (await held(g, token)).decision === "Allow");
+    ok("the fresh reservation SURVIVES the prune that followed it", seen.size === 1);
+    ok("…so the replay is still refused", (await held(g, token)).decision === "NeedsApproval");
+  }
+  {
+    // Opportunistic, not per-call: many approvals must not become many DELETEs.
+    let prunes = 0;
+    const store = { add: () => true, prune: () => { prunes++; } };
+    const g = gov({ approvalSecret: SECRET_A, approvalStore: store });
+    for (let i = 0; i < 20; i++) await held(g, g.mintApproval(challenge));
+    ok("20 approvals do exactly ONE prune — an authorize never becomes unbounded work",
+      prunes === 1, `got ${prunes}`);
+    ok("the interval and the grace margin are exported, in milliseconds",
+      APPROVAL_PRUNE_INTERVAL_MS === 60_000 && APPROVAL_PRUNE_GRACE_MS === 60_000);
+  }
+  {
+    // Concurrency: the interval is claimed before the first await, so a fan-out
+    // cannot start N prunes at once and pile cleanup up behind the decisions.
+    let inFlight = 0, maxInFlight = 0, prunes = 0;
+    const store = {
+      add: () => true,
+      prune: async () => {
+        prunes++; maxInFlight = Math.max(maxInFlight, ++inFlight);
+        await new Promise((r) => setTimeout(r, 10));
+        inFlight--;
+      },
+    };
+    const g = gov({ approvalSecret: SECRET_A, approvalStore: store });
+    await Promise.all(Array.from({ length: 8 }, () => held(g, g.mintApproval(challenge))));
+    ok("8 concurrent approvals never run two prunes at once", maxInFlight <= 1, `got ${maxInFlight}`);
+    ok("…and start exactly one", prunes === 1, `got ${prunes}`);
+  }
+  {
+    // The store is consulted only for an AUTHENTIC token, and that includes the
+    // cleanup: an unauthenticated caller can drive no load into it at all.
+    const calls = [];
+    const store = { add: (id) => (calls.push(["add", id]), true), prune: (b) => calls.push(["prune", b]) };
+    const g = gov({ approvalSecret: SECRET_A, approvalStore: store });
+    const [exp, nonce] = g.mintApproval(challenge).split(".");
+    const d = await held(g, `${exp}.${nonce}.${"0".repeat(64)}`);
+    ok("a forged token drives no prune either — it never reaches the store at all",
+      d.decision === "NeedsApproval" && calls.length === 0);
+  }
+  {
+    // A store that just failed `add` is not handed more work on top.
+    let prunes = 0;
+    const store = { add: () => { throw new Error("store down"); }, prune: () => { prunes++; } };
+    await withWarnSpy(async () => {
+      const g = gov({ approvalSecret: SECRET_A, approvalStore: store });
+      const d = await held(g, g.mintApproval(challenge));
+      ok("a failing `add` still refuses (fail-closed), unchanged", d.decision === "NeedsApproval");
+    });
+    ok("…and a store that just failed is NOT asked to prune", prunes === 0);
+  }
+
+  console.log("a failed prune never moves a decision");
+  for (const [name, prune] of [
+    ["throwing", () => { throw new Error("delete failed"); }],
+    ["rejecting", async () => { throw new Error("delete failed"); }],
+  ]) {
+    // The OPPOSITE direction to `add`. `add` fails closed because a reservation
+    // it cannot confirm might admit a replay. A prune failure can only leave
+    // rows behind, and a row that stays refuses a replay — it never admits one.
+    // Failing that closed would deny a VALID approval for no security gain.
+    const warns = await withWarnSpy(async (w) => {
+      const seen = new Set();
+      const store = {
+        add: (id) => (seen.has(id) ? false : (seen.add(id), true)),
+        prune,
+      };
+      const g = gov({ approvalSecret: SECRET_A, approvalStore: store });
+      const token = g.mintApproval(challenge);
+      const d = await held(g, token);
+      ok(`a ${name} prune still ALLOWS the approval it rode on`,
+        d.decision === "Allow" && d.approved === true);
+      ok(`…and single use still holds afterwards (${name})`,
+        (await held(g, token)).decision === "NeedsApproval");
+      // The interval alone would hold this to one call, so rewind it: three
+      // real prune failures, reported once.
+      for (let i = 0; i < 3; i++) {
+        g._approval._lastPruneAt = 0;
+        await held(g, g.mintApproval(challenge));
+      }
+      return w;
+    });
+    ok(`a ${name} prune is reported once, without the error`,
+      warns.length === 1 && warns[0].includes("prune failed") && !warns[0].includes("delete failed"));
+    ok(`…and says plainly that no approval was affected (${name})`,
+      warns[0].includes("no approval was affected") && warns[0].includes("accumulating"));
+  }
+  {
+    // A broken prune must not mask a broken `add`: the two are reported
+    // separately, because only one of them refuses approvals.
+    const warns = await withWarnSpy(async (w) => {
+      const g = gov({
+        approvalSecret: SECRET_A,
+        approvalStore: { add: () => undefined, prune: () => { throw new Error("x"); } },
+      });
+      const d = await held(g, g.mintApproval(challenge));
+      ok("a non-boolean `add` still refuses even when the prune also fails",
+        d.decision === "NeedsApproval");
+      return w;
+    });
+    ok("both failures are reported — a broken prune never suppresses a broken add",
+      warns.length === 2 &&
+      warns.some((w) => w.includes("newly reserved")) &&
+      warns.some((w) => w.includes("prune failed")));
+  }
+  {
+    // Fail-STUCK is not acceptable for cleanup either: a prune that never
+    // settles is bounded by the same deadline as `add`, and the verdict it rode
+    // on — already decided — is returned unchanged.
+    const { DEFAULT_APPROVAL_STORE_TIMEOUT_MS } = require("../dist/index.js");
+    const warns = await withWarnSpy(async (w) => {
+      const g = gov({
+        approvalSecret: SECRET_A,
+        approvalStore: { add: () => true, prune: () => new Promise(() => {}) },
+      });
+      const started = Date.now();
+      const d = await held(g, g.mintApproval(challenge));
+      ok("a prune that never settles still returns the Allow it rode on",
+        d.decision === "Allow" && d.approved === true);
+      ok("…bounded by the same deadline as `add`, not indefinitely",
+        Date.now() - started >= DEFAULT_APPROVAL_STORE_TIMEOUT_MS &&
+        Date.now() - started < DEFAULT_APPROVAL_STORE_TIMEOUT_MS + 1500);
+      return w;
+    });
+    ok("the stuck prune is reported once, as a prune failure",
+      warns.length === 1 && warns[0].includes("prune failed"));
+  }
+
   console.log("concurrency: one token, one Allow");
   {
     // The P0 this guards: `consume` is async, so a "check, then insert" store
@@ -353,6 +565,31 @@ async function main() {
     const results = await Promise.all(Array.from({ length: 8 }, () => held(g, token)));
     ok("8 parallel consumes against a latency-injected async store yield exactly one Allow",
       results.filter((d) => d.decision === "Allow").length === 1);
+  }
+  {
+    // The single-use property is unchanged when the store ALSO prunes: the same
+    // fan-out on one token still yields exactly one Allow, with the prune
+    // running on the same calls.
+    const seen = new Map();
+    let prunes = 0;
+    const store = {
+      add(id, expiresAt) {
+        if (seen.has(id)) return false;
+        seen.set(id, expiresAt);
+        return true;
+      },
+      prune(before) {
+        prunes++;
+        for (const [k, exp] of seen) if (exp <= before) seen.delete(k);
+      },
+    };
+    const g = gov({ approvalSecret: SECRET_A, approvalStore: store });
+    const token = g.mintApproval(challenge);
+    const results = await Promise.all(Array.from({ length: 8 }, () => held(g, token)));
+    ok("8 parallel consumes against a PRUNING store still yield exactly one Allow",
+      results.filter((d) => d.decision === "Allow").length === 1);
+    ok("…and the prune ran without taking the reservation with it",
+      prunes === 1 && seen.size === 1);
   }
 
   {

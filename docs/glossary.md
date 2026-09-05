@@ -82,8 +82,13 @@ store for single use across replicas.
 [the signing secret](signing-secret.md)
 
 **Approval store** — a shared store you supply so a used approval token is
-recorded once for every replica, not once per process. One method, `add`, which
-must reserve the id atomically; a store that fails refuses the approval.
+recorded once for every replica, not once per process. One required method,
+`add`, which must reserve the id atomically; a store that fails refuses the
+approval. The reservations are yours — the SDK never deletes one, and
+`expires_at` / `expiresAt` is the epoch-millisecond deadline after which an id is
+safe to drop. Give the row a TTL, or add the optional `prune(before)` and the SDK
+asks for the deletion on the same code path as the reservation; a store without
+it is unchanged, and a failing `prune` never moves a decision.
 → [destructive actions](../examples/patterns/destructive-actions.md)
 
 **Attenuation** — narrowing a scope for a sub-agent. Strictly a subset: a child
