@@ -141,9 +141,19 @@ async function main() {
     ["null", null],
     ["undefined", undefined],
     ["an object", { count: 12 }],
+    ["past Number.MAX_SAFE_INTEGER", Number.MAX_SAFE_INTEGER + 1],
+    ["2^63", 2 ** 63],
   ]) {
     const { g } = gov({ counterSource: () => value });
     ok(`${name} from a source is refused`, throws(() => g.counters({ principal: USER }), CounterSourceError) !== null);
+  }
+  {
+    // The largest accepted count — the same bound the Python lane applies, so an
+    // integer one lane would carry cannot sail past the source and fail later
+    // inside the engine.
+    const { g } = gov({ counterSource: () => Number.MAX_SAFE_INTEGER });
+    ok("Number.MAX_SAFE_INTEGER is accepted",
+      g.counters({ principal: USER }).count === Number.MAX_SAFE_INTEGER);
   }
   {
     // Option validation happens BEFORE the source is called — a source can never

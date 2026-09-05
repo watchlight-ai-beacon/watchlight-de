@@ -52,13 +52,18 @@ const challenge = { action: "wire", resource: "acct/1" };
 const held = async (g, approval) =>
   g.authorize({ action: "wire", resource: "acct/1", ...(approval ? { approval } : {}) });
 
-/** An explicit shared seen-token store — the shape an integrator supplies. */
+/** An explicit shared seen-token store — the shape an integrator supplies, whose
+ *  `add` is the atomic check-and-set the contract requires. */
 const sharedStore = () => {
   const seen = new Map();
   return {
     calls: [],
-    has(id) { this.calls.push(["has", id]); return seen.has(id); },
-    add(id, expiresAt) { this.calls.push(["add", id, expiresAt]); seen.set(id, expiresAt); },
+    add(id, expiresAt) {
+      this.calls.push(["add", id, expiresAt]);
+      if (seen.has(id)) return false;
+      seen.set(id, expiresAt);
+      return true;
+    },
   };
 };
 
@@ -149,6 +154,8 @@ async function main() {
     const g = gov({ approvalSecret: SECRET_A, approvalStore: store });
     const token = g.mintApproval(challenge);
     await held(g, token);
+    ok("the reservation is a SINGLE call — never a read then a write",
+      store.calls.length === 1 && store.calls[0][0] === "add");
     const [, id] = store.calls.find(([op]) => op === "add");
     const [exp, nonce, sig] = token.split(".");
     ok("the store id is `<exp>.<nonce>` — never the signature", id === `${exp}.${nonce}`);
@@ -158,11 +165,15 @@ async function main() {
       expiresAt === Number(exp) && expiresAt > Date.now());
   }
   {
-    // A store may be asynchronous, exactly like an auditSink.
+    // A store may be asynchronous, exactly like an auditSink — as long as its
+    // `add` is still one atomic check-and-set.
     const seen = new Set();
     const asyncStore = {
-      async has(id) { return seen.has(id); },
-      async add(id) { seen.add(id); },
+      async add(id) {
+        if (seen.has(id)) return false;
+        seen.add(id);
+        return true;
+      },
     };
     const g = gov({ approvalSecret: SECRET_A, approvalStore: asyncStore });
     const token = g.mintApproval(challenge);
@@ -174,20 +185,30 @@ async function main() {
   {
     // A conditional `add` (INSERT … ON CONFLICT / SET NX) reports the race by
     // returning false, and that refuses too.
-    const g = gov({ approvalSecret: SECRET_A, approvalStore: { has: () => false, add: () => false } });
+    const g = gov({ approvalSecret: SECRET_A, approvalStore: { add: () => false } });
     const d = await held(g, g.mintApproval(challenge));
     ok("`add` returning false (already present) refuses the approval",
       d.decision === "NeedsApproval");
+  }
+  for (const [name, value] of [["undefined", undefined], ["null", null], ["a number", 1], ["a string", "ok"]]) {
+    // A store that will not say whether the reservation was NEW cannot enforce
+    // single use, so it never gets to admit one.
+    const warns = await withWarnSpy(async (w) => {
+      const g = gov({ approvalSecret: SECRET_A, approvalStore: { add: () => value } });
+      const d = await held(g, g.mintApproval(challenge));
+      ok(`an \`add\` returning ${name} refuses the approval`, d.decision === "NeedsApproval");
+      return w;
+    });
+    ok(`…and says the store did not report the reservation (${name})`,
+      warns.length === 1 && warns[0].includes("newly reserved"));
   }
 
   console.log("seen-token store: fail closed");
   {
     const boom = () => { throw new Error("store down"); };
     for (const [name, store] of [
-      ["has", { has: boom, add: () => {} }],
-      ["add", { has: () => false, add: boom }],
-      ["async has", { has: async () => { throw new Error("store down"); }, add: async () => {} }],
-      ["async add", { has: async () => false, add: async () => { throw new Error("store down"); } }],
+      ["add", { add: boom }],
+      ["async add", { add: async () => { throw new Error("store down"); } }],
     ]) {
       const warns = await withWarnSpy(async (w) => {
         const g = gov({ approvalSecret: SECRET_A, approvalStore: store });
@@ -201,10 +222,7 @@ async function main() {
   }
   {
     const warns = await withWarnSpy(async (w) => {
-      const g = gov({
-        approvalSecret: SECRET_A,
-        approvalStore: { has: () => { throw new Error("x"); }, add: () => {} },
-      });
+      const g = gov({ approvalSecret: SECRET_A, approvalStore: { add: () => { throw new Error("x"); } } });
       for (let i = 0; i < 3; i++) await held(g, g.mintApproval(challenge));
       return w;
     });
@@ -233,6 +251,72 @@ async function main() {
       (await held(g, wrong)).decision === "NeedsApproval");
     const expired = g.mintApproval(challenge, { ttlMs: -1 });
     ok("an expired token is refused", (await held(g, expired)).decision === "NeedsApproval");
+  }
+
+  console.log("concurrency: one token, one Allow");
+  {
+    // The P0 this guards: `consume` is async, so a "check, then insert" store
+    // would put an await between the two and let every concurrent consume of one
+    // token through. The reservation is ONE atomic check-and-set instead.
+    const g = gov();                       // the DEFAULT in-process store
+    const token = g.mintApproval(challenge);
+    const results = await Promise.all(Array.from({ length: 8 }, () => held(g, token)));
+    const allows = results.filter((d) => d.decision === "Allow").length;
+    ok("8 parallel consumes of one token with the default store yield exactly one Allow",
+      allows === 1, `got ${allows}`);
+    ok("…and the other 7 are held", results.filter((d) => d.decision === "NeedsApproval").length === 7);
+  }
+  {
+    // Same guarantee across governors sharing one atomic store — two replicas,
+    // both handling the fan-out at once.
+    const store = sharedStore();
+    const a = gov({ approvalSecret: SECRET_A, approvalStore: store });
+    const b = gov({ approvalSecret: SECRET_A, approvalStore: store });
+    const token = a.mintApproval(challenge);
+    const results = await Promise.all(
+      Array.from({ length: 8 }, (_, i) => held(i % 2 ? a : b, token))
+    );
+    ok("8 parallel consumes across two governors on one store yield exactly one Allow",
+      results.filter((d) => d.decision === "Allow").length === 1);
+  }
+  {
+    // With latency between the caller and the store — the case a check-then-act
+    // implementation loses — an atomic `add` still admits exactly one.
+    const seen = new Set();
+    const slowAtomic = {
+      async add(id) {
+        await new Promise((r) => setTimeout(r, 10));   // network latency
+        if (seen.has(id)) return false;                // …then one atomic step
+        seen.add(id);
+        return true;
+      },
+    };
+    const g = gov({ approvalSecret: SECRET_A, approvalStore: slowAtomic });
+    const token = g.mintApproval(challenge);
+    const results = await Promise.all(Array.from({ length: 8 }, () => held(g, token)));
+    ok("8 parallel consumes against a latency-injected async store yield exactly one Allow",
+      results.filter((d) => d.decision === "Allow").length === 1);
+  }
+
+  console.log("a store that never answers");
+  {
+    // Fail-STUCK is not acceptable either: a store that never settles would hang
+    // the governed call it gates, so it is raced against a deadline and refused.
+    const { DEFAULT_APPROVAL_STORE_TIMEOUT_MS } = require("../dist/index.js");
+    ok("the deadline is exported and shorter than the egress hook's",
+      DEFAULT_APPROVAL_STORE_TIMEOUT_MS === 2000);
+    const warns = await withWarnSpy(async (w) => {
+      const g = gov({ approvalSecret: SECRET_A, approvalStore: { add: () => new Promise(() => {}) } });
+      const started = Date.now();
+      const d = await held(g, g.mintApproval(challenge));
+      ok("a store that never settles refuses rather than hanging authorize",
+        d.decision === "NeedsApproval");
+      ok("…within the deadline, not indefinitely",
+        Date.now() - started >= DEFAULT_APPROVAL_STORE_TIMEOUT_MS &&
+        Date.now() - started < DEFAULT_APPROVAL_STORE_TIMEOUT_MS + 1500);
+      return w;
+    });
+    ok("the timeout is reported once, without the id", warns.length === 1 && warns[0].includes("timed out"));
   }
 
   console.log("signed payload is unambiguous");

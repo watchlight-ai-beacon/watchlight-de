@@ -263,24 +263,35 @@ if (d.decision === "NeedsApproval") {
     secret configures both, the approval key being
     `HMAC-SHA256(secret, "watchlight-de:approval-token:v1")`, never the secret
     itself) to mint in one process and consume in another.
-  - "used once" is recorded in an **in-process map**, so behind two replicas the
-    same token can be consumed once on *each*. Pass an `approvalStore`
-    (`has(id)` / `add(id, expiresAt)`, sync or async — the read/write shape of an
-    `auditSink`) backed by a store every replica shares, and single-use holds
-    across all of them. A store that throws **refuses** the approval; it never
-    admits one.
+  - "used once" is reserved in an **in-process map**, so behind two replicas the
+    same token can be consumed once on *each*. Pass an `approvalStore` backed by
+    a store every replica shares and single-use holds across all of them.
+
+  `ApprovalStore` is one method, and it **must be an atomic check-and-set**:
+  `add(id, expiresAt)` reserves the id only if it is not already there, and
+  returns `true` when the reservation was new, `false` when it was not. A
+  separate "does it exist?" read followed by an unconditional write **cannot**
+  enforce single use — `authorize` is async, so the gap between the two is a
+  window in which N concurrent consumes of one token are all approved, which is
+  exactly what one agent fanning out parallel tool calls after one human
+  confirmation does. The built-in default is atomic, so within a single process N
+  parallel consumes of one token yield exactly one `Allow`.
 
   ```ts
   const govern = new Watchlight({
     approvalSecret: process.env.APPROVAL_SECRET,          // >= 16 bytes
     approvalStore: {                                       // e.g. Redis
-      has: (id) => redis.exists(`wl:appr:${id}`).then(Boolean),
-      // a conditional write makes single-use atomic; `false` refuses the replay
+      // SET … NX is the atomic step; a null reply means the id was already there
       add: (id, expiresAt) =>
         redis.set(`wl:appr:${id}`, "1", { NX: true, PXAT: expiresAt }).then((r) => r !== null),
     },
   });
   ```
+
+  Fail-closed in every direction: `false`, a throw, a non-boolean return, or
+  outrunning `DEFAULT_APPROVAL_STORE_TIMEOUT_MS` (2 s — a store that never
+  settles is refused, never left hanging on the decision path) all refuse the
+  approval. None of them admits one.
 
   Every refusal — expired, tampered, signed with another key, already consumed,
   or a store that could not answer — surfaces as the *same* `NeedsApproval` hold
@@ -561,7 +572,13 @@ const c = govern.counters({ principal: 'User::"u1"', intent: "read", window: "1h
 
 The source is handed the **validated, resolved** query — `window.start`
 exclusive, `window.end` inclusive, both ISO-8601 UTC, so it maps straight onto a
-range query — and must return a non-negative integer. Fail-closed: a throw or a
+range query; `intent` / `resource` are omitted when the caller did not filter on
+them (identically in both lanes) — and must return a non-negative safe integer.
+It has to apply the same rules the local scan does, above all **decision rows
+only**: the trail also carries `sanitization`, `screening`, `egress` and
+`attenuation` records, and a `sanitization` / `screening` record can carry a
+`principal`, so a query filtered on principal and window alone over-counts and
+the quota denies early. Fail-closed: a throw or a
 non-count raises `CounterSourceError`; it never falls back to the local file,
 because a silently local count is a quota that under-counts without saying so. An
 **async** source is read with `await govern.countersAsync(...)`; calling the

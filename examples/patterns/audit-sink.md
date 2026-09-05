@@ -179,11 +179,27 @@ otherwise the only source:
 
 - **`counterSource` / `counter_source`** — the read side of this sink.
   `govern.counters(...)` then folds your store instead of the local file, so a
-  quota spans every replica and survives a deploy. See the
-  [quotas pattern](./quotas.md).
+  quota spans every replica and survives a deploy. Count **decision rows only**:
+  the same table holds `sanitization`, `screening`, `egress` and `attenuation`
+  records, and a `sanitization` / `screening` record can carry a `principal` of
+  its own, so a query filtered on principal and window alone counts them too and
+  the quota denies early.
+
+  ```sql
+  select count(*) from agent_audit
+  where record->>'event' is null          -- decisions only
+    and record->>'principal' = $1
+    and record->>'decision'  = 'Allow'
+    and ts > $2 and ts <= $3;             -- start exclusive, end inclusive
+  ```
+
+  See the [quotas pattern](./quotas.md).
 - **`approvalStore` / `approval_store`** — where consumed approval-token ids are
-  recorded, so an approval is single-use across replicas rather than once per
-  replica. See [destructive actions](./destructive-actions.md).
+  reserved, so an approval is single-use across replicas rather than once per
+  replica. Its `add(id, expiresAt)` must be an **atomic check-and-set** — an
+  insert that fails on a duplicate key, `SET … NX` — returning `false` when the
+  id was already present; a read followed by an unconditional write cannot
+  enforce single use. See [destructive actions](./destructive-actions.md).
 
 Both are separate from the sink deliberately: the sink is fire-and-forget and
 must never affect a decision, while these two are read *on* the decision path and

@@ -14,7 +14,7 @@ import pytest
 
 pytest.importorskip("watchlight_engine")
 
-from watchlight import AuditTrailUnreadable, CounterSourceError, Watchlight
+from watchlight import MAX_COUNTER_VALUE, AuditTrailUnreadable, CounterSourceError, Watchlight
 
 READ = 'permit(principal, action == Action::"read", resource);'
 CAP = 'forbid(principal, action == Action::"read", resource) when { context.reads_this_hour >= 100 };'
@@ -76,13 +76,23 @@ def test_a_source_replaces_the_local_count(tmp_path):
     assert (end - start).total_seconds() == 900
 
 
-def test_defaults_are_applied_before_the_source_sees_them(tmp_path):
+def test_an_unfiltered_query_omits_intent_and_resource(tmp_path):
+    """Key-for-key what the TypeScript lane passes: absent filters are OMITTED,
+    never sent as None, so one shared counting service sees one shape."""
     seen = []
     g = _gov(tmp_path, counter_source=lambda q: seen.append(q) or 0)
     c = g.counters(principal=USER)
-    assert seen[0]["intent"] is None and seen[0]["resource"] is None
+    assert "intent" not in seen[0] and "resource" not in seen[0]
+    assert set(seen[0]) == {"principal", "outcome", "window"}
     assert seen[0]["window"]["seconds"] == 3600 and seen[0]["outcome"] == "allowed"
     assert c["count"] == 0
+
+
+def test_a_filtered_query_carries_only_the_filters_given(tmp_path):
+    seen = []
+    g = _gov(tmp_path, counter_source=lambda q: seen.append(q) or 0)
+    g.counters(principal=USER, intent="read")
+    assert set(seen[0]) == {"principal", "outcome", "window", "intent"}
 
 
 def test_a_quota_policy_denies_on_the_durable_count(tmp_path):
@@ -151,11 +161,22 @@ def test_a_raising_async_source_fails_closed(tmp_path):
         asyncio.run(g.counters_async(principal=USER))
 
 
-@pytest.mark.parametrize("value", [-1, 1.5, float("nan"), "12", None, True, {"count": 12}])
+@pytest.mark.parametrize(
+    "value",
+    [-1, 1.5, float("nan"), "12", None, True, {"count": 12}, 2**53, 2**63],
+)
 def test_a_non_count_return_is_refused(tmp_path, value):
     g = _gov(tmp_path, counter_source=lambda q: value)
     with pytest.raises(CounterSourceError):
         g.counters(principal=USER)
+
+
+def test_the_largest_accepted_count_matches_the_typescript_bound(tmp_path):
+    """`Number.isSafeInteger`'s bound, so an int Python would happily carry does
+    not sail past the source and fail later inside the engine."""
+    assert MAX_COUNTER_VALUE == 2**53 - 1
+    g = _gov(tmp_path, counter_source=lambda q: MAX_COUNTER_VALUE)
+    assert g.counters(principal=USER)["count"] == MAX_COUNTER_VALUE
 
 
 def test_validation_happens_before_the_source_is_called(tmp_path):

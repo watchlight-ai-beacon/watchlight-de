@@ -14,6 +14,13 @@
 //      the same token can be consumed once on each. Configure `approvalStore`
 //      with a shared store and single-use holds across every replica.
 //
+// Single use is ONE atomic check-and-set: `add(id, expiresAt)` reserves the id
+// and answers whether the reservation was new. There is deliberately no
+// "check, then insert" — `consume` is async, so anything between the two would
+// be an interleaving window in which N concurrent consumes of one token all
+// observe "not yet used". A single agent fanning out parallel tool calls after
+// one human confirmation is exactly that race.
+//
 // Both defaults are safe for a single-process agent and are the wrong choice for
 // a replicated deployment; neither is silently upgraded. Every refusal here is
 // fail-closed: the caller sees the SAME `NeedsApproval` hold whichever of these
@@ -59,37 +66,62 @@ export class ApprovalError extends Error {
  * consumed — the same shape as an `auditSink`: your object, your storage, called
  * by the SDK. Configured via `WatchlightOptions.approvalStore`.
  *
- * `has(id)` answers whether the id was already consumed; `add(id, expiresAt)`
- * records it. `expiresAt` is epoch milliseconds — the moment the token expires
- * on its own, so a row may be dropped after it (a TTL / expiry index). Both may
- * be synchronous or return a promise; both are awaited before the approval is
+ * `add(id, expiresAt)` is the whole contract, and it MUST BE AN ATOMIC
+ * CHECK-AND-SET: reserve `id` only if it is not already present, and return
+ * `true` when the reservation was new, `false` when the id was already there.
+ * `expiresAt` is epoch milliseconds — the moment the token expires on its own,
+ * so a row may be dropped after it (a TTL / expiry index). It may be
+ * synchronous or return a promise; it is awaited before the approval is
  * honoured.
+ *
+ * In SQL that is an insert that fails (or affects no row) on a duplicate key;
+ * in Redis it is `SET key value NX PXAT <expiresAt>`, whose `null` reply means
+ * "already present". **A store that cannot do this in one atomic step cannot
+ * enforce single use** — a separate "does it exist?" read followed by a write
+ * leaves a window in which N concurrent consumes of the same token all see it
+ * unused, and every one of them is approved. Do not implement `add` as a read
+ * plus an unconditional write.
+ *
+ * ```ts
+ * add: (id, expiresAt) =>
+ *   redis.set(`wl:appr:${id}`, "1", { NX: true, PXAT: expiresAt }).then((r) => r !== null),
+ * ```
  *
  * The id is `<exp>.<nonce>` — unique per mint, and deliberately NOT the token:
  * the signature never leaves the process, so a store whose rows leak yields no
  * usable approval.
  *
- * Fail-closed: if either call throws or rejects, the approval is REFUSED (the
- * decision stays `NeedsApproval`) — a store that cannot answer never admits.
- * `has` + `add` is check-then-act, so under concurrency two replicas can both
- * see `has === false`; a store that must be strictly single-use should make
- * `add` conditional (an insert that fails on a duplicate key, `SET … NX`) and
- * either throw or return `false` when the id is already present — a `false`
- * return refuses the approval.
+ * Fail-closed, in every direction: `false` refuses; a throw or a rejection
+ * refuses; outrunning {@link DEFAULT_APPROVAL_STORE_TIMEOUT_MS} refuses; and a
+ * return that is not a boolean refuses too, because a store that will not say
+ * whether the reservation was new cannot be relied on for single use. A store
+ * that cannot answer never admits.
  */
 export interface ApprovalStore {
-  /** True when this id was already consumed. */
-  has(id: string): boolean | Promise<boolean>;
-  /** Record this id as consumed. Return `false` if it was already present. */
-  add(id: string, expiresAt: number): void | boolean | Promise<void | boolean>;
+  /** Atomically reserve `id`. `true` = newly reserved (the approval may
+   *  proceed); `false` = already present (the approval is refused). */
+  add(id: string, expiresAt: number): boolean | Promise<boolean>;
+  /** Optional, and NEVER consulted when consuming a token — single use is
+   *  decided by `add` alone, in one step. Present only so a store can also
+   *  expose a read for your own inspection. */
+  has?(id: string): boolean | Promise<boolean>;
 }
+
+/** How long the seen-token store gets to answer before the approval is refused.
+ *  A store that never settles would otherwise hang the governed call it gates;
+ *  the deadline turns that into a refusal (fail-closed), never an admission.
+ *  Mirrors the egress hook's `DEFAULT_ON_RESULT_TIMEOUT_MS`, but shorter — this
+ *  one sits on the decision path. */
+export const DEFAULT_APPROVAL_STORE_TIMEOUT_MS = 2000;
 
 /**
  * The default seen-token store: an in-process map of id → expiry.
  *
- * PER-PROCESS ONLY. It is shared by every governor in one process, and by
- * nothing else: behind two replicas the same approval token can be consumed once
- * on each, and a restart forgets every consumed id (harmless, since the same
+ * Atomic WITHIN this process — of N concurrent `authorize` calls carrying one
+ * token, exactly one is approved — and PER-PROCESS ONLY. It is shared by every
+ * governor in one process, and by nothing else: behind two replicas the same
+ * approval token can be consumed once on each, and a restart forgets every
+ * consumed id (harmless, since the same
  * restart also invalidates the random per-process key — unless an
  * `approvalSecret` is configured, which is exactly when a shared store is
  * needed too). Ids are dropped once they expire, so the map stays bounded by the
@@ -98,22 +130,19 @@ export interface ApprovalStore {
 class MemoryApprovalStore implements ApprovalStore {
   private readonly _seen = new Map<string, number>();
 
-  has(id: string): boolean {
-    const exp = this._seen.get(id);
-    if (exp === undefined) return false;
-    if (Date.now() > exp) {
-      this._seen.delete(id);
-      return false; // expired ids are refused by the TTL check, not by this store
-    }
-    return true;
-  }
-
-  add(id: string, expiresAt: number): void {
+  /** Test-and-set in ONE synchronous step. Because it never awaits, Node's
+   *  single thread cannot interleave another consume between the lookup and the
+   *  write: of N concurrent consumes of the same token, exactly one sees
+   *  `true`. */
+  add(id: string, expiresAt: number): boolean {
     const now = Date.now();
+    const seenAt = this._seen.get(id);
+    if (seenAt !== undefined && now <= seenAt) return false; // already reserved
     if (this._seen.size > 0) {
       for (const [k, exp] of this._seen) if (now > exp) this._seen.delete(k);
     }
     this._seen.set(id, expiresAt);
+    return true;
   }
 }
 
@@ -265,25 +294,58 @@ export class ApprovalTokens {
     // Only an authentic token reaches the store, so an unauthenticated caller
     // can never burn an id or drive load into it.
     const id = `${exp}.${nonce}`;
+    // ONE atomic reservation. Nothing is read before it: an `await` between a
+    // check and a write is an interleaving window, and N concurrent consumes of
+    // one token would all pass through it.
+    let reserved: unknown;
     try {
-      if (await this._store.has(id)) return false;
-      const added = await this._store.add(id, exp);
-      if (added === false) return false; // the store already held it (atomic add)
+      reserved = await this._withDeadline(
+        Promise.resolve().then(() => this._store.add(id, exp))
+      );
     } catch {
-      // Fail-closed: a store that cannot answer refuses the approval. The
-      // failure is reported once, without the error or the id.
-      this._warnOnce();
+      // Fail-closed: a store that cannot answer — a throw, a rejection, or one
+      // that never settles — refuses the approval. Reported once, without the
+      // error or the id.
+      this._warnOnce("approval store failed or timed out");
       return false;
     }
-    return true;
+    if (reserved === true) return true;
+    if (reserved === false) return false; // the store already held the id
+    // A store that will not say whether the reservation was new cannot be
+    // relied on for single use, so it does not get to admit one.
+    this._warnOnce("approval store did not report whether the id was newly reserved");
+    return false;
   }
 
-  private _warnOnce(): void {
+  /** Race the store against {@link DEFAULT_APPROVAL_STORE_TIMEOUT_MS}. A store
+   *  that settles late is ignored — the approval was already refused, and the
+   *  id it may yet reserve is simply burned, which is the safe direction. */
+  private _withDeadline(attempt: Promise<unknown>): Promise<unknown> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // A late rejection must not surface as an unhandled one.
+    attempt.catch(() => {});
+    const deadline = new Promise<never>((_, reject) => {
+      // NOT unref'd: while this is pending an `authorize` call is waiting on
+      // it, and a process whose only outstanding work is that call must stay
+      // alive to see the refusal — not exit silently as if nothing had been
+      // asked. The timer is cleared as soon as the race settles, so it holds
+      // the loop for at most the deadline.
+      timer = setTimeout(
+        () => reject(new Error("approval store deadline exceeded")),
+        DEFAULT_APPROVAL_STORE_TIMEOUT_MS
+      );
+    });
+    return Promise.race([attempt, deadline]).finally(() => {
+      if (timer !== undefined) clearTimeout(timer);
+    });
+  }
+
+  private _warnOnce(what: string): void {
     if (this._warned) return;
     this._warned = true;
     // eslint-disable-next-line no-console
     console.warn(
-      "watchlight: approval store failed; the approval was refused (fail-closed) — " +
+      `watchlight: ${what}; the approval was refused (fail-closed) — ` +
         "further approval-store failures are suppressed"
     );
   }

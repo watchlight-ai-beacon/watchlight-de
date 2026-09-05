@@ -54,6 +54,7 @@ __all__ = [
     "AuditTrailUnreadable",
     "CounterSource",
     "CounterSourceError",
+    "MAX_COUNTER_VALUE",
     "count_from_source",
     "count_from_source_async",
     "DEFAULT_COUNTERS_MAX_BYTES",
@@ -79,18 +80,19 @@ class AuditTrailUnreadable(RuntimeError):
 #: return how many DECISION records match it in your durable store — the same
 #: records the sink wrote there. Configured via ``Watchlight(counter_source=...)``.
 #:
-#: The query is ``{"principal", "intent", "resource", "outcome", "window":
-#: {"seconds", "start", "end"}}`` — the validated, resolved form of the caller's
-#: arguments. ``window["start"]`` is exclusive and ``window["end"]`` inclusive,
-#: both ISO-8601 UTC, so the source can translate them straight into a range
-#: query; ``intent`` / ``resource`` are ``None`` when the caller did not filter
-#: on them, and when present match by exact string equality, like the local scan.
+#: The query is ``{"principal", "outcome", "window": {"seconds", "start",
+#: "end"}}`` plus ``"intent"`` / ``"resource"`` WHEN the caller filtered on them
+#: — the validated, resolved form of the caller's arguments, key-for-key
+#: identical to what the TypeScript lane passes. ``window["start"]`` is exclusive
+#: and ``window["end"]`` inclusive, both ISO-8601 UTC, so the source can
+#: translate them straight into a range query; ``intent`` / ``resource`` match by
+#: exact string equality, like the local scan.
 #:
-#: Must return a non-negative ``int``, or an awaitable of one (an async source is
-#: read with ``counters_async``). Fail-closed: an exception, or anything that is
-#: not a count, raises :class:`CounterSourceError` — the read never falls back to
-#: the local file, because a silently local count is a quota that under-counts
-#: without saying so.
+#: Must return a non-negative ``int`` no larger than :data:`MAX_COUNTER_VALUE`,
+#: or an awaitable of one (an async source is read with ``counters_async``).
+#: Fail-closed: an exception, or anything that is not a count, raises
+#: :class:`CounterSourceError` — the read never falls back to the local file,
+#: because a silently local count is a quota that under-counts without saying so.
 CounterSource = Callable[[dict], Any]
 
 
@@ -351,19 +353,39 @@ def _prepare_counters(
 
 
 def _query_of(result: dict) -> dict:
-    """The query dict a :data:`CounterSource` is handed for these arguments."""
-    return {
+    """The query dict a :data:`CounterSource` is handed for these arguments.
+
+    ``intent`` / ``resource`` are OMITTED when the caller did not filter on them
+    — never present as ``None`` — so the dict is key-for-key what the TypeScript
+    lane passes (and serialises to the same JSON): one shared counting service
+    must not have to recognise two shapes. Read them with ``query.get("intent")``.
+    """
+    query = {
         "principal": result["principal"],
-        "intent": result["intent"],
-        "resource": result["resource"],
         "outcome": result["outcome"],
         "window": dict(result["window"]),
     }
+    for key in ("intent", "resource"):
+        if result[key] is not None:
+            query[key] = result[key]
+    return query
+
+
+#: Largest count a source may return: the same bound as TypeScript's
+#: ``Number.isSafeInteger``, so both lanes accept exactly the same values. A
+#: larger integer would survive Python and then fail inside the engine when it
+#: reached Cedar ``context``, instead of failing at the source that produced it.
+MAX_COUNTER_VALUE = 2**53 - 1
 
 
 def _counters_from_source_value(count: Any, result: dict) -> dict:
     """Turn a source's return value into a counters dict, or fail closed."""
-    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+    if (
+        isinstance(count, bool)
+        or not isinstance(count, int)
+        or count < 0
+        or count > MAX_COUNTER_VALUE
+    ):
         raise CounterSourceError("a counter source must return a non-negative integer count")
     result["count"] = count
     return result

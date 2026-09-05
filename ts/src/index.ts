@@ -49,7 +49,7 @@ import {
 
 export { Scope, DE_MAX_DEPTH, AttenuationDenied, DevEditionCeiling } from "./attenuation";
 export type { AuditRecord, AuditSink } from "./audit";
-export { ApprovalError, APPROVAL_KEY_LABEL, APPROVAL_PAYLOAD_VERSION, APPROVAL_MIN_SECRET_BYTES } from "./approval";
+export { ApprovalError, APPROVAL_KEY_LABEL, APPROVAL_PAYLOAD_VERSION, APPROVAL_MIN_SECRET_BYTES, DEFAULT_APPROVAL_STORE_TIMEOUT_MS } from "./approval";
 export type { ApprovalStore, ApprovalErrorCode } from "./approval";
 export type { ScopeTokenOptions, AttenuateOptions } from "./attenuation";
 export { ScopeTokenError, SCOPE_TOKEN_PREFIX, MAX_TOKEN_LENGTH } from "./scope-token";
@@ -291,14 +291,18 @@ export interface WatchlightOptions {
    *  `NeedsApproval` with the uniform `approval required` reason. Never logged
    *  or written. Shared with every view made by {@link Watchlight.as}. */
   approvalSecret?: string | Uint8Array;
-  /** Where consumed approval-token ids are recorded, which is what makes an
+  /** Where consumed approval-token ids are reserved, which is what makes an
    *  approval single-use. Defaults to an IN-PROCESS map shared by every
-   *  governor in this process and by nothing else — behind two replicas the
-   *  same token can be consumed once on each. Supply a shared store
-   *  ({@link ApprovalStore}: `has(id)` / `add(id, expiresAt)`, sync or async)
-   *  and single-use holds across every replica. Fail-closed: a store that
-   *  throws refuses the approval; it never admits one. Shared with every view
-   *  made by {@link Watchlight.as}. */
+   *  governor in this process and by nothing else — atomic within the process
+   *  (of N concurrent consumes of one token, exactly one is approved) but
+   *  behind two replicas the same token can be consumed once on each. Supply a
+   *  shared store ({@link ApprovalStore}) and single-use holds across every
+   *  replica. Its `add(id, expiresAt)` MUST be an atomic check-and-set
+   *  returning `true` when the reservation was new and `false` when the id was
+   *  already present — a read followed by an unconditional write cannot enforce
+   *  single use. Fail-closed: `false`, a throw, a timeout, or a non-boolean
+   *  return all refuse the approval; none of them admits one. Shared with every
+   *  view made by {@link Watchlight.as}. */
   approvalStore?: ApprovalStore;
   /** Read side of {@link auditSink}: where {@link Watchlight.counters} gets its
    *  number. Defaults to folding the local `audit.jsonl`. Configure it and

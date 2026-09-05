@@ -58,6 +58,7 @@ from ._counters import (
     MAX_COUNTERS_NESTING,
     MAX_COUNTERS_WINDOW_SECONDS,
     AuditTrailUnreadable,
+    MAX_COUNTER_VALUE,
     CounterSource,
     CounterSourceError,
     count_audit_records,
@@ -89,6 +90,7 @@ __all__ = [
     "APPROVAL_PAYLOAD_VERSION",
     "CounterSource",
     "CounterSourceError",
+    "MAX_COUNTER_VALUE",
     "count_audit_records",
     "parse_window_seconds",
     "DEFAULT_COUNTERS_MAX_BYTES",
@@ -1141,17 +1143,21 @@ class Watchlight:
             one — the decision stays ``NeedsApproval`` with the uniform
             ``approval required`` reason. Never logged or written. Shared with
             every view made by :meth:`as_`.
-        :param approval_store: where consumed approval-token ids are recorded,
+        :param approval_store: where consumed approval-token ids are reserved,
             which is what makes an approval single-use. Defaults to an
             IN-PROCESS dict shared by every governor in this process and by
-            nothing else — behind two replicas the same token can be consumed
-            once on each. Supply a shared store
-            (:class:`~watchlight._approval.ApprovalStore`: ``has(id)`` /
-            ``add(id, expires_at)``) and single-use holds across every replica.
-            Fail-closed: a store that raises refuses the approval; it never
-            admits one. Shared with every view made by :meth:`as_`, so a token
-            minted through one name and consumed through another is refused as a
-            replay rather than admitted twice.
+            nothing else — atomic within the process (of N consumes of one token
+            exactly one is approved) but behind two replicas the same token can
+            be consumed once on each. Supply a shared store
+            (:class:`~watchlight._approval.ApprovalStore`) and single-use holds
+            across every replica. Its ``add(id, expires_at)`` MUST be an atomic
+            check-and-set returning ``True`` when the reservation was new and
+            ``False`` when the id was already present — a read followed by an
+            unconditional write cannot enforce single use. Fail-closed:
+            ``False``, a raise, or a non-boolean return all refuse the approval;
+            none of them admits one. Shared with every view made by
+            :meth:`as_`, so a token minted through one name and consumed through
+            another is refused as a replay rather than admitted twice.
         :param counter_source: read side of ``audit_sink``: where
             :meth:`counters` gets its number. Defaults to folding the local
             ``audit.jsonl``. Configure it and ``counters`` folds your durable

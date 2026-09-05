@@ -14,6 +14,12 @@ resource) it was minted for. Two things decide whether it is honoured:
    same token can be consumed once on each. Configure ``approval_store`` with a
    shared store and single-use holds across every replica.
 
+Single use is ONE atomic check-and-set: ``add(id, expires_at)`` reserves the id
+and answers whether the reservation was new. There is deliberately no "check,
+then insert" — anything between the two is a window in which N concurrent
+consumes of one token all observe "not yet used". A single agent fanning out
+parallel tool calls after one human confirmation is exactly that race.
+
 Both defaults are safe for a single-process agent and are the wrong choice for a
 replicated deployment; neither is silently upgraded. Every refusal here is
 fail-closed: the caller sees the SAME ``NeedsApproval`` hold whichever check
@@ -79,48 +85,62 @@ class ApprovalError(ValueError):
 @runtime_checkable
 class ApprovalStore(Protocol):
     """An application-supplied store of approval-token ids that have already been
-    consumed — the same shape as an ``audit_sink``: your object, your storage,
+    reserved — the same shape as an ``audit_sink``: your object, your storage,
     called by the SDK. Configured via ``Watchlight(approval_store=...)``.
 
-    ``has(id)`` answers whether the id was already consumed; ``add(id,
-    expires_at)`` records it. ``expires_at`` is epoch MILLISECONDS — the moment
-    the token expires on its own, so a row may be dropped after it (a TTL /
-    expiry index).
+    ``add(id, expires_at)`` is the whole contract, and it MUST BE AN ATOMIC
+    CHECK-AND-SET: reserve ``id`` only if it is not already present, and return
+    ``True`` when the reservation was new, ``False`` when the id was already
+    there. ``expires_at`` is epoch MILLISECONDS — the moment the token expires on
+    its own, so a row may be dropped after it (a TTL / expiry index).
 
-    Both calls must be SYNCHRONOUS: the decision path in this package is
-    synchronous, so there is no loop to await on. A coroutine return is treated
-    as a failure and refuses the approval. (The TypeScript package, whose
-    ``authorize`` is async, additionally accepts a promise-returning store; every
-    other behaviour is identical.)
+    In SQL that is an insert that fails (or affects no row) on a duplicate key;
+    in Redis it is ``SET key value NX PXAT <expires_at>``, whose ``None`` reply
+    means "already present"::
+
+        def add(self, id, expires_at):
+            return self._redis.set(f"wl:appr:{id}", "1", nx=True, pxat=expires_at) is not None
+
+    **A store that cannot do this in one atomic step cannot enforce single
+    use** — a separate "does it exist?" read followed by a write leaves a window
+    in which N concurrent consumes of the same token all see it unused, and every
+    one of them is approved. Do not implement ``add`` as a read plus an
+    unconditional write.
+
+    ``add`` must be SYNCHRONOUS: the decision path in this package is
+    synchronous, so there is no loop to await on, and a coroutine return refuses
+    the approval. Use your client's own connect/read timeout to bound it — the
+    TypeScript package, whose ``authorize`` is async, additionally accepts a
+    promise-returning store and races it against a deadline. Every other
+    behaviour is identical.
 
     The id is ``<exp>.<nonce>`` — unique per mint, and deliberately NOT the
     token: the signature never leaves the process, so a store whose rows leak
     yields no usable approval.
 
-    Fail-closed: if either call raises, the approval is REFUSED (the decision
-    stays ``NeedsApproval``) — a store that cannot answer never admits. ``has``
-    + ``add`` is check-then-act, so under concurrency two replicas can both see
-    ``has() is False``; a store that must be strictly single-use should make
-    ``add`` conditional (an insert that fails on a duplicate key, ``SET … NX``)
-    and either raise or return ``False`` when the id is already present — a
-    ``False`` return refuses the approval.
+    Fail-closed, in every direction: ``False`` refuses; a raise refuses; and a
+    return that is not a ``bool`` refuses too, because a store that will not say
+    whether the reservation was new cannot be relied on for single use. A store
+    that cannot answer never admits.
     """
 
-    def has(self, id: str) -> bool:  # noqa: A002 - the parameter is named `id` in both lanes
-        """True when this id was already consumed."""
+    def add(self, id: str, expires_at: int) -> bool:  # noqa: A002 - named `id` in both lanes
+        """Atomically reserve ``id``. ``True`` = newly reserved (the approval may
+        proceed); ``False`` = already present (the approval is refused)."""
         ...
 
-    def add(self, id: str, expires_at: int) -> Any:  # noqa: A002
-        """Record this id as consumed. Return ``False`` if it was already present."""
-        ...
+    # ``has(id)`` is optional and is NEVER consulted when consuming a token —
+    # single use is decided by ``add`` alone, in one step. Define it only if you
+    # also want a read for your own inspection.
 
 
 class _MemoryApprovalStore:
     """The default seen-token store: an in-process dict of id -> expiry.
 
-    PER-PROCESS ONLY. It is shared by every governor in one process, and by
-    nothing else: behind two replicas the same approval token can be consumed
-    once on each, and a restart forgets every consumed id (harmless, since the
+    Atomic WITHIN this process — of N consumes of one token, exactly one is
+    approved — and PER-PROCESS ONLY. It is shared by every governor in one
+    process, and by nothing else: behind two replicas the same approval token can
+    be consumed once on each, and a restart forgets every consumed id (harmless, since the
     same restart also invalidates the random per-process key — unless an
     ``approval_secret`` is configured, which is exactly when a shared store is
     needed too). Ids are dropped once they expire, so the dict stays bounded by
@@ -130,20 +150,18 @@ class _MemoryApprovalStore:
     def __init__(self) -> None:
         self._seen: dict[str, int] = {}
 
-    def has(self, id: str) -> bool:  # noqa: A002
-        exp = self._seen.get(id)
-        if exp is None:
-            return False
-        if int(time.time() * 1000) > exp:
-            del self._seen[id]
-            return False  # expired ids are refused by the TTL check, not by this store
-        return True
-
-    def add(self, id: str, expires_at: int) -> None:  # noqa: A002
+    def add(self, id: str, expires_at: int) -> bool:  # noqa: A002
+        """Test-and-set in ONE step, with nothing that yields between the lookup
+        and the write: of N consumes of the same token, exactly one sees
+        ``True``."""
         now = int(time.time() * 1000)
+        seen_at = self._seen.get(id)
+        if seen_at is not None and now <= seen_at:
+            return False  # already reserved
         for key in [k for k, exp in self._seen.items() if now > exp]:
             del self._seen[key]
         self._seen[id] = expires_at
+        return True
 
 
 # Process-wide default store, so the in-memory single-use registry behaves
@@ -270,20 +288,22 @@ class ApprovalTokens:
         # Only an authentic token reaches the store, so an unauthenticated caller
         # can never burn an id or drive load into it.
         token_id = f"{exp}.{nonce}"
+        # ONE atomic reservation. Nothing is read before it: a check followed by
+        # a separate write is a window that N concurrent consumes of one token
+        # would all pass through.
         try:
-            seen = self._store.has(token_id)
-            if self._is_awaitable(seen):
-                return self._refuse()
-            if seen:
-                return False
-            added = self._store.add(token_id, exp)
-            if self._is_awaitable(added):
-                return self._refuse()
-            if added is False:  # the store already held it (atomic add)
-                return False
+            reserved = self._store.add(token_id, exp)
         except Exception:  # noqa: BLE001 — a store must never admit on failure
-            return self._refuse()
-        return True
+            return self._refuse("approval store failed")
+        if self._is_awaitable(reserved):
+            return self._refuse("approval store returned an awaitable on the synchronous decision path")
+        if reserved is True:
+            return True
+        if reserved is False:
+            return False  # the store already held the id
+        # A store that will not say whether the reservation was new cannot be
+        # relied on for single use, so it does not get to admit one.
+        return self._refuse("approval store did not report whether the id was newly reserved")
 
     @staticmethod
     def _is_awaitable(value: Any) -> bool:
@@ -296,14 +316,14 @@ class ApprovalTokens:
             return True
         return False
 
-    def _refuse(self) -> bool:
+    def _refuse(self, what: str) -> bool:
         """Fail-closed: a store that cannot answer refuses the approval. The
         failure is reported once, without the error or the id."""
         if not self._warned:
             self._warned = True
             print(
-                "watchlight: approval store failed; the approval was refused "
-                "(fail-closed) — further approval-store failures are suppressed",
+                f"watchlight: {what}; the approval was refused (fail-closed) — "
+                "further approval-store failures are suppressed",
                 file=sys.stderr,
             )
         return False

@@ -271,8 +271,13 @@ It mirrors the Python package feature-for-feature:
   or the existing `tokenSecret`, from which the approval key is derived with a
   distinct domain separator) makes a token portable; an `approvalStore` /
   `approval_store` (`has(id)` / `add(id, expiresAt)`) backed by a shared store
-  makes single-use hold across replicas. A store that fails **refuses** the
-  approval — it never admits one.
+  makes single-use hold across replicas. `add` must be an **atomic
+  check-and-set** — reserve the id only if absent, and say whether the
+  reservation was new; a read followed by an unconditional write cannot enforce
+  single use, because concurrent consumes of one token would all pass through
+  the gap. The built-in default is atomic, so within one process N parallel
+  consumes of one token yield exactly one `Allow`. A store that fails, times
+  out, or will not report **refuses** the approval — it never admits one.
   **Breaking in 0.8.0:** the signed payload is now length-prefixed and versioned,
   so no two different `(principal, action, resource)` triples can sign the same
   bytes — approval tokens minted by an earlier version do not verify against
@@ -424,11 +429,15 @@ govern = Watchlight(
 c = govern.counters(principal='User::"u1"', intent="read", window="1h")   # c["source"] == "external"
 ```
 
-The source is handed the validated, resolved query — `principal`, `intent`,
-`resource`, `outcome` and a `window` whose `start` is exclusive and `end`
-inclusive — and must return a non-negative integer. Fail-closed: it never falls
-back to the local file, so a quota can never quietly under-count. An async source
-is read with `counters_async(...)` / `countersAsync(...)`.
+The source is handed the validated, resolved query — `principal`, `outcome`, a
+`window` whose `start` is exclusive and `end` inclusive, plus `intent` /
+`resource` when the caller filtered on them — and must return a non-negative
+integer. It has to count **decision rows only**, exactly as the local scan does:
+the trail also carries `sanitization`, `screening`, `egress` and `attenuation`
+records, so a query filtered on principal and window alone over-counts and the
+quota denies early. Fail-closed: it never falls back to the local file, so a
+quota can never quietly under-count. An async source is read with
+`counters_async(...)` / `countersAsync(...)`.
 
 The [quotas pattern](examples/patterns/quotas.md) has the policy, the tool
 binding, and the exact counting rules.

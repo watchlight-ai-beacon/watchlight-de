@@ -32,19 +32,19 @@ WARNING = "approval store failed"
 
 
 class SharedStore:
-    """The shape an integrator supplies: a store several governors share."""
+    """The shape an integrator supplies: a store several governors share, whose
+    ``add`` is an atomic check-and-set reporting whether the id was new."""
 
     def __init__(self):
         self.seen = {}
         self.calls = []
 
-    def has(self, id):  # noqa: A002
-        self.calls.append(("has", id))
-        return id in self.seen
-
     def add(self, id, expires_at):  # noqa: A002
         self.calls.append(("add", id, expires_at))
+        if id in self.seen:
+            return False
         self.seen[id] = expires_at
+        return True
 
 
 def _gov(tmp_path, name="a", policy=WIRE, **kw):
@@ -141,17 +141,37 @@ def test_the_store_id_is_exp_dot_nonce_never_the_signature(tmp_path):
     assert add[2] == int(exp) > int(time.time() * 1000)
 
 
+def test_the_reservation_is_a_single_call(tmp_path):
+    """One atomic check-and-set — never a read followed by a write, which would
+    be a window that concurrent consumes of one token could all pass through."""
+    store = SharedStore()
+    g = _gov(tmp_path, "a", approval_secret=SECRET_A, approval_store=store)
+    _held(g, g.mint_approval(action="wire", resource="acct/1"))
+    assert [c[0] for c in store.calls] == ["add"]
+
+
 def test_add_returning_false_refuses(tmp_path):
     class Conditional:
-        def has(self, id):  # noqa: A002
-            return False
-
         def add(self, id, expires_at):  # noqa: A002
             return False  # an atomic insert that found the row already present
 
     g = _gov(tmp_path, "a", approval_secret=SECRET_A, approval_store=Conditional())
     d = _held(g, g.mint_approval(action="wire", resource="acct/1"))
     assert d["decision"] == "NeedsApproval"
+
+
+@pytest.mark.parametrize("value", [None, 1, "ok", object()])
+def test_a_store_that_does_not_report_reservation_refuses(tmp_path, capsys, value):
+    """A store whose `add` will not say whether the id was new cannot enforce
+    single use, so it never gets to admit one."""
+
+    class Silent:
+        def add(self, id, expires_at):  # noqa: A002
+            return value
+
+    g = _gov(tmp_path, "a", approval_secret=SECRET_A, approval_store=Silent())
+    assert _held(g, g.mint_approval(action="wire", resource="acct/1"))["decision"] == "NeedsApproval"
+    assert "newly reserved" in capsys.readouterr().err
 
 
 def test_the_in_memory_default_is_still_single_use_within_one_process(tmp_path):
@@ -165,22 +185,12 @@ def test_the_in_memory_default_is_still_single_use_within_one_process(tmp_path):
 
 
 class Boom:
-    def __init__(self, which):
-        self.which = which
-
-    def has(self, id):  # noqa: A002
-        if self.which == "has":
-            raise RuntimeError("store down")
-        return False
-
     def add(self, id, expires_at):  # noqa: A002
-        if self.which == "add":
-            raise RuntimeError("store down")
+        raise RuntimeError("store down")
 
 
-@pytest.mark.parametrize("which", ["has", "add"])
-def test_a_raising_store_refuses_and_is_reported_without_the_error(tmp_path, capsys, which):
-    g = _gov(tmp_path, "a", approval_secret=SECRET_A, approval_store=Boom(which))
+def test_a_raising_store_refuses_and_is_reported_without_the_error(tmp_path, capsys):
+    g = _gov(tmp_path, "a", approval_secret=SECRET_A, approval_store=Boom())
     d = _held(g, g.mint_approval(action="wire", resource="acct/1"))
     assert d["decision"] == "NeedsApproval"  # refused, never admitted
     err = capsys.readouterr().err
@@ -188,7 +198,7 @@ def test_a_raising_store_refuses_and_is_reported_without_the_error(tmp_path, cap
 
 
 def test_a_broken_store_is_reported_once(tmp_path, capsys):
-    g = _gov(tmp_path, "a", approval_secret=SECRET_A, approval_store=Boom("has"))
+    g = _gov(tmp_path, "a", approval_secret=SECRET_A, approval_store=Boom())
     for _ in range(3):
         _held(g, g.mint_approval(action="wire", resource="acct/1"))
     assert capsys.readouterr().err.count(WARNING) == 1
@@ -198,17 +208,56 @@ def test_an_async_store_refuses_rather_than_admitting(tmp_path, capsys, recwarn)
     """The decision path is synchronous, so a coroutine can never be awaited."""
 
     class AsyncStore:
-        async def has(self, id):  # noqa: A002
-            return False
-
         async def add(self, id, expires_at):  # noqa: A002
-            return None
+            return True
 
     g = _gov(tmp_path, "a", approval_secret=SECRET_A, approval_store=AsyncStore())
     assert _held(g, g.mint_approval(action="wire", resource="acct/1"))["decision"] == "NeedsApproval"
-    assert WARNING in capsys.readouterr().err
+    assert "awaitable" in capsys.readouterr().err
     # The coroutine is closed, so it never surfaces as "never awaited".
     assert not [w for w in recwarn if "never awaited" in str(w.message)]
+
+
+# ── concurrency: one token, one Allow ───────────────────────────────────────
+
+
+def test_parallel_consumes_of_one_token_yield_exactly_one_allow(tmp_path):
+    """The default store reserves atomically, so a single agent fanning out
+    parallel tool calls after ONE human confirmation cannot reuse the token."""
+    import concurrent.futures
+
+    g = _gov(tmp_path, "a")
+    token = g.mint_approval(action="wire", resource="acct/1")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(lambda _: _held(g, token)["decision"], range(8)))
+    assert results.count("Allow") == 1
+    assert results.count("NeedsApproval") == 7
+
+
+def test_parallel_consumes_against_a_latency_injected_store(tmp_path):
+    """Same guarantee when the store itself is slow, provided its `add` is the
+    atomic check-and-set the contract requires."""
+    import concurrent.futures
+    import threading
+
+    class SlowAtomicStore:
+        def __init__(self):
+            self._seen = set()
+            self._lock = threading.Lock()
+
+        def add(self, id, expires_at):  # noqa: A002
+            time.sleep(0.01)  # latency between the caller and the store
+            with self._lock:  # the store's own atomicity, as the contract requires
+                if id in self._seen:
+                    return False
+                self._seen.add(id)
+                return True
+
+    g = _gov(tmp_path, "a", approval_secret=SECRET_A, approval_store=SlowAtomicStore())
+    token = g.mint_approval(action="wire", resource="acct/1")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(lambda _: _held(g, token)["decision"], range(8)))
+    assert results.count("Allow") == 1
 
 
 def test_a_forged_token_never_reaches_the_store(tmp_path):

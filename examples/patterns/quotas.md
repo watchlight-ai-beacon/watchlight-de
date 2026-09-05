@@ -134,9 +134,14 @@ const govern = new Watchlight({
   auditSink: (record) => db.insert("agent_audit", record),
   counterSource: (q) =>
     db.countDecisions({                       // your query, your index
+      // ONLY decision rows: the trail also carries `sanitization`, `screening`,
+      // `egress` and `attenuation` records, and several of those now carry a
+      // `principal` too — a filter on principal + window alone would count them
+      // and deny early.
+      eventIsNull: true,                      // i.e. WHERE record->>'event' IS NULL
       principal: q.principal,
-      intent: q.intent,
-      resource: q.resource,
+      intent: q.intent,                       // absent when the caller didn't filter
+      resource: q.resource,                   // absent when the caller didn't filter
       outcome: q.outcome,                     // "allowed" | "denied" | "all"
       after: q.window.start,                  // exclusive
       until: q.window.end,                    // inclusive
@@ -150,15 +155,35 @@ from watchlight import Watchlight
 govern = Watchlight(
     audit_sink=lambda record: db.insert("agent_audit", record),
     counter_source=lambda q: db.count_decisions(
-        principal=q["principal"], intent=q["intent"], resource=q["resource"],
+        event_is_null=True,                   # decision rows only — see the note above
+        principal=q["principal"], intent=q.get("intent"), resource=q.get("resource"),
         outcome=q["outcome"], after=q["window"]["start"], until=q["window"]["end"],
     ),
 )
 ```
 
+In SQL over the `jsonb` column of the [audit-sink pattern](./audit-sink.md):
+
+```sql
+select count(*) from agent_audit
+where record->>'event' is null            -- decisions only, never sanitization/screening/egress
+  and record->>'principal' = $1
+  and record->>'decision'  = 'Allow'      -- outcome = "allowed"
+  and ts > $2 and ts <= $3;               -- start exclusive, end inclusive
+```
+
 The source is handed the **validated, resolved** query — the same filters the
 local scan would apply, with `window.start` exclusive and `window.end` inclusive,
-both ISO-8601 UTC — and must return a **non-negative integer**. On an external
+both ISO-8601 UTC — and must return a **non-negative integer** (at most 2^53 − 1,
+the same bound in both languages). `intent` and `resource` are **omitted** when
+the caller did not filter on them, in both lanes, so one shared counting service
+sees one shape; read them with `q.intent` / `q.get("intent")`.
+
+It must apply the same *what counts* rules as the local scan, above — above all,
+**decision records only**. The trail also carries `sanitization`, `screening`,
+`egress` and `attenuation` records, and a `sanitization` / `screening` record can
+carry a `principal` of its own, so a query filtered on principal and window alone
+counts them too and denies early. On an external
 result, `records` and `skipped` describe the local scan that did not happen and
 are `0`; `truncated` is `false` (your store's bound is yours to enforce).
 
