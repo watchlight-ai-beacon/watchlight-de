@@ -1,0 +1,59 @@
+{
+  "policies": [
+    { "name": "a-traveller-may-cancel-their-own-trip",
+      "code": "permit(principal == User::\"db:4412\", action == Action::\"cancel_trip\", resource);" },
+
+    { "name": "write-memory-only-from-the-memory-writer-runtime",
+      "code": "permit(principal, action == Action::\"write_memory\", resource) when { context.actor == \"memory-writer\" };" },
+
+    { "name": "booking-for-a-person-from-the-booking-runtime",
+      "code": "permit(principal is User, action == Action::\"book\", resource) when { context.actor == \"flight-booker\" };" },
+
+    { "name": "the-booking-agent-acting-alone-may-only-warm-the-cache",
+      "code": "permit(principal == Agent::\"flight-booker\", action == Action::\"cache\", resource);" },
+
+    { "name": "reading-an-itinerary-for-a-person",
+      "code": "permit(principal is User, action == Action::\"read_itinerary\", resource) when { context.actor == \"flight-booker\" };" },
+
+    { "name": "the-seat-picker-acts-only-for-a-person",
+      "code": "permit(principal is User, action == Action::\"pick_seat\", resource) when { context.actor == \"seat-picker\" };" },
+
+    { "name": "anything-the-booking-agent-delegated-at-any-depth",
+      "code": "permit(principal is User, action == Action::\"trace\", resource) when { context.actor_chain.contains(\"flight-booker\") };" }
+  ],
+
+  "tests": [
+    { "name": "a traveller may cancel their own trip, whichever runtime acts",
+      "action": "cancel_trip", "principal": "User::\"db:4412\"", "resource": "trip/AX8821", "expect": "Allow" },
+
+    { "name": "a different traveller may not cancel that trip",
+      "action": "cancel_trip", "principal": "User::\"sso:8f3c2b7e\"", "resource": "trip/AX8821", "expect": "Deny" },
+
+    { "name": "an agent subject is not the traveller",
+      "action": "cancel_trip", "principal": "Agent::\"flight-booker\"", "resource": "trip/AX8821", "expect": "Deny" },
+
+    { "name": "a call that names no subject is not the traveller either",
+      "action": "cancel_trip", "resource": "trip/AX8821", "expect": "Deny" },
+
+    { "name": "write_memory is refused to a runtime that is not memory-writer",
+      "action": "write_memory", "principal": "User::\"db:4412\"", "resource": "memory/traveller-notes", "expect": "Deny" },
+
+    { "name": "book is refused to a runtime that is not flight-booker",
+      "action": "book", "principal": "User::\"db:4412\"", "resource": "trip/AX8821", "expect": "Deny" },
+
+    { "name": "pick_seat is refused to a runtime that is not seat-picker",
+      "action": "pick_seat", "principal": "User::\"db:4412\"", "resource": "seat/AX8821", "expect": "Deny" },
+
+    { "name": "trace is refused outside the booking agent's delegation",
+      "action": "trace", "principal": "User::\"db:4412\"", "resource": "trace/AX8821", "expect": "Deny" },
+
+    { "name": "the agent acting on its own behalf may warm the cache",
+      "action": "cache", "principal": "Agent::\"flight-booker\"", "resource": "route/AMS-LIS", "expect": "Allow" },
+
+    { "name": "the cache grant does not extend to a person subject",
+      "action": "cache", "principal": "User::\"db:4412\"", "resource": "route/AMS-LIS", "expect": "Deny" },
+
+    { "name": "an unlisted action is refused (fail-closed)",
+      "action": "refund", "principal": "User::\"db:4412\"", "resource": "trip/AX8821", "expect": "Deny" }
+  ]
+}

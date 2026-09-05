@@ -306,7 +306,7 @@ export interface WatchlightOptions {
    *  every outstanding approval. A token presented to a governor holding a
    *  different key is refused exactly like an expired one — the decision stays
    *  `NeedsApproval` with the uniform `approval required` reason. Never logged
-   *  or written. Shared with every view made by {@link Watchlight.as}. */
+   *  or written. Shared with every governor made by {@link Watchlight.as}. */
   approvalSecret?: SecretInput;
   /** Where consumed approval-token ids are reserved, which is what makes an
    *  approval single-use. Defaults to an IN-PROCESS map shared by every
@@ -319,7 +319,7 @@ export interface WatchlightOptions {
    *  already present — a read followed by an unconditional write cannot enforce
    *  single use. Fail-closed: `false`, a throw, a timeout, or a non-boolean
    *  return all refuse the approval; none of them admits one. Shared with every
-   *  view made by {@link Watchlight.as}. */
+   *  governor made by {@link Watchlight.as}. */
   approvalStore?: ApprovalStore;
   /** Read side of {@link auditSink}: where {@link Watchlight.counters} gets its
    *  number. Defaults to folding the local `audit.jsonl`. Configure it and
@@ -328,7 +328,7 @@ export interface WatchlightOptions {
    *  source that throws, or returns anything but a non-negative integer, fails
    *  the read closed ({@link CounterSourceError}); it never falls back to the
    *  local file. An async source is read with {@link Watchlight.countersAsync}.
-   *  Shared with every view made by {@link Watchlight.as}. */
+   *  Shared with every governor made by {@link Watchlight.as}. */
   counterSource?: CounterSource;
 }
 
@@ -449,7 +449,7 @@ function withActorContext(
 
 /** Everything a governor owns that is NOT its name: the engine and its compiled
  *  policies, the audit trail (file + sink), the scope-token secret, and the
- *  counters. A view made by {@link Watchlight.as} shares this object by
+ *  counters. Another governor made by {@link Watchlight.as} shares this object by
  *  reference, so it is provably the same engine, the same policies and the same
  *  trail — only the name stamped on records and decisions differs.
  *  @internal */
@@ -459,8 +459,8 @@ interface GovernorState {
   /** Signing secrets, newest first: the first signs, every one verifies. */
   signingSecrets?: Uint8Array[];
   /** The approval signing key + seen-token store. On the SHARED state, so an
-   *  approval minted through one view is consumed — and, once consumed, refused
-   *  — through every other view of the same governor. A view that had its own
+   *  approval minted through one name is consumed — and, once consumed, refused
+   *  — through every other name of the same governor. A governor that had its own
    *  store would let one token be spent once per name. */
   approval: ApprovalTokens;
   /** The approval options in force, so {@link Watchlight._configure} can apply
@@ -636,10 +636,10 @@ export class Watchlight {
    *  derived. Pass this governor (or this scope) to {@link delegate} again to
    *  go one level deeper. Undefined on a governor that is not a delegate. */
   readonly delegatedScope?: Scope;
-  /** Shared with every view made by {@link as} — see {@link GovernorState}. */
+  /** Shared with every governor made by {@link as} — see {@link GovernorState}. */
   private readonly _shared: GovernorState;
 
-  // The state below is reached through accessors so that a view and the
+  // The state below is reached through accessors so that a renamed governor and the
   // governor it came from read and write ONE copy of it.
   private get _trail(): AuditTrail {
     return this._shared.trail;
@@ -672,8 +672,8 @@ export class Watchlight {
   }
 
   /**
-   * A view of THIS governor acting under a different agent name. The view
-   * shares the engine, the compiled policies, the audit trail, the sink, the
+   * Another Watchlight acting under a different agent name, backed by THIS
+   * governor's engine. It shares the engine, the compiled policies, the audit trail, the sink, the
    * scope-token secret and the policy count by reference — nothing is
    * reloaded, no second engine is constructed, and a policy added through
    * either one is immediately visible to both. Only the name stamped on audit
@@ -695,15 +695,15 @@ export class Watchlight {
           "actor chain. Use delegate(from, agent) to spawn a sub-agent under it."
       );
     }
-    const view = Object.create(Watchlight.prototype) as Watchlight;
-    // Shared BY REFERENCE — the whole point of the view. A rename is not a
-    // delegation: the view acts alone under its own name.
-    Object.assign(view, {
+    const renamed = Object.create(Watchlight.prototype) as Watchlight;
+    // Shared BY REFERENCE — the whole point of the rename. Renaming is not
+    // delegating: it acts alone under its own name.
+    Object.assign(renamed, {
       agent,
       actorChain: Object.freeze([agent]),
       _shared: this._shared,
     });
-    return view;
+    return renamed;
   }
 
   /**
@@ -737,14 +737,14 @@ export class Watchlight {
       );
     }
     const child = parent.attenuate({ ...opts, agent });
-    const view = Object.create(Watchlight.prototype) as Watchlight;
-    Object.assign(view, {
+    const sub = Object.create(Watchlight.prototype) as Watchlight;
+    Object.assign(sub, {
       agent,
       actorChain: child.actorChain,
       delegatedScope: child,
       _shared: this._shared,
     });
-    return view;
+    return sub;
   }
 
   /** `"in-process"` (Developer Edition) or `"networked"` (graduated to the
@@ -755,7 +755,7 @@ export class Watchlight {
 
   // ── policy loading ────────────────────────────────────────────────
 
-  /** How many policies this governor holds — the count shared with every view
+  /** How many policies this governor holds — the count shared with every governor
    *  from {@link as}. Counts what was added, not what the engine merged. */
   get policyCount(): number {
     return this._shared.policyCount;
@@ -792,7 +792,7 @@ export class Watchlight {
    *  does not exist is not remembered, so it loads once it appears. Two
    *  different paths to the same file are one source; two files with the same
    *  content are two, unless you give them a shared `sourceId`. The memo is
-   *  shared with every view from {@link as}.
+   *  shared with every governor from {@link as}.
    *
    *  The memo is keyed on identity, not content: EDITING a file already loaded
    *  and calling `load` again is a no-op, and the new policies do not apply.
@@ -923,7 +923,7 @@ export class Watchlight {
        *  {@link principals} (`principals.user(sub)`). With none, the agent is
        *  the subject and is recorded as `Agent::"<name>"`. */
       principal?: Binding<A>;
-      /** Agent name for this tool, overriding the governor's — the same view
+      /** Agent name for this tool, overriding the governor's — the same rename
        *  {@link as} returns, applied to one tool. */
       agent?: string;
       /** Cedar resource entity — value or `(args) => value`. Defaults to
@@ -953,7 +953,7 @@ export class Watchlight {
   ): Governed<A, R> {
     const intent = opts.intent;
     const name = fn.name || "anonymous";
-    // A per-tool `agent` is exactly a view of this governor (same engine, same
+    // A per-tool `agent` is exactly a rename of this governor (same engine, same
     // policies, same trail) with a different name on it.
     const gov = opts.agent ? this.as(opts.agent) : this;
     return async (...args: A): Promise<Awaited<R>> => {
@@ -1035,7 +1035,7 @@ export class Watchlight {
     context?: Record<string, unknown>;
     /** A token from {@link mintApproval} (after human confirmation). */
     approval?: string;
-    /** Agent name for this one call, overriding the governor's — the same view
+    /** Agent name for this one call, overriding the governor's — the same rename
      *  {@link as} returns, applied to a single decision. It is what the record
      *  carries and what the policy reads as `context.actor`. */
     agent?: string;
@@ -1170,7 +1170,7 @@ export class Watchlight {
    *   Configure `approvalStore` with a store every replica shares and
    *   single-use holds across all of them.
    *
-   * Both live on the state a view made by {@link as} shares, so a token minted
+   * Both live on the state a governor made by {@link as} shares, so a token minted
    * through one name and consumed through another is the SAME token: the second
    * use is refused as a replay, not admitted a second time.
    */
@@ -1272,7 +1272,7 @@ export class Watchlight {
    * source that throws or returns a non-count throws {@link CounterSourceError};
    * an asynchronous source throws too, naming {@link countersAsync}, rather than
    * quietly handing back a local number. The source is on the shared state, so
-   * every view made by {@link as} counts from the same place.
+   * every governor made by {@link as} counts from the same place.
    */
   counters(opts: CountersOptions): Counters {
     if (this._counterSource) return countFromSource(this._counterSource, opts);
