@@ -427,9 +427,10 @@ All three belong on the run handle, and the error says so.
 
 **Name the entity type.** On this path `principal`, `resource` and the action
 reach the engine exactly as you write them. A typed reference discriminates:
-`User::"u-1"` is not matched by a policy naming `Agent::"u-1"`. A **bare** name
-is a wildcard that matches every entity type with that id — convenient for a
-scratch policy, wrong for a decision you rely on. The action is always Cedar
+`User::"u-1"` is not matched by a policy naming `Agent::"u-1"`. A **bare** name is
+not typed and not inert: it matches a policy naming that id under `User`,
+`Agent`, `Group` or `Role`, and when it matches more than one, an allow beats a
+forbid — the opposite of Cedar's usual rule. Name the type. The action is always Cedar
 type `Action`; the engine rejects a policy that gives it any other type.
 
 ---

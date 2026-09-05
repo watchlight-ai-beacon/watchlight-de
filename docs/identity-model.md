@@ -327,10 +327,15 @@ that is what records the agent as its own subject, deliberately and visibly.
 
 The value is **not parsed**, and a bare identifier — `team-42`, with no
 `Type::` — is accepted and recorded exactly as given. It is not a shorthand for
-any type: it binds to whichever entity type the surrounding policy set names
-that identifier with, so the same bare id can satisfy a `principal is User` rule
-in one policy set and a `principal is Agent` rule in another, and *which* one it
-binds to is fixed for the life of an engine rather than decided by policy order.
+any one type, and it is not inert.
+
+A bare identifier matches a policy naming that id under `User`, `Agent`,
+`Group` or `Role`, and does **not** match one naming it under `Tool`,
+`Resource` or `Workflow` — each of those types works when you name it
+explicitly, so this is a property of leaving the type off. And when a bare
+identifier matches more than one of those policies, an **allow beats a
+forbid**, which is the opposite of Cedar's usual rule. A `forbid` naming an
+agent can therefore be defeated by a `permit` naming a user with the same id.
 
 Treat a bare identifier as an **opaque** subject. **Only a typed reference
 discriminates by type** — if a policy needs to tell a person from an agent, both
