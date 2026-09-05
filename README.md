@@ -56,9 +56,9 @@ running control plane, not a rewrite.
                  └───────────────┬───────────────┘
                 PERMIT ─ forward │ ─ DENY  (blocked before execution)
                                  ▼
-              value-free audit → .watchlight/audit.jsonl
+     value-free audit → your sink and/or .watchlight/audit.jsonl
                                  ▼
-                 watchlight dev  ·  http://localhost:7000
+        watchlight dev  ·  http://localhost:7000   (reads the file)
 
   Production = the SAME code, pointed at the governed control plane
   (signed audit · multi-tenant · drift→quarantine · fleet revocation).
@@ -396,7 +396,8 @@ Reference sinks — a Postgres row, an OTLP log record, a webhook — are in
 
 `audit_file=False` makes the sink the **sole** destination: no `.watchlight`
 directory, no file, and `govern.counters(...)` — which reads the local file —
-raises rather than counting zero. With neither a file nor a sink the SDK says so
+raises rather than counting zero. `watchlight dev` tails that same file, so it
+has nothing to show once the file is off; read your sink's store instead. With neither a file nor a sink the SDK says so
 once instead of discarding records silently. Note that the file is shared: every
 governor pointed at the same directory, including concurrent instances in one
 process and a test run in the same working directory, appends to the same
@@ -633,7 +634,7 @@ You don't have to trust a black box to trust the decisions:
 
 - **The policy language is open.** Decisions are standard [Cedar](https://www.cedarpolicy.com/) — an open, formally-specified language; the same policy yields the same decision, deterministically.
 - **The integration layer is open.** The SDK, plugins, CLI, and PEP transport are all readable here, so you can see exactly what the engine is asked and what it returns.
-- **Every decision is on disk.** Each `ALLOW`/`DENY` is appended, value-free, to `.watchlight/audit.jsonl` — inspect the engine's behaviour on your own machine, tool by tool.
+- **Every decision is yours to read.** Each `ALLOW`/`DENY` is emitted value-free to whatever destination you configure — by default `.watchlight/audit.jsonl`, so you can inspect the engine's behaviour on your own machine, tool by tool, with nothing set up.
 
 Want the **engine source** or an **air-gapped build**? That's Enterprise — [email sales@watchlight.ai](mailto:sales@watchlight.ai?subject=Watchlight%20Enterprise).
 
