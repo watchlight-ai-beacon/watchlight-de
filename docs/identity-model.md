@@ -145,6 +145,9 @@ from data. Ids carrying control characters are refused rather than mangled.
 
 ## The three cases
 
+All three run, print their verdicts and their audit records, and assert them in
+[`examples/showcase/identity/`](../examples/showcase/identity/README.md).
+
 | Case | `principal` | `context.actor` | How you make it |
 |---|---|---|---|
 | Agent acting alone | `Agent::"flight-booker"` | `flight-booker` | omit `principal` |
@@ -417,6 +420,9 @@ new Watchlight({ agent: "my-agent", strictPrincipal: false });   // transitional
 
 ## See also
 
+- [`examples/showcase/identity/`](../examples/showcase/identity/README.md) — this page as a runnable
+  example in both lanes: the three cases printed side by side, a policy per field, every refusal
+  asserted, and a `policy.suite.json` the CLI verifies
 - [`README.md`](../README.md) — quickstart, the audit trail, the identity ladder
 - [`examples/patterns/per-user-attribution.md`](../examples/patterns/per-user-attribution.md) — a policy that requires a named subject
 - [`examples/patterns/subagent-confinement.md`](../examples/patterns/subagent-confinement.md) — scope attenuation
