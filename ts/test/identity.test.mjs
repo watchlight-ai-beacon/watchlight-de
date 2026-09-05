@@ -9,7 +9,8 @@ import * as os from "node:os";
 const require = createRequire(import.meta.url);
 const {
   Watchlight, govern, configureDefault, principals, entityRef, escapeCedarString,
-  policyEntityRef,
+  policyEntityRef, ACTOR_CHAIN_CONTEXT_KEY, MAX_ACTOR_CHAIN, DE_MAX_DEPTH,
+  AttenuationDenied, DevEditionCeiling, AuthorizeRequestError, REQUEST_INVALID_MESSAGE,
   ReservedContextError, RESERVED_CONTEXT_MESSAGE, ACTOR_CONTEXT_KEY, Denied,
 } = require("../dist/index.js");
 
@@ -135,6 +136,8 @@ async function main() {
       lines(dir).every((r) => r.principal === "writer"));
     ok("the transitional substitution warns exactly once",
       said.filter((w) => w.includes("strictPrincipal")).length === 1, JSON.stringify(said));
+    ok("the warning names the key that resolves, `context.actor`",
+      said[0]?.includes("context.actor") && !said[0]?.includes("context.agent"), JSON.stringify(said));
   }
 
   // ── the reserved actor context key (policies name the runtime) ─────
@@ -273,14 +276,18 @@ async function main() {
   // ── the default governor is configurable, once, before first use ───
   {
     const dir = tmp("default");
+    const dir2 = tmp("default2");
     const seen = [];
     ok("govern starts with no policies", govern.policyCount === 0);
     configureDefault({ agent: "configured", auditDir: dir, auditSink: (r) => seen.push(r) });
     ok("configureDefault renames the default governor", govern.agent === "configured");
+    // A second call naming only the directory must not drop the sink.
+    configureDefault({ auditDir: dir2 });
     govern.allow('permit(principal, action == Action::"read", resource);');
     await govern.authorize({ action: "read", principal: 'User::"a"' });
     ok("the default governor's records reach the configured sink", seen.length === 1);
-    ok("and its file lands in the configured directory", fs.existsSync(join(dir, "audit.jsonl")));
+    ok("a later configureDefault MERGES: the sink survives a directory change",
+      seen.length === 1 && fs.existsSync(join(dir2, "audit.jsonl")) && !fs.existsSync(join(dir, "audit.jsonl")));
 
     let late = null;
     try { configureDefault({ auditDir: tmp("late") }); } catch (e) { late = e; }
@@ -339,6 +346,182 @@ async function main() {
       JSON.stringify([alone, forUser]));
     ok("the record's agent is the actor the policy matched",
       recs.filter((r) => r.intent === "book").every((r) => typeof r.agent === "string"));
+  }
+
+  // ── the actor CHAIN: delegation through a spawned scope ────────────
+  {
+    const dir = tmp("chain");
+    const g = new Watchlight({ agent: "flight-booker", auditDir: dir });
+    // "who made this call" — the leaf actor.
+    g.allow(
+      'permit(principal is User, action == Action::"pick_seat", resource) ' +
+        'when { context.actor == "seat-picker" };',
+      "leaf"
+    );
+    // "whose delegation is this" — membership anywhere in the chain.
+    g.allow(
+      'permit(principal is User, action == Action::"trace", resource) ' +
+        'when { context.actor_chain.contains("flight-booker") };',
+      "chain"
+    );
+    ok("reserved chain key is 'actor_chain'", ACTOR_CHAIN_CONTEXT_KEY === "actor_chain");
+    ok("the chain is bounded by the depth ceiling", MAX_ACTOR_CHAIN === DE_MAX_DEPTH + 1);
+
+    const alice = principals.user("alice");
+    const root = await g.scope({ tools: ["search", "book"], timeBudgetSeconds: 600 });
+    ok("a root scope's chain is the governor's agent",
+      JSON.stringify(root.actorChain) === JSON.stringify(["flight-booker"]));
+
+    const picker = g.delegate(root, "seat-picker", { tools: ["search"] });
+    ok("a delegate is a Watchlight sharing the engine",
+      picker instanceof Watchlight && picker.policyCount === g.policyCount);
+    ok("the delegate's chain is ordered, root first",
+      JSON.stringify(picker.actorChain) === JSON.stringify(["flight-booker", "seat-picker"]),
+      JSON.stringify(picker.actorChain));
+    ok("the delegate's leaf is its own name", picker.agent === "seat-picker");
+    ok("the delegate holds the narrowed scope",
+      picker.delegatedScope?.depth === 1 && !picker.delegatedScope.allowedTools.includes("book"));
+
+    const seat = await picker.authorize({ action: "pick_seat", principal: alice });
+    ok("a policy allows on the LEAF actor", seat.allowed === true);
+    const trace = await picker.authorize({ action: "trace", principal: alice });
+    ok("a policy allows on MEMBERSHIP anywhere in the chain", trace.allowed === true);
+
+    // The parent is not the leaf; the sub-agent is not the root.
+    ok("the parent is denied by the leaf policy",
+      (await g.authorize({ action: "pick_seat", principal: alice })).allowed === false);
+    const other = g.as("rogue");
+    ok("an undelegated governor is not in anyone's chain",
+      (await other.authorize({ action: "trace", principal: alice })).allowed === false);
+
+    // Records: the ordered chain rides along, and the leaf is the record's agent.
+    const recs = lines(dir).filter((r) => r.intent === "pick_seat" && r.decision === "Allow");
+    ok("the record carries the ordered chain and the leaf",
+      recs[0]?.agent === "seat-picker" &&
+      JSON.stringify(recs[0]?.actor_chain) === JSON.stringify(["flight-booker", "seat-picker"]) &&
+      recs[0]?.principal === 'User::"alice"',
+      JSON.stringify(recs[0]));
+    ok("a call outside any delegation writes no actor_chain field",
+      lines(dir).some((r) => r.agent === "flight-booker" && r.actor_chain === undefined));
+    ok("an undelegated governor's chain is [agent]",
+      JSON.stringify(g.actorChain) === JSON.stringify(["flight-booker"]));
+
+    // Every record kind produced through the delegate carries it.
+    picker.sanitize("call me at 555-867-5309");
+    const sanit = lines(dir).find((r) => r.event === "sanitization");
+    ok("a sanitization record through a delegate carries the chain",
+      JSON.stringify(sanit?.actor_chain) === JSON.stringify(["flight-booker", "seat-picker"]));
+
+    // A caller can neither supply nor extend it.
+    let supplied = null;
+    try {
+      // claiming a delegation this governor does not have
+      await g.authorize({
+        action: "trace", principal: alice,
+        context: { actor_chain: ["flight-booker", "seat-picker"] },
+      });
+    } catch (e) { supplied = e; }
+    ok("a caller-supplied chain that differs is refused", supplied instanceof ReservedContextError);
+    ok("the refusal message is the same fixed one", supplied?.message === RESERVED_CONTEXT_MESSAGE);
+    let extended = null;
+    try {
+      await picker.authorize({
+        action: "trace", principal: alice,
+        context: { actor_chain: ["flight-booker", "seat-picker", "smuggled"] },
+      });
+    } catch (e) { extended = e; }
+    ok("extending the chain is refused", extended instanceof ReservedContextError);
+    const echoed = await picker.authorize({
+      action: "trace", principal: alice,
+      context: { actor_chain: ["flight-booker", "seat-picker"] },
+    });
+    ok("an identical chain is accepted", echoed.allowed === true);
+
+    // Depth: one level per delegation, bounded by the attenuation ceiling.
+    let deep = picker;
+    for (let i = 2; i <= DE_MAX_DEPTH; i++) deep = g.delegate(deep, `level-${i}`);
+    ok("the chain reaches MAX_ACTOR_CHAIN at the ceiling",
+      deep.actorChain.length === MAX_ACTOR_CHAIN, JSON.stringify(deep.actorChain));
+    let ceiling = null;
+    try { g.delegate(deep, "too-deep"); } catch (e) { ceiling = e; }
+    ok("one level past the ceiling throws DevEditionCeiling", ceiling instanceof DevEditionCeiling);
+
+    // Delegation is still attenuation: a sub-agent cannot widen.
+    let widened = null;
+    try { g.delegate(picker, "greedy", { tools: ["search", "book"] }); } catch (e) { widened = e; }
+    ok("a delegate cannot widen its parent's authority", widened instanceof AttenuationDenied);
+
+    let noScope = null;
+    try { g.delegate(g, "orphan"); } catch (e) { noScope = e; }
+    ok("delegating from a governor that is not itself a delegate is refused", noScope instanceof TypeError);
+  }
+
+  // ── review fixes: names, sources, and requests the engine refuses ──
+  {
+    // An unusable agent name fails at the name, not later inside the engine.
+    const bad = (fn) => { try { fn(); return false; } catch (e) { return e instanceof TypeError; } };
+    ok("the constructor refuses an empty agent", bad(() => new Watchlight({ agent: "" })));
+    ok("the constructor refuses control characters in the agent",
+      bad(() => new Watchlight({ agent: "a\nb" })));
+    ok("as() refuses the same names",
+      bad(() => new Watchlight({ agent: "ok" }).as("a\u0000b")));
+
+    // An inherited property is not a caller-supplied reserved key.
+    const dir = tmp("proto");
+    const g = new Watchlight({ agent: "proto-agent", auditDir: dir });
+    g.allow("permit(principal, action, resource);");
+    Object.prototype.actor = "smuggled";               // eslint-disable-line no-extend-native
+    let inherited = null;
+    try { await g.authorize({ action: "read", principal: 'User::"a"' }); }
+    catch (e) { inherited = e; }
+    finally { delete Object.prototype.actor; }
+    ok("an inherited `actor` property does not read as a caller value", inherited === null,
+      String(inherited));
+
+    // A request the engine cannot evaluate: typed, audited, fail-closed.
+    let refused = null;
+    try { await g.authorize({ action: "read", principal: 'Service::"svc"' }); }
+    catch (e) { refused = e; }
+    ok("an unrecognised entity type throws AuthorizeRequestError",
+      refused instanceof AuthorizeRequestError, String(refused));
+    ok("its message is fixed and echoes nothing from the engine",
+      refused?.message === REQUEST_INVALID_MESSAGE);
+    ok("the refusal is audited as a Deny like any other",
+      lines(dir).some((r) => r.decision === "Deny" && r.principal === 'Service::"svc"'));
+    let bodyRan = 0;
+    const svc = g.tool(async () => { bodyRan++; return "x"; },
+      { intent: "read", principal: 'Service::"svc"' });
+    let toolRefused = null;
+    try { await svc(); } catch (e) { toolRefused = e; }
+    ok("a governed tool refuses the same way and never runs its body",
+      toolRefused instanceof AuthorizeRequestError && bodyRan === 0);
+  }
+
+  // ── load(): identity, not content ──────────────────────────────────
+  {
+    const dir = tmp("load2");
+    const file = join(dir, "p.json");
+    const one = [{ name: "read", code: 'permit(principal, action == Action::"read", resource);' }];
+    fs.writeFileSync(file, JSON.stringify(one));
+    const g = new Watchlight({ agent: "loader", auditDir: dir });
+    g.load(file);
+    fs.writeFileSync(file, JSON.stringify([...one,
+      { name: "list", code: 'permit(principal, action == Action::"list", resource);' }]));
+    g.load(file);
+    ok("a CHANGED file is not reloaded (the memo is keyed on identity)", g.policyCount === 1);
+    ok("so the new policy does not apply",
+      (await g.authorize({ action: "list", principal: 'User::"a"' })).allowed === false);
+    g.load(file, { force: true });
+    ok("force loads it again (additively)", g.policyCount === 3, String(g.policyCount));
+    ok("and the new policy now applies",
+      (await g.authorize({ action: "list", principal: 'User::"a"' })).allowed === true);
+
+    // Two names for ONE file are one source — symlinks resolved.
+    const link = join(dir, "link.json");
+    fs.symlinkSync(file, link);
+    const g2 = new Watchlight({ agent: "loader2", auditDir: dir });
+    g2.load(file).load(link);
+    ok("a symlink to a loaded file is the same source", g2.policyCount === 2, String(g2.policyCount));
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);

@@ -17,7 +17,14 @@ import pytest
 pytest.importorskip("watchlight_engine")
 
 from watchlight import (  # noqa: E402
+    ACTOR_CHAIN_CONTEXT_KEY,
     ACTOR_CONTEXT_KEY,
+    DE_MAX_DEPTH,
+    MAX_ACTOR_CHAIN,
+    REQUEST_INVALID_MESSAGE,
+    AttenuationDenied,
+    AuthorizeRequestError,
+    DevEditionCeiling,
     RESERVED_CONTEXT_MESSAGE,
     Denied,
     ReservedContextError,
@@ -131,6 +138,8 @@ def test_strict_principal_off_restores_the_bare_name_and_warns_once(tmp_path, ca
         capture_output=True, text=True, check=True,
     )
     assert out.stderr.count("strict_principal is off") == 1
+    # The key that resolves is `context.actor`; `context.agent` never does.
+    assert "context.actor" in out.stderr and "context.agent" not in out.stderr
 
 
 # ── the reserved actor context key ──────────────────────────────────
@@ -284,16 +293,20 @@ def test_no_file_and_no_sink_warns_once(tmp_path, capsys):
 # ── the default governor is configurable, once, before first use ────
 
 _DEFAULT_SCRIPT = """
-import json, sys
+import json, pathlib, sys
 from watchlight import govern, configure_default
 
 seen = []
 assert govern.policy_count == 0
 configure_default(agent="configured", audit_dir=sys.argv[1], audit_sink=seen.append)
 assert govern.agent == "configured"
+# A second call naming only the directory must not drop the sink.
+configure_default(audit_dir=sys.argv[2])
 govern.allow('permit(principal, action == Action::"read", resource);')
 govern.authorize(action="read", principal='User::"a"')
 assert len(seen) == 1, seen
+assert (pathlib.Path(sys.argv[2]) / "audit.jsonl").exists()
+assert not (pathlib.Path(sys.argv[1]) / "audit.jsonl").exists()
 try:
     configure_default(audit_dir=sys.argv[1])
     raise AssertionError("configuring after the first record must raise")
@@ -315,21 +328,187 @@ print("OK")
 """
 
 
-def _run(script, tmp_path):
+def _run(script, *args):
     return subprocess.run(
-        [sys.executable, "-c", script, str(tmp_path)], capture_output=True, text=True, check=True
+        [sys.executable, "-c", script, *[str(a) for a in args]],
+        capture_output=True, text=True, check=True,
     )
 
 
-def test_configure_default_routes_records_and_then_locks(tmp_path):
+def test_configure_default_routes_records_merges_and_then_locks(tmp_path):
     # The default governor is a module-level singleton, so each scenario runs in
     # its own process.
-    out = _run(_DEFAULT_SCRIPT, tmp_path)
+    second = tmp_path / "second"
+    out = _run(_DEFAULT_SCRIPT, tmp_path, second)
     assert "OK" in out.stdout
-    assert (tmp_path / "audit.jsonl").exists()
+    assert (second / "audit.jsonl").exists()
 
 
 def test_unconfigured_default_warns_exactly_once(tmp_path):
     out = _run(_UNCONFIGURED_SCRIPT, tmp_path)
     assert "OK" in out.stdout
     assert out.stderr.count("no audit_sink is configured") == 1
+
+
+def test_unconfigured_default_warns_exactly_once(tmp_path):
+    out = _run(_UNCONFIGURED_SCRIPT, tmp_path)
+    assert "OK" in out.stdout
+    assert out.stderr.count("no audit_sink is configured") == 1
+
+
+# ── the actor CHAIN: delegation through a spawned scope ─────────────
+
+
+def test_delegation_records_the_ordered_chain_and_the_leaf(tmp_path):
+    g = Watchlight(agent="flight-booker", audit_dir=str(tmp_path))
+    # "who made this call" — the leaf actor.
+    g.allow(
+        'permit(principal is User, action == Action::"pick_seat", resource) '
+        'when { context.actor == "seat-picker" };'
+    )
+    # "whose delegation is this" — membership anywhere in the chain.
+    g.allow(
+        'permit(principal is User, action == Action::"trace", resource) '
+        'when { context.actor_chain.contains("flight-booker") };'
+    )
+    assert ACTOR_CHAIN_CONTEXT_KEY == "actor_chain"
+    assert MAX_ACTOR_CHAIN == DE_MAX_DEPTH + 1
+    alice = principals.user("alice")
+
+    root = g.scope(tools=["search", "book"], time_budget_seconds=600)
+    assert root.actor_chain == ("flight-booker",)
+
+    picker = g.delegate(root, "seat-picker", tools=["search"])
+    assert isinstance(picker, Watchlight) and picker.policy_count == g.policy_count
+    assert picker.actor_chain == ("flight-booker", "seat-picker")
+    assert picker.agent == "seat-picker"
+    assert picker.delegated_scope.depth == 1
+    assert "book" not in picker.delegated_scope.allowed_tools
+
+    assert picker.authorize(action="pick_seat", principal=alice)["allowed"] is True   # leaf
+    assert picker.authorize(action="trace", principal=alice)["allowed"] is True       # membership
+    assert g.authorize(action="pick_seat", principal=alice)["allowed"] is False
+    assert g.as_("rogue").authorize(action="trace", principal=alice)["allowed"] is False
+
+    recs = records(tmp_path)
+    seat = next(r for r in recs if r["intent"] == "pick_seat" and r["decision"] == "Allow")
+    assert seat["agent"] == "seat-picker"
+    assert seat["actor_chain"] == ["flight-booker", "seat-picker"]
+    assert seat["principal"] == 'User::"alice"'
+    # A call outside any delegation keeps the record shape it always had.
+    assert any(r["agent"] == "flight-booker" and "actor_chain" not in r for r in recs)
+    assert g.actor_chain == ("flight-booker",)
+
+    picker.sanitize("call me at 555-867-5309")
+    sanit = next(r for r in records(tmp_path) if r.get("event") == "sanitization")
+    assert sanit["actor_chain"] == ["flight-booker", "seat-picker"]
+
+
+def test_a_caller_can_neither_supply_nor_extend_the_chain(tmp_path):
+    g = Watchlight(agent="flight-booker", audit_dir=str(tmp_path))
+    g.allow(
+        'permit(principal is User, action == Action::"trace", resource) '
+        'when { context.actor_chain.contains("flight-booker") };'
+    )
+    alice = principals.user("alice")
+    root = g.scope(tools=["search"])
+    picker = g.delegate(root, "seat-picker")
+
+    # claiming a delegation this governor does not have
+    with pytest.raises(ReservedContextError) as err:
+        g.authorize(
+            action="trace", principal=alice,
+            context={"actor_chain": ["flight-booker", "seat-picker"]},
+        )
+    assert str(err.value) == RESERVED_CONTEXT_MESSAGE
+    with pytest.raises(ReservedContextError):
+        picker.authorize(
+            action="trace", principal=alice,
+            context={"actor_chain": ["flight-booker", "seat-picker", "smuggled"]},
+        )
+    echoed = picker.authorize(
+        action="trace", principal=alice,
+        context={"actor_chain": ["flight-booker", "seat-picker"]},
+    )
+    assert echoed["allowed"] is True
+
+
+def test_the_chain_is_bounded_by_the_attenuation_ceiling(tmp_path):
+    g = Watchlight(agent="flight-booker", audit_dir=str(tmp_path))
+    deep = g.delegate(g.scope(tools=["search"]), "level-1")
+    for i in range(2, DE_MAX_DEPTH + 1):
+        deep = g.delegate(deep, f"level-{i}")
+    assert len(deep.actor_chain) == MAX_ACTOR_CHAIN
+    with pytest.raises(DevEditionCeiling):
+        g.delegate(deep, "too-deep")
+
+
+def test_delegation_is_still_attenuation(tmp_path):
+    g = Watchlight(agent="flight-booker", audit_dir=str(tmp_path))
+    picker = g.delegate(g.scope(tools=["search", "book"]), "seat-picker", tools=["search"])
+    with pytest.raises(AttenuationDenied):
+        g.delegate(picker, "greedy", tools=["search", "book"])
+    with pytest.raises(TypeError):
+        g.delegate(g, "orphan")          # not itself a delegate
+    with pytest.raises(TypeError):
+        g.delegate(picker, "")
+
+
+# ── review fixes: names, sources, and requests the engine refuses ────
+
+
+def test_an_unusable_agent_name_is_refused_at_the_name(tmp_path):
+    for bad in ["", "   ", "a\nb", "a\x00b"]:
+        with pytest.raises(TypeError):
+            Watchlight(agent=bad, audit_dir=str(tmp_path))
+    g = Watchlight(agent="ok", audit_dir=str(tmp_path))
+    for bad in ["", "a\x7fb"]:
+        with pytest.raises(TypeError):
+            g.as_(bad)
+
+
+def test_a_request_the_engine_cannot_evaluate_is_typed_and_audited(tmp_path):
+    g = Watchlight(agent="typed", audit_dir=str(tmp_path))
+    g.allow("permit(principal, action, resource);")
+    with pytest.raises(AuthorizeRequestError) as err:
+        g.authorize(action="read", principal='Service::"svc"')
+    # Fixed message: the engine's own text is never echoed to the caller.
+    assert str(err.value) == REQUEST_INVALID_MESSAGE
+    assert any(
+        r["decision"] == "Deny" and r["principal"] == 'Service::"svc"' for r in records(tmp_path)
+    )
+
+    ran = []
+
+    @g.tool(intent="read", principal='Service::"svc"')
+    def call_service():
+        ran.append(1)
+        return "x"
+
+    with pytest.raises(AuthorizeRequestError):
+        call_service()
+    assert ran == []          # fail-closed: the body never ran
+
+
+def test_load_is_keyed_on_identity_not_content(tmp_path):
+    policy = tmp_path / "p.json"
+    one = [{"name": "read", "code": 'permit(principal, action == Action::"read", resource);'}]
+    policy.write_text(json.dumps(one))
+    g = Watchlight(agent="loader", audit_dir=str(tmp_path))
+    g.load(policy)
+    policy.write_text(json.dumps(one + [
+        {"name": "list", "code": 'permit(principal, action == Action::"list", resource);'}
+    ]))
+    g.load(policy)
+    assert g.policy_count == 1                                   # a CHANGED file is not reloaded
+    assert g.authorize(action="list", principal=principals.user("a"))["allowed"] is False
+    g.load(policy, force=True)
+    assert g.policy_count == 3                                   # force loads it again, additively
+    assert g.authorize(action="list", principal=principals.user("a"))["allowed"] is True
+
+    # Two names for ONE file are one source — symlinks resolved.
+    link = tmp_path / "link.json"
+    link.symlink_to(policy)
+    g2 = Watchlight(agent="loader2", audit_dir=str(tmp_path))
+    g2.load(policy).load(link)
+    assert g2.policy_count == 2

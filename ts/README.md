@@ -42,10 +42,12 @@ async in WebAssembly).
 
 Fail-closed by default: with no matching policy, every governed call is denied.
 
-`govern.load(file)` is **idempotent per source**: the resolved path (or an
-explicit `{ sourceId }`) is remembered, so priming an engine in a factory and
-loading the same file again from an initialiser cannot double the set. A missing
-file is not remembered, so it loads once it appears. `govern.allow(code)` is
+`govern.load(file)` is **idempotent per source**: the real path (symlinks
+resolved) or an explicit `{ sourceId }` is remembered, so priming an engine in a
+factory and loading the same file again from an initialiser cannot double the
+set. A missing file is not remembered, so it loads once it appears. The memo is
+keyed on identity, not content — editing a loaded file and calling `load` again
+is a no-op; pass `{ force: true }` to load it again (additively). `govern.allow(code)` is
 always additive — the same code twice is two policies. `govern.policyCount` and
 `govern.hasPolicies` report what an engine holds, worth asserting at start-up:
 no policies means every call is denied.
@@ -58,6 +60,7 @@ A governed call answers three questions, and they are separate inputs:
 |---|---|---|
 | On whose behalf does this run? | `principal` — the subject | `User::"alice"` |
 | Which runtime is acting? | the reserved `actor` context key, set by the SDK | `context.actor == "flight-booker"` |
+| Through whose delegation? | the reserved `actor_chain` context key | `context.actor_chain.contains("flight-booker")` |
 | Under what narrowed authority? | the attenuation scope | `govern.scope({ tools: [...] })` |
 
 ```ts
@@ -92,9 +95,26 @@ const research = govern.as("research-agent");
 
 `authorize`, `sanitize`, `screen` and `tool` also take a per-call `agent`.
 
+A sub-agent is a *delegation*, not a rename: `delegate` narrows a scope for it
+(engine-enforced strict subset) and extends the actor chain, so the decision and
+every record name both the sub-agent and whose delegation it acts under.
+
+```ts
+const root = await govern.scope({ tools: ["search", "book"] });
+const picker = govern.delegate(root, "seat-picker", { tools: ["search"] });
+await picker.authorize({ action: "pick_seat", principal: principals.user("alice") });
+// records agent "seat-picker", actor_chain ["flight-booker", "seat-picker"]
+```
+
+The subject is a stable identifier for whoever your application already
+authenticated — a users-table primary key is as valid as a token's subject
+claim, and no identity provider is required. Derive it from something you
+authenticated, never from a request header or body a caller can set, and prefer
+an id that never moves over an email or a username.
+
 **→ Full reference: [The identity model](../docs/identity-model.md)** — the three
-cases with exact values, worked policies, the RFC 8693 (`sub` / `act.sub`)
-mapping, and the 0.8.0 migration note.
+cases with exact values, worked policies, where the values come from, and the
+0.8.0 migration note.
 
 ## Sub-agent scope attenuation
 

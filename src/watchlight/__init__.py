@@ -64,8 +64,12 @@ __all__ = [
     "configure_default",
     "principals",
     "ACTOR_CONTEXT_KEY",
+    "ACTOR_CHAIN_CONTEXT_KEY",
+    "MAX_ACTOR_CHAIN",
     "RESERVED_CONTEXT_MESSAGE",
     "ReservedContextError",
+    "AuthorizeRequestError",
+    "REQUEST_INVALID_MESSAGE",
     "AuditSink",
     "AuditTrailUnreadable",
     "count_audit_records",
@@ -100,6 +104,20 @@ __all__ = [
 
 _F = TypeVar("_F", bound=Callable[..., Any])
 
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _assert_agent_name(agent: Any, where: str) -> str:
+    """Reject an agent name that cannot be recorded or referenced unambiguously —
+    in the constructor, in :meth:`Watchlight.as_` and in
+    :meth:`Watchlight.delegate` alike, so it fails at the name rather than later,
+    inside the engine."""
+    if not isinstance(agent, str) or not agent.strip():
+        raise TypeError(f"{where}: agent must be a non-empty string")
+    if _CONTROL_CHARS.search(agent):
+        raise TypeError(f"{where}: agent must not contain control characters")
+    return agent
+
 #: The Cedar ``context`` key the SDK reserves for the ACTOR — the runtime that
 #: made the call, as distinct from the subject it acted for. The pair follows
 #: RFC 8693 (OAuth 2.0 Token Exchange), which separates the subject (``sub``,
@@ -116,30 +134,72 @@ _F = TypeVar("_F", bound=Callable[..., Any])
 #: ``contains`` is the operator surface the engine resolves.
 ACTOR_CONTEXT_KEY = "actor"
 
+#: The Cedar ``context`` key the SDK reserves for the ordered ACTOR CHAIN, root
+#: first — RFC 8693's nested ``act``, flattened into the shape the engine
+#: resolves. A set-valued entry supports ``contains``, so a policy can ask
+#: whether an agent was anywhere in the delegation::
+#:
+#:     permit(principal is User, action == Action::"pick_seat", resource)
+#:     when { context.actor_chain.contains("flight-booker") };
+#:
+#: ``context.actor`` answers a different question — *which* agent made this call
+#: — and remains the leaf, so policies written against it are unaffected. Both
+#: keys are set on every authorization; the chain of a call made outside any
+#: delegation is the single-element ``[agent]``.
+ACTOR_CHAIN_CONTEXT_KEY = "actor_chain"
+
+#: The longest an actor chain can be: the root agent plus one entry per
+#: attenuation level, bounded by the Developer-Edition depth ceiling.
+MAX_ACTOR_CHAIN = DE_MAX_DEPTH + 1
+
+#: Fixed, value-free message of :class:`AuthorizeRequestError`.
+REQUEST_INVALID_MESSAGE = (
+    "the authorization request is not valid for the engine (check the principal "
+    "and resource entity types)"
+)
+
+
+class AuthorizeRequestError(RuntimeError):
+    """Raised when the engine cannot evaluate the request at all — most often an
+    entity type it does not recognise, e.g. ``Service::"x"`` as a principal. The
+    call is refused (fail-closed, the tool body never runs) and the refusal is
+    audited as a ``Deny`` like any other. The engine's own message is never
+    echoed: it is not a caller-facing reason."""
+
+    def __init__(self) -> None:
+        super().__init__(REQUEST_INVALID_MESSAGE)
+
+
 #: Fixed, value-free message of :class:`ReservedContextError`.
 RESERVED_CONTEXT_MESSAGE = (
-    "context key 'actor' is reserved for the acting agent and is set by the SDK"
+    "context keys 'actor' and 'actor_chain' are reserved for the acting agent "
+    "and are set by the SDK"
 )
 
 
 class ReservedContextError(ValueError):
-    """Raised when a caller's ``context`` sets the reserved actor key to a value
-    that differs from the governor's agent. Refused rather than overwritten, so
-    a policy reading ``context.actor`` can trust it. An identical value is
-    fine."""
+    """Raised when a caller's ``context`` sets a reserved actor key to a value
+    that differs from the governor's own — the acting agent, or the delegation
+    chain of the scope the call was made through. Refused rather than
+    overwritten, so a policy reading either key can trust it. An identical value
+    is fine."""
 
     def __init__(self) -> None:
         super().__init__(RESERVED_CONTEXT_MESSAGE)
 
 
-def _with_actor_context(context: Optional[dict], actor: str) -> dict:
-    """The caller's context with the reserved actor key stamped on it."""
+def _with_actor_context(context: Optional[dict], actor: str, chain: Sequence[str]) -> dict:
+    """The caller's context with the reserved actor keys stamped on it."""
     out = dict(context or {})
-    # The SDK's value always wins — and a caller who disagreed is told, never
-    # silently overruled.
+    # The SDK's values always win — and a caller who disagreed is told, never
+    # silently overruled. The chain is derived from the scope the call was made
+    # through, so a caller can neither supply nor extend one.
     if ACTOR_CONTEXT_KEY in out and out[ACTOR_CONTEXT_KEY] != actor:
         raise ReservedContextError()
+    if ACTOR_CHAIN_CONTEXT_KEY in out and list(out[ACTOR_CHAIN_CONTEXT_KEY] or []) != list(chain):
+        raise ReservedContextError()
     out[ACTOR_CONTEXT_KEY] = actor
+    out[ACTOR_CHAIN_CONTEXT_KEY] = list(chain)
     return out
 
 
@@ -159,6 +219,7 @@ class _GovernorState:
         "announced",
         "sources",
         "strict_principal",
+        "audit_options",
         "is_default",
         "wrote_record",
         "warned_default_sink",
@@ -174,6 +235,9 @@ class _GovernorState:
         #: Resolved sources already loaded — the key of ``load()``'s idempotence.
         self.sources: set[str] = set()
         self.strict_principal = True
+        #: The audit options in force, so ``_configure`` can apply one of them
+        #: without dropping the others.
+        self.audit_options: dict[str, Any] = {}
         self.is_default = False
         self.wrote_record = False
         self.warned_default_sink = False
@@ -1060,11 +1124,26 @@ class Watchlight:
             behaviour, where the BARE agent name — untyped, and
             indistinguishable on sight from a user id — stood in for the missing
             subject; that is transitional, warns once per process, and is
-            removed in a later version. See "Breaking in 0.8.0" in the README."""
+            removed in a later version. See "Breaking in 0.8.0" in
+            ``docs/identity-model.md``."""
         state = _GovernorState()
         self._shared = state
-        self.agent = agent or os.environ.get("WATCHLIGHT_AGENT", "my-agent")
+        # An explicitly passed name is validated as given — an empty one is a
+        # mistake, not a request for the default.
+        if agent is not None:
+            _assert_agent_name(agent, "Watchlight(agent=…)")
+        self.agent = _assert_agent_name(
+            agent or os.environ.get("WATCHLIGHT_AGENT") or "my-agent", "Watchlight(agent=…)"
+        )
+        #: The delegation chain this governor acts under, root first; the last
+        #: entry is :attr:`agent`. A governor that was not delegated to acts
+        #: alone, so its chain is just its own name. Set by :meth:`delegate`
+        #: from the scope the sub-agent was spawned under — never by a caller.
+        self.actor_chain: tuple[str, ...] = (self.agent,)
+        #: The scope a delegated governor acts under (``None`` otherwise).
+        self.delegated_scope: Optional[Scope] = None
         state.engine = _engine.PolicyEngine()
+        state.audit_options = {"dir": audit_dir, "file": audit_file, "sink": audit_sink}
         state.audit_path = (pathlib.Path(audit_dir) / "audit.jsonl") if audit_file else None
         state.trail = AuditTrail(state.audit_path, audit_sink)
         state.strict_principal = bool(strict_principal)
@@ -1127,11 +1206,69 @@ class Watchlight:
         (``as`` is a Python keyword, hence the trailing underscore; the
         TypeScript SDK spells it ``govern.as("name")``.)
         """
-        if not isinstance(agent, str) or not agent.strip():
-            raise TypeError("as_(agent): agent must be a non-empty string")
+        _assert_agent_name(agent, "as_(agent)")
         view = object.__new__(Watchlight)
         view.agent = agent
+        # A rename is not a delegation: the view acts alone under its own name.
+        view.actor_chain = (agent,)
+        view.delegated_scope = None
         # Shared BY REFERENCE — the whole point of the view.
+        view._shared = self._shared
+        return view
+
+    def delegate(
+        self,
+        parent: Union[Scope, "Watchlight"],
+        agent: str,
+        *,
+        tools: Sequence[str] | None = None,
+        resources: Sequence[str] | None = None,
+        intents: Sequence[str] | None = None,
+        time_budget_seconds: int | None = None,
+    ) -> "Watchlight":
+        """Spawn a governor for a SUB-AGENT under ``parent``, and record the
+        delegation.
+
+        The sub-agent's authority is ``parent`` narrowed by the dimensions you
+        pass — the engine's strict-subset attenuation, so it can never hold what
+        its parent lacks — and its identity is the parent's
+        :attr:`actor_chain` with ``agent`` appended. Every decision and every
+        record it produces then carries the ordered chain (root first) alongside
+        the leaf actor, and a policy can ask either question:
+        ``context.actor == "seat-picker"`` (who made this call) or
+        ``context.actor_chain.contains("flight-booker")`` (whose delegation is
+        this)::
+
+            root = govern.scope(tools=["search", "book"])
+            picker = govern.delegate(root, "seat-picker", tools=["search"])
+            picker.authorize(action="pick_seat", principal=principals.user("alice"))
+            govern.delegate(picker, "row-checker")      # one level deeper
+
+        ``parent`` is a :class:`~watchlight.attenuation.Scope` or a governor that
+        was itself delegated. The engine, the compiled policies, the audit trail
+        and the sink are shared with this governor, exactly as for :meth:`as_`.
+        Raises :class:`AttenuationDenied` if the request widens the scope and
+        :class:`DevEditionCeiling` past the depth ceiling — which also bounds the
+        chain at :data:`MAX_ACTOR_CHAIN` entries.
+        """
+        _assert_agent_name(agent, "delegate(parent, agent)")
+        scope = parent.delegated_scope if isinstance(parent, Watchlight) else parent
+        if scope is None:
+            raise TypeError(
+                "delegate(parent, agent): `parent` must be a scope, or a governor that "
+                "was itself delegated"
+            )
+        child = scope.attenuate(
+            tools=tools,
+            resources=resources,
+            intents=intents,
+            time_budget_seconds=time_budget_seconds,
+            agent=agent,
+        )
+        view = object.__new__(Watchlight)
+        view.agent = agent
+        view.actor_chain = tuple(child.actor_chain)
+        view.delegated_scope = child
         view._shared = self._shared
         return view
 
@@ -1175,23 +1312,34 @@ class Watchlight:
         return self
 
     def load(
-        self, path: str | os.PathLike[str], *, source_id: str | None = None
+        self,
+        path: str | os.PathLike[str],
+        *,
+        source_id: str | None = None,
+        force: bool = False,
     ) -> "Watchlight":
         """Load policies from a JSON file — a list of ``{"name", "code"}`` objects
         (or ``{"policies": [...]}``). Fail-closed: a missing file loads nothing,
         so every governed call is denied until a policy permits it.
 
-        IDEMPOTENT PER SOURCE: the source is remembered under its resolved
-        absolute path, or under ``source_id`` when you give one, and loading the
-        same source again is a no-op — priming an engine in a factory and
-        loading the same file again from an initialiser cannot double the set. A
-        file that does not exist is not remembered, so it loads once it appears.
-        Two different paths to the same content are two sources; pass a shared
-        ``source_id`` to make them one. The memo is shared with every view from
-        :meth:`as_`."""
+        IDEMPOTENT PER SOURCE: the source is remembered under its real path
+        (symlinks resolved), or under ``source_id`` when you give one, and
+        loading the same source again is a no-op — priming an engine in a
+        factory and loading the same file again from an initialiser cannot
+        double the set. A file that does not exist is not remembered, so it
+        loads once it appears. Two different paths to the same file are one
+        source; two files with the same content are two, unless you give them a
+        shared ``source_id``. The memo is shared with every view from
+        :meth:`as_`.
+
+        The memo is keyed on identity, not content: EDITING a file already
+        loaded and calling ``load`` again is a no-op, and the new policies do
+        not apply. Pass ``force=True`` to load it again — policies are only ever
+        added, so the previous copy stays and ``policy_count`` grows; construct
+        a fresh governor when you need the old set gone."""
         p = pathlib.Path(path)
         key = source_id if source_id is not None else str(p.resolve())
-        if key in self._shared.sources:
+        if key in self._shared.sources and not force:
             return self
         if not p.exists():
             return self
@@ -1402,9 +1550,22 @@ class Watchlight:
                 context=context,
                 approval=approval,
             )
-        result, prin, res, decision_id = self._decide(
-            action=action, principal=principal, resource=resource, context=context, approval=approval
-        )
+        try:
+            result, prin, res, decision_id = self._decide(
+                action=action, principal=principal, resource=resource, context=context,
+                approval=approval,
+            )
+        except (ReservedContextError, AuthorizeError):
+            # The caller's own context, refused before anything reached the
+            # engine — raised as-is.
+            raise
+        except Exception:
+            # A request the engine cannot evaluate is a refusal like any other:
+            # it is recorded, then raised typed.
+            self._audit(
+                action, resource or "resource", "Deny", DENY_REASON, principal=principal
+            )
+            raise AuthorizeRequestError() from None
         self._audit(
             action, res, result["decision"], result["reason"],
             principal=prin, decision_id=decision_id, approved=result["approved"],
@@ -1426,10 +1587,12 @@ class Watchlight:
         audits) and by :meth:`test` (which must not pollute the trail)."""
         prin = self._principal(principal)
         res = resource or "resource"
-        # The acting agent is the ACTOR, a reserved context key the SDK owns, so
-        # a policy can name the runtime (`context.actor == "…"`) independently of
-        # the subject it acts for. A caller value that disagrees is refused.
-        ctx = _with_actor_context(context, self.agent)
+        # The acting agent is the ACTOR, and its delegation chain the ACTOR
+        # CHAIN — reserved context keys the SDK owns, so a policy can name the
+        # runtime (`context.actor == "…"`) or its delegation
+        # (`context.actor_chain.contains("…")`) independently of the subject it
+        # acts for. A caller value that disagrees with either is refused.
+        ctx = _with_actor_context(context, self.agent, self.actor_chain)
         raw = json.loads(
             self._engine.authorize(
                 json.dumps({"principal": prin, "action": action, "resource": res, "context": ctx})
@@ -1666,6 +1829,7 @@ class Watchlight:
         record: dict[str, Any] = {
             "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "agent": self.agent,
+            **self._chain_field(),
             "principal": info["principal"],
             "intent": info["intent"],
             "event": "egress",
@@ -1677,6 +1841,13 @@ class Watchlight:
         if withheld:
             record["withheld"] = True
         self._write_audit(record)
+
+    def _chain_field(self) -> dict:
+        """``actor_chain`` for a record, and nothing at all when this governor is
+        not a delegate — a call outside any delegation keeps the record shape it
+        has always had, and its chain is the single-element ``[agent]``
+        anyway."""
+        return {"actor_chain": list(self.actor_chain)} if len(self.actor_chain) > 1 else {}
 
     def _announce(self) -> None:
         if not self._announced:
@@ -1708,6 +1879,7 @@ class Watchlight:
         record: dict[str, Any] = {
             "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "agent": self.agent,
+            **self._chain_field(),
             # Never the agent standing in for an unnamed subject: `_principal`
             # has already resolved it (to the typed Agent::"<name>" by default).
             "principal": self._principal(principal),
@@ -1732,6 +1904,7 @@ class Watchlight:
         record: dict[str, Any] = {
             "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "agent": self.agent,
+            **self._chain_field(),
             "intent": intent,
             "event": "sanitization",
             "resource": resource,
@@ -1756,6 +1929,7 @@ class Watchlight:
         record: dict[str, Any] = {
             "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "agent": self.agent,
+            **self._chain_field(),
             "intent": intent,
             "event": "screening",
             "resource": resource,
@@ -1811,16 +1985,22 @@ class Watchlight:
                 "destination"
             )
         if agent is not None:
-            self.agent = agent
+            self.agent = _assert_agent_name(agent, "configure_default(agent=…)")
+            self.actor_chain = (self.agent,)
         if audit_dir is not None or audit_sink is not None or audit_file is not None:
-            keep_file = state.audit_path is not None if audit_file is None else bool(audit_file)
-            directory = (
-                pathlib.Path(audit_dir)
-                if audit_dir is not None
-                else (state.audit_path.parent if state.audit_path is not None else pathlib.Path(".watchlight"))
-            )
+            # MERGE: a later call that names only one audit option must not drop
+            # the sink (or the directory) an earlier one configured.
+            audit = state.audit_options
+            if audit_dir is not None:
+                audit["dir"] = audit_dir
+            if audit_file is not None:
+                audit["file"] = audit_file
+            if audit_sink is not None:
+                audit["sink"] = audit_sink
+            keep_file = audit.get("file", True) is not False
+            directory = pathlib.Path(audit.get("dir") or ".watchlight")
             state.audit_path = (directory / "audit.jsonl") if keep_file else None
-            state.trail = AuditTrail(state.audit_path, audit_sink)
+            state.trail = AuditTrail(state.audit_path, audit.get("sink"))
         if token_secret is not None:
             state.token_secret = normalize_secret(token_secret)
         if strict_principal is not None:
@@ -1856,8 +2036,9 @@ def configure_default(
     Call it once, before the first governed call. It raises ``RuntimeError`` if
     the default governor has already written an audit record: records written
     before the sink existed cannot be sent to it, and a trail split across two
-    destinations reads like a data bug. Only the options you pass are applied;
-    policies already added survive."""
+    destinations reads like a data bug. Only the options you pass are applied,
+    and they MERGE with any earlier call's — configuring ``audit_dir`` after an
+    ``audit_sink`` keeps the sink. Policies already added survive."""
     govern._configure(
         agent=agent,
         audit_dir=audit_dir,

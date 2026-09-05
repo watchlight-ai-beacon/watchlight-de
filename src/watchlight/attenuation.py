@@ -121,6 +121,7 @@ class Scope:
         parent: Optional["Scope"] = None,
         token_secret: Optional[bytes] = None,
         issued_at: Optional[int] = None,
+        actor_chain: Sequence[str] | None = None,
     ) -> None:
         """``parent`` is the scope this one was attenuated from (``None`` for a
         root) — it lets :meth:`to_token` serialise the full chain for engine
@@ -145,6 +146,13 @@ class Scope:
         #: distinct). ``parent_id`` is None for a root scope.
         self.node_id = uuid.uuid4().hex[:8]
         self.parent_id = parent_id
+        #: The ordered delegation chain a call made through this scope acts
+        #: under, root first — ``["flight-booker", "seat-picker"]`` for a
+        #: seat-picker spawned by a flight-booker. The last entry is the acting
+        #: (leaf) agent. A root scope's chain is just the governor's agent; each
+        #: :meth:`attenuate` that names an ``agent`` appends one entry, so the
+        #: chain is at most ``DE_MAX_DEPTH + 1`` long.
+        self.actor_chain: tuple[str, ...] = tuple(actor_chain if actor_chain is not None else [agent])
         self._parent = parent
         self._token_secret = token_secret
         #: Epoch seconds this scope came into force.
@@ -232,6 +240,7 @@ class Scope:
         resources: Sequence[str] | None = None,
         intents: Sequence[str] | None = None,
         time_budget_seconds: int | None = None,
+        agent: str | None = None,
     ) -> "Scope":
         """Derive a sub-agent scope — a **strict subset** of this one.
 
@@ -239,6 +248,12 @@ class Scope:
         regardless). Raises :class:`AttenuationDenied` if the request exceeds the
         parent, and :class:`DevEditionCeiling` at the Developer-Edition depth
         ceiling.
+
+        ``agent`` names the sub-agent this scope is spawned FOR, appending it to
+        the child's :attr:`actor_chain` — what a delegated governor
+        (:meth:`watchlight.Watchlight.delegate`) records and what a policy reads
+        as ``context.actor_chain``. Omit it to narrow authority without naming a
+        new actor: the child then inherits the parent's chain unchanged.
         """
         self.assert_active()  # a spent scope grants nothing further (fail-closed)
         child_depth = self.depth + 1
@@ -302,6 +317,10 @@ class Scope:
             audit=self._audit,
             parent=self,
             token_secret=self._token_secret,
+            # Naming the sub-agent this scope is spawned for extends the
+            # delegation chain; narrowing without a name leaves the acting
+            # identity unchanged.
+            actor_chain=(*self.actor_chain, agent) if agent else self.actor_chain,
         )
         self._record(
             node_id=child.node_id,

@@ -63,6 +63,12 @@ export interface AttenuateOptions {
   resources?: readonly string[];
   intents?: readonly string[];
   timeBudgetSeconds?: number;
+  /** The sub-agent this scope is spawned FOR. Appends that name to the child's
+   *  {@link Scope.actorChain}, which is what a delegated governor
+   *  ({@link Watchlight.delegate}) records and what a policy reads as
+   *  `context.actor_chain`. Omit it to narrow authority without naming a new
+   *  actor: the child then inherits the parent's chain unchanged. */
+  agent?: string;
 }
 
 interface ScopeInit {
@@ -89,6 +95,9 @@ interface ScopeInit {
   tokenSecret?: Uint8Array;
   /** Epoch seconds this scope came into force (defaults to now). */
   issuedAt?: number;
+  /** The ordered actor chain, root first, that a call made through this scope
+   *  carries. Defaults to `[agent]` for a root. */
+  actorChain?: readonly string[];
 }
 
 /** Options for {@link Scope.toToken}. */
@@ -111,6 +120,13 @@ export class Scope {
   readonly depth: number;
   readonly nodeId: string;
   readonly parentId?: string;
+  /** The ordered delegation chain a call made through this scope acts under,
+   *  root first — `["flight-booker", "seat-picker"]` for a seat-picker spawned
+   *  by a flight-booker. The last entry is the acting (leaf) agent. A root
+   *  scope's chain is just the governor's agent; each {@link attenuate} that
+   *  names an `agent` appends one entry, so the chain is at most
+   *  `DE_MAX_DEPTH + 1` long. */
+  readonly actorChain: readonly string[];
   /** Epoch seconds this scope came into force. */
   readonly issuedAt: number;
   private _expiresAt: number;
@@ -132,6 +148,7 @@ export class Scope {
     this.depth = init.depth;
     this.nodeId = nodeId();
     this.parentId = init.parentId;
+    this.actorChain = Object.freeze([...(init.actorChain ?? [init.agent])]);
     this._parent = init.parent;
     this._tokenSecret = init.tokenSecret;
     this.issuedAt = init.issuedAt ?? nowSeconds();
@@ -291,6 +308,9 @@ export class Scope {
       parentId: this.nodeId,
       parent: this,
       tokenSecret: this._tokenSecret,
+      // Naming the sub-agent this scope is spawned for extends the delegation
+      // chain; narrowing without a name leaves the acting identity unchanged.
+      actorChain: opts.agent ? [...this.actorChain, opts.agent] : this.actorChain,
     });
     this._record({
       nodeId: child.nodeId,
