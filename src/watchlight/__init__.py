@@ -244,6 +244,7 @@ class _GovernorState:
         "audit_path",
         "signing_secrets",
         "approval",
+        "approval_options",
         "counter_source",
         "policy_count",
         "announced",
@@ -266,6 +267,9 @@ class _GovernorState:
         #: refused — through every other view of the same governor. A view with
         #: its own store would let one token be spent once per name.
         self.approval: Any = None
+        #: The approval options in force, so ``_configure`` can apply one of them
+        #: without dropping the others.
+        self.approval_options: dict[str, Any] = {}
         #: The read side of the trail, shared for the same reason:
         #: ``counters()`` must answer the same number whichever name asks.
         self.counter_source: Optional[CounterSource] = None
@@ -307,34 +311,37 @@ def _warn_token_secret_name() -> None:
 
 
 def _resolve_signing_secrets(signing_secret: Any, token_secret: Any) -> Optional[list[bytes]]:
-    """The signing secrets in force, newest first. In order: ``signing_secret``,
-    ``$WATCHLIGHT_SIGNING_SECRET``, ``token_secret``, ``$WATCHLIGHT_TOKEN_SECRET``,
-    then nothing (scope tokens fail closed). The last two are the former name:
-    they still work, warn once, and are refused when they contradict the new name
-    rather than being resolved silently."""
-    from_new = normalize_secrets(signing_secret)
-    from_old = normalize_secrets(token_secret)
-    if from_new is not None and from_old is not None and from_new != from_old:
+    """The signing secrets in force, newest first. Sources, in precedence order:
+
+    1. the ``signing_secret`` argument
+    2. ``$WATCHLIGHT_SIGNING_SECRET``
+    3. the ``token_secret`` argument     (former name)
+    4. ``$WATCHLIGHT_TOKEN_SECRET``      (former name)
+
+    and then nothing, which leaves scope tokens failing closed. The former names
+    still work and warn once. A source under the new name and one under the old
+    name holding DIFFERENT values is refused rather than resolved silently — the
+    argument/environment split does not matter, only that the two names
+    disagree."""
+    under_new_name = normalize_secrets(signing_secret)
+    if under_new_name is None:
+        under_new_name = normalize_secrets(
+            split_env_secrets(os.environ.get("WATCHLIGHT_SIGNING_SECRET"))
+        )
+    under_old_name = normalize_secrets(token_secret)
+    if under_old_name is None:
+        under_old_name = normalize_secrets(
+            split_env_secrets(os.environ.get("WATCHLIGHT_TOKEN_SECRET"))
+        )
+    if (
+        under_new_name is not None
+        and under_old_name is not None
+        and under_new_name != under_old_name
+    ):
         raise ScopeTokenError("mismatch", SIGNING_SECRET_CONFLICT_MESSAGE)
-    if from_new is not None:
-        if from_old is not None:
-            _warn_token_secret_name()
-        return from_new
-    if from_old is not None:
+    if under_old_name is not None:
         _warn_token_secret_name()
-        return from_old
-    env_new = normalize_secrets(split_env_secrets(os.environ.get("WATCHLIGHT_SIGNING_SECRET")))
-    env_old = normalize_secrets(split_env_secrets(os.environ.get("WATCHLIGHT_TOKEN_SECRET")))
-    if env_new is not None and env_old is not None and env_new != env_old:
-        raise ScopeTokenError("mismatch", SIGNING_SECRET_CONFLICT_MESSAGE)
-    if env_new is not None:
-        if env_old is not None:
-            _warn_token_secret_name()
-        return env_new
-    if env_old is not None:
-        _warn_token_secret_name()
-        return env_old
-    return None
+    return under_new_name if under_new_name is not None else under_old_name
 
 
 #: One process-wide notice that the bare agent name is standing in for a missing
@@ -1272,6 +1279,7 @@ class Watchlight:
         state.trail = AuditTrail(state.audit_path, audit_sink)
         state.strict_principal = bool(strict_principal)
         state.signing_secrets = _resolve_signing_secrets(signing_secret, token_secret)
+        state.approval_options = {"secret": approval_secret, "store": approval_store}
         state.approval = ApprovalTokens(
             resolve_approval_keys(
                 approval_secret,
@@ -2253,6 +2261,9 @@ class Watchlight:
         audit_file: Optional[bool] = None,
         signing_secret: Any = None,
         token_secret: Any = None,
+        approval_secret: Any = None,
+        approval_store: Optional[ApprovalStore] = None,
+        counter_source: Optional[CounterSource] = None,
         strict_principal: Optional[bool] = None,
     ) -> None:
         """Apply options to a governor that has not written an audit record yet.
@@ -2281,8 +2292,30 @@ class Watchlight:
             directory = pathlib.Path(audit.get("dir") or ".watchlight")
             state.audit_path = (directory / "audit.jsonl") if keep_file else None
             state.trail = AuditTrail(state.audit_path, audit.get("sink"))
+        # The signing secrets and the approval state are rebuilt TOGETHER: the
+        # approval key falls back to the signing secret, so changing one without
+        # the other would leave approvals on a key nothing else holds.
+        approval_changed = approval_secret is not None or approval_store is not None
         if signing_secret is not None or token_secret is not None:
             state.signing_secrets = _resolve_signing_secrets(signing_secret, token_secret)
+            approval_changed = True
+        if approval_changed:
+            # MERGE, like the audit options: naming only the store must not drop
+            # a secret an earlier call configured.
+            if approval_secret is not None:
+                state.approval_options["secret"] = approval_secret
+            if approval_store is not None:
+                state.approval_options["store"] = approval_store
+            state.approval = ApprovalTokens(
+                resolve_approval_keys(
+                    state.approval_options.get("secret"),
+                    state.signing_secrets,
+                    os.environ.get("WATCHLIGHT_APPROVAL_SECRET"),
+                ),
+                state.approval_options.get("store"),
+            )
+        if counter_source is not None:
+            state.counter_source = counter_source
         if strict_principal is not None:
             state.strict_principal = bool(strict_principal)
 
@@ -2304,6 +2337,9 @@ def configure_default(
     audit_file: Optional[bool] = None,
     signing_secret: Any = None,
     token_secret: Any = None,
+    approval_secret: Any = None,
+    approval_store: Optional[ApprovalStore] = None,
+    counter_source: Optional[CounterSource] = None,
     strict_principal: Optional[bool] = None,
 ) -> "Watchlight":
     """Configure the module-level :data:`govern` — the one governor an
@@ -2327,6 +2363,9 @@ def configure_default(
         audit_file=audit_file,
         signing_secret=signing_secret,
         token_secret=token_secret,
+        approval_secret=approval_secret,
+        approval_store=approval_store,
+        counter_source=counter_source,
         strict_principal=strict_principal,
     )
     return govern

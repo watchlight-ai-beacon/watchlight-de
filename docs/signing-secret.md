@@ -18,6 +18,7 @@ openssl rand -base64 32
 Give it to the governor:
 
 ```python
+import os
 from watchlight import Watchlight
 
 govern = Watchlight(agent="my-agent", signing_secret=os.environ["WATCHLIGHT_SIGNING_SECRET"])
@@ -110,8 +111,12 @@ The environment variable takes a list too, separated by commas, newest first:
 export WATCHLIGHT_SIGNING_SECRET="$NEW,$OLD"
 ```
 
-(A secret containing a comma has to be passed as a list in code. Base64 and hex
-values never do.)
+**A secret must not contain a comma.** In the environment variable a comma
+separates entries, so a value containing one is split into pieces and only the
+first piece signs. Base64 and hex values — what `openssl rand` above produces —
+never contain one. A variable that is set but holds no usable secret (a lone
+comma, a space) is refused when you construct the governor rather than treated
+as unset.
 
 Rotating a single value is an immediate cutover: the moment the new one is live,
 every outstanding scope token and every unconsumed approval is refused. That is

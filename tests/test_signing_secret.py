@@ -123,6 +123,39 @@ def test_the_new_environment_variable_outranks_the_old(tmp_path, monkeypatch):
     assert _gov(tmp_path, "b").scope(tools=["read"]).to_token()
 
 
+def test_the_new_environment_variable_outranks_the_old_option(tmp_path, monkeypatch):
+    """The precedence is by NAME, not by option-versus-environment: during the
+    rename the new environment variable must not be ignored because some code
+    still passes the old argument."""
+    monkeypatch.setenv("WATCHLIGHT_SIGNING_SECRET", NEW)
+    with pytest.raises(ScopeTokenError) as exc:
+        _gov(tmp_path, "a", token_secret=OLD)  # they disagree
+    assert exc.value.code == "mismatch"
+    # Same value under both names: accepted, and the new-name source is used.
+    monkeypatch.setenv("WATCHLIGHT_SIGNING_SECRET", NEW)
+    a = _gov(tmp_path, "b", token_secret=NEW)
+    b = _gov(tmp_path, "c", signing_secret=NEW)
+    assert b.scope_from_token(a.scope(tools=["read"]).to_token()).allowed_tools == ["read"]
+
+
+def test_a_new_name_source_conflicting_with_an_old_one_is_refused(tmp_path, monkeypatch):
+    """The conflict is between NAMES, whichever source each came from."""
+    monkeypatch.setenv("WATCHLIGHT_TOKEN_SECRET", OLD)
+    with pytest.raises(ScopeTokenError) as exc:
+        _gov(tmp_path, "a", signing_secret=NEW)
+    assert exc.value.code == "mismatch"
+    # Agreeing sources are fine, and the old name still warns.
+    monkeypatch.setenv("WATCHLIGHT_TOKEN_SECRET", NEW)
+    assert _gov(tmp_path, "b", signing_secret=NEW).scope(tools=["read"]).to_token()
+
+
+def test_the_old_environment_variable_is_the_last_source(tmp_path, monkeypatch):
+    monkeypatch.setenv("WATCHLIGHT_TOKEN_SECRET", NEW)
+    a = _gov(tmp_path, "a")                       # nothing else configured
+    b = _gov(tmp_path, "b", signing_secret=NEW)
+    assert b.scope_from_token(a.scope(tools=["read"]).to_token()).allowed_tools == ["read"]
+
+
 # ── rotation: an ordered list ───────────────────────────────────────────────
 
 
@@ -192,12 +225,77 @@ def test_an_empty_list_fails_closed(tmp_path):
         _gov(tmp_path, "b", signing_secret=["", "   "])
 
 
+def test_an_environment_variable_holding_no_usable_secret_is_refused(tmp_path, monkeypatch):
+    """It was configured, so resolving it to "unset" would quietly fall back to a
+    weaker default — for approvals, a random per-process key."""
+    for value in (",", " ", " , "):
+        monkeypatch.setenv("WATCHLIGHT_SIGNING_SECRET", value)
+        with pytest.raises(ScopeTokenError) as exc:
+            _gov(tmp_path, "a")
+        assert exc.value.code == "no_secret"
+    # An EMPTY variable is genuinely unset — an unfilled placeholder.
+    monkeypatch.setenv("WATCHLIGHT_SIGNING_SECRET", "")
+    assert _gov(tmp_path, "b") is not None
+
+
 def test_the_environment_variable_takes_a_comma_separated_list(tmp_path, monkeypatch):
     before = _gov(tmp_path, "a", signing_secret=OLD)
     token = before.scope(tools=["read"]).to_token()
     monkeypatch.setenv("WATCHLIGHT_SIGNING_SECRET", f"{NEW}, {OLD}")
     during = _gov(tmp_path, "b")
     assert during.scope_from_token(token).allowed_tools == ["read"]
+
+
+# ── configure_default applies every option ──────────────────────────────────
+
+
+def test_configure_default_applies_the_approval_and_counter_options(tmp_path, monkeypatch):
+    """An option the default governor accepts but never applies would degrade
+    single use to per-replica with no signal at all."""
+    import watchlight
+
+    monkeypatch.setattr(watchlight, "govern", Watchlight(audit_dir=str(tmp_path / ".watchlight")))
+    seen = {}
+
+    class Store:
+        def add(self, id, expires_at):  # noqa: A002
+            seen[id] = expires_at
+            return True
+
+    g = watchlight.configure_default(
+        signing_secret=NEW,
+        approval_store=Store(),
+        counter_source=lambda q: 11,
+    )
+    g.allow(ANY, "any")
+    token = g.mint_approval(principal="U", action="a", resource="r")
+    assert g.authorize(principal="U", action="a", resource="r", approval=token)["decision"] == "Allow"
+    assert seen, "the configured approval store was never written to"
+    assert g.counters(principal="U")["count"] == 11
+    # …and the signing secret reached the approval keys, so another process
+    # holding the same value verifies the token.
+    other = _gov(tmp_path, "other", signing_secret=NEW)
+    other_token = other.mint_approval(principal="U", action="a", resource="r")
+    assert g.authorize(principal="U", action="a", resource="r", approval=other_token)["decision"] == "Allow"
+
+
+def test_configure_default_merges_the_approval_options(tmp_path, monkeypatch):
+    import watchlight
+
+    monkeypatch.setattr(watchlight, "govern", Watchlight(audit_dir=str(tmp_path / ".watchlight")))
+    rows = {}
+
+    class Store:
+        def add(self, id, expires_at):  # noqa: A002
+            rows[id] = expires_at
+            return True
+
+    watchlight.configure_default(approval_store=Store())
+    g = watchlight.configure_default(signing_secret=NEW)   # names only the secret
+    g.allow(ANY, "any")
+    token = g.mint_approval(principal="U", action="a", resource="r")
+    g.authorize(principal="U", action="a", resource="r", approval=token)
+    assert rows, "the store from the earlier call was dropped"
 
 
 # ── the same list drives approvals ──────────────────────────────────────────

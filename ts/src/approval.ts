@@ -212,14 +212,21 @@ export function resolveApprovalKeys(
   return configured === undefined ? [PROCESS_KEY] : deriveApprovalKeys(configured);
 }
 
-/** An environment variable carries one secret, or several separated by commas —
- *  newest first, as in the option. A secret that itself contains a comma has to
- *  be supplied through the option instead; the generated secrets this SDK
- *  documents (hex or base64) never do. */
+/**
+ * An environment variable carries one secret, or several separated by commas —
+ * newest first, as in the option. A SECRET MUST NOT CONTAIN A COMMA: the
+ * generated values this SDK documents (base64 or hex) never do, and one that did
+ * would be split into pieces and sign with only its first part.
+ *
+ * An unset or empty variable is "unset" and falls through to the next source. A
+ * variable that is SET to something that yields no usable entry — a lone comma,
+ * a space — returns the empty list, which the caller then refuses: it was
+ * configured, so resolving it to "unset" would quietly fall back to a weaker
+ * default.
+ */
 export function splitEnvSecrets(value: string | undefined): string[] | undefined {
-  if (value === undefined) return undefined;
-  const parts = value.split(",").map((v) => v.trim()).filter((v) => v.length > 0);
-  return parts.length === 0 ? undefined : parts;
+  if (value === undefined || value.length === 0) return undefined;
+  return value.split(",").map((v) => v.trim()).filter((v) => v.length > 0);
 }
 
 /** {@link normalizeApprovalSecret} over one value or an ordered list. */

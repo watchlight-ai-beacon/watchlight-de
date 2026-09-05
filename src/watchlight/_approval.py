@@ -222,14 +222,18 @@ def derive_approval_key(secret: bytes) -> bytes:
 
 def split_env_secrets(value: Optional[str]) -> Optional[list[str]]:
     """An environment variable carries one secret, or several separated by
-    commas — newest first, as in the option. A secret that itself contains a
-    comma has to be supplied through the option instead; the generated secrets
-    this SDK documents (hex or base64) never do."""
-    if value is None:
+    commas — newest first, as in the option. A SECRET MUST NOT CONTAIN A COMMA:
+    the generated values this SDK documents (base64 or hex) never do, and one
+    that did would be split into pieces and sign with only its first part.
+
+    An unset or empty variable is "unset" and falls through to the next source. A
+    variable that is SET to something that yields no usable entry — a lone comma,
+    a space — returns the empty list, which the caller then refuses: it was
+    configured, so resolving it to "unset" would quietly fall back to a weaker
+    default."""
+    if value is None or value == "":
         return None
-    parts = [v.strip() for v in value.split(",")]
-    parts = [v for v in parts if v]
-    return parts or None
+    return [v for v in (part.strip() for part in value.split(",")) if v]
 
 
 def normalize_approval_secrets(secret: Any) -> Optional[list[bytes]]:

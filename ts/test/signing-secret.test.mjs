@@ -128,6 +128,63 @@ async function main() {
     delete process.env.WATCHLIGHT_TOKEN_SECRET;
   }
 
+  {
+    // Precedence is by NAME, not by option-versus-environment: during the rename
+    // the new environment variable must not be ignored because some code still
+    // passes the old argument.
+    process.env.WATCHLIGHT_SIGNING_SECRET = NEW;
+    ok("the new env var conflicting with the old option is refused",
+      threw(() => gov({ tokenSecret: OLD }))?.code === "mismatch");
+    ok("…and agreeing with it is accepted", threw(() => gov({ tokenSecret: NEW })) === null);
+    delete process.env.WATCHLIGHT_SIGNING_SECRET;
+    process.env.WATCHLIGHT_TOKEN_SECRET = OLD;
+    ok("the old env var conflicting with the new option is refused",
+      threw(() => gov({ signingSecret: NEW }))?.code === "mismatch");
+    delete process.env.WATCHLIGHT_TOKEN_SECRET;
+  }
+  {
+    // Set, but holding no usable secret: refused rather than resolved to
+    // "unset", which would quietly leave approvals on a random per-process key.
+    for (const value of [",", " ", " , "]) {
+      process.env.WATCHLIGHT_SIGNING_SECRET = value;
+      ok(`an env var holding only ${JSON.stringify(value)} is refused`,
+        threw(() => gov())?.code === "no_secret");
+    }
+    process.env.WATCHLIGHT_SIGNING_SECRET = "";
+    ok("an EMPTY env var is genuinely unset", threw(() => gov()) === null);
+    delete process.env.WATCHLIGHT_SIGNING_SECRET;
+  }
+
+  console.log("configureDefault applies every option");
+  {
+    const { configureDefault, govern } = require("../dist/index.js");
+    const rows = new Map();
+    const store = { add: (id, expiresAt) => { rows.set(id, expiresAt); return true; } };
+    // Every configure call must land BEFORE the first record: a later call
+    // naming one option must merge onto the earlier ones, not replace them.
+    configureDefault({
+      auditDir: fs.mkdtempSync(join(os.tmpdir(), "wl-sig-")),
+      approvalStore: store,
+      counterSource: () => 11,
+    });
+    const g = configureDefault({ signingSecret: NEW });   // names only the secret
+    g.allow(ANY, "any");
+    ok("the default governor is the one configured", g === govern);
+    const token = g.mintApproval({ principal: "U", action: "a", resource: "r" });
+    const d = await g.authorize({ principal: "U", action: "a", resource: "r", approval: token });
+    ok("the approval is honoured", d.decision === "Allow");
+    ok("…and the configured store was written to, not the per-process default", rows.size === 1);
+    ok("the counter source is applied", g.counters({ principal: "U" }).count === 11);
+    // The signing secret reached the approval keys, so another process holding
+    // the same value verifies a token it minted.
+    const other = gov({ signingSecret: NEW });
+    const foreign = other.mintApproval({ principal: "U", action: "a", resource: "r" });
+    ok("the signing secret drives approvals across processes",
+      (await g.authorize({ principal: "U", action: "a", resource: "r", approval: foreign })).decision === "Allow");
+    ok("a later call naming only the secret keeps the store and the source",
+      rows.size >= 1 && g.counters({ principal: "U" }).count === 11);
+  }
+
   console.log("rotation: an ordered list");
   {
     const token = await mintScope(gov({ signingSecret: NEW }));

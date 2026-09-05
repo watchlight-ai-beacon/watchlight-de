@@ -463,6 +463,9 @@ interface GovernorState {
    *  — through every other view of the same governor. A view that had its own
    *  store would let one token be spent once per name. */
   approval: ApprovalTokens;
+  /** The approval options in force, so {@link Watchlight._configure} can apply
+   *  one of them without dropping the others. */
+  approvalOptions: { secret?: SecretInput; store?: ApprovalStore };
   /** The read side of the trail, shared for the same reason: `counters()` must
    *  answer the same number whichever name asks. */
   counterSource?: CounterSource;
@@ -526,40 +529,36 @@ function sameSecrets(a: Uint8Array[] | undefined, b: Uint8Array[] | undefined): 
 }
 
 /**
- * The signing secrets in force, newest first. In order:
- * `signingSecret`, `WATCHLIGHT_SIGNING_SECRET`, `tokenSecret`,
- * `WATCHLIGHT_TOKEN_SECRET`, then nothing (scope tokens fail closed). The last
- * two are the former name: they still work, warn once, and are refused when
- * they contradict the new name rather than being resolved silently.
+ * The signing secrets in force, newest first. Sources, in precedence order:
+ *
+ *   1. the `signingSecret` option
+ *   2. `WATCHLIGHT_SIGNING_SECRET`
+ *   3. the `tokenSecret` option        (former name)
+ *   4. `WATCHLIGHT_TOKEN_SECRET`       (former name)
+ *
+ * and then nothing, which leaves scope tokens failing closed. The former names
+ * still work and warn once. A source under the new name and one under the old
+ * name holding DIFFERENT values is refused rather than resolved silently — the
+ * option/environment split does not matter, only that the two names disagree.
  */
 function resolveSigningSecrets(opts: WatchlightOptions): Uint8Array[] | undefined {
-  const fromNew = normalizeSecrets(opts.signingSecret);
-  const fromOld = normalizeSecrets(opts.tokenSecret);
-  if (fromNew !== undefined && fromOld !== undefined && !sameSecrets(fromNew, fromOld)) {
+  // Resolved in precedence order within each name, so `signingSecret` beats
+  // WATCHLIGHT_SIGNING_SECRET and `tokenSecret` beats WATCHLIGHT_TOKEN_SECRET.
+  const underNewName =
+    normalizeSecrets(opts.signingSecret) ??
+    normalizeSecrets(splitEnvSecrets(process.env.WATCHLIGHT_SIGNING_SECRET));
+  const underOldName =
+    normalizeSecrets(opts.tokenSecret) ??
+    normalizeSecrets(splitEnvSecrets(process.env.WATCHLIGHT_TOKEN_SECRET));
+  if (
+    underNewName !== undefined &&
+    underOldName !== undefined &&
+    !sameSecrets(underNewName, underOldName)
+  ) {
     throw new ScopeTokenError("mismatch", SIGNING_SECRET_CONFLICT_MESSAGE);
   }
-  if (fromNew !== undefined) {
-    if (fromOld !== undefined) warnTokenSecretName();
-    return fromNew;
-  }
-  if (fromOld !== undefined) {
-    warnTokenSecretName();
-    return fromOld;
-  }
-  const envNew = normalizeSecrets(splitEnvSecrets(process.env.WATCHLIGHT_SIGNING_SECRET));
-  const envOld = normalizeSecrets(splitEnvSecrets(process.env.WATCHLIGHT_TOKEN_SECRET));
-  if (envNew !== undefined && envOld !== undefined && !sameSecrets(envNew, envOld)) {
-    throw new ScopeTokenError("mismatch", SIGNING_SECRET_CONFLICT_MESSAGE);
-  }
-  if (envNew !== undefined) {
-    if (envOld !== undefined) warnTokenSecretName();
-    return envNew;
-  }
-  if (envOld !== undefined) {
-    warnTokenSecretName();
-    return envOld;
-  }
-  return undefined;
+  if (underOldName !== undefined) warnTokenSecretName();
+  return underNewName ?? underOldName;
 }
 
 function newState(opts: WatchlightOptions): GovernorState {
@@ -581,6 +580,7 @@ function newState(opts: WatchlightOptions): GovernorState {
       resolveApprovalKeys(opts.approvalSecret, signingSecrets),
       opts.approvalStore
     ),
+    approvalOptions: { secret: opts.approvalSecret, store: opts.approvalStore },
     counterSource: opts.counterSource,
     policyCount: 0,
     announced: false,
@@ -1526,9 +1526,30 @@ export class Watchlight {
         audit.sink
       );
     }
+    // The signing secrets and the approval state are rebuilt TOGETHER: the
+    // approval key falls back to the signing secret, so changing one without the
+    // other would leave approvals on a key nothing else holds.
+    const approvalChanged =
+      opts.approvalSecret !== undefined || opts.approvalStore !== undefined;
     if (opts.signingSecret !== undefined || opts.tokenSecret !== undefined) {
       shared.signingSecrets = resolveSigningSecrets(opts);
+      shared.approvalOptions.secret = opts.approvalSecret ?? shared.approvalOptions.secret;
+      shared.approvalOptions.store = opts.approvalStore ?? shared.approvalOptions.store;
+      shared.approval = new ApprovalTokens(
+        resolveApprovalKeys(shared.approvalOptions.secret, shared.signingSecrets),
+        shared.approvalOptions.store
+      );
+    } else if (approvalChanged) {
+      // MERGE, like the audit options: naming only the store must not drop a
+      // secret an earlier call configured.
+      if (opts.approvalSecret !== undefined) shared.approvalOptions.secret = opts.approvalSecret;
+      if (opts.approvalStore !== undefined) shared.approvalOptions.store = opts.approvalStore;
+      shared.approval = new ApprovalTokens(
+        resolveApprovalKeys(shared.approvalOptions.secret, shared.signingSecrets),
+        shared.approvalOptions.store
+      );
     }
+    if (opts.counterSource !== undefined) shared.counterSource = opts.counterSource;
     if (opts.strictPrincipal !== undefined) shared.strictPrincipal = opts.strictPrincipal !== false;
     if (opts.apdpUrl !== undefined || opts.token !== undefined || opts.tenantId !== undefined) {
       // A different backend is a different policy holder: the policies added to

@@ -299,12 +299,23 @@ def test_spent_rebuilt_scope_refuses_attenuate_and_to_token(tmp_path):
 
 
 def test_blank_env_secret_is_treated_as_unset(tmp_path, monkeypatch):
-    monkeypatch.setenv("WATCHLIGHT_TOKEN_SECRET", "   ")
+    # EMPTY is unset — the unfilled `.env` placeholder — so constructing a
+    # governor works and only the token operations fail closed.
+    monkeypatch.setenv("WATCHLIGHT_SIGNING_SECRET", "")
     g = Watchlight(agent="test-agent", audit_dir=str(tmp_path / ".watchlight"))  # must not raise
     with pytest.raises(ScopeTokenError) as ei:
         g.scope(tools=["read"]).to_token()
     assert ei.value.code == "no_secret"
-    assert Watchlight(agent="test-agent", audit_dir=str(tmp_path / "b"), token_secret="").scope(tools=["read"]).depth == 0
+    assert Watchlight(agent="test-agent", audit_dir=str(tmp_path / "b"), signing_secret="").scope(tools=["read"]).depth == 0
+
+
+def test_an_env_secret_set_to_nothing_usable_is_refused(tmp_path, monkeypatch):
+    # SET but holding no usable secret is a misconfiguration, not "unset":
+    # falling through would quietly leave approvals on a random per-process key.
+    monkeypatch.setenv("WATCHLIGHT_SIGNING_SECRET", "   ")
+    with pytest.raises(ScopeTokenError) as ei:
+        Watchlight(agent="test-agent", audit_dir=str(tmp_path / "c"))
+    assert ei.value.code == "no_secret"
 
 
 def test_bytearray_secret_is_copied(tmp_path):

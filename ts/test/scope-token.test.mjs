@@ -167,16 +167,22 @@ async function main() {
   await rejects("spent rebuilt scope refuses toToken", () => live.toToken(), "expired");
   await rejects("assertActive fails closed on a spent scope", () => live.assertActive(), "expired");
 
-  // ── empty / whitespace env secret is "unset", not a construction error ──
-  process.env.WATCHLIGHT_TOKEN_SECRET = "   ";
+  // ── an EMPTY env secret is "unset" (the unfilled .env placeholder), while one
+  //    SET to nothing usable is a misconfiguration and is refused ──
+  process.env.WATCHLIGHT_SIGNING_SECRET = "";
   let emptyOk = null;
   try { emptyOk = new Watchlight({ agent: "test-agent", auditDir: tmp() }); } catch (e) { emptyOk = e; }
-  ok("blank WATCHLIGHT_TOKEN_SECRET does not break construction", emptyOk instanceof Watchlight, String(emptyOk));
+  ok("empty WATCHLIGHT_SIGNING_SECRET does not break construction", emptyOk instanceof Watchlight, String(emptyOk));
   await rejects("...but token operations still fail closed", async () => (await emptyOk.scope({ tools: ["read"] })).toToken(), "no_secret");
-  delete process.env.WATCHLIGHT_TOKEN_SECRET;
+  process.env.WATCHLIGHT_SIGNING_SECRET = "   ";
+  let blank = null;
+  try { blank = new Watchlight({ agent: "test-agent", auditDir: tmp() }); } catch (e) { blank = e; }
+  ok("an env secret set to nothing usable is refused, not treated as unset",
+    blank instanceof ScopeTokenError && blank.code === "no_secret", String(blank));
+  delete process.env.WATCHLIGHT_SIGNING_SECRET;
   let emptyOpt = null;
-  try { emptyOpt = new Watchlight({ agent: "test-agent", auditDir: tmp(), tokenSecret: "" }); } catch (e) { emptyOpt = e; }
-  ok("empty tokenSecret option is treated as unset", emptyOpt instanceof Watchlight);
+  try { emptyOpt = new Watchlight({ agent: "test-agent", auditDir: tmp(), signingSecret: "" }); } catch (e) { emptyOpt = e; }
+  ok("empty signingSecret option is treated as unset", emptyOpt instanceof Watchlight);
 
   // ── a Uint8Array secret is copied: mutating the caller's array cannot change the key ──
   const keyBytes = new Uint8Array(Buffer.from(SECRET, "utf8"));
