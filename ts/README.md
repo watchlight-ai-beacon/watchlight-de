@@ -403,14 +403,16 @@ audit line under the same key the decision line uses:
 govern.sanitize(text, { resource: "statement.pdf", principal: `User::"${userId}"`, decisionId });
 ```
 
-Without it the record says what was redacted but not *for whom* — answerable only
-by joining through `decisionId`, and only when a decision exists. A pipeline that
-sanitizes and screens *before* it authorizes (the right order when the text must
-never be embedded unsanitized) has nothing to join to, so a data-minimisation
-audit gets "something was redacted for someone". `principal` is an identifier
-**you** supply — never anything derived from the content — validated exactly like
-`decisionId` (1–128 characters, no control or line-separator characters,
-`SanitizeError` / `ScreenError` otherwise). Records without one are unchanged.
+Omit it and the subject is *this agent*, recorded as the typed `Agent::"<name>"`
+— exactly what a decision that names no principal records — so the record always
+answers *for whom*; naming the person it was really for is what makes that answer
+useful. A pipeline that sanitizes and screens *before* it authorizes (the right
+order when the text must never be embedded unsanitized) has no decision to join
+through, so without `principal` a data-minimisation audit gets "redacted for the
+agent" rather than the person. `principal` is an identifier **you** supply —
+never anything derived from the content — validated exactly like `decisionId`
+(1–128 characters, no control or line-separator characters, `SanitizeError` /
+`ScreenError` otherwise).
 
 **Values you already hold** — names, streets, ids from your own records — go in
 `known`. Every occurrence is redacted (exact string, case-insensitive; overlapping
@@ -432,7 +434,7 @@ known trade-offs — so they are **off by default**: list them in `types` to run
 them (`types: [...DEFAULT_PII_TYPES, "PERSON", "ADDRESS"]`). For precision, prefer
 `known`.
 
-`SanitizeOptions` is `{ mode?, types?, intent?, resource?, decisionId? }`. Pass
+`SanitizeOptions` is `{ mode?, types?, intent?, resource?, decisionId?, principal?, known? }`. Pass
 the `decisionId` returned by `authorize` and the `sanitization` audit line
 carries the same `decision_id` as the decision that governed the read, so the
 two records join on one key. The id is opaque and validated before it is
@@ -494,8 +496,8 @@ consumers decide from the report, never from markers in the text.
 decision** — never argument values. Same contract as the production audit trail.
 
 ```json
-{"ts":"2026-08-29T…Z","agent":"my-agent","intent":"research","resource":"tool/webSearch","decision":"Allow","decision_id":"…"}
-{"ts":"2026-08-29T…Z","agent":"my-agent","intent":"read","event":"sanitization","resource":"statement.pdf","mode":"tag","detector":"de-rules-1","counts":{"EMAIL":2},"total":2,"decision_id":"…"}
+{"ts":"2026-08-29T…Z","agent":"my-agent","principal":"Agent::\"my-agent\"","intent":"research","resource":"tool/webSearch","decision":"Allow","decision_id":"…"}
+{"ts":"2026-08-29T…Z","agent":"my-agent","intent":"read","event":"sanitization","resource":"statement.pdf","mode":"tag","detector":"de-rules-2","counts":{"EMAIL":2},"total":2,"decision_id":"…","principal":"Agent::\"my-agent\""}
 ```
 
 A `sanitization` line carries `decision_id` only when `govern.sanitize` was given

@@ -18,7 +18,7 @@ Watchlight Developer Edition (DE) is the open front door to an **Agent Runtime G
 - `pip install "watchlight[all]"` → one install for the whole DE: the SDK (`watchlight_core`) + every framework plugin + the MCP PEP (`watchlight_mcp`). Use this to run any example in the docs without resolving individual packages. (Requires `watchlight >= 0.3.0`.)
 - `npm install @watchlight/sdk` → the **TypeScript / Node** lane. `import { govern } from "@watchlight/sdk"` — the same in-process engine (`@watchlight/engine`, compiled to WebAssembly), same API and value-free audit as the Python `watchlight` package, no Python sidecar. See the TypeScript section below.
 
-## Core API — the `watchlight` package (verified, 0.5.0)
+## Core API — the `watchlight` package (verified, 0.7.1)
 
 - `from watchlight import govern, Denied` — `govern` is a ready-to-use default governor (starts with **no** policies → fail-closed until you load some).
 - `govern.load("policies.json")` — load a JSON file: a list of `{"name", "code"}` objects, or `{"policies": [...]}`. A missing file loads nothing (still fail-closed). **Idempotent per source**: keyed on the real path (symlinks resolved), or on `source_id="…"` / `{ sourceId }` when given, so loading the same set twice does not double it; a missing file is not remembered and loads once it appears. The memo is identity, not content: editing a loaded file and calling `load` again is a NO-OP — pass `force=True` / `{ force: true }` to load it again (additively; policies are never removed). `govern.allow(...)` stays additive (same code twice = two policies).
@@ -80,7 +80,7 @@ Three separate inputs; do not collapse them.
 - Full reference: `docs/identity-model.md` in the repo (three cases, worked policies, the 0.8.0 migration note).
 - Term lookup: `docs/glossary.md` — governor / subject / actor / chain first, then every term alphabetically, with contrast lines for subject vs actor, renaming vs delegating, scope vs policy, sanitizing vs screening, approval token vs scope token.
 
-## Scope attenuation — confine sub-agents (verified, 0.5.0)
+## Scope attenuation — confine sub-agents (verified, 0.7.1)
 
 - `scope = govern.scope(tools=[...], resources=[...], intents=[...], max_depth=5, time_budget_seconds=3600)` — the root capability scope.
 - `child = scope.attenuate(tools=[...], intents=[...], resources=[...], time_budget_seconds=...)` — derive a **strict-subset** child. Omitting a dimension inherits the parent's. Every `attenuate` runs the real engine strict-subset validation and is audited (streams into `watchlight dev`).
@@ -128,7 +128,7 @@ Three separate inputs; do not collapse them.
 
 - `govern.screen(text, ...)` (Python) / `govern.screen(text, {...})` (TS) — deterministic, rule-based detection of prompt-injection / output-leak shapes in text the agent reads but did not write (web pages, search and tool results) or in what the model produced. Seven families, each a named counter in the report: `INSTRUCTION_OVERRIDE`, `ROLE_SWITCH`, `PROMPT_EXFILTRATION`, `JAILBREAK_MARKER`, `AUTHORITY_IMPERSONATION`, `HTML_INJECTION`, `PROMPT_LEAK`. Modes: `report` (default — text untouched, counts only), `redact` (matched spans → `[FAMILY]`). Report is **value-free**: `{mode, detector_version ("de-screen-1"), counts, total, flagged}` — never the matched text or offsets; writes a value-free `screening` audit record. Pass `decision_id=` (Python) / `{ decisionId }` (TS) from the `authorize` decision that governed the read: it is echoed on the report and written as `decision_id` on the `screening` line, so it joins the decision (same bounds as `sanitize`: opaque, 1–128 chars, no control characters — otherwise `ScreenError`). `principal=` / `{ principal }` works exactly as it does on `sanitize`: validated the same way, echoed on the report and written as `principal` on the `screening` line. Fail-closed (`ScreenError` with fixed messages on a non-string, unknown mode / family, empty family list, or a malformed `decision_id` / `principal`). Matching ignores case, whitespace runs and zero-width characters; it does NOT decode leetspeak, homoglyphs or encodings, and text that quotes an attack verbatim is flagged. `redact` marks the trigger (a whole `<script>…</script>` element when its body has no `<`) — it does not neutralise HTML; markers can be spoofed by input, so decide from the report, not the text. Call it inside the governed tool body before returning (throw `Denied(toolName, intent, DENY_REASON)` to refuse), or in the `onResult` / `on_result` egress hook of `govern.tool`. Known TS/Python divergence: Turkish dotted capital İ case-folds only in Python. Pattern: [screen-before-model](https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/examples/patterns/screen-before-model.md).
 
-## TypeScript / Node lane — `@watchlight/sdk` (verified, 0.5.0)
+## TypeScript / Node lane — `@watchlight/sdk` (verified, 0.7.1)
 
 - `import { govern, Denied, NeedsApproval } from "@watchlight/sdk";` — same default governor, fail-closed, value-free `.watchlight/audit.jsonl`. `govern.tool(fn, {intent})` is a **higher-order function** (not a decorator) and returns an async function.
 - `govern.allow('permit(...);')` / `govern.load("policies.json")`; `govern.tool(fn, { intent, principal?, resource?, context?, onNeedsApproval?, onResult? })`; `govern.authorize({...})`; `govern.mintApproval({...})`; `govern.sanitize(text, {...})`; `govern.screen(text, {...})`; `govern.counters({...})` / `await govern.countersAsync({...})`. Governor options: `new Watchlight({ agent?, auditDir?, auditSink?, signingSecret?, approvalSecret?, approvalStore?, counterSource?, apdpUrl?, token?, tenantId? })`.
@@ -143,6 +143,9 @@ Three separate inputs; do not collapse them.
 - [Quickstart](https://docs.watchlight.ai/de/quickstart): `pip install`, govern a tool, print your first ALLOW/DENY in under five minutes.
 - [TypeScript / Node](https://docs.watchlight.ai/de/typescript): `npm install @watchlight/sdk`, govern a tool in-process, runtime context + human-in-the-loop, Claude Agent SDK + LangGraph.js adapters.
 - [Cedar policy syntax](https://docs.watchlight.ai/de/policies): the policy language the engine evaluates, from first principles.
+- [The identity model](https://docs.watchlight.ai/de/identity-model): the subject principal (`User::"…"` / `Agent::"…"`), the reserved `context.actor` and `context.actor_chain` keys, and where each value comes from.
+- [Glossary](https://docs.watchlight.ai/de/glossary): every term the DE documentation uses, with the easy-to-confuse pairs contrasted.
+- [The signing secret](https://docs.watchlight.ai/de/signing-secret): which processes need the same value, what happens when it is missing, and how to rotate it in two deploys.
 - [Governed agents (in-process)](https://docs.watchlight.ai/de/governed-agents): govern an agent lifecycle with `InProcessClient` (from `watchlight-agent-sdk` / `watchlight_core`).
 - [Sub-agent scope attenuation](https://docs.watchlight.ai/de/scope-attenuation): strict-subset confinement, the depth-5 ceiling, and the deepagents example.
 - [Govern an MCP server](https://docs.watchlight.ai/de/mcp-server): `serve` (HTTP) and `serve_stdio` (stdio) transports.

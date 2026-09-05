@@ -313,8 +313,12 @@ It mirrors the Python package feature-for-feature:
   heuristics. Pass the `decisionId` from `authorize` and the `sanitization`
   audit line joins the decision on `decision_id`; pass `principal` (Python
   `principal=`) and the line names *whose* data was redacted, under the same key
-  the decision line uses — which is the only way to answer that when the
-  sanitization runs *before* any decision exists to join to.
+  the decision line uses. Omit it and the line still names a subject — this
+  agent, typed as `Agent::"<name>"`, exactly as a decision that names no
+  principal is recorded — so naming the person is what turns "redacted for the
+  agent" into an answer a data-minimisation audit can use, and it is the only
+  way to get one when the sanitization runs *before* any decision exists to
+  join to.
 - **Content screening:** `govern.screen(text, { resource, decisionId?, principal? })`
   — flag or redact prompt-injection shapes in what a read returns, before it
   reaches the model; with the `decisionId` the `screening` audit line joins the
@@ -521,6 +525,7 @@ The advanced policy JSON — each a runnable `{ policies, tests }` suite with Ce
 | [External messaging](./examples/patterns/external-messaging.md) | May the agent message *outside* — allowlisted destinations only, with review? | [`external-messaging.suite.json`](./examples/patterns/suites/external-messaging.suite.json) |
 | [Data egress](./examples/patterns/data-egress.md) | May *this classification* of data cross *this boundary*? | [`data-egress.suite.json`](./examples/patterns/suites/data-egress.suite.json) |
 | [Egress after read](./examples/patterns/egress-after-read.md) | Govern what a tool *returns* — decide on the result's classification after the fetch. | [`egress-after-read.suite.json`](./examples/patterns/suites/egress-after-read.suite.json) |
+| [Allow, but redact](./examples/patterns/allow-but-redact.md) | Say "yes, but…" *in the policy* — `@obligate_redact` / `@obligate_max_items` / `@obligate_log_values` ride on the `Allow`, and the suite asserts them. | [`allow-but-redact.suite.json`](./examples/patterns/suites/allow-but-redact.suite.json) |
 | [Kill-switch / quarantine](./examples/patterns/kill-switch.md) | Stop a suspect agent cold — a hard boundary that beats every grant. | [`kill-switch.suite.json`](./examples/patterns/suites/kill-switch.suite.json) |
 | [Per-user attribution](./examples/patterns/per-user-attribution.md) | Attribute the decision to the acting end-user, and scope policy to them. | [`per-user-attribution.suite.json`](./examples/patterns/suites/per-user-attribution.suite.json) |
 | [PII before read](./examples/patterns/pii-before-read.md) | Strip PII from a document *before* the agent ever sees it; read only through the sanitizing path. | [`pii-before-read.suite.json`](./examples/patterns/suites/pii-before-read.suite.json) + [`pii-before-read.mjs`](./examples/patterns/scripts/pii-before-read.mjs) |

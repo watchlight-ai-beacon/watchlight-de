@@ -49,12 +49,18 @@ by choosing the handle, not by passing a field:
     `-- .as("memory-writer") ->  actor  memory-writer
                                  chain  [memory-writer]
 
-  the request  --X-->  actor / actor_chain
-      no field of the call reaches either key: a differing value
+  the request context  --X-->  actor / actor_chain
+      no context field reaches either key: a differing value
       raises, an identical one is accepted
 ```
 
-There is no request field to set, which is what lets a policy trust the value.
+Both keys are derived from the governor the call was made through — its name and
+the delegation it came down — never read out of the request `context`, which is
+what lets a policy trust them. The *name* is still yours to choose: `as`, a
+per-call `agent` override, and `delegate` each set the actor, as the table above
+shows. What no caller can do is write `context.actor` or `context.actor_chain`
+directly and have the engine believe it.
+
 Renaming — with `as` or with the per-call override — always produces a fresh
 single-element chain; only `delegate` appends.
 

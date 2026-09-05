@@ -350,12 +350,6 @@ def test_unconfigured_default_warns_exactly_once(tmp_path):
     assert out.stderr.count("no audit_sink is configured") == 1
 
 
-def test_unconfigured_default_warns_exactly_once(tmp_path):
-    out = _run(_UNCONFIGURED_SCRIPT, tmp_path)
-    assert "OK" in out.stdout
-    assert out.stderr.count("no audit_sink is configured") == 1
-
-
 # ── the actor CHAIN: delegation through a spawned scope ─────────────
 
 
@@ -431,6 +425,22 @@ def test_a_caller_can_neither_supply_nor_extend_the_chain(tmp_path):
         context={"actor_chain": ["flight-booker", "seat-picker"]},
     )
     assert echoed["allowed"] is True
+
+
+def test_a_chain_that_is_not_a_sequence_is_the_reserved_key_error(tmp_path):
+    # A value that is not a list is simply not the chain the SDK derived, so it
+    # is refused as a reserved-key conflict — never as a TypeError from trying
+    # to coerce it. The TypeScript lane answers the same way for the same input.
+    g = Watchlight(agent="flight-booker", audit_dir=str(tmp_path))
+    g.allow('permit(principal, action == Action::"trace", resource);')
+    for value in (123, {"flight-booker": True}, "flight-booker", None, object()):
+        with pytest.raises(ReservedContextError) as err:
+            g.authorize(action="trace", context={"actor_chain": value})
+        assert str(err.value) == RESERVED_CONTEXT_MESSAGE
+
+    # a tuple IS a sequence, and one that matches is accepted like the list
+    ok = g.authorize(action="trace", context={"actor_chain": ("flight-booker",)})
+    assert ok["allowed"] is True
 
 
 def test_the_chain_is_bounded_by_the_attenuation_ceiling(tmp_path):
