@@ -45,6 +45,10 @@ any delegation it is just `[agent]`.
   checked when you delegate and only ever narrowing. A policy decides each call
   that is authorized. The scope is not consulted at authorize time, so confining
   a sub-agent means narrowing the scope *and* writing the policy.
+- **Scope versus goal** — a scope bounds what a delegated agent may *hold*, and
+  is checked when you delegate. A goal bounds what a *run* may do: its actions,
+  its spend, its progress toward an objective. Goals are evaluated in the
+  governed control plane (Enterprise).
 - **Sanitizing versus screening** — sanitizing removes personal data from text
   you are about to pass on; screening decides whether text is safe to use at
   all. Sanitize what leaves; screen what arrives.
@@ -132,6 +136,12 @@ whether it was withheld or rewritten.
 **Fail closed** — no matching policy means Deny, and an evaluation that cannot
 be reached means Deny. Uncertainty never becomes permission.
 → [README](../README.md)
+
+**Goal** — a bound on a whole run rather than on one call: how many actions it
+may take, against what budget, toward what objective. Evaluated in the governed
+control plane (Enterprise), not by a scope, which bounds what a delegated agent
+may hold.
+→ [README](../README.md#developer-edition-vs-enterprise)
 
 **Governed tool** — a function wrapped so the engine authorizes the call before
 the body runs. On Deny the body is never entered.
