@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "watchlight"
-version = "0.8.1"
+version = "0.8.2"
 description = "Watchlight Developer Edition — govern AI agents in-process, with zero infrastructure."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -37,9 +37,9 @@ dependencies = [
 # framework plugin (which pulls the Watchlight SDK); the SAME plugin you ship to
 # production, wired here to the in-process engine via
 # `watchlight.<framework>.governed_plugin`.
-langgraph = ["watchlight-langgraph>=0.4"]
-pydantic-ai = ["watchlight-pydantic-ai>=0.3"]
-claude-agent = ["watchlight-claude-agent>=0.2"]
+langgraph = ["watchlight-langgraph>=0.4", "watchlight-agent-sdk>=0.7"]
+pydantic-ai = ["watchlight-pydantic-ai>=0.3", "watchlight-agent-sdk>=0.7"]
+claude-agent = ["watchlight-claude-agent>=0.2", "watchlight-agent-sdk>=0.7"]
 # Govern an MCP server: the Watchlight MCP Runtime PEP — a policy enforcement
 # point in front of any MCP (2026-07-28) server. See examples/governed_mcp_server.py.
 mcp = ["watchlight-mcp>=0.4.0"]

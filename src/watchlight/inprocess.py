@@ -67,17 +67,16 @@ def in_process_backend(
 
 # Terms a ``governed_plugin`` factory cannot take, and what to do instead. A
 # framework plugin is constructed once and then governs many calls, so a term
-# that belongs to ONE call is not a constructor argument — and the acting
-# subject is not expressible through a plugin at all. Forwarded blindly, each
-# of these would surface as a TypeError naming a plugin constructor the caller
-# never wrote; named here, the message says where the term actually goes.
+# that belongs to ONE call is not a constructor argument. All three ARE
+# expressible — on the run handle, per call. Forwarded blindly, each would
+# surface as a TypeError naming a plugin constructor the caller never wrote;
+# named here, the message says where the term actually goes.
 _PER_CALL_TERMS: Dict[str, str] = {
     "principal": (
-        "a framework plugin attributes every decision to the agent it runs "
-        '(`Agent::"<agent>"`) and takes no acting subject, at construction or '
-        "per call. To name the subject a call is made FOR, govern that call "
-        "with `watchlight.Watchlight.tool(..., principal=...)` or "
-        "`authorize(principal=...)`."
+        "the acting subject is a per-call term: pass it on the run handle — "
+        "`await handle.authorize_action(action, resource, "
+        "principal='User::\"u-1\"')`. Omitted, it defaults to the agent that "
+        "runs. Requires watchlight-agent-sdk 0.7.0 or later."
     ),
     "context": (
         "Cedar `context` is a per-call term: pass it on the run handle — "
