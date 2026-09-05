@@ -7,6 +7,12 @@ exactly that request; the agent resumes, the approval is recorded, and the
 delete runs **once**. The example then tries to replay the grant and to replay
 the SDK's approval token, and asserts both are refused.
 
+The annotation is checked when the policy loads: `allow` / `load` refuse an
+`@enforcement_effect` value the engine does not implement, so a typo cannot
+quietly turn this permit into a plain Allow that deletes without asking. A near
+miss for the annotation *name* warns instead — an annotation the SDK does not
+read may well be yours.
+
 | File | Purpose |
 |---|---|
 | [`agent.py`](agent.py) / [`agent.mjs`](agent.mjs) | The governed agent: `request` holds, `resume` completes and runs the replay checks. |

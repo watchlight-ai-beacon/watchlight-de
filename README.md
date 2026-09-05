@@ -604,6 +604,18 @@ always additive — the same code twice is two policies. `govern.policy_count` a
 `govern.has_policies` report what an engine holds, which is worth asserting at
 start-up: no policies means every call is denied.
 
+Both entry points **check the enforcement effect before the policy loads**. A
+policy annotated with an `@enforcement_effect` the engine does not implement —
+anything outside `attenuate`, `escalate`, `observe`, `quarantine`,
+`require_approval`, `revoke`, `sever_subtree`, `terminate` — raises `PolicyError`
+naming the value and the accepted set, and `load` adds nothing from that file. An
+unrecognised effect is otherwise *dropped*, which on a `forbid` is harmless (a
+deny stays a deny) but on a `permit` turns a `require_approval` hold into an
+unconditional allow, so a one-character typo would quietly remove a
+human-in-the-loop gate. A near miss for the annotation *name* (`@enforcment_effect`)
+warns instead of raising — an annotation the SDK does not read may well be yours.
+See [the enforcement effect](docs/using-the-governor.md#the-enforcement-effect-is-checked-when-the-policy-loads).
+
 ```python
 from watchlight import govern
 

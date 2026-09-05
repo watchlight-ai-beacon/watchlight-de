@@ -43,6 +43,12 @@ from typing import Any, Awaitable, Callable, Optional, Sequence, TypeVar, Union
 import watchlight_engine as _engine
 
 from . import principals
+from ._annotations import (
+    ENFORCEMENT_EFFECT_ANNOTATION,
+    ENFORCEMENT_EFFECTS,
+    PolicyError,
+    check_policy_annotations,
+)
 from ._approval import (
     APPROVAL_KEY_LABEL,
     APPROVAL_MIN_SECRET_BYTES,
@@ -139,6 +145,9 @@ __all__ = [
     "Denied",
     "NeedsApproval",
     "AuthorizeError",
+    "PolicyError",
+    "ENFORCEMENT_EFFECTS",
+    "ENFORCEMENT_EFFECT_ANNOTATION",
     "OBLIGATIONS_INVALID_MESSAGE",
     "MAX_REDACT_ENTRIES",
     "sanitize",
@@ -1690,10 +1699,20 @@ class Watchlight:
     def allow(self, cedar_code: str, name: str | None = None) -> "Watchlight":
         """Add one Cedar policy inline. Returns self for chaining. Always
         additive: calling it twice with the same code adds it twice (use
-        :meth:`load` for a set you may load more than once)."""
-        self._engine.add_policy(
-            json.dumps({"name": name or f"policy-{self._policy_count}", "code": cedar_code})
-        )
+        :meth:`load` for a set you may load more than once).
+
+        CHECKED BEFORE IT LOADS: a policy carrying an
+        ``@enforcement_effect`` value the engine does not implement raises
+        :class:`PolicyError` naming the value and the accepted set
+        (:data:`ENFORCEMENT_EFFECTS`), rather than loading and quietly deciding
+        without the effect — which on a ``permit`` would turn an approval hold
+        into a plain allow. An annotation NAME that is a near miss for
+        ``@enforcement_effect`` warns on stderr; any other annotation is your
+        own and passes without comment. Every policy entry point goes through
+        here, :meth:`load` and the CLI included."""
+        policy_name = name or f"policy-{self._policy_count}"
+        check_policy_annotations(cedar_code, policy_name)
+        self._engine.add_policy(json.dumps({"name": policy_name, "code": cedar_code}))
         self._policy_count += 1
         return self
 
@@ -1722,7 +1741,13 @@ class Watchlight:
         loaded and calling ``load`` again is a no-op, and the new policies do
         not apply. Pass ``force=True`` to load it again — policies are only ever
         added, so the previous copy stays and ``policy_count`` grows; construct
-        a fresh governor when you need the old set gone."""
+        a fresh governor when you need the old set gone.
+
+        CHECKED BEFORE IT LOADS: the whole file is checked first, so a policy
+        carrying an ``@enforcement_effect`` the engine does not implement raises
+        :class:`PolicyError` and NOTHING from that file is added — the governor
+        is left exactly as it was, and the source is not remembered. See
+        :meth:`allow`."""
         p = pathlib.Path(path)
         key = source_id if source_id is not None else str(p.resolve())
         if key in self._shared.sources and not force:
@@ -1731,6 +1756,14 @@ class Watchlight:
             return self
         data = json.loads(p.read_text())
         entries = data if isinstance(data, list) else data.get("policies", [])
+        # Check the whole file before adding any of it, so one refused policy
+        # leaves the governor exactly as it was rather than half-loaded.
+        for offset, entry in enumerate(entries):
+            check_policy_annotations(
+                entry["code"],
+                entry.get("name") or f"policy-{self._policy_count + offset}",
+                warn=False,
+            )
         for entry in entries:
             self.allow(entry["code"], entry.get("name"))
         self._shared.sources.add(key)

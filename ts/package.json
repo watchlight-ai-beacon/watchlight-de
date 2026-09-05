@@ -18,7 +18,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && for t in govern identity claude-agent graduation langchain adapter-parity sanitize screen action-gate policytest obligations audit-sink scope-token counters approval-store counter-source async-context principal-record signing-secret default-governor; do node test/$t.test.mjs || exit 1; done",
+    "test": "npm run build && for t in govern identity claude-agent graduation langchain adapter-parity sanitize screen action-gate policytest policy-annotations obligations audit-sink scope-token counters approval-store counter-source async-context principal-record signing-secret default-governor; do node test/$t.test.mjs || exit 1; done",
     "prepublishOnly": "npm run build"
   },
   "keywords": [

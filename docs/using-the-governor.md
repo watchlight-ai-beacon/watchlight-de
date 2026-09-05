@@ -609,6 +609,59 @@ console.log(govern.policyCount);    // 6 — force adds another copy; nothing is
 That last point is the one that costs people an afternoon. A policy change takes
 effect on a restart, not on a re-`load`.
 
+### The enforcement effect is checked when the policy loads
+
+A policy can carry an **enforcement effect** — what the engine does beyond
+allowing or denying:
+
+```cedar
+@enforcement_effect("require_approval")
+permit(principal, action == Action::"wire", resource)
+when { context.amount > 1000 };
+```
+
+That is the human-in-the-loop gate: the verdict is `NeedsApproval` rather than
+`Allow`, and a person has to release it. The effects the engine implements are
+
+`attenuate`, `escalate`, `observe`, `quarantine`, `require_approval`, `revoke`,
+`sever_subtree`, `terminate`
+
+and **`allow` and `load` refuse anything else**, before the policy reaches the
+engine:
+
+```python
+govern.allow('@enforcement_effect("needs_approval")\npermit(principal, action, resource);')
+# PolicyError: policy "policy-0": @enforcement_effect("needs_approval") is not an
+# effect this engine implements. Accepted: attenuate, escalate, observe,
+# quarantine, require_approval, revoke, sever_subtree, terminate. …
+```
+
+```ts
+govern.allow('@enforcement_effect("needs_approval")\npermit(principal, action, resource);');
+// PolicyError: policy "policy-0": @enforcement_effect("needs_approval") is not an
+// effect this engine implements. Accepted: attenuate, escalate, observe,
+// quarantine, require_approval, revoke, sever_subtree, terminate. …
+```
+
+- **Why it refuses rather than warns.** An effect the engine does not implement
+  is *dropped*. On a `forbid` that is harmless — `terminate` and `quarantine`
+  make a deny stronger, so dropping one leaves a plain deny. On a `permit` it
+  runs the other way: dropping `require_approval` leaves a plain **allow**. A
+  one-character typo would turn an approval gate into an unconditional permit,
+  and nothing in the verdict would say so. There is also nothing to pass the
+  value through *to* — unlike an unknown `@obligate_*`, which the engine hands
+  to the caller uninterpreted, an effect verb is read only by the engine.
+- **`load` is whole-file or nothing.** One refused policy in a file loads none of
+  it, and the source is not remembered — fix the file and load it again.
+- **A misspelled annotation NAME warns, and still loads.** `@enforcment_effect`
+  is not something the SDK can refuse: an annotation it does not read is
+  legitimate Cedar and may well be yours. A name that is a near miss for
+  `@enforcement_effect` prints a warning naming it; anything further away is
+  silent.
+- **The accepted set is the one the pinned engine implements**, and the SDK
+  ships it. That is why the SDK and the engine are released together; a verb
+  added to the engine is added to both SDK lanes in the same release.
+
 ## See also
 
 - [The identity model](identity-model.md) — the subject you pass, the actor a

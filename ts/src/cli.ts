@@ -16,7 +16,7 @@
 // scoped to policy testing.
 
 import * as path from "node:path";
-import { Watchlight } from "./index";
+import { PolicyError, Watchlight } from "./index";
 import { loadTestSuite, type PolicyTestReport } from "./policytest";
 
 const USAGE = `watchlight — Watchlight Developer Edition (Node)
@@ -72,10 +72,19 @@ async function policyTest(file: string | undefined): Promise<number> {
   // Fresh, policy-free governor (fail-closed); load only what the suite declares.
   // No audit is written — `test()` uses the engine's decision core directly.
   const gov = new Watchlight({ agent: "policy-test" });
-  if (suite.policyFile) {
-    gov.load(path.resolve(path.dirname(file), suite.policyFile));
+  try {
+    if (suite.policyFile) {
+      gov.load(path.resolve(path.dirname(file), suite.policyFile));
+    }
+    for (const p of suite.policies ?? []) gov.allow(p.code, p.name);
+  } catch (e) {
+    if (!(e instanceof PolicyError)) throw e;
+    // A policy the engine could not honour as written — reported here rather
+    // than run, since the suite would otherwise be testing a different policy
+    // from the one on the page.
+    console.error(`watchlight: ${e.message}`);
+    return 2;
   }
-  for (const p of suite.policies ?? []) gov.allow(p.code, p.name);
 
   if (!suite.tests || suite.tests.length === 0) {
     console.error(`watchlight: suite '${file}' has no tests`);
