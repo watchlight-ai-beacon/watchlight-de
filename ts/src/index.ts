@@ -21,13 +21,27 @@ import { randomBytes, createHmac, timingSafeEqual } from "node:crypto";
 import { Scope, DE_MAX_DEPTH, type AttenuateOptions } from "./attenuation";
 import { AuditTrail, type AuditSink } from "./audit";
 import {
+  ApprovalTokens,
+  resolveApprovalKeys,
+  splitEnvSecrets,
+  type ApprovalStore,
+} from "./approval";
+import {
   ScopeTokenError,
-  normalizeSecret,
-  requireSecret,
+  normalizeSecrets,
+  requireSecrets,
   sameSet,
-  verifyScopeToken,
+  verifyScopeTokenAny,
+  type SecretInput,
 } from "./scope-token";
-import { countAuditRecords, type Counters, type CountersOptions } from "./counters";
+import {
+  countAuditRecords,
+  countFromSource,
+  countFromSourceAsync,
+  type Counters,
+  type CountersOptions,
+  type CounterSource,
+} from "./counters";
 import { AuthorizeError, selectBackend, type GovernanceBackend, type Obligations } from "./backend";
 import { sanitize as sanitizeText, type SanitizeOptions, type SanitizeResult } from "./sanitize";
 import { screen as screenText, type ScreenOptions, type ScreenResult } from "./screen";
@@ -41,6 +55,8 @@ import {
 
 export { Scope, DE_MAX_DEPTH, AttenuationDenied, DevEditionCeiling } from "./attenuation";
 export type { AuditRecord, AuditSink } from "./audit";
+export { ApprovalError, APPROVAL_KEY_LABEL, APPROVAL_PAYLOAD_VERSION, APPROVAL_MIN_SECRET_BYTES, DEFAULT_APPROVAL_STORE_TIMEOUT_MS } from "./approval";
+export type { ApprovalStore, ApprovalErrorCode } from "./approval";
 export type { ScopeTokenOptions, AttenuateOptions } from "./attenuation";
 export { ScopeTokenError, SCOPE_TOKEN_PREFIX, MAX_TOKEN_LENGTH } from "./scope-token";
 export type { ScopeTokenClaims, ScopeTokenErrorCode } from "./scope-token";
@@ -53,7 +69,9 @@ export {
   MAX_COUNTERS_LINE_BYTES,
   MAX_COUNTERS_NESTING,
 } from "./counters";
+export { CounterSourceError } from "./counters";
 export type { Counters, CountersOptions, CounterOutcome, CounterWindow } from "./counters";
+export type { CounterQuery, CounterSource, CounterSourceKind } from "./counters";
 export { governedHooks, DEFAULT_ON_RESULT_TIMEOUT_MS } from "./claude-agent";
 export type { GovernedHooksOptions, GovernedHooksResult } from "./claude-agent";
 export { governTool, governTools } from "./langchain";
@@ -201,52 +219,10 @@ export interface AuthorizeResult {
 }
 
 // ── approval tokens (DE: local, single-use, HMAC, TTL) ───────────────
-// Enterprise mints these KMS-signed and records them in signed lineage.
-const APPROVAL_SECRET = randomBytes(32);
-const USED_APPROVALS = new Set<string>();
-
-const approvalPayload = (
-  principal: string,
-  action: string,
-  resource: string,
-  exp: number,
-  nonce: string
-): string => `${principal} ${action} ${resource} ${exp} ${nonce}`;
-
-function mintApprovalToken(principal: string, action: string, resource: string, ttlMs: number): string {
-  const exp = Date.now() + ttlMs;
-  // A per-mint nonce makes every token unique, so two approvals for the same
-  // (principal, action, resource) minted in the same millisecond never collide
-  // — and "single-use" is genuinely per-mint, not per-(challenge, exp).
-  const nonce = randomBytes(8).toString("hex");
-  const sig = createHmac("sha256", APPROVAL_SECRET)
-    .update(approvalPayload(principal, action, resource, exp, nonce))
-    .digest("hex");
-  return `${exp}.${nonce}.${sig}`;
-}
-
-/** Verify + CONSUME an approval token (single-use). Bound to the exact
- *  (principal, action, resource); rejects expired, tampered, or reused tokens. */
-function consumeApprovalToken(
-  token: string,
-  principal: string,
-  action: string,
-  resource: string
-): boolean {
-  const parts = token.split(".");
-  if (parts.length !== 3) return false;
-  const [expStr, nonce, sig] = parts;
-  const exp = Number(expStr);
-  if (!Number.isFinite(exp) || Date.now() > exp) return false;
-  const expected = createHmac("sha256", APPROVAL_SECRET)
-    .update(approvalPayload(principal, action, resource, exp, nonce))
-    .digest("hex");
-  if (sig.length !== expected.length) return false;
-  if (!timingSafeEqual(Buffer.from(sig, "hex"), Buffer.from(expected, "hex"))) return false;
-  if (USED_APPROVALS.has(token)) return false;
-  USED_APPROVALS.add(token);
-  return true;
-}
+// Minting, verification, the signing key and the seen-token store all live in
+// `./approval` — including the per-process defaults and what they do NOT cover
+// (a second process, a second replica). Enterprise mints these KMS-signed and
+// records them in signed lineage.
 
 function resolveBinding<A extends unknown[]>(
   b: Binding<A> | undefined,
@@ -294,12 +270,23 @@ export interface WatchlightOptions {
   /** Tenant id (`X-Wl-Tenant-Id`) for the networked control plane. Defaults to
    *  `WATCHLIGHT_TENANT_ID`. Ignored in-process. */
   tenantId?: string;
-  /** Shared secret (≥ 16 bytes) for {@link Scope.toToken} /
-   *  {@link Watchlight.scopeFromToken} — lets an attenuated scope cross a process
-   *  boundary with integrity. Defaults to `WATCHLIGHT_TOKEN_SECRET`. When unset,
-   *  minting and verifying scope tokens fail closed; there is no built-in
-   *  default. Never logged or written. */
-  tokenSecret?: string | Uint8Array;
+  /** Shared secret (>= 16 bytes) that lets tokens cross a process boundary:
+   *  scope tokens ({@link Scope.toToken} / {@link Watchlight.scopeFromToken}),
+   *  and approval tokens unless {@link approvalSecret} overrides them. Defaults
+   *  to `WATCHLIGHT_SIGNING_SECRET`. Unset, minting and verifying scope tokens
+   *  fail closed; there is no built-in default.
+   *
+   *  Pass an ORDERED LIST to rotate without a cutover: the first entry signs,
+   *  every entry verifies. Add the new secret at the front, deploy, wait out
+   *  the longest token lifetime, then drop the old one and deploy again.
+   *  Never logged or written. */
+  signingSecret?: SecretInput;
+  /** Former name of {@link signingSecret}. Still accepted, at lower precedence,
+   *  and warns once per process. Supplying both a `signingSecret` and a
+   *  `tokenSecret` that differ is refused at construction rather than resolved
+   *  silently.
+   *  @deprecated Use `signingSecret` (and `WATCHLIGHT_SIGNING_SECRET`). */
+  tokenSecret?: SecretInput;
   /** How a call that names no `principal` is recorded. Defaults to `true`: the
    *  agent is the subject and is recorded as a TYPED entity reference,
    *  `Agent::"<name>"` (build one with {@link principals}). Set `false` to
@@ -309,6 +296,40 @@ export interface WatchlightOptions {
    *  later version. See "Breaking in 0.8.0" in the identity model:
    *  https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/docs/identity-model.md */
   strictPrincipal?: boolean;
+  /** Shared secret (>= 16 bytes) that approval tokens are signed under, so a
+   *  token minted in one process verifies in another and survives a redeploy
+   *  inside its TTL. Defaults to `WATCHLIGHT_APPROVAL_SECRET`, then to
+   *  {@link signingSecret} — one value configures both kinds of token, under
+   *  separate keys. Takes an ordered list, and rotates, exactly as
+   *  `signingSecret` does. With nothing configured a RANDOM PER-PROCESS key is used:
+   *  tokens then never cross a process boundary, and a restart invalidates
+   *  every outstanding approval. A token presented to a governor holding a
+   *  different key is refused exactly like an expired one — the decision stays
+   *  `NeedsApproval` with the uniform `approval required` reason. Never logged
+   *  or written. Shared with every view made by {@link Watchlight.as}. */
+  approvalSecret?: SecretInput;
+  /** Where consumed approval-token ids are reserved, which is what makes an
+   *  approval single-use. Defaults to an IN-PROCESS map shared by every
+   *  governor in this process and by nothing else — atomic within the process
+   *  (of N concurrent consumes of one token, exactly one is approved) but
+   *  behind two replicas the same token can be consumed once on each. Supply a
+   *  shared store ({@link ApprovalStore}) and single-use holds across every
+   *  replica. Its `add(id, expiresAt)` MUST be an atomic check-and-set
+   *  returning `true` when the reservation was new and `false` when the id was
+   *  already present — a read followed by an unconditional write cannot enforce
+   *  single use. Fail-closed: `false`, a throw, a timeout, or a non-boolean
+   *  return all refuse the approval; none of them admits one. Shared with every
+   *  view made by {@link Watchlight.as}. */
+  approvalStore?: ApprovalStore;
+  /** Read side of {@link auditSink}: where {@link Watchlight.counters} gets its
+   *  number. Defaults to folding the local `audit.jsonl`. Configure it and
+   *  `counters` folds your durable store instead — the same store the sink
+   *  writes to — so a quota spans every replica and survives a redeploy. A
+   *  source that throws, or returns anything but a non-negative integer, fails
+   *  the read closed ({@link CounterSourceError}); it never falls back to the
+   *  local file. An async source is read with {@link Watchlight.countersAsync}.
+   *  Shared with every view made by {@link Watchlight.as}. */
+  counterSource?: CounterSource;
 }
 
 /**
@@ -435,7 +456,19 @@ function withActorContext(
 interface GovernorState {
   trail: AuditTrail;
   backend: GovernanceBackend;
-  tokenSecret?: Uint8Array;
+  /** Signing secrets, newest first: the first signs, every one verifies. */
+  signingSecrets?: Uint8Array[];
+  /** The approval signing key + seen-token store. On the SHARED state, so an
+   *  approval minted through one view is consumed — and, once consumed, refused
+   *  — through every other view of the same governor. A view that had its own
+   *  store would let one token be spent once per name. */
+  approval: ApprovalTokens;
+  /** The approval options in force, so {@link Watchlight._configure} can apply
+   *  one of them without dropping the others. */
+  approvalOptions: { secret?: SecretInput; store?: ApprovalStore };
+  /** The read side of the trail, shared for the same reason: `counters()` must
+   *  answer the same number whichever name asks. */
+  counterSource?: CounterSource;
   policyCount: number;
   announced: boolean;
   /** Resolved sources already loaded — the key of {@link Watchlight.load}'s
@@ -463,7 +496,75 @@ function resolveSource(file: string): string {
   }
 }
 
+/** Fixed, value-free message when the new and old names disagree. */
+export const SIGNING_SECRET_CONFLICT_MESSAGE =
+  "signingSecret and tokenSecret are both set to different values; tokenSecret is the " +
+  "former name of signingSecret — set one of them (the same applies to " +
+  "WATCHLIGHT_SIGNING_SECRET and WATCHLIGHT_TOKEN_SECRET)";
+
+let warnedTokenSecretName = false;
+
+/** Clear the once-per-process deprecation notice. Test-only; the Python package
+ *  exposes the same flag for the same reason. @internal */
+export function __resetSigningSecretWarning(): void {
+  warnedTokenSecretName = false;
+}
+
+function warnTokenSecretName(): void {
+  if (warnedTokenSecretName) return;
+  warnedTokenSecretName = true;
+  // eslint-disable-next-line no-console
+  console.warn(
+    "watchlight: `tokenSecret` / WATCHLIGHT_TOKEN_SECRET is the former name of " +
+      "`signingSecret` / WATCHLIGHT_SIGNING_SECRET, which is what it is called now that it " +
+      "signs approval tokens as well as scope tokens. The old name still works; rename it."
+  );
+}
+
+/** Same bytes, in the same order? Two spellings of one secret are not a conflict. */
+function sameSecrets(a: Uint8Array[] | undefined, b: Uint8Array[] | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  if (a.length !== b.length) return false;
+  return a.every((entry, i) => Buffer.from(entry).equals(Buffer.from(b[i])));
+}
+
+/**
+ * The signing secrets in force, newest first. Sources, in precedence order:
+ *
+ *   1. the `signingSecret` option
+ *   2. `WATCHLIGHT_SIGNING_SECRET`
+ *   3. the `tokenSecret` option        (former name)
+ *   4. `WATCHLIGHT_TOKEN_SECRET`       (former name)
+ *
+ * and then nothing, which leaves scope tokens failing closed. The former names
+ * still work and warn once. A source under the new name and one under the old
+ * name holding DIFFERENT values is refused rather than resolved silently — the
+ * option/environment split does not matter, only that the two names disagree.
+ */
+function resolveSigningSecrets(opts: WatchlightOptions): Uint8Array[] | undefined {
+  // Resolved in precedence order within each name, so `signingSecret` beats
+  // WATCHLIGHT_SIGNING_SECRET and `tokenSecret` beats WATCHLIGHT_TOKEN_SECRET.
+  const underNewName =
+    normalizeSecrets(opts.signingSecret) ??
+    normalizeSecrets(splitEnvSecrets(process.env.WATCHLIGHT_SIGNING_SECRET));
+  const underOldName =
+    normalizeSecrets(opts.tokenSecret) ??
+    normalizeSecrets(splitEnvSecrets(process.env.WATCHLIGHT_TOKEN_SECRET));
+  if (
+    underNewName !== undefined &&
+    underOldName !== undefined &&
+    !sameSecrets(underNewName, underOldName)
+  ) {
+    throw new ScopeTokenError("mismatch", SIGNING_SECRET_CONFLICT_MESSAGE);
+  }
+  if (underOldName !== undefined) warnTokenSecretName();
+  return underNewName ?? underOldName;
+}
+
 function newState(opts: WatchlightOptions): GovernorState {
+  // Resolved once: the approval key falls back to the scope-token secret, so
+  // both are derived from the same configured value.
+  const signingSecrets = resolveSigningSecrets(opts);
   return {
     trail: new AuditTrail(
       opts.auditFile === false ? null : path.join(opts.auditDir ?? ".watchlight", "audit.jsonl"),
@@ -474,7 +575,13 @@ function newState(opts: WatchlightOptions): GovernorState {
       token: opts.token,
       tenantId: opts.tenantId,
     }),
-    tokenSecret: normalizeSecret(opts.tokenSecret ?? process.env.WATCHLIGHT_TOKEN_SECRET),
+    signingSecrets,
+    approval: new ApprovalTokens(
+      resolveApprovalKeys(opts.approvalSecret, signingSecrets),
+      opts.approvalStore
+    ),
+    approvalOptions: { secret: opts.approvalSecret, store: opts.approvalStore },
+    counterSource: opts.counterSource,
     policyCount: 0,
     announced: false,
     sources: new Set<string>(),
@@ -540,8 +647,14 @@ export class Watchlight {
   private get _backend(): GovernanceBackend {
     return this._shared.backend;
   }
-  private get _tokenSecret(): Uint8Array | undefined {
-    return this._shared.tokenSecret;
+  private get _signingSecrets(): Uint8Array[] | undefined {
+    return this._shared.signingSecrets;
+  }
+  private get _approval(): ApprovalTokens {
+    return this._shared.approval;
+  }
+  private get _counterSource(): CounterSource | undefined {
+    return this._shared.counterSource;
   }
   private get _announced(): boolean {
     return this._shared.announced;
@@ -738,7 +851,7 @@ export class Watchlight {
       maxDepth: Math.min(opts.maxDepth ?? DE_MAX_DEPTH, DE_MAX_DEPTH),
       timeBudgetSeconds: opts.timeBudgetSeconds ?? 3600,
       depth: 0,
-      tokenSecret: this._tokenSecret,
+      signingSecrets: this._signingSecrets,
     });
     root.emitRoot();
     return root;
@@ -753,13 +866,15 @@ export class Watchlight {
    * whether each level is a subset: a widened chain throws
    * {@link AttenuationDenied} even with a valid signature, and a chain whose
    * engine-granted result differs from the token's claim is rejected. Throws
-   * {@link ScopeTokenError} when `tokenSecret` is unset (fail-closed) or the
+   * {@link ScopeTokenError} when `signingSecret` is unset (fail-closed) or the
    * token is malformed, tampered, expired, or bound to a different agent. The
    * returned scope cannot outlive the token's `exp`.
    */
   async scopeFromToken(token: string): Promise<Scope> {
-    const secret = requireSecret(this._tokenSecret);
-    const claims = verifyScopeToken(token, secret, { agent: this.agent });
+    // Any configured secret may have signed it — a rotation is two deploys, not
+    // a cutover. Which one verified is never reported.
+    const secrets = requireSecrets(this._signingSecrets);
+    const claims = verifyScopeTokenAny(token, secrets, { agent: this.agent });
     const root = await this.scope({
       tools: claims.root.tools,
       resources: claims.root.resources,
@@ -986,7 +1101,7 @@ export class Watchlight {
     let needsApproval = allowed && !!raw.needsApproval;
     let approved = false;
     if (needsApproval) {
-      if (req.approval && consumeApprovalToken(req.approval, principal, req.action, resource)) {
+      if (req.approval && (await this._approval.consume(req.approval, principal, req.action, resource))) {
         approved = true;
         needsApproval = false; // human-confirmed → proceed
       } else {
@@ -1038,12 +1153,32 @@ export class Watchlight {
    * resource)`, to pass to {@link authorize} after a human confirms a
    * `NeedsApproval` decision. Local HMAC, TTL-bounded (default 2 min). In
    * Enterprise these are KMS-signed and recorded in signed lineage.
+   *
+   * SCOPE OF THE DEFAULTS — both are per-process, and neither is upgraded
+   * silently:
+   *
+   * * **The signing key.** With no `approvalSecret` (or `signingSecret`) the key
+   *   is random and per-process: a token minted here is refused by any other
+   *   process, and a redeploy invalidates every outstanding approval —
+   *   indistinguishably from a genuine hold, since the reason is uniform.
+   *   Configure `approvalSecret` to mint in one process and consume in another.
+   * * **Single use.** "Used once" is reserved in the `approvalStore`, which
+   *   defaults to a map in THIS process. It is atomic there — of N concurrent
+   *   consumes of one token exactly one is approved — but behind two replicas
+   *   the same token can be consumed once on EACH: single-use is per-replica,
+   *   not per token, and that degrades silently under a routine scaling change.
+   *   Configure `approvalStore` with a store every replica shares and
+   *   single-use holds across all of them.
+   *
+   * Both live on the state a view made by {@link as} shares, so a token minted
+   * through one name and consumed through another is the SAME token: the second
+   * use is refused as a replay, not admitted a second time.
    */
   mintApproval(
     challenge: { action: string; principal?: string; resource?: string },
     opts: { ttlMs?: number } = {}
   ): string {
-    return mintApprovalToken(
+    return this._approval.mint(
       this._principal(challenge.principal),
       challenge.action,
       challenge.resource ?? "resource",
@@ -1058,6 +1193,14 @@ export class Watchlight {
    * `known` dictionary values) and returns the redacted text plus the report.
    * Operates on extracted text — extract a document to text first (never hand
    * the agent a "redacted PDF").
+   *
+   * `principal` names WHO the text was sanitized for and is written to the
+   * record under the same key the decision line uses, so "what was redacted,
+   * for whom" is answerable from that record alone — including when the
+   * sanitization runs BEFORE any decision exists to join to. Omit it and the
+   * agent is the subject, recorded as `Agent::"<name>"` exactly as a decision
+   * with no named principal is. It is an identifier the caller supplies; never
+   * anything derived from the content.
    */
   sanitize(content: string, opts: SanitizeOptions & { agent?: string } = {}): SanitizeResult {
     if (opts.agent && opts.agent !== this.agent) {
@@ -1065,10 +1208,15 @@ export class Watchlight {
       return this.as(agent).sanitize(content, rest);
     }
     const { intent = "read", resource = "document", mode, types, decisionId, known } = opts;
-    // `decisionId` is validated (bounded, no control chars) inside sanitizeText
-    // before it is echoed onto the report and written to the audit line; `known`
-    // values are redacted in-process and never reach the report or the audit line.
-    const result = sanitizeText(content, { mode, types, decisionId, known });
+    // The subject the redaction was performed FOR. A call that names none has
+    // this agent as its subject — recorded as the TYPED `Agent::"<name>"`, the
+    // same reference the decision line carries, never a bare name.
+    const principal = this._principal(opts.principal);
+    // `decisionId` and `principal` are validated (bounded, no control chars)
+    // inside sanitizeText before they are echoed onto the report and written to
+    // the audit line; `known` values are redacted in-process and never reach the
+    // report or the audit line.
+    const result = sanitizeText(content, { mode, types, decisionId, principal, known });
     this._auditSanitize(intent, resource, result);
     return result;
   }
@@ -1080,7 +1228,9 @@ export class Watchlight {
    * `screening` record to the audit trail (counts per family + `flagged` — never
    * the text) and returns the text (untouched in `report` mode, family markers
    * in `redact` mode) plus the report. Pass the `decisionId` of the decision
-   * that governed the read to join the two records on `decision_id`.
+   * that governed the read to join the two records on `decision_id`, and
+   * `principal` to name whom it was screened for (the agent, typed, when the
+   * call names no subject — as on {@link sanitize}).
    */
   screen(
     content: string,
@@ -1091,9 +1241,13 @@ export class Watchlight {
       return this.as(agent).screen(content, rest);
     }
     const { intent = "read", resource = "content", mode, families, decisionId } = opts;
-    // `decisionId` is validated (bounded, no control chars) inside screenText
-    // before it is echoed onto the report and written to the audit line.
-    const result = screenText(content, { mode, families, decisionId });
+    // As in `sanitize`: the subject the screening was performed for, typed when
+    // the call names none.
+    const principal = this._principal(opts.principal);
+    // `decisionId` and `principal` are validated (bounded, no control chars)
+    // inside screenText before they are echoed onto the report and written to
+    // the audit line.
+    const result = screenText(content, { mode, families, decisionId, principal });
     this._auditScreen(intent, resource, result);
     return result;
   }
@@ -1112,19 +1266,47 @@ export class Watchlight {
    * A missing file is zero counts; an unreadable one throws
    * {@link AuditTrailUnreadable}. Synchronous, so it can run inside a `context`
    * binding right before the decision it feeds.
+   *
+   * With a `counterSource` configured this folds THAT store instead of the local
+   * file — same query, same filters, same window — and `source` says which. A
+   * source that throws or returns a non-count throws {@link CounterSourceError};
+   * an asynchronous source throws too, naming {@link countersAsync}, rather than
+   * quietly handing back a local number. The source is on the shared state, so
+   * every view made by {@link as} counts from the same place.
    */
   counters(opts: CountersOptions): Counters {
+    if (this._counterSource) return countFromSource(this._counterSource, opts);
+    return countAuditRecords(this._localTrailPath(), opts);
+  }
+
+  /**
+   * {@link counters} for an asynchronous `counterSource` — the only way to read
+   * one that returns a promise. Identical in every other respect, and identical
+   * to `counters` when no source is configured (the local file is read
+   * synchronously either way), so a caller can use it unconditionally. Await it
+   * BEFORE the call whose `context` it feeds; a `context` binding itself is
+   * synchronous.
+   */
+  async countersAsync(opts: CountersOptions): Promise<Counters> {
+    if (this._counterSource) return countFromSourceAsync(this._counterSource, opts);
+    return countAuditRecords(this._localTrailPath(), opts);
+  }
+
+  /** The local file counters fold when no `counterSource` is configured.
+   *  Counters are folded from the LOCAL file; with `auditFile: false` there is
+   *  nothing to fold, and a quota that cannot be counted must not read as zero
+   *  (that would silently widen it). Fail closed instead — unless a
+   *  `counterSource` answers, which is exactly the pairing `auditFile: false`
+   *  calls for: the sink holds the records and the source counts them. */
+  private _localTrailPath(): string {
     const trailPath = this._trail.path;
-    // Counters are folded from the LOCAL file; with `auditFile: false` there is
-    // nothing to fold, and a quota that cannot be counted must not read as
-    // zero (that would silently widen it). Fail closed instead.
     if (trailPath === null) {
       throw new Error(
         "counters() reads the local audit file, which is disabled by `auditFile: false`; " +
-          "count from your own sink's records instead"
+          "configure a `counterSource` to count your own sink's records instead"
       );
     }
-    return countAuditRecords(trailPath, opts);
+    return trailPath;
   }
 
   // ── internals ─────────────────────────────────────────────────────
@@ -1151,6 +1333,9 @@ export class Watchlight {
     };
     // Same key as the `authorize` line, so the two records join on `decision_id`.
     if (report.decisionId) record.decision_id = report.decisionId;
+    // Same key, and the same typed vocabulary, as the `authorize` line: the
+    // record names its subject even with no decision to join to.
+    if (report.principal) record.principal = report.principal;
     this._writeAudit(record);
   }
 
@@ -1240,6 +1425,9 @@ export class Watchlight {
     };
     // Same key as the `authorize` line, so the two records join on `decision_id`.
     if (report.decisionId) record.decision_id = report.decisionId;
+    // Same key, and the same typed vocabulary, as the `authorize` line: the
+    // record names its subject even with no decision to join to.
+    if (report.principal) record.principal = report.principal;
     this._writeAudit(record);
   }
 
@@ -1338,7 +1526,30 @@ export class Watchlight {
         audit.sink
       );
     }
-    if (opts.tokenSecret !== undefined) shared.tokenSecret = normalizeSecret(opts.tokenSecret);
+    // The signing secrets and the approval state are rebuilt TOGETHER: the
+    // approval key falls back to the signing secret, so changing one without the
+    // other would leave approvals on a key nothing else holds.
+    const approvalChanged =
+      opts.approvalSecret !== undefined || opts.approvalStore !== undefined;
+    if (opts.signingSecret !== undefined || opts.tokenSecret !== undefined) {
+      shared.signingSecrets = resolveSigningSecrets(opts);
+      shared.approvalOptions.secret = opts.approvalSecret ?? shared.approvalOptions.secret;
+      shared.approvalOptions.store = opts.approvalStore ?? shared.approvalOptions.store;
+      shared.approval = new ApprovalTokens(
+        resolveApprovalKeys(shared.approvalOptions.secret, shared.signingSecrets),
+        shared.approvalOptions.store
+      );
+    } else if (approvalChanged) {
+      // MERGE, like the audit options: naming only the store must not drop a
+      // secret an earlier call configured.
+      if (opts.approvalSecret !== undefined) shared.approvalOptions.secret = opts.approvalSecret;
+      if (opts.approvalStore !== undefined) shared.approvalOptions.store = opts.approvalStore;
+      shared.approval = new ApprovalTokens(
+        resolveApprovalKeys(shared.approvalOptions.secret, shared.signingSecrets),
+        shared.approvalOptions.store
+      );
+    }
+    if (opts.counterSource !== undefined) shared.counterSource = opts.counterSource;
     if (opts.strictPrincipal !== undefined) shared.strictPrincipal = opts.strictPrincipal !== false;
     if (opts.apdpUrl !== undefined || opts.token !== undefined || opts.tenantId !== undefined) {
       // A different backend is a different policy holder: the policies added to
@@ -1365,7 +1576,7 @@ export const govern = new Watchlight();
 /**
  * Configure the exported {@link govern} — the one governor an application never
  * constructs, and therefore the one that could not otherwise be given an
- * `auditSink`, an `auditDir`, a `tokenSecret` or a name.
+ * `auditSink`, an `auditDir`, a `signingSecret` or a name.
  *
  *     import { govern, configureDefault } from "@watchlight/sdk";
  *     configureDefault({ agent: "billing-agent", auditSink: (r) => ship(r) });

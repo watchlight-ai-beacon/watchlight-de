@@ -74,8 +74,8 @@ try {
   // Crossing a process boundary: a scope token carries the chain, the receiving
   // engine re-proves it. Illustrative secret — a real one comes from a secret store.
   const secret = "example-shared-secret-0123456789";
-  const orchestrator = new Watchlight({ agent: "orchestrator", auditDir, tokenSecret: secret });
-  const worker = new Watchlight({ agent: "orchestrator", auditDir, tokenSecret: secret });
+  const orchestrator = new Watchlight({ agent: "orchestrator", auditDir, signingSecret: secret });
+  const worker = new Watchlight({ agent: "orchestrator", auditDir, signingSecret: secret });
   const minted = (await orchestrator.scope({ tools: ["read_file", "web_search", "send_email"], timeBudgetSeconds: 600 }))
     .attenuate({ tools: ["read_file"] });
   const token = minted.toToken();
@@ -88,7 +88,7 @@ try {
   const tampered = `${v}.${p.slice(0, 10)}${p[10] === "A" ? "B" : "A"}${p.slice(11)}.${sig}`;
   const forged = await worker.scopeFromToken(tampered).then(() => null, (e) => e);
   t.ok("a tampered payload is refused with ScopeTokenError", forged instanceof ScopeTokenError && forged.code === "signature", String(forged));
-  const wrongSecret = new Watchlight({ agent: "orchestrator", auditDir, tokenSecret: "another-secret-0123456789abcdef" });
+  const wrongSecret = new Watchlight({ agent: "orchestrator", auditDir, signingSecret: "another-secret-0123456789abcdef" });
   t.ok("a token verified with a different secret is refused",
     (await wrongSecret.scopeFromToken(token).then(() => null, (e) => e)) instanceof ScopeTokenError);
   // Expiry is checked in whole seconds against the wall clock and the public API

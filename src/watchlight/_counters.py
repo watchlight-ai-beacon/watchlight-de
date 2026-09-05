@@ -42,15 +42,21 @@ from __future__ import annotations
 
 import calendar
 import datetime
+import inspect
 import json
 import os
 import pathlib
 import re
 import time
-from typing import Any, Optional, Union
+from typing import Any, Callable, Optional, Union
 
 __all__ = [
     "AuditTrailUnreadable",
+    "CounterSource",
+    "CounterSourceError",
+    "MAX_COUNTER_VALUE",
+    "count_from_source",
+    "count_from_source_async",
     "DEFAULT_COUNTERS_MAX_BYTES",
     "MAX_COUNTERS_LINE_BYTES",
     "MAX_COUNTERS_NESTING",
@@ -68,6 +74,36 @@ class AuditTrailUnreadable(RuntimeError):
         super().__init__("audit trail is not readable")
         #: The file that could not be read. Kept off the message deliberately.
         self.path = str(audit_path)
+
+
+#: The read-side counterpart of an ``audit_sink``: given the query dict below,
+#: return how many DECISION records match it in your durable store — the same
+#: records the sink wrote there. Configured via ``Watchlight(counter_source=...)``.
+#:
+#: The query is ``{"principal", "outcome", "window": {"seconds", "start",
+#: "end"}}`` plus ``"intent"`` / ``"resource"`` WHEN the caller filtered on them
+#: — the validated, resolved form of the caller's arguments, key-for-key
+#: identical to what the TypeScript lane passes. ``window["start"]`` is exclusive
+#: and ``window["end"]`` inclusive, both ISO-8601 UTC, so the source can
+#: translate them straight into a range query; ``intent`` / ``resource`` match by
+#: exact string equality, like the local scan.
+#:
+#: Must return a non-negative ``int`` no larger than :data:`MAX_COUNTER_VALUE`,
+#: or an awaitable of one (an async source is read with ``counters_async``).
+#: Fail-closed: an exception, or anything that is not a count, raises
+#: :class:`CounterSourceError` — the read never falls back to the local file,
+#: because a silently local count is a quota that under-counts without saying so.
+CounterSource = Callable[[dict], Any]
+
+
+class CounterSourceError(RuntimeError):
+    """A configured :data:`CounterSource` could not produce a count. Fail-closed:
+    the quota read fails rather than returning a number from somewhere else. The
+    message is fixed and value-free; the source's own exception is the
+    ``__cause__``."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(f"counter source failed (fail-closed): {detail}")
 
 
 DEFAULT_COUNTERS_MAX_BYTES = 64 * 1024 * 1024
@@ -267,8 +303,7 @@ def _tally_line(raw: bytes, f: dict, t: _Tally) -> None:
         t.count += 1
 
 
-def count_audit_records(
-    audit_path: Union[str, os.PathLike],
+def _prepare_counters(
     principal: str,
     intent: Optional[str] = None,
     resource: Optional[str] = None,
@@ -277,23 +312,10 @@ def count_audit_records(
     outcome: str = "allowed",
     now: Union[None, datetime.datetime, str] = None,
     max_bytes: int = DEFAULT_COUNTERS_MAX_BYTES,
-) -> dict:
-    """Count decision records in the audit file at ``audit_path``. See the module
-    docstring for exactly what counts.
-
-    :param principal: Cedar principal exactly as written on the record, e.g. ``User::"u1"``.
-    :param intent: match only decisions with this intent (the Cedar action). Exact.
-    :param resource: match only decisions on this resource. Exact.
-    :param window: ``"15m"``, ``"1h"``, ``"24h"``, ``"7d"``, a bare number of
-        seconds as a string, or an ``int`` of seconds. Positive, at most 366 days.
-    :param outcome: ``"allowed"`` (default), ``"denied"`` or ``"all"``.
-    :param now: the inclusive end of the window — a timezone-aware ``datetime``
-        or an ISO-8601 string with a zone. Default: now. Clocks across the
-        processes that wrote the trail are the caller's concern.
-    :param max_bytes: scan at most this many bytes from the end of the file.
-    :returns: ``{"count", "principal", "intent", "resource", "outcome",
-        "window": {"seconds", "start", "end"}, "records", "skipped", "truncated"}``.
-    """
+) -> tuple[dict, dict]:
+    """Validate the arguments and resolve the window ONCE — shared by the local
+    scan and by a :data:`CounterSource`, so both are asked exactly the same
+    question and reject exactly the same inputs. Internal."""
     if not isinstance(principal, str) or not principal:
         raise TypeError("principal must be a non-empty string")
     if intent is not None and not isinstance(intent, str):
@@ -325,7 +347,115 @@ def count_audit_records(
         "records": 0,
         "skipped": 0,
         "truncated": False,
+        "source": "local",
     }
+    return f, result
+
+
+def _query_of(result: dict) -> dict:
+    """The query dict a :data:`CounterSource` is handed for these arguments.
+
+    ``intent`` / ``resource`` are OMITTED when the caller did not filter on them
+    — never present as ``None`` — so the dict is key-for-key what the TypeScript
+    lane passes (and serialises to the same JSON): one shared counting service
+    must not have to recognise two shapes. Read them with ``query.get("intent")``.
+    """
+    query = {
+        "principal": result["principal"],
+        "outcome": result["outcome"],
+        "window": dict(result["window"]),
+    }
+    for key in ("intent", "resource"):
+        if result[key] is not None:
+            query[key] = result[key]
+    return query
+
+
+#: Largest count a source may return: the same bound as TypeScript's
+#: ``Number.isSafeInteger``, so both lanes accept exactly the same values. A
+#: larger integer would survive Python and then fail inside the engine when it
+#: reached Cedar ``context``, instead of failing at the source that produced it.
+MAX_COUNTER_VALUE = 2**53 - 1
+
+
+def _counters_from_source_value(count: Any, result: dict) -> dict:
+    """Turn a source's return value into a counters dict, or fail closed."""
+    if (
+        isinstance(count, bool)
+        or not isinstance(count, int)
+        or count < 0
+        or count > MAX_COUNTER_VALUE
+    ):
+        raise CounterSourceError("a counter source must return a non-negative integer count")
+    result["count"] = count
+    return result
+
+
+def count_from_source(source: CounterSource, /, **kwargs: Any) -> dict:
+    """Count via a :data:`CounterSource`, synchronously. The source is validated
+    the same way the local scan is, and an awaitable is refused rather than
+    resolved behind the caller's back: a ``context`` binding that must stay
+    synchronous cannot silently become a stale or local number."""
+    _f, result = _prepare_counters(**kwargs)
+    result["source"] = "external"
+    try:
+        count = source(_query_of(result))
+    except Exception as exc:  # noqa: BLE001 — fail-closed
+        raise CounterSourceError("the counter source raised") from exc
+    if inspect.isawaitable(count):
+        close = getattr(count, "close", None)
+        if callable(close):
+            close()  # never surfaces as "never awaited": the caller gets an error
+        raise CounterSourceError(
+            "the counter source is asynchronous — read it with counters_async()"
+        )
+    return _counters_from_source_value(count, result)
+
+
+async def count_from_source_async(source: CounterSource, /, **kwargs: Any) -> dict:
+    """:func:`count_from_source` for a source that may return an awaitable."""
+    _f, result = _prepare_counters(**kwargs)
+    result["source"] = "external"
+    try:
+        count = source(_query_of(result))
+        if inspect.isawaitable(count):
+            count = await count
+    except Exception as exc:  # noqa: BLE001 — fail-closed
+        raise CounterSourceError("the counter source raised") from exc
+    return _counters_from_source_value(count, result)
+
+
+def count_audit_records(
+    audit_path: Union[str, os.PathLike],
+    principal: str,
+    intent: Optional[str] = None,
+    resource: Optional[str] = None,
+    window: Union[str, int] = "1h",
+    *,
+    outcome: str = "allowed",
+    now: Union[None, datetime.datetime, str] = None,
+    max_bytes: int = DEFAULT_COUNTERS_MAX_BYTES,
+) -> dict:
+    """Count decision records in the audit file at ``audit_path``. See the module
+    docstring for exactly what counts.
+
+    :param principal: Cedar principal exactly as written on the record, e.g. ``User::"u1"``.
+    :param intent: match only decisions with this intent (the Cedar action). Exact.
+    :param resource: match only decisions on this resource. Exact.
+    :param window: ``"15m"``, ``"1h"``, ``"24h"``, ``"7d"``, a bare number of
+        seconds as a string, or an ``int`` of seconds. Positive, at most 366 days.
+    :param outcome: ``"allowed"`` (default), ``"denied"`` or ``"all"``.
+    :param now: the inclusive end of the window — a timezone-aware ``datetime``
+        or an ISO-8601 string with a zone. Default: now. Clocks across the
+        processes that wrote the trail are the caller's concern.
+    :param max_bytes: scan at most this many bytes from the end of the file.
+    :returns: ``{"count", "principal", "intent", "resource", "outcome",
+        "window": {"seconds", "start", "end"}, "records", "skipped", "truncated",
+        "source"}``.
+    """
+    f, result = _prepare_counters(
+        principal, intent, resource, window, outcome=outcome, now=now, max_bytes=max_bytes
+    )
     path = pathlib.Path(audit_path)
     try:
         fh = path.open("rb")

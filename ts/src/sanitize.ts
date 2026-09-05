@@ -83,6 +83,16 @@ export interface SanitizeOptions {
    *  audit record, so the two audit lines join on the same key. Opaque: must be
    *  1–{@link DECISION_ID_MAX_LENGTH} characters with no control characters. */
   decisionId?: string;
+  /** Who the text is being sanitized FOR — the Cedar principal, exactly as it
+   *  is written on the decision record (e.g. `User::"u1"`). Echoed onto
+   *  `report.principal` and written as `principal` on the `sanitization` audit
+   *  record, so "what was redacted, for whom" is answerable from that record
+   *  alone — including when the sanitization happens BEFORE any decision exists
+   *  to join to. Opaque and never interpreted; validated exactly like
+   *  `decisionId` (1–{@link DECISION_ID_MAX_LENGTH} characters, no control or
+   *  line-separator characters). An identifier the caller supplies — never
+   *  anything derived from the content. */
+  principal?: string;
   /** Application-supplied dictionary: exact strings to redact (names, streets,
    *  ids the caller already holds). Matched as substrings with simple
    *  (ASCII-style) case-insensitivity — Unicode case folding differs between
@@ -101,6 +111,8 @@ export interface SanitizeReport {
   total: number;
   /** The `decisionId` supplied by the caller, if any (validated, never interpreted). */
   decisionId?: string;
+  /** The `principal` supplied by the caller, if any (validated, never interpreted). */
+  principal?: string;
 }
 
 export interface SanitizeResult {
@@ -430,19 +442,28 @@ function replacement(
   return tag;
 }
 
-/** Fail-closed check of a caller-supplied correlation id before it reaches the
- *  audit line. Accepts `undefined` (no correlation); rejects anything that is
- *  not a short, control-character-free string. The id is never parsed. */
-function validateDecisionId(id: unknown): string | undefined {
-  if (id === undefined) return undefined;
-  if (typeof id !== "string" || id.length === 0 || id.length > DECISION_ID_MAX_LENGTH) {
-    throw new SanitizeError(`decisionId must be a string of 1-${DECISION_ID_MAX_LENGTH} characters`);
+/** Fail-closed check of a caller-supplied opaque id — a `decisionId`, a
+ *  `principal` — before it reaches the audit line. Accepts `undefined` (the
+ *  field is simply absent); rejects anything that is not a short,
+ *  control-character-free string, with a fixed message that never echoes the
+ *  value. The id is never parsed. Shared with `screen`, so both primitives
+ *  apply exactly the same bounds. @internal */
+export function validateOpaqueId(
+  value: unknown,
+  field: string,
+  error: (message: string) => Error
+): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || value.length === 0 || value.length > DECISION_ID_MAX_LENGTH) {
+    throw error(`${field} must be a string of 1-${DECISION_ID_MAX_LENGTH} characters`);
   }
-  if (DECISION_ID_CONTROL_CHARS.test(id)) {
-    throw new SanitizeError("decisionId must not contain control characters");
+  if (DECISION_ID_CONTROL_CHARS.test(value)) {
+    throw error(`${field} must not contain control characters`);
   }
-  return id;
+  return value;
 }
+
+const sanitizeError = (message: string): Error => new SanitizeError(message);
 /** The structured (default-on) detector types, in priority order. */
 export const DEFAULT_PII_TYPES: readonly PiiType[] = Array.from(
   new Set(DETECTORS.filter((d) => d.defaultOn).map((d) => d.type))
@@ -459,7 +480,8 @@ export function sanitize(text: string, opts: SanitizeOptions = {}): SanitizeResu
   if (typeof text !== "string") {
     throw new SanitizeError("input must be a string (extract document text first)");
   }
-  const decisionId = validateDecisionId(opts.decisionId);
+  const decisionId = validateOpaqueId(opts.decisionId, "decisionId", sanitizeError);
+  const principal = validateOpaqueId(opts.principal, "principal", sanitizeError);
   const known = opts.known ?? [];
   if (!Array.isArray(known) || known.some((v) => typeof v !== "string")) {
     // Value-free by design: the message never echoes the offending entry.
@@ -484,6 +506,7 @@ export function sanitize(text: string, opts: SanitizeOptions = {}): SanitizeResu
 
     const report: SanitizeReport = { mode, detectorVersion: DETECTOR_VERSION, counts, total: spans.length };
     if (decisionId !== undefined) report.decisionId = decisionId;
+    if (principal !== undefined) report.principal = principal;
     return { text: out, report };
   } catch (e) {
     throw new SanitizeError(String((e as Error)?.message ?? e));

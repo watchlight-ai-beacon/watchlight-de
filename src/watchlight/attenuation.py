@@ -25,7 +25,7 @@ import uuid
 from typing import Any, Optional, Sequence
 
 from ._audit import AuditTrail
-from .scope_token import ScopeTokenError, now_seconds, require_secret, sign_scope_token
+from .scope_token import ScopeTokenError, now_seconds, sign_scope_token, signing_secret
 
 __all__ = ["Scope", "DevEditionCeiling", "AttenuationDenied", "DE_MAX_DEPTH"]
 
@@ -119,13 +119,14 @@ class Scope:
         parent_id: str | None = None,
         audit: Optional[AuditTrail] = None,
         parent: Optional["Scope"] = None,
-        token_secret: Optional[bytes] = None,
+        signing_secrets: Optional[list[bytes]] = None,
         issued_at: Optional[int] = None,
         actor_chain: Sequence[str] | None = None,
     ) -> None:
         """``parent`` is the scope this one was attenuated from (``None`` for a
         root) — it lets :meth:`to_token` serialise the full chain for engine
-        replay. ``token_secret`` is the HMAC key for :meth:`to_token`, inherited
+        replay. ``signing_secrets`` are the keys for :meth:`to_token` (newest
+        first: the first signs, every one verifies), inherited
         by children; unset ⇒ minting fails closed. Never logged or written.
         ``issued_at`` is the epoch second this scope came into force (now)."""
         self._engine = engine
@@ -154,7 +155,7 @@ class Scope:
         #: chain is at most ``DE_MAX_DEPTH + 1`` long.
         self.actor_chain: tuple[str, ...] = tuple(actor_chain if actor_chain is not None else [agent])
         self._parent = parent
-        self._token_secret = token_secret
+        self._signing_secrets = signing_secrets
         #: Epoch seconds this scope came into force.
         self.issued_at = int(issued_at) if issued_at is not None else now_seconds()
         # A scope never outlives its parent, whatever its own budget says.
@@ -206,9 +207,11 @@ class Scope:
         sharing the secret, never authority. ``ttl_seconds`` defaults to — and
         is always capped at — the scope's remaining lifetime
         (:attr:`expires_at`). Fails closed with :class:`ScopeTokenError` when no
-        ``token_secret`` was configured or the scope has no remaining lifetime.
+        ``signing_secret`` was configured or the scope has no remaining lifetime.
         The token never carries argument values, audit paths, or the secret."""
-        secret = require_secret(self._token_secret)
+        # The FIRST configured secret signs; the rest exist so a token signed
+        # under a previous one still verifies while it is listed.
+        secret = signing_secret(self._signing_secrets)
         self.assert_active()
         now = now_seconds()
         remaining = self.expires_at - now
@@ -316,7 +319,7 @@ class Scope:
             parent_id=self.node_id,
             audit=self._audit,
             parent=self,
-            token_secret=self._token_secret,
+            signing_secrets=self._signing_secrets,
             # Naming the sub-agent this scope is spawned for extends the
             # delegation chain; narrowing without a name leaves the acting
             # identity unchanged.

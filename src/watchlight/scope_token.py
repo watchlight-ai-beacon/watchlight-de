@@ -67,6 +67,10 @@ __all__ = [
     "MAX_TOKEN_LENGTH",
     "MAX_IAT_SKEW_SECONDS",
     "MIN_SECRET_BYTES",
+    "normalize_secrets",
+    "require_secrets",
+    "signing_secret",
+    "verify_scope_token_any",
     "MAX_CHAIN_LENGTH",
     "canonical_json",
     "normalize_claims",
@@ -170,6 +174,66 @@ def normalize_claims(claims: dict[str, Any]) -> dict[str, Any]:
 # ── secret handling ─────────────────────────────────────────────────────────
 
 
+def normalize_secrets(secret: Any) -> Optional[list[bytes]]:
+    """Coerce a configured secret — one value or an ordered list — to a non-empty
+    list of byte strings, applying the minimum length to EVERY entry. Returns
+    ``None`` when nothing is configured. Never echoes a secret.
+
+    The FIRST entry signs; every entry verifies. Two deploys rotate a secret with
+    no cutover: add the new one at the front, wait out the longest token
+    lifetime, drop the old."""
+    if secret is None:
+        return None
+    if isinstance(secret, (str, bytes, bytearray)):
+        one = normalize_secret(secret)
+        return None if one is None else [one]
+    if isinstance(secret, (list, tuple)):
+        entries = [e for e in (normalize_secret(v) for v in secret) if e is not None]
+        if not entries:
+            # A list that resolves to nothing is a misconfiguration, not "unset":
+            # the caller asked for rotation and supplied no usable key.
+            raise ScopeTokenError(
+                "no_secret", "a signing-secret list must hold at least one usable secret"
+            )
+        return entries
+    raise ScopeTokenError("weak_secret", "a signing secret must be a string, bytes, or a list of them")
+
+
+def signing_secret(secrets: Optional[list[bytes]]) -> bytes:
+    """The secret that SIGNS: the first entry of the list."""
+    return require_secrets(secrets)[0]
+
+
+def require_secrets(secrets: Optional[list[bytes]]) -> list[bytes]:
+    if not secrets:
+        raise ScopeTokenError(
+            "no_secret",
+            "scope tokens require a signing secret — construct "
+            "Watchlight(signing_secret=...) (or set WATCHLIGHT_SIGNING_SECRET); "
+            "there is no default",
+        )
+    return secrets
+
+
+def verify_scope_token_any(
+    token: Any, secrets: list[bytes], *, agent: str, now: Optional[int] = None
+) -> dict:
+    """Verify a scope token against ANY configured secret, in order — so a token
+    signed under the previous secret keeps verifying while it is still listed.
+    Only a SIGNATURE mismatch moves on to the next entry: a malformed, expired or
+    misbound token is refused for its own reason on the first try. The error
+    never says which entry was tried, or how many there are."""
+    last: Optional[BaseException] = None
+    for secret in secrets:
+        try:
+            return verify_scope_token(token, secret, agent=agent, now=now)
+        except ScopeTokenError as exc:
+            if exc.code != "signature":
+                raise
+            last = exc
+    raise last  # type: ignore[misc]
+
+
 def normalize_secret(secret: Union[str, bytes, bytearray, None]) -> Optional[bytes]:
     """Coerce a configured secret to bytes and enforce the minimum length. Never
     echoes the secret."""
@@ -180,7 +244,9 @@ def normalize_secret(secret: Union[str, bytes, bytearray, None]) -> Optional[byt
         return None
     raw = secret.encode("utf-8") if isinstance(secret, str) else bytes(secret)  # bytes() copies
     if len(raw) < MIN_SECRET_BYTES:
-        raise ScopeTokenError("weak_secret", f"token secret must be at least {MIN_SECRET_BYTES} bytes")
+        raise ScopeTokenError(
+            "weak_secret", f"every signing secret must be at least {MIN_SECRET_BYTES} bytes"
+        )
     return raw
 
 
@@ -188,8 +254,9 @@ def require_secret(secret: Optional[bytes]) -> bytes:
     if not secret:
         raise ScopeTokenError(
             "no_secret",
-            "scope tokens require a token secret — construct Watchlight(token_secret=...) "
-            "(or set WATCHLIGHT_TOKEN_SECRET); there is no default",
+            "scope tokens require a signing secret — construct "
+            "Watchlight(signing_secret=...) (or set WATCHLIGHT_SIGNING_SECRET); "
+            "there is no default",
         )
     return secret
 

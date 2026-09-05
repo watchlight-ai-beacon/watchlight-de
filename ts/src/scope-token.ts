@@ -188,7 +188,75 @@ export function normalizeClaims(claims: ScopeTokenClaims): ScopeTokenClaims {
 
 // ── secret handling ─────────────────────────────────────────────────────────
 
-/** Coerce a configured secret to bytes and enforce the minimum length. Never
+/** One configured secret, or an ordered list of them. The FIRST entry signs;
+ *  every entry verifies. Two deploys rotate a secret with no cutover: add the
+ *  new one at the front, wait out the longest token lifetime, drop the old. */
+export type SecretInput = string | Uint8Array | readonly (string | Uint8Array)[];
+
+/** Coerce a configured secret — one value or an ordered list — to a non-empty
+ *  list of byte strings, applying the minimum length to EVERY entry. Returns
+ *  `undefined` when nothing is configured. Never echoes a secret. */
+export function normalizeSecrets(secret: SecretInput | undefined): Uint8Array[] | undefined {
+  if (secret === undefined || secret === null) return undefined;
+  if (Array.isArray(secret)) {
+    const entries = (secret as readonly (string | Uint8Array)[])
+      .map((entry) => normalizeSecret(entry))
+      .filter((entry): entry is Uint8Array => entry !== undefined);
+    if (entries.length === 0) {
+      // A list that resolves to nothing is a misconfiguration, not "unset": the
+      // caller asked for rotation and supplied no usable key.
+      throw new ScopeTokenError(
+        "no_secret",
+        "a signing-secret list must hold at least one usable secret"
+      );
+    }
+    return entries;
+  }
+  const one = normalizeSecret(secret as string | Uint8Array);
+  return one === undefined ? undefined : [one];
+}
+
+/** The secret that SIGNS: the first entry of the list. */
+export function signingSecret(secrets: Uint8Array[] | undefined): Uint8Array {
+  return requireSecrets(secrets)[0];
+}
+
+export function requireSecrets(secrets: Uint8Array[] | undefined): Uint8Array[] {
+  if (!secrets || secrets.length === 0) {
+    throw new ScopeTokenError(
+      "no_secret",
+      "scope tokens require a signing secret — construct Watchlight with { signingSecret } " +
+        "(or set WATCHLIGHT_SIGNING_SECRET); there is no default"
+    );
+  }
+  return secrets;
+}
+
+/**
+ * Verify a scope token against ANY configured secret, in order — so a token
+ * signed under the previous secret keeps verifying while it is still listed.
+ * Only a SIGNATURE mismatch moves on to the next entry: a malformed, expired or
+ * misbound token is refused for its own reason on the first try. The error never
+ * says which entry was tried, or how many there are.
+ */
+export function verifyScopeTokenAny(
+  token: unknown,
+  secrets: Uint8Array[],
+  opts: { agent: string; now?: number }
+): ScopeTokenClaims {
+  let last: unknown;
+  for (const secret of secrets) {
+    try {
+      return verifyScopeToken(token, secret, opts);
+    } catch (err) {
+      if (!(err instanceof ScopeTokenError) || err.code !== "signature") throw err;
+      last = err;
+    }
+  }
+  throw last;
+}
+
+/** Coerce ONE configured secret to bytes and enforce the minimum length. Never
  *  echoes the secret. */
 export function normalizeSecret(secret: string | Uint8Array | undefined): Uint8Array | undefined {
   // An empty / whitespace-only value (an unfilled `.env` placeholder) is "unset":
@@ -199,7 +267,10 @@ export function normalizeSecret(secret: string | Uint8Array | undefined): Uint8A
   // Copy caller-provided bytes so a later mutation of their array cannot change the key.
   const bytes = typeof secret === "string" ? Buffer.from(secret, "utf8") : Buffer.from(secret);
   if (bytes.length < MIN_SECRET_BYTES) {
-    throw new ScopeTokenError("weak_secret", `token secret must be at least ${MIN_SECRET_BYTES} bytes`);
+    throw new ScopeTokenError(
+      "weak_secret",
+      `every signing secret must be at least ${MIN_SECRET_BYTES} bytes`
+    );
   }
   return bytes;
 }
@@ -208,8 +279,8 @@ export function requireSecret(secret: Uint8Array | undefined): Uint8Array {
   if (!secret) {
     throw new ScopeTokenError(
       "no_secret",
-      "scope tokens require a token secret — construct Watchlight with { tokenSecret } " +
-        "(or set WATCHLIGHT_TOKEN_SECRET); there is no default"
+      "scope tokens require a signing secret — construct Watchlight with { signingSecret } " +
+        "(or set WATCHLIGHT_SIGNING_SECRET); there is no default"
     );
   }
   return secret;

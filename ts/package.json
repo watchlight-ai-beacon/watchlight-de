@@ -18,7 +18,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && for t in govern identity claude-agent graduation langchain sanitize screen action-gate policytest obligations audit-sink scope-token counters; do node test/$t.test.mjs || exit 1; done",
+    "test": "npm run build && for t in govern identity claude-agent graduation langchain sanitize screen action-gate policytest obligations audit-sink scope-token counters approval-store counter-source principal-record signing-secret; do node test/$t.test.mjs || exit 1; done",
     "prepublishOnly": "npm run build"
   },
   "keywords": [

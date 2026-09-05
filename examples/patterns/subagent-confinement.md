@@ -58,7 +58,7 @@ re-prove the subset:
 
 ```ts
 // orchestrator — needs a shared secret (≥ 16 bytes); there is no default
-const govern = new Watchlight({ tokenSecret: process.env.WATCHLIGHT_TOKEN_SECRET });
+const govern = new Watchlight({ signingSecret: process.env.WATCHLIGHT_SIGNING_SECRET });
 const root = await govern.scope({ tools: ["read_file", "web_search", "send_email"], timeBudgetSeconds: 600 });
 const summarizer = root.attenuate({ tools: ["read_file"] });
 queue.push({ job, scope: summarizer.toToken() });     // wls1.<claims>.<hmac>
@@ -69,7 +69,7 @@ scope.attenuate({ tools: ["send_email"] });            // ❌ still throws — n
 ```
 
 ```python
-govern = Watchlight(token_secret=os.environ["WATCHLIGHT_TOKEN_SECRET"])
+govern = Watchlight(signing_secret=os.environ["WATCHLIGHT_SIGNING_SECRET"])
 summarizer = govern.scope(tools=["read_file", "web_search", "send_email"]).attenuate(tools=["read_file"])
 queue.push({"job": job, "scope": summarizer.to_token()})
 
@@ -83,7 +83,7 @@ verifies the signature (constant-time) and time window, rebuilds the root, and
 replays each level through the engine's strict-subset validator; a token whose
 chain requests more than its root allows is refused **by the engine**, even with
 a valid signature. Tampered, expired, oversized, wrong-agent, or unknown-version
-tokens are rejected; with no `tokenSecret` configured, minting and verifying both
+tokens are rejected; with no `signingSecret` configured, minting and verifying both
 fail closed.
 
 *The honest bound:* a shared secret gives **integrity** across processes within
