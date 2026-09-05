@@ -233,6 +233,13 @@ missing file yields zero counts (a fresh agent has done nothing yet); a file tha
 exists but cannot be read raises `AuditTrailUnreadable` (the path is on the
 error object, not in its message).
 
+**How far the bound reaches.** A counter folded from the trail — the local file
+or your own store — bounds one principal's behaviour over a window, within the
+deployment that writes the records and reads them back. The same bound evaluated
+centrally, across every agent and every environment, is a **goal**: how many
+actions a run may take, against what budget, toward what objective, evaluated in
+the governed control plane (Enterprise).
+
 ## Operational cost
 
 Every `counters()` call **rescans the tail of the file** — up to `maxBytes` — and

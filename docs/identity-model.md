@@ -358,6 +358,13 @@ that, `delegate` raises `DevEditionCeiling`.
 > Re-establish the delegation there with `delegate` if the receiving side must
 > record it.
 
+**A scope does not bound a run.** A scope narrows what a delegated agent may
+hold — which tools, which resources, which intents, for how long — and it is
+checked when you delegate. It says nothing about the extent of the work: not how
+many actions a run may take, not what it may spend, not how far it has got
+toward an objective. That bound is a **goal**, evaluated in the governed control
+plane (Enterprise).
+
 Each case is distinct in the trail — `principal` and `agent` on the same line:
 
 ```json
