@@ -193,7 +193,7 @@ govern.load("watchlight.policy.json")          # compiled once
 
 broker = govern.as_("context-broker")
 digest = govern.as_("weekly-digest")
-assistant = govern.as_("wendell-assistant")
+assistant = govern.as_("trip-assistant")
 
 broker.authorize(action="read", principal=principals.user("db:4412"))
 ```
@@ -206,7 +206,7 @@ govern.load("watchlight.policy.json");         // compiled once
 
 const broker = govern.as("context-broker");
 const digest = govern.as("weekly-digest");
-const assistant = govern.as("wendell-assistant");
+const assistant = govern.as("trip-assistant");
 
 await broker.authorize({ action: "read", principal: principals.user("db:4412") });
 ```

@@ -17,7 +17,7 @@ const ok = (name, cond, detail = "") => {
   else { console.log(`  ✗ ${name} ${detail}`); fail++; }
 };
 
-// A representative money-movement policy set (the Joywend funded-check shape).
+// A representative money-movement policy set: a funded-balance check.
 const POLICIES = [
   { name: "funded-book",
     code: 'permit(principal, action == Action::"book", resource) when { context.amount <= context.limit && context.refundable };' },

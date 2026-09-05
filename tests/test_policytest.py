@@ -11,7 +11,7 @@ import sys
 
 from watchlight import Watchlight, load_test_suite, run_policy_tests
 
-# A representative money-movement policy set (the Joywend funded-check shape).
+# A representative money-movement policy set: a funded-balance check.
 POLICIES = [
     {"name": "funded-book",
      "code": 'permit(principal, action == Action::"book", resource) when { context.amount <= context.limit && context.refundable };'},
