@@ -38,50 +38,63 @@ running control plane, not a rewrite.
 
 ## How the pieces fit together
 
+There are two lanes — **Python** and **TypeScript / Node** — and they are one
+product: the same compiled engine, the same Cedar policies, the same fail-closed
+verdicts, the same value-free audit file. The diagram is the shape of both; the
+table under it is how each lane spells it.
+
 ```text
-             your code · agents · tools
-  ┌─────────────┬──────────────────┬──────────────┬─────────────┐
-  │ @govern.tool│  LangGraph /     │  MCP client  │  custom app │
-  │ (decorator) │  Pydantic AI /   │  (any tool)  │             │
-  │             │  Claude Agent    │              │             │
-  └──────┬──────┴────────┬─────────┴──────┬───────┴──────┬──────┘
-         │               │                │              │
-     watchlight   watchlight.<fw>   watchlight-mcp    watchlight
-      (govern)   .governed_plugin   (PEP · MCP spec)     SDK
-         └───────────────┴───────┬────────┴──────────────┘
-                                 ▼
-                 ┌───────────────────────────────┐
-                 │  Watchlight engine · Cedar     │   the REAL engine,
-                 │  in-process · zero infra       │   a compiled wheel
-                 └───────────────┬───────────────┘
-                PERMIT ─ forward │ ─ DENY  (blocked before execution)
-                                 ▼
-     value-free audit → your sink and/or .watchlight/audit.jsonl
-                                 ▼
-        watchlight dev  ·  http://localhost:7000   (reads the file)
+                   your code · agents · tools
+  ┌────────────┬─────────────────┬──────────────┬──────────────┐
+  │ your own   │ LangGraph ·     │ an MCP       │ your own     │
+  │ tools      │ Claude Agent ·  │ server       │ app          │
+  │            │ Pydantic AI     │              │              │
+  └─────┬──────┴────────┬────────┴──────┬───────┴──────┬───────┘
+        │               │               │              │
+   govern.tool  framework adapter    MCP PEP   govern.authorize
+        └───────────────┴───────┬───────┴──────────────┘
+                                ▼
+                ┌──────────────────────────────┐
+                │ Watchlight engine · Cedar    │  the REAL engine —
+                │ in-process · zero infra      │  a compiled wheel
+                └───────────────┬──────────────┘  or Wasm module
+               PERMIT ─ forward │ ─ DENY  (blocked before execution)
+                                ▼
+   value-free audit → your sink and/or .watchlight/audit.jsonl
+                                ▼
+    watchlight dev · http://localhost:7000  (reads that file)
 
   Production = the SAME code, pointed at the governed control plane
   (signed audit · multi-tenant · drift→quarantine · fleet revocation).
 ```
 
-| Package | You use it for |
-|---|---|
-| `watchlight` | the `govern` decorator + the `watchlight dev` dashboard |
-| `watchlight[langgraph\|pydantic-ai\|claude-agent]` | govern an existing framework agent |
-| `watchlight-agent-sdk` | the lifecycle SDK — `InProcessClient`, sessions, preflight, local lineage (**imports as `watchlight_core`**) |
-| `watchlight-mcp` | govern an MCP server (a policy enforcement point) |
-| `watchlight-engine` | the compiled in-process engine (pulled in automatically) |
-| **`watchlight[all]`** | **one install for the whole DE** — SDK + every plugin + the MCP PEP; runs every example in the docs |
+| What you're governing | Python — `pip install …` | TypeScript / Node — `npm install …` |
+|---|---|---|
+| **A tool you wrote** | `watchlight` → `@govern.tool(intent=…)` | `@watchlight/sdk` → `govern.tool(fn, { intent })` |
+| **A framework agent** | `watchlight[langgraph]` · `[pydantic-ai]` · `[claude-agent]` → `watchlight.<fw>.governed_plugin`; `[deepagents]` for a governed deep-agent tree | `@watchlight/sdk` → `governedHooks()` for the Claude Agent SDK, `governTool()` / `governTools()` for LangChain / LangGraph.js |
+| **An MCP server** | `watchlight-mcp` → a policy enforcement point in front of any MCP server | governed on the Python side — an MCP client in **any** language points at the PEP |
+| **Your own app, directly** | `watchlight` → `govern.authorize(…)`; `watchlight-agent-sdk` adds the lifecycle SDK — `InProcessClient`, sessions, preflight, local lineage (**imports as `watchlight_core`**) | `@watchlight/sdk` → `await govern.authorize({…})` |
+| **The engine itself** | `watchlight-engine` — a compiled wheel, pulled in automatically | `@watchlight/engine` — the same core as WebAssembly, pulled in automatically |
 
-> **Just want everything?** `pip install "watchlight[all]"` pulls the SDK, all
-> framework plugins, and the MCP PEP in one go — so every example on
-> [docs.watchlight.ai/de](https://docs.watchlight.ai/de) runs with a single install.
-> Note the SDK's module name is **`watchlight_core`** (there is no `watchlight-core`
-> package on PyPI).
+```bash
+pip install "watchlight[all]"   # Python — the SDK, every framework plugin, the MCP PEP
+npm install @watchlight/sdk     # Node   — the SDK, and the engine with it
+```
+
+> `watchlight[all]` is one install for the whole Python lane, so every example on
+> [docs.watchlight.ai/de](https://docs.watchlight.ai/de) runs after it. Note the
+> lifecycle SDK's module name is **`watchlight_core`** (there is no
+> `watchlight-core` package on PyPI). On the Node lane `@watchlight/sdk` is the
+> only install you need.
+>
+> The `watchlight dev` dashboard ships in the Python `watchlight` package, and it
+> tails `.watchlight/audit.jsonl` — the file **both** lanes write by default — so
+> it shows a Node agent's decisions too.
 
 Runnable, self-contained examples for every one of these are in
 [`examples/`](examples/) — start with
-[`examples/governed_research_agent.py`](examples/governed_research_agent.py).
+[`examples/governed_research_agent.py`](examples/governed_research_agent.py) in
+Python, or [`ts/examples/agent.mjs`](ts/examples/agent.mjs) in TypeScript / Node.
 
 ---
 
@@ -89,6 +102,9 @@ Runnable, self-contained examples for every one of these are in
 
 > The `govern` decorator, `watchlight dev`, and the framework + MCP integrations
 > below all work today. Full guide: [Developer Edition docs](https://docs.watchlight.ai/de).
+
+This is the Python lane. **On Node?** The same five-minute `DENY` is
+`npm install @watchlight/sdk` → **[TypeScript / Node](#typescript--node)**.
 
 **Prerequisites:** Python **3.9+**. Prebuilt wheels ship for Linux, macOS, and
 Windows — no Rust toolchain, no build step, no account.
@@ -565,8 +581,8 @@ Or from CI, with the CLI — a `suite.json` of `{ policyFile?, policies?, tests:
 exit 1 on any failure:
 
 ```bash
-watchlight policy test suite.json          # Python
-npx watchlight policy test suite.json      # Node
+watchlight policy test suite.json                                 # Python
+npx --package @watchlight/sdk watchlight policy test suite.json   # Node
 ```
 
 ---
