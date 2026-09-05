@@ -2,7 +2,7 @@
 
 What to pass, what gets recorded, and what a policy can name.
 
-## The three questions a governed call answers
+## The questions a governed call answers
 
 | Question | Where it goes | Example value |
 |---|---|---|
@@ -21,7 +21,10 @@ agent name, the chain from the scope the call was made through. A
 caller-supplied `context.actor` or `context.actor_chain` that disagrees is
 refused (`ReservedContextError` / `RESERVED_CONTEXT_MESSAGE`), never silently
 overwritten, so a policy that reads either can trust it. An identical value is
-accepted; a caller can neither invent a delegation nor extend one.
+accepted: through the context, a caller can neither invent a delegation nor
+extend one. The values themselves come from the governor — `delegate` is the
+only thing that builds a chain, and it goes through the engine's attenuation to
+do it.
 
 Which key answers which question:
 
@@ -38,6 +41,63 @@ Use these keys, not a key of your own called `agent`: the engine's enricher
 overwrites `context.agent` with an object of its own, so a policy comparing it
 to a string never matches and the call silently denies. `actor` and
 `actor_chain` are the caller-writable reserved keys, and the SDK guards both.
+
+## One engine, many named agents
+
+Construct **one governor per policy set** and give every agent a name with a
+view. A view shares the engine, the compiled policies and their load memo, the
+audit trail, the sink and the secrets; only the name stamped on records and
+decisions differs. Naming six agents costs one engine and one policy load.
+
+```python
+from watchlight import Watchlight, configure_default, principals
+
+govern = Watchlight(agent="platform", audit_sink=ship, token_secret=SECRET)
+govern.load("watchlight.policy.json")          # compiled once
+
+broker = govern.as_("context-broker")
+digest = govern.as_("weekly-digest")
+assistant = govern.as_("wendell-assistant")
+
+broker.authorize(action="read", principal=principals.user("db:4412"))
+```
+
+```ts
+import { Watchlight, principals } from "@watchlight/sdk";
+
+const govern = new Watchlight({ agent: "platform", auditSink: ship, tokenSecret: SECRET });
+govern.load("watchlight.policy.json");         // compiled once
+
+const broker = govern.as("context-broker");
+const digest = govern.as("weekly-digest");
+const assistant = govern.as("wendell-assistant");
+
+await broker.authorize({ action: "read", principal: principals.user("db:4412") });
+```
+
+Four ways to name an agent without a second engine:
+
+| Way | Use it when |
+|---|---|
+| `as(name)` / `as_(name)` | a long-lived named agent shares the policy set |
+| the per-call or per-tool `agent` override | one call or one tool acts under another name |
+| `delegate(scope, name, …)` | a sub-agent genuinely acts under a parent's narrowed authority |
+| `configure_default(agent=…)` / `configureDefault({ agent })` | the exported `govern` is the one governor you use |
+
+An earlier version fixed the agent name on the engine, so naming several agents
+meant constructing several governors — each recompiling the same policy set and
+holding its own engine state, with cost scaling by the number of names rather
+than the number of policies. That is no longer necessary; don't copy it from
+older examples.
+
+**A second engine is for a different policy set** — a strict set for one tenant
+and a permissive one for a sandbox, say. Naming is not a reason.
+
+One consequence, stated plainly: views share the trail and the sink, so records
+from every named agent land in the same destination, told apart by the `agent`
+field (and `actor_chain` under a delegation). That is what makes a single audit
+stream readable. If you need a *separate* trail per agent, that — not naming —
+is the reason to construct separate governors.
 
 ## What `principal` contains
 
@@ -110,8 +170,11 @@ await seatPicker.authorize({ action: "pick_seat", principal: principals.user("al
 `as(name)` / `as_(name)` is a view: it shares the engine, the compiled policies,
 the audit trail, the sink and the token secret, and only stamps a different
 name. Six named agents cost one engine and one policy load. A single call can
-also carry `agent="…"` on `authorize`, `sanitize`, `screen` and `tool`. A rename
-is not a delegation — a view acts alone, under its own name.
+also carry `agent="…"` on `authorize`, `sanitize`, `screen` and `tool`, which is
+the same rename applied to one call. A rename is not a delegation — a view acts
+alone, under its own name — and neither form is allowed on a delegate: its name
+is what the delegation granted, and renaming it would drop the chain. Spawn a
+sub-agent with `delegate` instead.
 
 ### Delegating to a sub-agent
 
@@ -140,9 +203,14 @@ view; `picker.delegated_scope` / `picker.delegatedScope` is the narrowed scope i
 acts under. It cannot widen what its parent held (`AttenuationDenied`), and each
 level is one attenuation level, so the chain is at most **`MAX_ACTOR_CHAIN` = 6**
 entries — the root agent plus the `DE_MAX_DEPTH` (5) attenuation levels; past
-that, `delegate` raises `DevEditionCeiling`. A scope carried to another process
-as a token rebuilds capabilities, not names: re-establish the delegation there
-with `delegate`.
+that, `delegate` raises `DevEditionCeiling`.
+
+> **A scope token does not carry the chain.** `to_token()` / `toToken()`
+> serialises capabilities, and `scope_from_token` / `scopeFromToken` rebuilds
+> them — the actor chain is not part of the claims, so a scope re-established in
+> another process starts a fresh chain from the receiving governor's agent.
+> Re-establish the delegation there with `delegate` if the receiving side must
+> record it.
 
 Each case is distinct in the trail — `principal` and `agent` on the same line:
 
@@ -276,14 +344,21 @@ as you climb.
 ## Breaking in 0.8.0
 
 **Read this first: an agent-scoped policy not spelled `Agent::` flips from
-Allow to Deny.** The substituted principal was an untyped string, and the engine
-bound it to whichever entity type the policy set named that id with — verified:
-with `permit(principal == User::"bob", …)` in the set, the bare `bob` matched
-`User::"bob"`; with an `Agent::"bob"` policy it matched that instead; with both,
-the first one added won. So a rule written against a *user* entity could, and
-did, authorize the agent. From 0.8.0 the SDK always sends `Agent::"<name>"`, and
-those rules stop matching — silently, since a Deny is what fail-closed looks
-like.
+Allow to Deny — and which rule it was is not something you can read off the
+policy set.** The substituted principal was an untyped string, and the engine
+bound it to one of the entity types the policy set named that identifier with.
+*Which* one is not decided by policy order: it is fixed for the life of an
+engine and can differ between processes running the very same policy set. With
+`permit(principal == User::"bob", …)` and `permit(principal == Agent::"bob", …)`
+both loaded, freshly constructed engines bound the bare `bob` to `User` on
+roughly half the runs and to `Agent` on the rest — in both insertion orders. So
+a rule written against a *user* entity could, and did, authorize the agent, on
+some process starts and not others. From 0.8.0 the SDK always sends
+`Agent::"<name>"`, so the binding is deterministic and those rules stop
+matching — silently, since a Deny is what fail-closed looks like.
+
+Do not audit this by policy order. A rule that looks unreachable in the run in
+front of you may be the one that matched in the last one.
 
 ```cedar
 // before — matched the untyped substituted name (whatever type it bound to)
@@ -322,8 +397,11 @@ and one version, as before.
 
 **The one-release opt-out.** `strict_principal=False` (Python) /
 `strictPrincipal: false` (TypeScript) restores the bare-name substitution for
-one release and warns once per process. It exists to unblock a deploy, not to
-stay on:
+one release and warns once per process. Note what it restores: the untyped name,
+and with it the unpredictable binding above — the same policy set can decide
+differently in different processes, so the opt-out buys migration time at the
+price of a deterministic verdict. It exists to unblock a deploy, not to stay
+on:
 
 ```python
 Watchlight(agent="my-agent", strict_principal=False)   # transitional

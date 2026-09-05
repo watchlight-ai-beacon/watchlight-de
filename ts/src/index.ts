@@ -306,7 +306,8 @@ export interface WatchlightOptions {
    *  restore the previous behaviour, where the BARE agent name — untyped, and
    *  indistinguishable on sight from a user id — stood in for the missing
    *  subject; that is transitional, warns once per process, and is removed in a
-   *  later version. See "Breaking in 0.8.0" in `docs/identity-model.md`. */
+   *  later version. See "Breaking in 0.8.0" in the identity model:
+   *  https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/docs/identity-model.md */
   strictPrincipal?: boolean;
 }
 
@@ -494,7 +495,9 @@ function warnLenientPrincipal(): void {
   // eslint-disable-next-line no-console
   console.warn(
     "watchlight: strictPrincipal is off, so the BARE agent name is recorded as the acting " +
-      "principal of calls that name none, instead of the typed Agent::\"<name>\". This is " +
+      "principal of calls that name none, instead of the typed Agent::\"<name>\". The bare " +
+      "name binds to an unpredictable one of the entity types your policies name it with, " +
+      "and the same policy set can decide differently in different processes. This is " +
       "transitional and is removed in a later version: name the subject at the call site " +
       "with `principal` (see `principals.user`), and write agent-scoped policies against " +
       "Agent::\"<name>\" or the reserved `context.actor` key."
@@ -569,6 +572,16 @@ export class Watchlight {
    */
   as(agent: string): Watchlight {
     assertAgentName(agent, "as(agent)");
+    // A delegate's name is what the delegation granted. Renaming it — directly,
+    // or through a per-call `agent` override, which lands here — would drop the
+    // actor chain from the context and the record, so it is refused rather than
+    // silently losing the delegation.
+    if (this.actorChain.length > 1) {
+      throw new TypeError(
+        "as(agent): a delegated governor cannot be renamed — its name is part of the " +
+          "actor chain. Use delegate(from, agent) to spawn a sub-agent under it."
+      );
+    }
     const view = Object.create(Watchlight.prototype) as Watchlight;
     // Shared BY REFERENCE — the whole point of the view. A rename is not a
     // delegation: the view acts alone under its own name.

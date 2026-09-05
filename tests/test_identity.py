@@ -453,6 +453,15 @@ def test_delegation_is_still_attenuation(tmp_path):
     with pytest.raises(TypeError):
         g.delegate(picker, "")
 
+    # A delegate cannot be renamed — that would drop the chain it was granted.
+    with pytest.raises(TypeError):
+        picker.as_("disguise")
+    with pytest.raises(TypeError):
+        picker.authorize(action="read", principal=principals.user("a"), agent="disguise")
+    with pytest.raises(TypeError):
+        picker.sanitize("555-867-5309", agent="disguise")
+    assert picker.actor_chain == ("flight-booker", "seat-picker")
+
 
 # ── review fixes: names, sources, and requests the engine refuses ────
 

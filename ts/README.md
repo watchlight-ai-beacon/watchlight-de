@@ -54,7 +54,7 @@ no policies means every call is denied.
 
 ## Who is acting, and on whose behalf
 
-A governed call answers three questions, and they are separate inputs:
+A governed call answers these questions, and they are separate inputs:
 
 | Question | Where it goes | Example |
 |---|---|---|
@@ -85,13 +85,20 @@ sets `context.actor` on every call from the governor's agent name, and refuses a
 caller-supplied value that disagrees (`ReservedContextError`), so a policy can
 trust it.
 
-Run several named agents on one engine with a view — it shares the engine, the
-compiled policies, the audit trail and the sink, and only changes the name:
+**One engine per policy set, many named agents.** Construct once (with the sink
+and the secrets), load the policies once, then name each agent with a view: it
+shares the engine, the compiled policies and their load memo, the audit trail,
+the sink and the secrets, and only changes the stamped name. Construct a second
+governor for a genuinely different policy set — not to give an agent a name.
 
 ```ts
 const billing = govern.as("billing-agent");    // no second engine, no second policy load
 const research = govern.as("research-agent");
 ```
+
+Views share the trail, so every named agent's records land in one destination,
+told apart by the `agent` field — which is what makes a single audit stream
+readable. Separate governors are how you get a separate trail per agent.
 
 `authorize`, `sanitize`, `screen` and `tool` also take a per-call `agent`.
 
@@ -112,9 +119,9 @@ claim, and no identity provider is required. Derive it from something you
 authenticated, never from a request header or body a caller can set, and prefer
 an id that never moves over an email or a username.
 
-**→ Full reference: [The identity model](../docs/identity-model.md)** — the three
-cases with exact values, worked policies, where the values come from, and the
-0.8.0 migration note.
+**→ Full reference: [The identity model](https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/docs/identity-model.md)** — the
+one-engine shape, the three cases with exact values, worked policies, where the
+values come from, and the 0.8.0 migration note.
 
 ## Sub-agent scope attenuation
 

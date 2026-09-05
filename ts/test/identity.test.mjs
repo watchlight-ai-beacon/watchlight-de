@@ -454,6 +454,21 @@ async function main() {
     let noScope = null;
     try { g.delegate(g, "orphan"); } catch (e) { noScope = e; }
     ok("delegating from a governor that is not itself a delegate is refused", noScope instanceof TypeError);
+
+    // A delegate cannot be renamed — that would drop the chain it was granted.
+    let renamed = null;
+    try { picker.as("disguise"); } catch (e) { renamed = e; }
+    ok("a delegate cannot be renamed", renamed instanceof TypeError, String(renamed));
+    let overridden = null;
+    try { await picker.authorize({ action: "trace", principal: alice, agent: "disguise" }); }
+    catch (e) { overridden = e; }
+    ok("a per-call agent override on a delegate is refused too", overridden instanceof TypeError);
+    let toolOverride = null;
+    try { picker.tool(async () => "x", { intent: "trace", agent: "disguise" }); }
+    catch (e) { toolOverride = e; }
+    ok("and a per-tool override is refused at wrap time", toolOverride instanceof TypeError);
+    ok("the delegate still carries its chain afterwards",
+      JSON.stringify(picker.actorChain) === JSON.stringify(["flight-booker", "seat-picker"]));
   }
 
   // ── review fixes: names, sources, and requests the engine refuses ──
