@@ -96,8 +96,9 @@ This needs `watchlight-agent-sdk` 0.7.0 or later, which the framework extras
 require.
 
 Write the entity type. These terms reach the engine exactly as given, so
-`User::"u-1"` is not matched by a policy naming `Agent::"u-1"`. A bare name
-matches every entity type with that id, which is the wrong shape for a decision
+`User::"u-1"` is not matched by a policy naming `Agent::"u-1"`. A bare name matches a
+policy naming that id under `User`, `Agent`, `Group` or `Role`, and when it
+matches more than one an allow beats a forbid — the wrong shape for a decision
 you rely on.
 
 The factory still refuses `principal=`, `context=` and `resource=` by name: all

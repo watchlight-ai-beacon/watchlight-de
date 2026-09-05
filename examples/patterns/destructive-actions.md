@@ -65,6 +65,7 @@ more than one replica:
 
 ```ts
 const govern = new Watchlight({
+  agent: "ops-agent",
   approvalSecret: process.env.APPROVAL_SECRET,   // >= 16 bytes; or WATCHLIGHT_APPROVAL_SECRET,
                                                  // or reuse signingSecret, which
                                                  // covers approvals too
@@ -80,6 +81,7 @@ const govern = new Watchlight({
 
 ```python
 govern = Watchlight(
+    agent="ops-agent",
     approval_secret=os.environ["APPROVAL_SECRET"],
     approval_store=redis_store,   # .add(id, expires_at) -> bool; synchronous
 )

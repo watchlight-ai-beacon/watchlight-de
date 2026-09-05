@@ -24,7 +24,8 @@ own processes, not proof of who they are.
 
 **Actor** — which runtime made this particular call. It is the identity of the
 governor you called through, read by a policy as `context.actor`; there is no
-request field for it.
+request field for it. A governor with no configured agent name asserts none:
+the key is absent, and a policy naming it cannot match.
 → [identity model](identity-model.md#where-the-actor-comes-from)
 
 **Chain** (actor chain) — how the acting runtime got its authority: the ordered
@@ -70,8 +71,10 @@ Same thing an `intent` names on a governed tool.
 → [identity model](identity-model.md#delegating-to-a-sub-agent)
 
 **Agent name** — the name a governor acts under. It is stamped on every record
-and is what a policy reads as `context.actor`.
-→ [identity model](identity-model.md#one-engine-many-named-agents)
+and is what a policy reads as `context.actor`. There is no default: with neither
+the `agent` option nor `WATCHLIGHT_AGENT`, a governor still runs but is recorded
+as the reserved placeholder `<unconfigured>` and asserts no actor.
+→ [identity model](identity-model.md#an-agent-you-did-not-name)
 
 **Approval token** — a single-use grant, minted after a person confirms, that
 turns one `NeedsApproval` verdict into an `Allow`, bound to that subject, action

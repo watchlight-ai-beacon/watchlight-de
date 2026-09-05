@@ -88,6 +88,42 @@ export function policyEntityRef(type: string, id: string): string {
   return `${type}::"${escapeCedarString(id)}"`;
 }
 
+/** What a caller-supplied `principal` must satisfy at EVERY boundary that takes
+ *  one — the same two rules `entityRef` already applies to an id, applied to the
+ *  whole reference. The message is fixed and never echoes the value. */
+export const PRINCIPAL_EMPTY_MESSAGE = "principal must be a non-empty string";
+export const PRINCIPAL_CONTROL_MESSAGE = "principal must not contain control characters";
+
+/**
+ * Check a caller-supplied `principal` and return it unchanged.
+ *
+ * The principal is recorded verbatim and is the subject of every audit row, so
+ * a value that cannot be a subject is refused at the boundary rather than
+ * written. Two rules, the ones `principals.user()` has always applied:
+ *
+ *   * it must be a non-empty string — blank (or whitespace-only) is a mistake,
+ *     never a request for the default. `user?.id ?? ""` reaching a governed call
+ *     used to be recorded as the AGENT, attributing a person's action to the
+ *     runtime;
+ *   * it must carry no control characters, which no reference can represent
+ *     unambiguously.
+ *
+ * It is deliberately NOT parsed: a bare identifier is a valid, opaque principal
+ * (see `docs/identity-model.md`), and only a typed `Type::"id"` reference
+ * discriminates by type.
+ *
+ * `makeError` lets a primitive raise its own typed error; the default is the
+ * `TypeError` the identity builders raise. @internal
+ */
+export function assertPrincipal(
+  value: unknown,
+  makeError: (message: string) => Error = (m) => new TypeError(m)
+): string {
+  if (typeof value !== "string" || !value.trim()) throw makeError(PRINCIPAL_EMPTY_MESSAGE);
+  if (CONTROL_CHARS.test(value)) throw makeError(PRINCIPAL_CONTROL_MESSAGE);
+  return value;
+}
+
 /** Builders for the principal an application asserts. */
 export const principals = {
   /** The person a call runs on behalf of — the subject an application takes

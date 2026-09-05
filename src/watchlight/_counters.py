@@ -50,6 +50,8 @@ import re
 import time
 from typing import Any, Callable, Optional, Union
 
+from . import principals
+
 __all__ = [
     "AuditTrailUnreadable",
     "CounterSource",
@@ -316,8 +318,9 @@ def _prepare_counters(
     """Validate the arguments and resolve the window ONCE — shared by the local
     scan and by a :data:`CounterSource`, so both are asked exactly the same
     question and reject exactly the same inputs. Internal."""
-    if not isinstance(principal, str) or not principal:
-        raise TypeError("principal must be a non-empty string")
+    # The ONE principal rule, so a filter cannot be a shape a decision record
+    # could never carry.
+    principals.assert_principal(principal)
     if intent is not None and not isinstance(intent, str):
         raise TypeError("intent must be a string")
     if resource is not None and not isinstance(resource, str):

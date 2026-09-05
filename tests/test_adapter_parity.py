@@ -133,8 +133,10 @@ def test_the_limit_is_in_the_docstring_an_integrator_reads(framework):
     doc = inspect.getdoc(FACTORIES[framework]) or ""
     assert "authorize_action" in doc  # where every per-call term goes
     assert "principal=" in doc  # including the subject, since 0.7.0
-    # The entity-type rule is the one that bites silently, so it must be said.
-    assert "bare" in doc.lower() and "wildcard" in doc.lower()
+    # The entity-type rule is the one that bites silently, so it must be said —
+    # including that an untyped principal inverts Cedar's conflict rule.
+    assert "bare" in doc.lower()
+    assert "allow beats a forbid" in doc.lower()
 
 
 # ── what it still forwards, unchanged ───────────────────────────────────────

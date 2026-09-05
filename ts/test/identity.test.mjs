@@ -12,6 +12,7 @@ const {
   policyEntityRef, ACTOR_CHAIN_CONTEXT_KEY, MAX_ACTOR_CHAIN, DE_MAX_DEPTH,
   AttenuationDenied, DevEditionCeiling, AuthorizeRequestError, REQUEST_INVALID_MESSAGE,
   ReservedContextError, RESERVED_CONTEXT_MESSAGE, ACTOR_CONTEXT_KEY, Denied,
+  UNCONFIGURED_AGENT, SanitizeError, ScreenError,
 } = require("../dist/index.js");
 
 let pass = 0, fail = 0;
@@ -537,6 +538,160 @@ async function main() {
     const g2 = new Watchlight({ agent: "loader2", auditDir: dir });
     g2.load(file).load(link);
     ok("a symlink to a loaded file is the same source", g2.policyCount === 2, String(g2.policyCount));
+  }
+
+
+  // -- the principal is validated at every boundary that takes one ----
+  // The Python twin is the matching block in `tests/test_identity.py`.
+  {
+    const dir = tmp("principal-empty");
+    const g = new Watchlight({ agent: "probe", auditDir: dir });
+    g.allow('permit(principal, action == Action::"x", resource);');
+    // The defect this block exists for: `""` -- very easy to produce from
+    // `user?.id ?? ""` -- used to fall through to the agent, so a person's
+    // action was attributed to the runtime.
+    let raised;
+    try { await g.authorize({ action: "x", principal: "" }); } catch (e) { raised = e; }
+    ok("an empty principal raises instead of becoming the agent",
+      raised instanceof TypeError && raised.message === "principal must be a non-empty string",
+      String(raised));
+    ok("...and nothing is recorded", !fs.existsSync(join(dir, "audit.jsonl")));
+
+    const BAD = ["", "   ", "a\nb", "a\u0000b", "a\u007fb", 12, null];
+    let allRaised = true, sanRaised = true, scrRaised = true;
+    let toolRaised = true, mintRaised = true, cntRaised = true;
+    for (const bad of BAD) {
+      // A real trail directory: `counters()` refuses on `auditFile: false`
+      // BEFORE it looks at its arguments, in both lanes.
+      const h = new Watchlight({ agent: "probe", auditDir: tmp("principal-bad") });
+      h.allow('permit(principal, action == Action::"x", resource);');
+      try { await h.authorize({ action: "x", principal: bad }); allRaised = false; }
+      catch (e) { allRaised &&= e instanceof TypeError; }
+      try { h.mintApproval({ action: "x", principal: bad }); mintRaised = false; }
+      catch (e) { mintRaised &&= e instanceof TypeError; }
+      try { h.counters({ principal: bad, window: "1h" }); cntRaised = false; }
+      catch (e) { cntRaised &&= e instanceof TypeError; }
+      const governed = h.tool(() => "ran", { intent: "x", principal: bad });
+      try { await governed(); toolRaised = false; } catch (e) { toolRaised &&= e instanceof TypeError; }
+      try { h.sanitize("mail a@b.com", { principal: bad }); sanRaised = false; }
+      catch (e) { sanRaised &&= e instanceof SanitizeError; }
+      try { h.screen("ignore all previous instructions", { principal: bad }); scrRaised = false; }
+      catch (e) { scrRaised &&= e instanceof ScreenError; }
+    }
+    ok("authorize validates it", allRaised);
+    ok("tool validates it", toolRaised);
+    ok("mintApproval validates it", mintRaised);
+    ok("counters validates it", cntRaised);
+    ok("sanitize validates it (as a SanitizeError)", sanRaised);
+    ok("screen validates it (as a ScreenError)", scrRaised);
+  }
+
+  // NOT tightened: a bare identifier is still accepted, and is OPAQUE -- it
+  // binds to whichever entity type the policies around it use, so it
+  // discriminates by none. Only a typed reference does.
+  {
+    const dir = tmp("principal-bare");
+    const g = new Watchlight({ agent: "probe", auditDir: dir });
+    g.allow('permit(principal, action == Action::"x", resource);');
+    ok("a bare identifier is still accepted",
+      (await g.authorize({ action: "x", principal: "team-42" })).allowed === true);
+    await new Promise((r) => setTimeout(r, 100));
+    ok("...and recorded verbatim", lines(dir)[0].principal === "team-42");
+    let bothTypes = true;
+    for (const type of ["User", "Agent"]) {
+      const one = new Watchlight({ agent: "probe", auditFile: false });
+      one.allow(`permit(principal is ${type}, action == Action::"t", resource);`);
+      bothTypes &&= (await one.authorize({ action: "t", principal: "team-42" })).allowed === true;
+    }
+    ok("the same bare id satisfies a User-typed and an Agent-typed policy set", bothTypes);
+    const typed = new Watchlight({ agent: "probe", auditFile: false });
+    typed.allow('permit(principal is Agent, action == Action::"t", resource);');
+    ok("a typed reference names one type and matches only that one",
+      (await typed.authorize({ action: "t", principal: principals.user("team-42") })).allowed === false);
+  }
+
+  // Unchanged, and asserted so it stays that way.
+  {
+    const g = new Watchlight({ agent: "real-agent", auditFile: false });
+    g.allow('permit(principal == User::"alice", action == Action::"x", resource);');
+    let denied = true;
+    for (const crafted of ['User::"bob"', 'User::"alice" || true', 'User::"alice"; permit(', "not-an-entity"])
+      denied &&= (await g.authorize({ action: "x", principal: crafted })).allowed === false;
+    ok("a crafted principal forges nothing -- it denies like any non-match", denied);
+    const h = new Watchlight({ agent: 'evil" || true', auditFile: false });
+    h.allow('permit(principal, action == Action::"y", resource) when { context.actor == "trusted" };');
+    ok("nor does a crafted agent name", (await h.authorize({ action: "y" })).allowed === false);
+  }
+
+  // -- an unnamed governor asserts no identity ------------------------
+  {
+    delete process.env.WATCHLIGHT_AGENT;
+    const dir = tmp("unconfigured");
+    const g = new Watchlight({ auditDir: dir });
+    ok("an absent agent name is not an error", g.unconfigured === true);
+    ok("...it is the RESERVED placeholder, not a name",
+      g.agent === UNCONFIGURED_AGENT && UNCONFIGURED_AGENT === "<unconfigured>");
+    g.allow('permit(principal, action == Action::"x", resource);');
+    ok("the quickstart still runs with no configuration",
+      (await g.authorize({ action: "x" })).allowed === true);
+    await new Promise((r) => setTimeout(r, 100));
+    const r = lines(dir)[0];
+    ok("the audit row says the agent was never configured", r.agent === UNCONFIGURED_AGENT);
+    ok("...and so does its subject", r.principal === `Agent::"${UNCONFIGURED_AGENT}"`);
+
+    let reserved = 0;
+    for (const call of [
+      () => new Watchlight({ agent: UNCONFIGURED_AGENT, auditFile: false }),
+      () => new Watchlight({ agent: "a", auditFile: false }).as(UNCONFIGURED_AGENT),
+    ]) { try { call(); } catch (e) { if (/reserved/.test(e.message)) reserved++; } }
+    ok("the placeholder is reserved, so no real agent can wear it", reserved === 2);
+
+    // Structurally non-matchable: neither reserved key is set.
+    let unmatched = true;
+    for (const policy of [
+      `permit(principal, action == Action::"y", resource) when { context.${ACTOR_CONTEXT_KEY} == "${UNCONFIGURED_AGENT}" };`,
+      `permit(principal, action == Action::"y", resource) when { context.${ACTOR_CHAIN_CONTEXT_KEY}.contains("${UNCONFIGURED_AGENT}") };`,
+      `permit(principal, action == Action::"y", resource) when { context has ${ACTOR_CONTEXT_KEY} };`,
+    ]) {
+      const h = new Watchlight({ auditFile: false });
+      h.allow(policy);
+      unmatched &&= (await h.authorize({ action: "y" })).allowed === false;
+    }
+    ok("a policy naming the placeholder cannot match it", unmatched);
+
+    const f = new Watchlight({ auditFile: false });
+    f.allow('permit(principal, action == Action::"z", resource);');
+    f.allow(`forbid(principal, action == Action::"z", resource) when { context.${ACTOR_CONTEXT_KEY} != "trusted" };`);
+    ok("and a forbid guarded on the actor still DENIES -- closed in both directions",
+      (await f.authorize({ action: "z" })).allowed === false);
+  }
+
+  // Naming it -- however -- configures it, and the reserved keys come back.
+  {
+    delete process.env.WATCHLIGHT_AGENT;
+    const g = new Watchlight({ auditFile: false });
+    const named = g.as("billing");
+    ok("as(name) configures it", named.unconfigured === false);
+    g.allow(`permit(principal, action == Action::"x", resource) when { context.${ACTOR_CONTEXT_KEY} == "billing" };`);
+    ok("...so a policy naming it matches again",
+      (await named.authorize({ action: "x" })).allowed === true);
+
+    process.env.WATCHLIGHT_AGENT = "from-env";
+    ok("the environment variable configures it too",
+      new Watchlight({ auditFile: false }).unconfigured === false);
+    process.env.WATCHLIGHT_AGENT = "   ";
+    ok("a blank variable is how a shell says 'not set'",
+      new Watchlight({ auditFile: false }).unconfigured === true);
+    delete process.env.WATCHLIGHT_AGENT;
+
+    // A caller who wrote `agent: config.agent` meant to pass a name.
+    let rejected = 0;
+    for (const bad of [null, "", "   "]) {
+      try { new Watchlight({ agent: bad, auditFile: false }); }
+      catch (e) { if (e instanceof TypeError && /non-empty string/.test(e.message)) rejected++; }
+    }
+    ok("an explicit null is a value, not an absent option", rejected === 3);
+    ok("...but an absent one is fine", new Watchlight({ auditFile: false }).unconfigured === true);
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);

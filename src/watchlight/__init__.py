@@ -106,6 +106,8 @@ __all__ = [
     "AUDIT_FILE_ENV",
     "principals",
     "ACTOR_CONTEXT_KEY",
+    "AGENT_ENV",
+    "UNCONFIGURED_AGENT",
     "ACTOR_CHAIN_CONTEXT_KEY",
     "MAX_ACTOR_CHAIN",
     "RESERVED_CONTEXT_MESSAGE",
@@ -174,16 +176,86 @@ _F = TypeVar("_F", bound=Callable[..., Any])
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 
 
+#: The name a governor carries when NO agent name was configured — neither the
+#: ``agent`` argument nor :data:`AGENT_ENV`.
+#:
+#: It is a placeholder, not a name: it is RESERVED (passing it as ``agent`` is a
+#: :class:`TypeError`), so ``"agent": "<unconfigured>"`` on an audit row proves
+#: the agent was never configured rather than looking like somebody's real agent.
+#: An unconfigured governor also asserts NO actor — it sets neither
+#: :data:`ACTOR_CONTEXT_KEY` nor :data:`ACTOR_CHAIN_CONTEXT_KEY` — so no policy
+#: naming it can match. Name the agent and both keys appear.
+UNCONFIGURED_AGENT = "<unconfigured>"
+
+#: The environment variable that names the agent when the ``agent`` argument does
+#: not. A blank value counts as unset.
+AGENT_ENV = "WATCHLIGHT_AGENT"
+
+
+class _Unset:
+    """The absence of an argument, told apart from an explicit ``None``."""
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return "<unset>"
+
+
+#: Sentinel for "the caller passed no ``agent`` at all". ``None`` IS a value
+#: here — a caller who wrote ``agent=config.get("agent")`` meant to pass a name
+#: and got nothing, which is a mistake, not a request for the default.
+_UNSET: Any = _Unset()
+
+
 def _assert_agent_name(agent: Any, where: str) -> str:
     """Reject an agent name that cannot be recorded or referenced unambiguously —
     in the constructor, in :meth:`Watchlight.as_` and in
     :meth:`Watchlight.delegate` alike, so it fails at the name rather than later,
-    inside the engine."""
+    inside the engine. ``None`` is a value, not an absent argument: a caller who
+    passed one meant to pass a name."""
     if not isinstance(agent, str) or not agent.strip():
         raise TypeError(f"{where}: agent must be a non-empty string")
     if _CONTROL_CHARS.search(agent):
         raise TypeError(f"{where}: agent must not contain control characters")
+    if agent == UNCONFIGURED_AGENT:
+        raise TypeError(
+            f"{where}: {UNCONFIGURED_AGENT!r} is reserved for a governor whose agent name "
+            "was never configured — it must not name a real agent"
+        )
     return agent
+
+
+def _resolve_agent_name(agent: Any, where: str) -> Optional[str]:
+    """The configured agent name, or ``None`` when none was configured. An
+    explicit ``None`` is rejected; a blank environment variable counts as unset,
+    because an exported-but-empty variable is how a shell says "not set"."""
+    if agent is not _UNSET:
+        return _assert_agent_name(agent, where)
+    from_env = os.environ.get(AGENT_ENV)
+    if from_env is None or not from_env.strip():
+        return None
+    return _assert_agent_name(from_env, AGENT_ENV)
+
+
+#: One process-wide notice that no agent name was configured. Said once, on the
+#: first record an unconfigured governor writes, and it names both ways to fix
+#: it. The governor still runs — the first five minutes must work with no
+#: configuration — but it asserts no actor while it does.
+_warned_unconfigured_agent = False
+
+
+def _warn_unconfigured_agent() -> None:
+    global _warned_unconfigured_agent
+    if _warned_unconfigured_agent:
+        return
+    _warned_unconfigured_agent = True
+    print(
+        f"watchlight: no agent name configured — recorded as {UNCONFIGURED_AGENT!r}, and it "
+        f"asserts no actor (context.{ACTOR_CONTEXT_KEY} and context.{ACTOR_CHAIN_CONTEXT_KEY} "
+        "are unset), so a policy naming it cannot match. Name it: "
+        'Watchlight(agent="…"), configure_default(agent="…") for the exported `govern`, '
+        f"or {AGENT_ENV}.",
+        file=sys.stderr,
+    )
+
 
 #: The Cedar ``context`` key the SDK reserves for the ACTOR — the runtime that
 #: made the call, as distinct from the subject it acted for. The pair follows
@@ -290,7 +362,9 @@ def _same_chain(value: Any, chain: Sequence[str]) -> bool:
     return list(value) == list(chain)
 
 
-def _with_actor_context(context: Optional[dict], actor: str, chain: Sequence[str]) -> dict:
+def _with_actor_context(
+    context: Optional[dict], actor: Optional[str], chain: Sequence[str]
+) -> dict:
     """The caller's context with the reserved actor keys stamped on it."""
     if inspect.isawaitable(context):
         # Refused before the engine, and NOT closed: the caller made this
@@ -305,6 +379,15 @@ def _with_actor_context(context: Optional[dict], actor: str, chain: Sequence[str
         raise ReservedContextError()
     if ACTOR_CHAIN_CONTEXT_KEY in out and not _same_chain(out[ACTOR_CHAIN_CONTEXT_KEY], chain):
         raise ReservedContextError()
+    if actor is None:
+        # No configured agent name: the governor asserts NO actor. Both keys stay
+        # reserved (any caller-supplied value disagrees with "none" and was
+        # refused above). An absent `context.actor` makes `context has actor`
+        # false and makes a policy that READS `context.actor` fail — closed, in
+        # both directions: an erroring permit does not grant and an erroring
+        # forbid still denies — so no policy naming the unconfigured placeholder
+        # can allow anything.
+        return out
     out[ACTOR_CONTEXT_KEY] = actor
     out[ACTOR_CHAIN_CONTEXT_KEY] = list(chain)
     return out
@@ -1030,7 +1113,11 @@ def sanitize(
     if not isinstance(text, str):
         raise SanitizeError("input must be a string (extract document text first)")
     decision_id = _validate_decision_id(decision_id)
+    # Length-bounded first (an audit field), then the ONE principal rule every
+    # boundary applies — non-empty, no control characters.
     principal = _validate_opaque_id(principal, field="principal")
+    if principal is not None:
+        principals.assert_principal(principal, SanitizeError)
     if known is not None and isinstance(known, (str, bytes)):
         # A bare string is a Sequence[str] of characters — never what was meant.
         raise SanitizeError("known must be a sequence of strings")
@@ -1334,7 +1421,11 @@ def screen(
             raise ScreenError("unknown family")
     enabled = set(requested)
     decision_id = _validate_decision_id(decision_id, error=ScreenError)
+    # Length-bounded first (an audit field), then the ONE principal rule every
+    # boundary applies — non-empty, no control characters.
     principal = _validate_opaque_id(principal, field="principal", error=ScreenError)
+    if principal is not None:
+        principals.assert_principal(principal, ScreenError)
     try:
         norm, idx = _screen_normalize(text)
         spans: list[tuple[int, int, str]] = []
@@ -1393,7 +1484,7 @@ class Watchlight:
 
     def __init__(
         self,
-        agent: str | None = None,
+        agent: Any = _UNSET,
         audit_dir: str | os.PathLike[str] = ".watchlight",
         audit_sink: Optional[AuditSink] = None,
         *,
@@ -1405,8 +1496,13 @@ class Watchlight:
         audit_file: bool = True,
         strict_principal: bool = True,
     ) -> None:
-        """:param agent: stable agent identity for the audit trail (default
-            ``$WATCHLIGHT_AGENT`` or ``"my-agent"``).
+        """:param agent: stable agent identity for the audit trail and the
+            reserved ``context.actor`` key. Falls back to ``$WATCHLIGHT_AGENT``
+            (a blank value counts as unset). With NEITHER, the governor is
+            :attr:`unconfigured`: it runs, it is recorded as the reserved
+            :data:`UNCONFIGURED_AGENT` placeholder, and it asserts NO actor, so
+            no policy can match it by name. An explicit ``None`` is a value, not
+            an absent argument, and raises like ``""``.
         :param audit_dir: directory for the audit trail; ``audit.jsonl`` is
             written inside it.
         :param audit_sink: additive destination for every audit record —
@@ -1494,13 +1590,19 @@ class Watchlight:
             model: https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/docs/identity-model.md"""
         state = _GovernorState()
         self._shared = state
-        # An explicitly passed name is validated as given — an empty one is a
-        # mistake, not a request for the default.
-        if agent is not None:
-            _assert_agent_name(agent, "Watchlight(agent=…)")
-        self.agent = _assert_agent_name(
-            agent or os.environ.get("WATCHLIGHT_AGENT") or "my-agent", "Watchlight(agent=…)"
-        )
+        # An explicitly passed name is validated as given — an empty one, or an
+        # explicit None, is a mistake, not a request for the default.
+        configured = _resolve_agent_name(agent, "Watchlight(agent=…)")
+        #: ``True`` when NO agent name was configured — neither the ``agent``
+        #: argument nor :data:`AGENT_ENV` — so :attr:`agent` is the reserved
+        #: :data:`UNCONFIGURED_AGENT` placeholder and this governor asserts no
+        #: actor. :meth:`as_`, :meth:`delegate` and ``configure_default(agent=…)``
+        #: all name it, and clear this.
+        self.unconfigured = configured is None
+        # No name anywhere is not an error — the first five minutes must work
+        # with no configuration — but it is not a name either: the governor
+        # carries the reserved placeholder, asserts no actor, and says so once.
+        self.agent = configured if configured is not None else UNCONFIGURED_AGENT
         #: The delegation chain this governor acts under, root first; the last
         #: entry is :attr:`agent`. A governor that was not delegated to acts
         #: alone, so its chain is just its own name. Set by :meth:`delegate`
@@ -1604,6 +1706,9 @@ class Watchlight:
             )
         renamed = object.__new__(Watchlight)
         renamed.agent = agent
+        # A rename NAMES it: the renamed governor is configured even when the one
+        # it came from never was.
+        renamed.unconfigured = False
         # Renaming is not delegating: it acts alone under its own name.
         renamed.actor_chain = (agent,)
         renamed.delegated_scope = None
@@ -1662,6 +1767,8 @@ class Watchlight:
         )
         sub = object.__new__(Watchlight)
         sub.agent = agent
+        # `delegate(parent, agent)` names the sub-agent explicitly.
+        sub.unconfigured = False
         sub.actor_chain = tuple(child.actor_chain)
         sub.delegated_scope = child
         sub._shared = self._shared
@@ -1681,14 +1788,19 @@ class Watchlight:
         start-up."""
         return self._shared.policy_count > 0
 
-    def _principal(self, explicit: Optional[str] = None) -> str:
+    def _principal(
+        self, explicit: Optional[str] = None, *, error: type = TypeError
+    ) -> str:
         """The subject of a call that named none: a TYPED reference to this
         agent, ``Agent::"<name>"`` — when no human is on whose behalf the call
         runs, the agent is the subject, and typing it says so on sight and in a
         policy. Transitionally, ``strict_principal=False`` restores the bare,
         untyped agent name (warned once per process)."""
-        if explicit:
-            return explicit
+        # An explicitly supplied principal is CHECKED, never quietly replaced.
+        # ``""`` (from ``user.id or ""``) used to fall through to the agent here,
+        # so a person's action was attributed to the runtime; it now raises.
+        if explicit is not None:
+            return principals.assert_principal(explicit, error)
         if self._shared.strict_principal:
             return principals.agent(self.agent)
         _warn_lenient_principal()
@@ -2000,6 +2112,12 @@ class Watchlight:
                 context=context,
                 approval=approval,
             )
+        # Before the try, so a malformed principal raises as itself rather than
+        # being recorded and re-raised as an engine refusal — the same place a
+        # ReservedContextError is raised, and for the same reason: it is the
+        # caller's own input, not a verdict.
+        if principal is not None:
+            principals.assert_principal(principal)
         try:
             result, prin, res, decision_id = self._decide(
                 action=action, principal=principal, resource=resource, context=context,
@@ -2042,7 +2160,9 @@ class Watchlight:
         # runtime (`context.actor == "…"`) or its delegation
         # (`context.actor_chain.contains("…")`) independently of the subject it
         # acts for. A caller value that disagrees with either is refused.
-        ctx = _with_actor_context(context, self.agent, self.actor_chain)
+        ctx = _with_actor_context(
+            context, None if self.unconfigured else self.agent, self.actor_chain
+        )
         raw = json.loads(
             self._engine.authorize(
                 json.dumps({"principal": prin, "action": action, "resource": res, "context": ctx})
@@ -2182,7 +2302,9 @@ class Watchlight:
             mode=mode,
             types=types,
             decision_id=decision_id,
-            principal=self._principal(principal),
+            # The primitive's own error type, so a bad principal fails as a
+            # SanitizeError here exactly as it does on the module function.
+            principal=self._principal(principal, error=SanitizeError),
             known=known,
         )
         self._audit_sanitize(intent, resource, result)
@@ -2224,7 +2346,8 @@ class Watchlight:
             mode=mode,
             families=families,
             decision_id=decision_id,
-            principal=self._principal(principal),
+            # As above: the primitive's own error type.
+            principal=self._principal(principal, error=ScreenError),
         )
         self._audit_screen(intent, resource, result)
         return result
@@ -2421,6 +2544,8 @@ class Watchlight:
         return {"actor_chain": list(self.actor_chain)} if len(self.actor_chain) > 1 else {}
 
     def _announce(self) -> None:
+        if self.unconfigured:
+            _warn_unconfigured_agent()
         if not self._announced:
             print(f"watchlight: governing '{self.agent}' (dev mode, in-process engine)")
             self._announced = True
@@ -2554,7 +2679,7 @@ class Watchlight:
     def _configure(
         self,
         *,
-        agent: Optional[str] = None,
+        agent: Any = _UNSET,
         audit_dir: Union[str, "os.PathLike[str]", None] = None,
         audit_sink: Optional[AuditSink] = None,
         audit_file: Optional[bool] = None,
@@ -2598,8 +2723,10 @@ class Watchlight:
                 "bug. Options identical to the ones already in force are accepted; ask "
                 "can_configure_default() whether a change is still possible."
             )
-        if agent is not None:
+        if agent is not _UNSET:
             self.agent = _assert_agent_name(agent, "configure_default(agent=…)")
+            # Naming it here configures it: it now asserts an actor.
+            self.unconfigured = False
             self.actor_chain = (self.agent,)
         if audit_dir is not None or audit_sink is not None or audit_file is not None:
             # MERGE: a later call that names only one audit option must not drop
@@ -2668,7 +2795,7 @@ class Watchlight:
     def _configuration_conflict(
         self,
         *,
-        agent: Optional[str],
+        agent: Any,
         audit_dir: Union[str, "os.PathLike[str]", None],
         audit_sink: Optional[AuditSink],
         audit_file: Optional[bool],
@@ -2693,7 +2820,7 @@ class Watchlight:
         caller believed it had just redirected."""
         state = self._shared
         audit = state.audit_options
-        if agent is not None and agent != self.agent:
+        if agent is not _UNSET and agent != self.agent:
             return f"agent would change from {self.agent!r} to {agent!r}"
         if audit_dir is not None and _audit_dir_key(audit_dir) != _audit_dir_key(audit.get("dir")):
             return (
@@ -2748,7 +2875,7 @@ govern._shared.is_default = True
 
 def configure_default(
     *,
-    agent: Optional[str] = None,
+    agent: Any = _UNSET,
     audit_dir: Union[str, "os.PathLike[str]", None] = None,
     audit_sink: Optional[AuditSink] = None,
     audit_file: Optional[bool] = None,

@@ -28,6 +28,7 @@ by choosing the handle, not by passing a field:
 | `as("flight-booker")` / `as_(…)` | `flight-booker` | `[flight-booker]` |
 | a per-call `agent` override | that name | `[that name]` |
 | `delegate(scope, "seat-picker")` | `seat-picker` | `[flight-booker, seat-picker]` |
+| **a governor with no name configured** | **not set** | **not set** |
 
 ```
   Watchlight(agent="trip-platform")   <- one engine, one policy set
@@ -63,6 +64,58 @@ directly and have the engine believe it.
 
 Renaming — with `as` or with the per-call override — always produces a fresh
 single-element chain; only `delegate` appends.
+
+### An agent you did not name
+
+The name is yours to choose, and there is no useful default — an invented one
+would be the same name in every application that never set one, which is a
+collision, not an identity. So a governor constructed with **neither** an
+`agent` option nor `WATCHLIGHT_AGENT` (a blank variable counts as unset) has no
+name, and:
+
+* it **runs** — the quickstart must work with no configuration, so this is not
+  an error;
+* it **sets neither reserved key**. `context.actor` and `context.actor_chain`
+  are absent, so `context has actor` is `false` and a policy that *reads*
+  `context.actor` cannot match it. That fails closed in both directions: an
+  erroring `permit` does not grant, and an erroring `forbid` still denies;
+* it is recorded as the **reserved placeholder** `<unconfigured>` — in `agent`,
+  and as `Agent::"<unconfigured>"` in `principal` when the call names no
+  subject. The name is reserved: passing it as `agent` raises, so nobody can be
+  called it, and `"agent": "<unconfigured>"` on an audit row is proof the agent
+  was never configured rather than somebody's real name;
+* it **says so once**, on the first record it writes, naming both the option and
+  the environment variable.
+
+```python
+from watchlight import Watchlight, UNCONFIGURED_AGENT
+
+anon = Watchlight()                    # no agent, no WATCHLIGHT_AGENT
+anon.unconfigured                      # True
+anon.agent                             # "<unconfigured>"
+named = anon.as_("flight-booker")      # naming it configures it
+named.unconfigured                     # False
+```
+
+```ts
+import { Watchlight, UNCONFIGURED_AGENT } from "@watchlight/sdk";
+
+const anon = new Watchlight();         // no agent, no WATCHLIGHT_AGENT
+anon.unconfigured;                     // true
+anon.agent;                            // "<unconfigured>"
+const named = anon.as("flight-booker");
+named.unconfigured;                    // false
+```
+
+Every way of naming an agent configures it and brings both keys back:
+`Watchlight({ agent })`, `WATCHLIGHT_AGENT`, `configureDefault({ agent })` /
+`configure_default(agent=…)`, `as` / `as_`, and `delegate`.
+
+An **explicit** empty or null name is a different thing from an absent one and
+raises: `new Watchlight({ agent: null })` and `Watchlight(agent=None)` both fail
+with `agent must be a non-empty string`. A caller who wrote `agent:
+config.agent` meant to pass a name and got nothing — the same mistake `""` has
+always been.
 
 ### The whole flow
 
@@ -241,7 +294,7 @@ is the reason to construct separate governors.
 
 ## What `principal` contains
 
-Always a typed Cedar entity reference:
+A typed Cedar entity reference:
 
 | Shape | Meaning |
 |---|---|
@@ -252,6 +305,43 @@ Always a typed Cedar entity reference:
 The engine accepts the principal types `User`, `Agent`, `Group`, `Role`, `Tool`,
 `Resource` and `Workflow`. A machine caller with no human behind it is an
 `Agent`. An unrecognised type fails the request rather than silently denying it.
+
+### What every `principal` must satisfy
+
+The value is recorded verbatim and is the subject of every audit row it appears
+on, so two rules apply at **every** boundary that takes one — `authorize`,
+`tool`, `mintApproval` / `mint_approval`, `counters`, `sanitize`, `screen`, and
+the `principal` binding on every framework adapter:
+
+* **a non-empty string.** Blank — `""`, or only whitespace — is a mistake, never
+  a request for the default. `user?.id ?? ""` is very easy to write, and it used
+  to be recorded as the *agent*, attributing a person's action to the runtime.
+  It raises now.
+* **no control characters.** No reference can carry one unambiguously, and a
+  newline in a JSONL audit line splits one record into two.
+
+To name no subject at all, omit `principal` (or pass `None` / `undefined`) —
+that is what records the agent as its own subject, deliberately and visibly.
+
+### The bare form is opaque
+
+The value is **not parsed**, and a bare identifier — `team-42`, with no
+`Type::` — is accepted and recorded exactly as given. It is not a shorthand for
+any one type, and it is not inert.
+
+A bare identifier matches a policy naming that id under `User`, `Agent`,
+`Group` or `Role`, and does **not** match one naming it under `Tool`,
+`Resource` or `Workflow` — each of those types works when you name it
+explicitly, so this is a property of leaving the type off. And when a bare
+identifier matches more than one of those policies, an **allow beats a
+forbid**, which is the opposite of Cedar's usual rule. A `forbid` naming an
+agent can therefore be defeated by a `permit` naming a user with the same id.
+
+Treat a bare identifier as an **opaque** subject. **Only a typed reference
+discriminates by type** — if a policy needs to tell a person from an agent, both
+sides must be typed, which is what `principals.user` / `principals.agent` are
+for. Anything reading the audit trail should treat `principal` the same way: a
+string to compare, not a shape to parse.
 
 Build the reference with the helpers — a subject identifier is an arbitrary
 string (it comes from an identity you verified, and may contain a quote, a
@@ -469,6 +559,11 @@ then recorded as its own subject, `Agent::"<name>"`. Do not invent a stand-in
 like `User::"system"`: it claims a person who does not exist, and it collides
 with whatever a real user id might be.
 
+**And do not coalesce a missing subject to an empty string.** `user?.id ?? ""`
+is the common way to write it, and an empty principal is [refused](#what-every-principal-must-satisfy)
+rather than substituted. Pass nothing when there is no subject; the record then
+says so.
+
 The vocabulary matches [RFC 8693 (OAuth 2.0 Token
 Exchange)](https://www.rfc-editor.org/rfc/rfc8693) for applications that do
 carry tokens:
@@ -610,6 +705,65 @@ it would suspend the guarantee, not the migration. The principal opt-out can be
 narrower because it degrades a value the SDK derives either way. This change
 also announces itself: a typed error at the call site names the sites to rename,
 where an unannounced Allow-to-Deny flip does not.
+
+## Breaking in 0.8.3
+
+Two API boundaries reject input they used to accept. Both are inputs that
+produced a **wrong record** rather than an error, so the migration is one line
+each.
+
+| What raises now | What it did before | Fix |
+|---|---|---|
+| `principal=""` — or whitespace-only, or non-string — on `authorize`, `tool`, `mint_approval`, `counters`, `sanitize`, `screen`, or an adapter's `principal` binding | recorded the **agent** as the subject | omit `principal` to mean "no subject"; pass a real one otherwise |
+| a control character in a `principal` | recorded verbatim, splitting the audit line | strip it, or use `principals.user(sub)`, which has always refused it |
+| `agent=None` (Python) / `agent: null` (TS) | became the default name | omit the argument, or pass a name |
+| a **blank** `WATCHLIGHT_AGENT` | Python took the default; TS raised | unset the variable, or give it a name (both lanes now treat blank as unset) |
+
+`TypeError` from `authorize` / `tool` / `mint_approval` / `counters`;
+`SanitizeError` / `ScreenError` from `sanitize` / `screen`, which keep their own
+error type. Same message and same accepted input in both lanes.
+
+**The one-line migration.** Wherever a subject may be missing, stop coalescing
+it to an empty string and pass nothing instead:
+
+```python
+# before — an absent user was recorded as the agent
+govern.authorize(action="read", principal=f'User::"{user.id or ""}"')
+# after  — an absent user names no subject, which the record then says
+govern.authorize(
+    action="read",
+    principal=principals.user(user.id) if user else None,
+)
+```
+
+```ts
+// before
+await govern.authorize({ action: "read", principal: user?.id ?? "" });
+// after
+await govern.authorize({
+  action: "read",
+  principal: user ? principals.user(user.id) : undefined,
+});
+```
+
+### And one verdict changes
+
+A governor with **no configured agent name** sets neither `context.actor` nor
+`context.actor_chain` (see [An agent you did not
+name](#an-agent-you-did-not-name)). Two consequences, both in the closed
+direction:
+
+* a `permit` that reads `context.actor` no longer matches it — it never usefully
+  did, since the value it matched was an invented placeholder shared with every
+  other unconfigured deployment;
+* a `forbid` that reads `context.actor` now **denies** where the placeholder
+  used to fall outside its condition and allow.
+
+If you see either, the fix is to name the agent — which is what the change is
+asking for. Nothing changes for a governor that has a name.
+
+The bare-identifier form of `principal` is deliberately **not** tightened: it
+still works, and is documented above as opaque.
 
 ## See also
 

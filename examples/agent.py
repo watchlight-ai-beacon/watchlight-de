@@ -8,7 +8,7 @@ Runs offline — no API key required.
 
 Expected output:
 
-    watchlight: governing 'my-agent' (dev mode, in-process engine)
+    watchlight: governing 'research-agent' (dev mode, in-process engine)
     watchlight: ALLOW  research  tool/web_search
     results for: watchlight docs
     watchlight: DENY   transfer  tool/transfer_funds     not authorized
@@ -21,7 +21,11 @@ refuses the call BEFORE the function body runs — that is the product.
 
 import pathlib
 
-from watchlight import Denied, govern
+from watchlight import Denied, configure_default, govern
+
+# Name the agent. It is what the audit trail records and what a policy reads as
+# `context.actor`; without it the governor asserts no actor at all.
+configure_default(agent="research-agent")
 
 # Load the local policy file (fail-closed: without it, everything denies).
 govern.load(pathlib.Path(__file__).parent / "watchlight.policy.json")

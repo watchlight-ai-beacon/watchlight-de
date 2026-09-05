@@ -2,7 +2,7 @@
 // infra. The TS counterpart of watchlight-de's examples/agent.py.
 //
 // Expected output:
-//   watchlight: governing 'my-agent' (dev mode, in-process engine)
+//   watchlight: governing 'research-agent' (dev mode, in-process engine)
 //   watchlight: ALLOW research  tool/webSearch
 //   [tool ran] results for: cedar policy language
 //   watchlight: DENY  transfer  tool/transferFunds     not authorized
@@ -16,7 +16,11 @@ import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const { govern, Denied } = require("@watchlight/sdk");
+const { govern, Denied, configureDefault } = require("@watchlight/sdk");
+
+// Name the agent. It is what the audit trail records and what a policy reads as
+// `context.actor`; without it the governor asserts no actor at all.
+configureDefault({ agent: "research-agent" });
 
 const here = dirname(fileURLToPath(import.meta.url));
 govern.load(join(here, "watchlight.policy.json"));

@@ -20,7 +20,11 @@ npm install @watchlight/sdk
 ## Govern a tool
 
 ```ts
-import { govern, Denied } from "@watchlight/sdk";
+import { govern, configureDefault, Denied } from "@watchlight/sdk";
+
+// Name the agent: it is what the audit trail records and what a policy reads as
+// `context.actor`. Unnamed, the governor still runs but asserts no actor.
+configureDefault({ agent: "research-agent" });
 
 govern.load("watchlight.policy.json"); // or govern.allow('permit(principal, action == Action::"research", resource);')
 
@@ -612,8 +616,8 @@ consumers decide from the report, never from markers in the text.
 decision** — never argument values. Same contract as the production audit trail.
 
 ```json
-{"ts":"2026-08-29T…Z","agent":"my-agent","principal":"Agent::\"my-agent\"","intent":"research","resource":"tool/webSearch","decision":"Allow","decision_id":"…"}
-{"ts":"2026-08-29T…Z","agent":"my-agent","intent":"read","event":"sanitization","resource":"statement.pdf","mode":"tag","detector":"de-rules-2","counts":{"EMAIL":2},"total":2,"decision_id":"…","principal":"Agent::\"my-agent\""}
+{"ts":"2026-08-29T…Z","agent":"research-agent","principal":"Agent::\"research-agent\"","intent":"research","resource":"tool/webSearch","decision":"Allow","decision_id":"…"}
+{"ts":"2026-08-29T…Z","agent":"research-agent","intent":"read","event":"sanitization","resource":"statement.pdf","mode":"tag","detector":"de-rules-2","counts":{"EMAIL":2},"total":2,"decision_id":"…","principal":"Agent::\"research-agent\""}
 ```
 
 A `sanitization` line carries `decision_id` only when `govern.sanitize` was given
@@ -673,8 +677,11 @@ a test run in the same working directory, appends to the same `audit.jsonl`, so
 those records interleave and are told apart only by their fields.
 
 The exported `govern` is pre-constructed, so configure it before its first
-governed call — otherwise it has no sink, and it says so the first time it
-writes:
+governed call — otherwise it has no name and no sink, and it says so the first
+time it writes. Unnamed, it is recorded as the reserved `<unconfigured>`
+placeholder and sets neither `context.actor` nor `context.actor_chain`, so no
+policy can match it by name (see [the identity
+model](https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/docs/identity-model.md#an-agent-you-did-not-name)):
 
 ```ts
 import { govern, configureDefault } from "@watchlight/sdk";
@@ -700,13 +707,14 @@ if (canConfigureDefault()) {
 }
 ```
 
-Two environment variables configure the default governor's trail where the code
+Three environment variables configure the default governor where the code
 is not yours to change — a test run, a container, a CI job:
 
 | Variable | Effect |
 |---|---|
 | `WATCHLIGHT_AUDIT_DIR` | the directory `audit.jsonl` is written into (default `.watchlight`) |
 | `WATCHLIGHT_AUDIT_FILE` | `0` / `false` / `no` / `off` writes no local file at all |
+| `WATCHLIGHT_AGENT` | the agent name, when the `agent` option does not give one; blank counts as unset |
 
 ```bash
 WATCHLIGHT_AUDIT_FILE=0 npm test   # this run adds nothing to the application's audit.jsonl

@@ -58,9 +58,9 @@ def governed_plugin(
     **Name the entity type.** ``principal``, ``resource`` and the action reach
     the engine exactly as given. A typed reference such as ``User::"u-1"``
     discriminates: a policy naming a different type with the same id does not
-    match it. A BARE name is a wildcard that matches every entity type with
-    that id, which is a convenience for a scratch policy and the wrong thing
-    for a decision you rely on.
+    match it. A BARE name matches a policy naming that id under ``User``,
+    ``Agent``, ``Group`` or ``Role``, and when it matches more than one an
+    allow beats a forbid — the wrong thing for a decision you rely on.
 
     :param policies: local Cedar policies — a path to a JSON policy file or an
         in-memory list of ``{"name", "code"}`` objects. ``None`` → fail-closed.

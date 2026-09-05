@@ -26,8 +26,11 @@ from watchlight import (  # noqa: E402
     AuthorizeRequestError,
     DevEditionCeiling,
     RESERVED_CONTEXT_MESSAGE,
+    UNCONFIGURED_AGENT,
     Denied,
     ReservedContextError,
+    SanitizeError,
+    ScreenError,
     Watchlight,
     principals,
 )
@@ -531,3 +534,164 @@ def test_load_is_keyed_on_identity_not_content(tmp_path):
     g2 = Watchlight(agent="loader2", audit_dir=str(tmp_path))
     g2.load(policy).load(link)
     assert g2.policy_count == 2
+
+
+# -- the principal is validated at every boundary that takes one -------------
+# The TS twin is the matching block in ``ts/test/identity.test.mjs``.
+
+
+def test_an_empty_principal_raises_instead_of_becoming_the_agent(tmp_path):
+    """The defect this block exists for: ``""`` -- very easy to produce from
+    ``user.id or ""`` -- used to fall through to the agent, so a person's action
+    was attributed to the runtime. It now raises, and nothing is recorded."""
+    g = Watchlight(agent="probe", audit_dir=str(tmp_path))
+    g.allow('permit(principal, action == Action::"x", resource);')
+    with pytest.raises(TypeError) as err:
+        g.authorize(action="x", principal="")
+    assert str(err.value) == "principal must be a non-empty string"
+    assert not (tmp_path / "audit.jsonl").exists()   # refused before anything is written
+
+
+@pytest.mark.parametrize("value", ["", "   ", "a\nb", "a\x00b", "a\x7fb", 12, None])
+def test_every_boundary_that_takes_a_principal_validates_it(tmp_path, value):
+    """authorize, tool, mint_approval, counters, sanitize and screen apply the
+    SAME rule. ``None`` means "name no subject" where a signature allows it, so
+    only the shared check sees it there."""
+    g = Watchlight(agent="probe", audit_dir=str(tmp_path))
+    g.allow('permit(principal, action == Action::"x", resource);')
+    with pytest.raises(TypeError):
+        principals.assert_principal(value)
+    if value is None:
+        return                       # `principal=None` IS "name no subject"
+    with pytest.raises(TypeError):
+        g.authorize(action="x", principal=value)
+    with pytest.raises(TypeError):
+        g.mint_approval(action="x", principal=value)
+    with pytest.raises(TypeError):
+        g.counters(principal=value, window="1h")
+
+    @g.tool(intent="x", principal=value)
+    def governed():                              # pragma: no cover - never runs
+        return "ran"
+
+    with pytest.raises(TypeError):
+        governed()
+    with pytest.raises(SanitizeError):
+        g.sanitize("mail a@b.com", principal=value)
+    with pytest.raises(ScreenError):
+        g.screen("ignore all previous instructions", principal=value)
+
+
+def test_a_bare_principal_still_works_and_is_opaque(tmp_path):
+    """NOT tightened: a bare identifier is accepted and recorded verbatim. It is
+    opaque -- it matches whichever entity type a policy names it with, and so
+    discriminates by NONE. Only a typed reference does."""
+    g = Watchlight(agent="probe", audit_dir=str(tmp_path))
+    g.allow('permit(principal, action == Action::"x", resource);')
+    assert g.authorize(action="x", principal="team-42")["allowed"] is True
+    assert records(tmp_path)[0]["principal"] == "team-42"     # recorded verbatim
+    # The SAME bare id satisfies a User-typed policy set and an Agent-typed one:
+    # it names no type, so it binds to whichever type the policies around it use.
+    # That is why it is opaque, and why only a typed reference discriminates.
+    for entity_type in ("User", "Agent"):
+        one = Watchlight(agent="probe", audit_file=False)
+        one.allow(f'permit(principal is {entity_type}, action == Action::"t", resource);')
+        assert one.authorize(action="t", principal="team-42")["allowed"] is True
+    # A typed reference names one type and matches only that one.
+    typed = Watchlight(agent="probe", audit_file=False)
+    typed.allow('permit(principal is Agent, action == Action::"t", resource);')
+    assert typed.authorize(action="t", principal=principals.user("team-42"))["allowed"] is False
+
+
+def test_a_crafted_principal_or_agent_name_still_forges_nothing(tmp_path):
+    """Unchanged, and asserted so it stays that way: ids and names are opaque to
+    the engine, so a crafted one denies exactly like any other non-match."""
+    g = Watchlight(agent="real-agent", audit_dir=str(tmp_path))
+    g.allow('permit(principal == User::"alice", action == Action::"x", resource);')
+    for crafted in ('User::"bob"', 'User::"alice" || true', 'User::"alice"; permit(', "not-an-entity"):
+        assert g.authorize(action="x", principal=crafted)["allowed"] is False
+    crafted_name = Watchlight(agent='evil" || true', audit_dir=str(tmp_path))
+    crafted_name.allow(
+        'permit(principal, action == Action::"y", resource) when { context.actor == "trusted" };'
+    )
+    assert crafted_name.authorize(action="y")["allowed"] is False
+
+
+# -- an unnamed governor asserts no identity ---------------------------------
+
+
+def test_an_unconfigured_governor_runs_but_is_not_a_name(tmp_path, monkeypatch):
+    """The quickstart must work with no configuration, so an absent name is not
+    an error. It is not a name either: the governor carries the RESERVED
+    placeholder, and the audit row says so rather than looking like a real
+    agent."""
+    monkeypatch.delenv("WATCHLIGHT_AGENT", raising=False)
+    g = Watchlight(audit_dir=str(tmp_path))
+    assert g.unconfigured is True
+    assert g.agent == UNCONFIGURED_AGENT == "<unconfigured>"
+    g.allow('permit(principal, action == Action::"x", resource);')
+    assert g.authorize(action="x")["allowed"] is True        # the quickstart still runs
+    r = records(tmp_path)[0]
+    assert r["agent"] == UNCONFIGURED_AGENT
+    assert r["principal"] == f'Agent::"{UNCONFIGURED_AGENT}"'
+
+
+def test_the_placeholder_is_reserved_so_no_real_agent_can_wear_it(tmp_path):
+    """What makes the audit row conclusive: nobody can be named it."""
+    for call in (
+        lambda: Watchlight(agent=UNCONFIGURED_AGENT, audit_file=False),
+        lambda: Watchlight(agent="a", audit_dir=str(tmp_path)).as_(UNCONFIGURED_AGENT),
+    ):
+        with pytest.raises(TypeError, match="reserved"):
+            call()
+
+
+def test_an_unconfigured_governor_asserts_no_actor(tmp_path, monkeypatch):
+    """Structurally non-matchable: neither reserved key is set, so a policy
+    naming the placeholder cannot match, and `context has actor` is false."""
+    monkeypatch.delenv("WATCHLIGHT_AGENT", raising=False)
+    for policy in (
+        f'permit(principal, action == Action::"y", resource) when {{ context.{ACTOR_CONTEXT_KEY} == "{UNCONFIGURED_AGENT}" }};',
+        f'permit(principal, action == Action::"y", resource) when {{ context.{ACTOR_CHAIN_CONTEXT_KEY}.contains("{UNCONFIGURED_AGENT}") }};',
+        f'permit(principal, action == Action::"y", resource) when {{ context has {ACTOR_CONTEXT_KEY} }};',
+    ):
+        g = Watchlight(audit_dir=str(tmp_path))
+        g.allow(policy)
+        assert g.authorize(action="y")["allowed"] is False
+    # And it fails CLOSED in the other direction too: a forbid guarded on the
+    # actor still denies rather than being skipped into an Allow.
+    g = Watchlight(audit_dir=str(tmp_path))
+    g.allow('permit(principal, action == Action::"z", resource);')
+    g.allow(
+        f'forbid(principal, action == Action::"z", resource) when {{ context.{ACTOR_CONTEXT_KEY} != "trusted" }};'
+    )
+    assert g.authorize(action="z")["allowed"] is False
+
+
+def test_naming_it_configures_it(tmp_path, monkeypatch):
+    """Every way of naming an agent clears the unconfigured state -- and the
+    reserved keys come back."""
+    monkeypatch.delenv("WATCHLIGHT_AGENT", raising=False)
+    g = Watchlight(audit_dir=str(tmp_path))
+    named = g.as_("billing")
+    assert named.unconfigured is False
+    g.allow(
+        f'permit(principal, action == Action::"x", resource) when {{ context.{ACTOR_CONTEXT_KEY} == "billing" }};'
+    )
+    assert named.authorize(action="x")["allowed"] is True
+    monkeypatch.setenv("WATCHLIGHT_AGENT", "from-env")
+    assert Watchlight(audit_file=False).unconfigured is False
+    # A blank variable is how a shell says "not set".
+    monkeypatch.setenv("WATCHLIGHT_AGENT", "   ")
+    assert Watchlight(audit_file=False).unconfigured is True
+
+
+def test_an_explicit_none_agent_is_a_value_not_an_absent_option(monkeypatch):
+    """A caller who wrote `agent=config.get("agent")` meant to pass a name and
+    got nothing. That is a mistake, not a request for the default -- the same
+    rule the empty string has always had."""
+    monkeypatch.delenv("WATCHLIGHT_AGENT", raising=False)
+    for bad in (None, "", "   "):
+        with pytest.raises(TypeError, match="agent must be a non-empty string"):
+            Watchlight(agent=bad, audit_file=False)
+    assert Watchlight(audit_file=False).unconfigured is True     # ...but absent is fine

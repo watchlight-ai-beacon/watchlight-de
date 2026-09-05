@@ -23,6 +23,7 @@
 // `İgnore …` matches in Python's re, not in JavaScript.
 
 import { DECISION_ID_MAX_LENGTH, validateOpaqueId } from "./sanitize";
+import { assertPrincipal } from "./principals";
 
 /** Rule families the screener recognizes. Each is a named counter in the report. */
 export type ScreenFamily =
@@ -400,7 +401,11 @@ export function screen(text: string, opts: ScreenOptions = {}): ScreenResult {
   }
   const families = new Set<ScreenFamily>(requested);
   const decisionId = validateOpaqueId(opts.decisionId, "decisionId", screenError);
-  const principal = validateOpaqueId(opts.principal, "principal", screenError);
+  // Length-bounded first (an audit field), then the ONE principal rule every
+  // boundary applies — non-empty, no control characters.
+  const principalId = validateOpaqueId(opts.principal, "principal", screenError);
+  const principal =
+    principalId === undefined ? undefined : assertPrincipal(principalId, screenError);
   try {
     const { norm, map } = normalize(text);
     const spans = detect(norm, families);
