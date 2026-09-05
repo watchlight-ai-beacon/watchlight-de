@@ -286,7 +286,12 @@ It mirrors the Python package feature-for-feature:
   single use, because concurrent consumes of one token would all pass through
   the gap. The built-in default is atomic, so within one process N parallel
   consumes of one token yield exactly one `Allow`. A store that fails, times
-  out, or will not report **refuses** the approval — it never admits one.
+  out, or will not report **refuses** the approval — it never admits one. The
+  reservations are yours: the SDK never deletes one, and `expiresAt` /
+  `expires_at` is the epoch-millisecond deadline after which an id is safe to
+  drop — give the row a TTL, or implement the optional `prune(before)` and the
+  SDK asks for the deletion on the same code path as the reservation. A store
+  without `prune` is unchanged, and a failing `prune` never moves a decision.
   **Breaking in 0.8.0:** the signed payload is now length-prefixed and versioned,
   so no two different `(principal, action, resource)` triples can sign the same
   bytes — approval tokens minted by an earlier version do not verify against

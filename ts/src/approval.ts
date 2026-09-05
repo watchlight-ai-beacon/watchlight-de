@@ -21,6 +21,12 @@
 // observe "not yet used". A single agent fanning out parallel tool calls after
 // one human confirmation is exactly that race.
 //
+// The reservations belong to the store: nothing here ever deletes one.
+// `expiresAt` is the epoch-millisecond deadline after which an id is safe to
+// drop, and a store that implements the optional `prune(before)` is asked to do
+// that dropping on the same code path as the reservation — opportunistically,
+// bounded, and with its outcome discarded, so cleanup can never move a verdict.
+//
 // Both defaults are safe for a single-process agent and are the wrong choice for
 // a replicated deployment; neither is silently upgraded. Every refusal here is
 // fail-closed: the caller sees the SAME `NeedsApproval` hold whichever of these
@@ -95,16 +101,66 @@ export class ApprovalError extends Error {
  * the signature never leaves the process, so a store whose rows leak yields no
  * usable approval.
  *
+ * ## Who owns expiry
+ *
+ * **The reservations are yours, and the SDK never deletes one.** `add` is the
+ * only write it makes; there is no background task inside this package that
+ * sweeps your rows. `expiresAt` is the EPOCH-MILLISECOND deadline after which
+ * that id is safe to drop: the token expires on its own at exactly that
+ * instant, and an expired token is refused before the store is ever consulted,
+ * so a row past its deadline can never admit anything. A store that keeps every
+ * row forever is therefore correct and unbounded — give the row a TTL (Redis
+ * `PXAT`), or an indexed `expires_at` column you delete from.
+ *
+ * Implement the optional {@link ApprovalStore.prune} and the SDK will ask for
+ * that deletion on the same code path as the reservation, so the cleanup lives
+ * with the write instead of in a separate cron. It stays YOUR deletion — the
+ * SDK only says when and up to which deadline.
+ *
  * Fail-closed, in every direction: `false` refuses; a throw or a rejection
  * refuses; outrunning {@link DEFAULT_APPROVAL_STORE_TIMEOUT_MS} refuses; and a
  * return that is not a boolean refuses too, because a store that will not say
  * whether the reservation was new cannot be relied on for single use. A store
- * that cannot answer never admits.
+ * that cannot answer never admits. `prune` is the one exception, and it is the
+ * exception in the other direction — see its own note.
  */
 export interface ApprovalStore {
   /** Atomically reserve `id`. `true` = newly reserved (the approval may
    *  proceed); `false` = already present (the approval is refused). */
   add(id: string, expiresAt: number): boolean | Promise<boolean>;
+  /**
+   * OPTIONAL cleanup: delete every reservation whose `expiresAt` is at or
+   * before `before` (epoch milliseconds). Omit it and the store behaves exactly
+   * as it always has — nothing extra is called, and expiry is entirely yours.
+   *
+   * ```ts
+   * prune: (before) => db.query("DELETE FROM approvals WHERE expires_at <= $1", [before]),
+   * ```
+   *
+   * **When it is called.** Opportunistically, from `authorize`: after an
+   * approval has been reserved, at most once every
+   * {@link APPROVAL_PRUNE_INTERVAL_MS} per governor, and never more than one at
+   * a time — so an authorize does at most ONE extra store call and cleanup can
+   * never pile up behind the decision path. It is not called when `add` itself
+   * failed: a store that is already struggling is not handed more work.
+   *
+   * **`before` lags now.** It is `Date.now() - `{@link APPROVAL_PRUNE_GRACE_MS},
+   * not the current instant, so a row outlives its own deadline by that margin.
+   * Deleting a reservation LATE is harmless — the token it belongs to is
+   * already refused on expiry, before the store is consulted. Deleting one
+   * EARLY is not: with replica clocks a little apart, a row dropped ahead of
+   * the deadline another replica is still measuring against would let a live
+   * token be consumed a second time. The margin buys the safe side of that.
+   *
+   * **Failure changes nothing.** The verdict is decided before `prune` is
+   * called, and its outcome is discarded: a throw, a rejection, a timeout, or
+   * any return value leaves that verdict exactly as it was. A cleanup failure
+   * must never deny a valid approval — the only cost of a prune that never
+   * succeeds is rows that stay, and a row that stays can only refuse a replay,
+   * never admit one. The failure is reported once on stderr so the unbounded
+   * table is visible.
+   */
+  prune?(before: number): unknown;
   /** Optional, and NEVER consulted when consuming a token — single use is
    *  decided by `add` alone, in one step. Present only so a store can also
    *  expose a read for your own inspection. */
@@ -118,6 +174,21 @@ export interface ApprovalStore {
  *  one sits on the decision path. */
 export const DEFAULT_APPROVAL_STORE_TIMEOUT_MS = 2000;
 
+/** How often a governor asks a store that implements `prune` to delete its
+ *  expired reservations. Cleanup is opportunistic, not a schedule: it rides an
+ *  approval that was already going to talk to the store, and this interval is
+ *  what keeps "every approval" from becoming "a DELETE per approval". A
+ *  governor that never consumes an approval never prunes — there is nothing to
+ *  clean up. */
+export const APPROVAL_PRUNE_INTERVAL_MS = 60_000;
+
+/** How far behind `Date.now()` the prune cutoff sits. A reservation therefore
+ *  outlives its own deadline by this margin before the SDK offers it for
+ *  deletion. Late is harmless — an expired token is refused before the store is
+ *  consulted — while early, under replica clocks a little apart, would drop a
+ *  row another replica still needs to refuse a replay. */
+export const APPROVAL_PRUNE_GRACE_MS = 60_000;
+
 /**
  * The default seen-token store: an in-process map of id → expiry.
  *
@@ -130,6 +201,10 @@ export const DEFAULT_APPROVAL_STORE_TIMEOUT_MS = 2000;
  * `approvalSecret` is configured, which is exactly when a shared store is
  * needed too). Ids are dropped once they expire, so the map stays bounded by the
  * number of approvals live inside one TTL.
+ *
+ * It deliberately implements no `prune`: the sweep is already inside `add`, on
+ * every reservation, so there is nothing for the SDK to ask for — and the
+ * default path stays exactly the one call it has always been.
  */
 class MemoryApprovalStore implements ApprovalStore {
   private readonly _seen = new Map<string, number>();
@@ -290,6 +365,14 @@ export class ApprovalTokens {
   private readonly _keys: Uint8Array[];
   private readonly _store: ApprovalStore;
   private _warned = false;
+  /** Separate from `_warned`, so a broken `prune` never suppresses the report
+   *  of a broken `add` — one of those refuses approvals, the other does not. */
+  private _warnedPrune = false;
+  /** When the last opportunistic prune STARTED, and whether one is still
+   *  running. Both are claimed synchronously, before any await, so of N
+   *  concurrent consumes exactly one begins a prune. */
+  private _lastPruneAt = 0;
+  private _pruning = false;
 
   constructor(keys: Uint8Array[], store?: ApprovalStore) {
     this._keys = keys;
@@ -364,17 +447,63 @@ export class ApprovalTokens {
       this._warnOnce("approval store failed or timed out");
       return false;
     }
-    if (reserved === true) return true;
-    if (reserved === false) return false; // the store already held the id
-    // A store that will not say whether the reservation was new cannot be
-    // relied on for single use, so it does not get to admit one.
-    this._warnOnce("approval store did not report whether the id was newly reserved");
-    return false;
+    let verdict: boolean;
+    if (reserved === true) verdict = true;
+    else if (reserved === false) verdict = false; // the store already held the id
+    else {
+      // A store that will not say whether the reservation was new cannot be
+      // relied on for single use, so it does not get to admit one.
+      this._warnOnce("approval store did not report whether the id was newly reserved");
+      verdict = false;
+    }
+    // The verdict above is FINAL. Cleanup runs after it and its outcome is
+    // discarded, so expiry sits on the same code path as the reservation
+    // without any decision ever depending on it. Reached only because the store
+    // answered `add` — a store that just failed is not handed more work.
+    await this._maybePrune();
+    return verdict;
   }
 
-  /** Race the store against {@link DEFAULT_APPROVAL_STORE_TIMEOUT_MS}. A store
-   *  that settles late is ignored — the approval was already refused, and the
-   *  id it may yet reserve is simply burned, which is the safe direction. */
+  /**
+   * Ask a store that implements `prune` to delete its expired reservations —
+   * at most once per {@link APPROVAL_PRUNE_INTERVAL_MS}, never concurrently
+   * with itself, and never in a way that can change or fail a decision.
+   *
+   * A store WITHOUT `prune` is not touched: no call, no timer, no extra work.
+   */
+  private async _maybePrune(): Promise<void> {
+    const prune = this._store.prune;
+    if (typeof prune !== "function") return; // a store without prune is untouched
+    const now = Date.now();
+    // Claimed synchronously, before the first await: two concurrent consumes
+    // cannot both get past this, so at most one prune is ever in flight and an
+    // authorize does at most one extra store call.
+    if (this._pruning || now - this._lastPruneAt < APPROVAL_PRUNE_INTERVAL_MS) return;
+    this._pruning = true;
+    this._lastPruneAt = now;
+    try {
+      // The cutoff LAGS now by the grace margin — see APPROVAL_PRUNE_GRACE_MS.
+      // Bounded by the same deadline as `add`, so a prune that never settles
+      // cannot hold the decision it rides on open indefinitely.
+      await this._withDeadline(
+        Promise.resolve().then(() => prune.call(this._store, now - APPROVAL_PRUNE_GRACE_MS))
+      );
+    } catch {
+      // Deliberately NOT fail-closed: the verdict is already decided, and a
+      // cleanup failure must never turn into a refused approval. Rows simply
+      // stay, and a row that stays can only refuse a replay, never admit one.
+      this._warnPruneOnce();
+    } finally {
+      this._pruning = false;
+    }
+  }
+
+  /** Race the store against {@link DEFAULT_APPROVAL_STORE_TIMEOUT_MS}, for both
+   *  the reservation and the opportunistic prune. A store that settles late is
+   *  ignored: for `add` the approval was already refused and the id it may yet
+   *  reserve is simply burned, which is the safe direction; for `prune` the
+   *  verdict was already decided, and a deletion that lands late deletes rows
+   *  that were expired anyway. */
   private _withDeadline(attempt: Promise<unknown>): Promise<unknown> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     // A late rejection must not surface as an unhandled one.
@@ -402,6 +531,19 @@ export class ApprovalTokens {
     console.warn(
       `watchlight: ${what}; the approval was refused (fail-closed) — ` +
         "further approval-store failures are suppressed"
+    );
+  }
+
+  /** A failed prune is reported once, and says plainly that no decision moved —
+   *  the operator's problem is a table that grows, not a refused approval. */
+  private _warnPruneOnce(): void {
+    if (this._warnedPrune) return;
+    this._warnedPrune = true;
+    // eslint-disable-next-line no-console
+    console.warn(
+      "watchlight: approval store prune failed or timed out; no approval was " +
+        "affected, but expired reservations are accumulating — further prune " +
+        "failures are suppressed"
     );
   }
 }

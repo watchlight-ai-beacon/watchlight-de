@@ -55,7 +55,7 @@ import {
 
 export { Scope, DE_MAX_DEPTH, AttenuationDenied, DevEditionCeiling } from "./attenuation";
 export type { AuditRecord, AuditSink } from "./audit";
-export { ApprovalError, APPROVAL_KEY_LABEL, APPROVAL_PAYLOAD_VERSION, APPROVAL_MIN_SECRET_BYTES, DEFAULT_APPROVAL_STORE_TIMEOUT_MS } from "./approval";
+export { ApprovalError, APPROVAL_KEY_LABEL, APPROVAL_PAYLOAD_VERSION, APPROVAL_MIN_SECRET_BYTES, DEFAULT_APPROVAL_STORE_TIMEOUT_MS, APPROVAL_PRUNE_INTERVAL_MS, APPROVAL_PRUNE_GRACE_MS } from "./approval";
 export type { ApprovalStore, ApprovalErrorCode } from "./approval";
 export type { ScopeTokenOptions, AttenuateOptions } from "./attenuation";
 export { ScopeTokenError, SCOPE_TOKEN_PREFIX, MAX_TOKEN_LENGTH } from "./scope-token";
@@ -355,7 +355,11 @@ export interface WatchlightOptions {
    *  returning `true` when the reservation was new and `false` when the id was
    *  already present — a read followed by an unconditional write cannot enforce
    *  single use. Fail-closed: `false`, a throw, a timeout, or a non-boolean
-   *  return all refuse the approval; none of them admits one. Shared with every
+   *  return all refuse the approval; none of them admits one. The reservations
+   *  are YOURS — the SDK never deletes one, and `expiresAt` is the
+   *  epoch-millisecond deadline after which an id is safe to drop; give the row
+   *  a TTL, or implement the optional `prune(before)` and the SDK will ask for
+   *  the deletion on the same code path as the reservation. Shared with every
    *  governor made by {@link Watchlight.as}. */
   approvalStore?: ApprovalStore;
   /** Read side of {@link auditSink}: where {@link Watchlight.counters} gets its

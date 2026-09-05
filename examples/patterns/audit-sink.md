@@ -199,7 +199,11 @@ otherwise the only source:
   replica. Its `add(id, expiresAt)` must be an **atomic check-and-set** — an
   insert that fails on a duplicate key, `SET … NX` — returning `false` when the
   id was already present; a read followed by an unconditional write cannot
-  enforce single use. See [destructive actions](./destructive-actions.md).
+  enforce single use. The reservations are yours — the SDK never deletes one, and
+  `expiresAt` is the epoch-millisecond deadline after which an id is safe to
+  drop; give the row a TTL, or add the optional `prune(before)` and the SDK asks
+  for the deletion on the same code path as the reservation. See
+  [destructive actions](./destructive-actions.md).
 
 Both are separate from the sink deliberately: the sink is fire-and-forget and
 must never affect a decision, while these two are read *on* the decision path and

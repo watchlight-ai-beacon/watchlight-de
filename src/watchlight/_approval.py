@@ -20,6 +20,12 @@ then insert" — anything between the two is a window in which N concurrent
 consumes of one token all observe "not yet used". A single agent fanning out
 parallel tool calls after one human confirmation is exactly that race.
 
+The reservations belong to the store: nothing here ever deletes one.
+``expires_at`` is the epoch-millisecond deadline after which an id is safe to
+drop, and a store that implements the optional ``prune(before)`` is asked to do
+that dropping on the same code path as the reservation — opportunistically,
+bounded, and with its outcome discarded, so cleanup can never move a verdict.
+
 Both defaults are safe for a single-process agent and are the wrong choice for a
 replicated deployment; neither is silently upgraded. Every refusal here is
 fail-closed: the caller sees the SAME ``NeedsApproval`` hold whichever check
@@ -46,6 +52,8 @@ __all__ = [
     "APPROVAL_KEY_LABEL",
     "APPROVAL_MIN_SECRET_BYTES",
     "APPROVAL_PAYLOAD_VERSION",
+    "APPROVAL_PRUNE_GRACE_MS",
+    "APPROVAL_PRUNE_INTERVAL_MS",
     "ApprovalError",
     "ApprovalStore",
     "ApprovalTokens",
@@ -76,6 +84,20 @@ APPROVAL_KEY_LABEL = "watchlight-de:approval-token:v1"
 #: simply does not verify — the change is a refusal, never a silent
 #: reinterpretation — and the format can evolve by bumping this string.
 APPROVAL_PAYLOAD_VERSION = "watchlight-de:approval:v1"
+
+#: How often a governor asks a store that implements ``prune`` to delete its
+#: expired reservations. Cleanup is opportunistic, not a schedule: it rides an
+#: approval that was already going to talk to the store, and this interval is
+#: what keeps "every approval" from becoming "a DELETE per approval". A governor
+#: that never consumes an approval never prunes — there is nothing to clean up.
+APPROVAL_PRUNE_INTERVAL_MS = 60_000
+
+#: How far behind "now" the prune cutoff sits. A reservation therefore outlives
+#: its own deadline by this margin before the SDK offers it for deletion. Late is
+#: harmless — an expired token is refused before the store is consulted — while
+#: early, under replica clocks a little apart, would drop a row another replica
+#: still needs to refuse a replay.
+APPROVAL_PRUNE_GRACE_MS = 60_000
 
 
 class ApprovalError(ValueError):
@@ -123,10 +145,24 @@ class ApprovalStore(Protocol):
     token: the signature never leaves the process, so a store whose rows leak
     yields no usable approval.
 
+    **Who owns expiry.** The reservations are yours, and the SDK never deletes
+    one. ``add`` is the only write it makes; there is no background task inside
+    this package that sweeps your rows. ``expires_at`` is the EPOCH-MILLISECOND
+    deadline after which that id is safe to drop: the token expires on its own at
+    exactly that instant, and an expired token is refused before the store is
+    ever consulted, so a row past its deadline can never admit anything. A store
+    that keeps every row forever is therefore correct and unbounded — give the
+    row a TTL (Redis ``PXAT``), or an indexed ``expires_at`` column you delete
+    from. Implement the optional ``prune`` below and the SDK will ask for that
+    deletion on the same code path as the reservation, so the cleanup lives with
+    the write instead of in a separate cron. It stays YOUR deletion — the SDK
+    only says when and up to which deadline.
+
     Fail-closed, in every direction: ``False`` refuses; a raise refuses; and a
     return that is not a ``bool`` refuses too, because a store that will not say
     whether the reservation was new cannot be relied on for single use. A store
-    that cannot answer never admits.
+    that cannot answer never admits. ``prune`` is the one exception, and it is
+    the exception in the other direction — see its own note.
     """
 
     def add(self, id: str, expires_at: int) -> bool:  # noqa: A002 - named `id` in both lanes
@@ -134,6 +170,38 @@ class ApprovalStore(Protocol):
         proceed); ``False`` = already present (the approval is refused)."""
         ...
 
+    # ``prune(before)`` is OPTIONAL — declared here in a comment rather than on
+    # the Protocol so that a store WITHOUT it still satisfies `ApprovalStore`,
+    # exactly as it did before this method existed. Define it to delete every
+    # reservation whose `expires_at` is at or before `before` (epoch ms)::
+    #
+    #     def prune(self, before):
+    #         self._db.execute("DELETE FROM approvals WHERE expires_at <= %s", (before,))
+    #
+    # WHEN IT IS CALLED. Opportunistically, from `authorize`: after an approval
+    # has been reserved, at most once every APPROVAL_PRUNE_INTERVAL_MS per
+    # governor, and never more than one at a time — so an authorize does at most
+    # ONE extra store call and cleanup can never pile up behind the decision
+    # path. It is not called when `add` itself failed: a store that is already
+    # struggling is not handed more work. Like `add` it must be SYNCHRONOUS
+    # (a coroutine return is refused and closed) and bounded by your client's own
+    # timeout.
+    #
+    # `before` LAGS NOW. It is `now - APPROVAL_PRUNE_GRACE_MS`, not the current
+    # instant, so a row outlives its own deadline by that margin. Deleting a
+    # reservation LATE is harmless — the token it belongs to is already refused
+    # on expiry, before the store is consulted. Deleting one EARLY is not: with
+    # replica clocks a little apart, a row dropped ahead of the deadline another
+    # replica is still measuring against would let a live token be consumed a
+    # second time. The margin buys the safe side of that.
+    #
+    # FAILURE CHANGES NOTHING. The verdict is decided before `prune` is called,
+    # and its outcome is discarded: a raise, or any return value, leaves that
+    # verdict exactly as it was. A cleanup failure must never deny a valid
+    # approval — the only cost of a prune that never succeeds is rows that stay,
+    # and a row that stays can only refuse a replay, never admit one. The failure
+    # is reported once on stderr so the unbounded table is visible.
+    #
     # ``has(id)`` is optional and is NEVER consulted when consuming a token —
     # single use is decided by ``add`` alone, in one step. Define it only if you
     # also want a read for your own inspection.
@@ -150,6 +218,10 @@ class _MemoryApprovalStore:
     ``approval_secret`` is configured, which is exactly when a shared store is
     needed too). Ids are dropped once they expire, so the dict stays bounded by
     the number of approvals live inside one TTL.
+
+    It deliberately implements no ``prune``: the sweep is already inside ``add``,
+    on every reservation, so there is nothing for the SDK to ask for — and the
+    default path stays exactly the one call it has always been.
     """
 
     def __init__(self) -> None:
@@ -307,6 +379,16 @@ class ApprovalTokens:
         self._keys = keys
         self._store: Any = _DEFAULT_STORE if store is None else store
         self._warned = False
+        #: Separate from ``_warned``, so a broken ``prune`` never suppresses the
+        #: report of a broken ``add`` — one of those refuses approvals, the
+        #: other does not.
+        self._warned_prune = False
+        #: When the last opportunistic prune STARTED, and whether one is still
+        #: running. Both are claimed under the lock, so of N concurrent consumes
+        #: exactly one begins a prune.
+        self._last_prune_at = 0
+        self._pruning = False
+        self._prune_lock = threading.Lock()
 
     def mint(self, principal: str, action: str, resource: str, ttl_ms: int) -> str:
         """Mint a token bound to ``(principal, action, resource)``, valid for
@@ -360,12 +442,75 @@ class ApprovalTokens:
         if self._is_awaitable(reserved):
             return self._refuse("approval store returned an awaitable on the synchronous decision path")
         if reserved is True:
-            return True
-        if reserved is False:
-            return False  # the store already held the id
-        # A store that will not say whether the reservation was new cannot be
-        # relied on for single use, so it does not get to admit one.
-        return self._refuse("approval store did not report whether the id was newly reserved")
+            verdict = True
+        elif reserved is False:
+            verdict = False  # the store already held the id
+        else:
+            # A store that will not say whether the reservation was new cannot be
+            # relied on for single use, so it does not get to admit one.
+            verdict = self._refuse(
+                "approval store did not report whether the id was newly reserved"
+            )
+        # The verdict above is FINAL. Cleanup runs after it and its outcome is
+        # discarded, so expiry sits on the same code path as the reservation
+        # without any decision ever depending on it. Reached only because the
+        # store answered `add` — a store that just failed is not handed more work.
+        self._maybe_prune()
+        return verdict
+
+    def _maybe_prune(self) -> None:
+        """Ask a store that implements ``prune`` to delete its expired
+        reservations — at most once per :data:`APPROVAL_PRUNE_INTERVAL_MS`, never
+        concurrently with itself, and never in a way that can change or fail a
+        decision.
+
+        A store WITHOUT ``prune`` is not touched: no call, no lock contention, no
+        extra work.
+        """
+        prune = getattr(self._store, "prune", None)
+        if not callable(prune):
+            return  # a store without prune is untouched
+        now = int(time.time() * 1000)
+        # Claimed under the lock: two concurrent consumes cannot both get past
+        # this, so at most one prune is ever in flight and an authorize does at
+        # most one extra store call.
+        with self._prune_lock:
+            if self._pruning or now - self._last_prune_at < APPROVAL_PRUNE_INTERVAL_MS:
+                return
+            self._pruning = True
+            self._last_prune_at = now
+        try:
+            # The cutoff LAGS now by the grace margin — see
+            # APPROVAL_PRUNE_GRACE_MS.
+            outcome = prune(now - APPROVAL_PRUNE_GRACE_MS)
+            if self._is_awaitable(outcome):
+                # A coroutine would never run on this synchronous path; closing
+                # it keeps it from surfacing as "never awaited". Nothing was
+                # deleted, so this is the same case as a failed prune.
+                self._warn_prune()
+        except Exception:  # noqa: BLE001
+            # Deliberately NOT fail-closed: the verdict is already decided, and a
+            # cleanup failure must never turn into a refused approval. Rows
+            # simply stay, and a row that stays can only refuse a replay, never
+            # admit one.
+            self._warn_prune()
+        finally:
+            with self._prune_lock:
+                self._pruning = False
+
+    def _warn_prune(self) -> None:
+        """A failed prune is reported once, and says plainly that no decision
+        moved — the operator's problem is a table that grows, not a refused
+        approval."""
+        if self._warned_prune:
+            return
+        self._warned_prune = True
+        print(
+            "watchlight: approval store prune failed; no approval was affected, "
+            "but expired reservations are accumulating — further prune failures "
+            "are suppressed",
+            file=sys.stderr,
+        )
 
     @staticmethod
     def _is_awaitable(value: Any) -> bool:

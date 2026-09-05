@@ -69,7 +69,9 @@ const govern = new Watchlight({
                                                  // or reuse signingSecret, which
                                                  // covers approvals too
   approvalStore: {
-    // SET … NX is the atomic step; a null reply means the id was already there
+    // SET … NX is the atomic step; a null reply means the id was already there.
+    // PXAT makes the row expire itself at the token's own deadline — nothing
+    // else ever deletes it.
     add: (id, expiresAt) =>
       redis.set(`wl:appr:${id}`, "1", { NX: true, PXAT: expiresAt }).then((r) => r !== null),
   },
@@ -93,8 +95,57 @@ agent fanning out parallel tool calls after a single human confirmation. In SQL
 it is an insert that fails on a duplicate key; in Redis, `SET … NX`.
 
 The id handed to the store is `<exp>.<nonce>` — unique per mint, and never the
-signature, so a store whose rows leak yields no usable approval. `expires_at` is
-epoch milliseconds, so the row can carry its own TTL.
+signature, so a store whose rows leak yields no usable approval.
+
+**The reservations are yours, and the SDK never deletes one.** `expires_at` is
+the epoch-millisecond deadline after which an id is safe to drop: the token
+expires on its own at exactly that instant, and an expired token is refused
+before the store is consulted, so a row past its deadline can never admit
+anything. A store that keeps every row is therefore correct and unbounded. The
+Redis store above needs nothing extra — `PXAT` makes each row expire itself. A
+SQL table does not, so give it an indexed deadline column and implement the
+optional `prune(before)`; the SDK then asks for the deletion on the same code
+path as the reservation, and the cleanup lives with the write instead of in a
+separate cron:
+
+```ts
+approvalStore: {
+  add: (id, expiresAt) =>
+    db.query(
+      "INSERT INTO approvals (id, expires_at) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+      [id, expiresAt],
+    ).then((r) => r.rowCount === 1),          // 0 rows = the id was already there
+  prune: (before) =>
+    db.query("DELETE FROM approvals WHERE expires_at <= $1", [before]),
+}
+```
+
+```python
+class ApprovalTable:
+    def add(self, id, expires_at):
+        with self._db.cursor() as cur:
+            cur.execute(
+                "INSERT INTO approvals (id, expires_at) VALUES (%s, %s) "
+                "ON CONFLICT DO NOTHING",
+                (id, expires_at),
+            )
+            return cur.rowcount == 1          # 0 rows = the id was already there
+
+    def prune(self, before):
+        with self._db.cursor() as cur:
+            cur.execute("DELETE FROM approvals WHERE expires_at <= %s", (before,))
+```
+
+`prune` is opportunistic: it runs after an approval has been reserved, at most
+once a minute per governor and never twice at a time, so an authorize does at
+most one extra store call. The cutoff it is handed **lags now by a minute** —
+deleting a reservation late is harmless, deleting one early would drop a row
+another replica's clock still needs to refuse a replay. And a failing `prune`
+changes nothing: the verdict is decided before it runs and its outcome is
+discarded, because the only cost of cleanup that never succeeds is rows that
+stay, and a row that stays can only refuse a replay, never admit one. It is
+reported once on stderr so the growing table is visible. Omit `prune` entirely
+and the store behaves exactly as it did before the method existed.
 
 **Fail-closed throughout.** `false`, a raise, a return that is not a boolean, or
 (in TypeScript, where the store may be async) outrunning the 2-second deadline

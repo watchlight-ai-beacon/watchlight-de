@@ -370,12 +370,37 @@ if (d.decision === "NeedsApproval") {
   const govern = new Watchlight({
     approvalSecret: process.env.APPROVAL_SECRET,          // >= 16 bytes
     approvalStore: {                                       // e.g. Redis
-      // SET … NX is the atomic step; a null reply means the id was already there
+      // SET … NX is the atomic step; a null reply means the id was already there.
+      // PXAT makes the row expire itself at the token's own deadline.
       add: (id, expiresAt) =>
         redis.set(`wl:appr:${id}`, "1", { NX: true, PXAT: expiresAt }).then((r) => r !== null),
     },
   });
   ```
+
+  **The reservations are yours, and the SDK never deletes one.** `expiresAt` is
+  the epoch-millisecond deadline after which an id is safe to drop — the token
+  expires on its own then, and an expired token is refused before the store is
+  consulted, so a row past its deadline can never admit anything. Give the row a
+  TTL (`PXAT` above), or implement the optional `prune(before)` and the SDK asks
+  for the deletion on the same code path as the reservation:
+
+  ```ts
+  approvalStore: {
+    add: (id, expiresAt) => /* atomic check-and-set, as above */,
+    prune: (before) =>
+      db.query("DELETE FROM approvals WHERE expires_at <= $1", [before]),
+  }
+  ```
+
+  `prune` runs after an approval has been reserved, at most once a minute per
+  governor and never twice at a time, so an authorize does at most one extra
+  store call. The cutoff **lags now** by `APPROVAL_PRUNE_GRACE_MS` — deleting a
+  row late is harmless, deleting one early would drop a reservation another
+  replica's clock still needs to refuse a replay. A failing `prune` changes
+  nothing: the verdict is decided before it runs and its outcome is discarded
+  (reported once on stderr, so the growing table is visible). Omit it and the
+  store behaves exactly as it did before the method existed.
 
   Fail-closed in every direction: `false`, a throw, a non-boolean return, or
   outrunning `DEFAULT_APPROVAL_STORE_TIMEOUT_MS` (2 s — a store that never
