@@ -394,8 +394,9 @@ function countersFromSourceValue(count: unknown, result: Counters): Counters {
 /**
  * Count via a {@link CounterSource}, synchronously. The source is validated the
  * same way the local scan is, and a promise is refused rather than resolved
- * behind the caller's back: a `context` binding that must stay synchronous
- * cannot silently become a stale or local number.
+ * behind the caller's back: a synchronous caller cannot silently get a stale or
+ * local number. An async source belongs on an async path — `countersAsync`,
+ * awaited inside an async `context` binding.
  */
 export function countFromSource(source: CounterSource, opts: CountersOptions): Counters {
   const { result } = prepareCounters(opts);

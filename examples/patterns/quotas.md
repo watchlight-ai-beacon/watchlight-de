@@ -63,6 +63,10 @@ def quota(o):
 def fetch_document(o): ...
 ```
 
+The binding may also be `async`, awaited before the decision — which is what a
+count from a durable store needs; see [an async source](#an-async-source-read-from-an-async-context-binding)
+below.
+
 Why not throw? The `context` binding runs *before* `authorize`, so an exception
 there stops the call without writing a decision record — the refusal would be
 invisible in the trail. Handing the engine a context without the counter makes
@@ -204,11 +208,92 @@ context: (o) => {
 },
 ```
 
-**An async source** is read with `await govern.countersAsync(...)` /
-`await govern.counters_async(...)`, *before* the call whose `context` it feeds — a
-`context` binding is synchronous. Calling the synchronous `counters()` while an
-async source is configured raises and names the async method rather than quietly
-answering from the local file.
+### An async source, read from an async `context` binding
+
+A durable store is a network call, so a `counterSource` / `counter_source` may
+return a promise (Python: an awaitable) — read it with
+`await govern.countersAsync(...)` / `await govern.counters_async(...)`. The
+`context` binding may itself be **async**: it is awaited *before* the decision,
+so the durable count is what the policy evaluates, and the quota works through
+`tool()` with no counting done by hand at the call site.
+
+```ts
+import { Watchlight } from "@watchlight/sdk";
+
+const govern = new Watchlight({
+  auditSink: (record) => db.insert("agent_audit", record),
+  // The read side above — a network call, so it returns a promise.
+  counterSource: (q) => db.countDecisions({
+    eventIsNull: true, principal: q.principal, intent: q.intent, resource: q.resource,
+    outcome: q.outcome, after: q.window.start, until: q.window.end,
+  }),
+});
+govern.load("quotas.policy.json");
+
+const user = (o) => `User::"${o.userId}"`;
+
+const readDoc = govern.tool(fetchDocument, {
+  intent: "read",
+  principal: user,
+  resource: (o) => `doc/${o.docId}`,
+  // Awaited before the decision, so `reads_this_hour` is the durable count.
+  context: async (o) => {
+    try {
+      const c = await govern.countersAsync({ principal: user(o), intent: "read", window: "1h" });
+      return c.truncated ? {} : { reads_this_hour: c.count };
+    } catch {
+      return {};   // no counter → the condition can't evaluate → Deny, audited
+    }
+  },
+});
+```
+
+```python
+from watchlight import CounterSourceError, Watchlight
+
+govern = Watchlight(
+    audit_sink=lambda record: db.insert("agent_audit", record),
+    # The read side above — a network call, so it returns an awaitable.
+    counter_source=lambda q: db.count_decisions(
+        event_is_null=True, principal=q["principal"], intent=q.get("intent"),
+        resource=q.get("resource"), outcome=q["outcome"],
+        after=q["window"]["start"], until=q["window"]["end"],
+    ),
+)
+govern.load("quotas.policy.json")
+
+def user(o): return f'User::"{o["userId"]}"'
+
+async def quota(o):
+    try:
+        c = await govern.counters_async(principal=user(o), intent="read", window="1h")
+        return {} if c["truncated"] else {"reads_this_hour": c["count"]}
+    except CounterSourceError:
+        return {}   # no counter → the condition can't evaluate → Deny, audited
+
+# An async `context` binding needs an `async def` body: the decision is made
+# before the body runs, so a synchronous tool has no moment in which to await it
+# (it raises `TypeError` and nothing is authorized).
+@govern.tool("read", principal=user, resource=lambda o: f'doc/{o["docId"]}', context=quota)
+async def fetch_document(o): ...
+```
+
+### Which forms compose
+
+| counter source | `context` binding | what happens |
+|---|---|---|
+| none — the local file | synchronous | the local count feeds the policy |
+| none — the local file | async | the same count, awaited before the decision |
+| synchronous source | synchronous | the store's count feeds the policy |
+| synchronous source | async | the store's count, awaited before the decision |
+| **async source** | **synchronous** | `CounterSourceError`, naming `countersAsync` / `counters_async` — never a quiet fall back to the local file |
+| **async source** | **async** | the store's count feeds the policy, through `tool()` |
+
+The `context` binding is resolved **once per call**, before the decision — and
+before the re-decision that an approval triggers, so both are made against the
+same attributes. In Python an async binding requires an `async def` tool body
+(above); in TypeScript a governed tool is already async, so both forms work on
+any body.
 
 ## Durability and the bound
 

@@ -37,7 +37,7 @@ import os
 import pathlib
 import re
 import sys
-from typing import Any, Callable, Optional, Sequence, TypeVar, Union
+from typing import Any, Awaitable, Callable, Optional, Sequence, TypeVar, Union
 
 import watchlight_engine as _engine
 
@@ -86,6 +86,7 @@ __all__ = [
     "MAX_ACTOR_CHAIN",
     "RESERVED_CONTEXT_MESSAGE",
     "ReservedContextError",
+    "ASYNC_CONTEXT_MESSAGE",
     "AuthorizeRequestError",
     "REQUEST_INVALID_MESSAGE",
     "AuditSink",
@@ -548,6 +549,38 @@ def _resolve(binding: Any, args: tuple, kwargs: dict) -> Optional[str]:
     if binding is None:
         return None
     return binding(*args, **kwargs) if callable(binding) else binding
+
+
+#: What an async ``context`` binding on a synchronous tool body is told. The
+#: decision is made BEFORE the body runs, so a synchronous tool has no moment in
+#: which to await one; answering from a partially-built context would evaluate
+#: the policy against attributes the binding never returned.
+ASYNC_CONTEXT_MESSAGE = (
+    "an async `context` binding needs an async tool body: the decision is made "
+    "before the body runs, so a synchronous tool cannot await it. Declare the "
+    "tool `async def`, or resolve the value first (e.g. "
+    "`await govern.counters_async(...)`) and pass the result as `context`"
+)
+
+
+def _resolve_context(binding: Any, args: tuple, kwargs: dict) -> Any:
+    """Resolve a ``context`` binding: a fixed mapping, or a callable of the
+    tool's ``(*args, **kwargs)``. An async callable returns an awaitable, which
+    the caller awaits before the decision."""
+    if binding is None:
+        return {}
+    return binding(*args, **kwargs) if callable(binding) else binding
+
+
+def _discard_awaitable(pending: Any) -> None:
+    """Drop an awaitable that will never be awaited, without leaving a warning
+    behind. Nothing about it is inspected or logged."""
+    close = getattr(pending, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:  # pragma: no cover - closing must never mask the refusal
+            pass
 
 
 # ── sanitize: deterministic PII redaction (mirrors the TS detector) ─────────
@@ -1621,7 +1654,7 @@ class Watchlight:
         *,
         principal: Union[str, Callable[..., str], None] = None,
         resource: Union[str, Callable[..., str], None] = None,
-        context: Union[dict, Callable[..., dict], None] = None,
+        context: Union[dict, Callable[..., Union[dict, Awaitable[dict]]], None] = None,
         on_needs_approval: Optional[Callable[[dict], bool]] = None,
         on_result: Optional[Callable[[Any, dict], Any]] = None,
         agent: Optional[str] = None,
@@ -1630,8 +1663,20 @@ class Watchlight:
 
         ``principal`` / ``resource`` / ``context`` may each be a fixed value or a
         callable of the tool's ``(*args, **kwargs)`` — so per-call runtime facts
-        (amount, refundable, acting user, …) flow into Cedar evaluation. On a
-        ``NeedsApproval`` decision, ``on_needs_approval(decision)`` (if given) is
+        (amount, refundable, acting user, …) flow into Cedar evaluation.
+
+        ``context`` may also be an ``async def`` (anything returning an
+        awaitable), awaited BEFORE the decision, so a value that takes a round
+        trip — a quota read from a durable store with
+        :meth:`counters_async` — is part of the context the policy evaluates.
+        That form needs an ``async def`` tool body, since the decision is made
+        before the body runs and a synchronous tool has no moment in which to
+        await it; on a synchronous body it is refused fail-closed with a
+        ``TypeError`` and nothing is authorized. A synchronous ``context``
+        binding behaves exactly as before, on a synchronous or async body alike.
+
+        On a ``NeedsApproval`` decision, ``on_needs_approval(decision)`` (if
+        given) is
         called; return ``True`` to proceed after a human confirms. Fail-closed:
         DENY raises :class:`Denied`; unconfirmed approval raises
         :class:`NeedsApproval`; the body never runs in either case.
@@ -1658,13 +1703,9 @@ class Watchlight:
 
         def decorator(fn: _F) -> _F:
             name = fn.__name__
+            body_is_async = inspect.iscoroutinefunction(fn)
 
-            @functools.wraps(fn)
-            def wrapper(*args: Any, **kwargs: Any) -> Any:
-                prin = gov._principal(_resolve(principal, args, kwargs))
-                res = _resolve(resource, args, kwargs) or f"tool/{name}"
-                ctx = context(*args, **kwargs) if callable(context) else (context or {})
-
+            def decide_and_run(ctx: Any, prin: str, res: str, args: tuple, kwargs: dict) -> Any:
                 def run(d: dict) -> Any:
                     # Run the body, then the egress hook (if any) over its result.
                     out = fn(*args, **kwargs)
@@ -1690,6 +1731,27 @@ class Watchlight:
                             return run(d2)
                     raise NeedsApproval(name, intent, d.get("decision_id"), d["reason"])
                 raise Denied(name, intent, d["reason"] or DENY_REASON)
+
+            async def awaited_call(pending: Any, prin: str, res: str, args: tuple, kwargs: dict) -> Any:
+                # The context is awaited BEFORE the decision, so the policy is
+                # evaluated against every attribute the binding returns.
+                ctx = await pending
+                out = decide_and_run(ctx, prin, res, args, kwargs)
+                return await out if inspect.isawaitable(out) else out
+
+            @functools.wraps(fn)
+            def wrapper(*args: Any, **kwargs: Any) -> Any:
+                prin = gov._principal(_resolve(principal, args, kwargs))
+                res = _resolve(resource, args, kwargs) or f"tool/{name}"
+                ctx = _resolve_context(context, args, kwargs)
+                if inspect.isawaitable(ctx):
+                    # Fail closed rather than authorize against a context the
+                    # binding never finished producing.
+                    if not body_is_async:
+                        _discard_awaitable(ctx)
+                        raise TypeError(ASYNC_CONTEXT_MESSAGE)
+                    return awaited_call(ctx, prin, res, args, kwargs)
+                return decide_and_run(ctx, prin, res, args, kwargs)
 
             return wrapper  # type: ignore[return-value]
 
@@ -2039,8 +2101,9 @@ class Watchlight:
         to read one that returns an awaitable. Identical in every other respect,
         and identical to :meth:`counters` when no source is configured (the local
         file is read synchronously either way), so a caller can use it
-        unconditionally. Await it BEFORE the call whose ``context`` it feeds; a
-        ``context`` binding itself is synchronous."""
+        unconditionally. Await it inside an ``async def`` ``context`` binding on
+        an async tool, or before the :meth:`authorize` whose ``context`` it
+        feeds."""
         if self._counter_source is not None:
             return await count_from_source_async(
                 self._counter_source,
