@@ -1,14 +1,11 @@
 # Using the governor
 
-You have governed a tool and seen a `DENY`. The next questions are structural:
-where does the governor go in an application, how many do you need, and what
-does that look like in a web handler, a worker and a test.
-
-What to *pass* a governed call — the subject, the acting agent — is the
-[identity model](identity-model.md). Words used here are in the
+Where the governor goes in an application, how many you need, and what that
+looks like in a web handler, a worker and a test. What to *pass* a governed call
+is the [identity model](identity-model.md); words used here are in the
 [glossary](glossary.md).
 
-Every example on this page loads the same policy file, `watchlight.policy.json`:
+Every example below loads the same `watchlight.policy.json`:
 
 ```json
 {
@@ -23,8 +20,8 @@ Every example on this page loads the same policy file, `watchlight.policy.json`:
 
 ## Construct it once, at start-up
 
-Give the governor a module of its own, construct it there, and load the policy
-set in the same place. Everything else imports it.
+Give the governor a module of its own. Construct it there, load the policy set
+there, and import it everywhere else.
 
 ```python
 # governance.py — the one module that holds the governor.
@@ -56,22 +53,17 @@ govern.load(POLICIES);
 if (!govern.hasPolicies) throw new Error("no policies loaded — every call would be denied");
 ```
 
-Two things that block does deliberately:
+Two details in that block matter:
 
-- **The policy path does not depend on the working directory.** A web process, a
-  worker and a test runner rarely share one, and a `load` that misses its file
-  raises nothing — it loads no policies, and every call is then denied.
-- **It asserts that policies arrived.** That is the difference between a start-up
-  failure you see and a production request that is refused for a reason nobody
-  can find.
+- **The policy path does not depend on the working directory.** A `load` that
+  misses its file raises nothing. It loads no policies, and every call is then
+  denied.
+- **It asserts that policies arrived**, so the failure is at start-up rather
+  than in a request nobody can explain.
 
-If your application uses a dependency container, register the governor as a
-single long-lived instance — a singleton provider built at start-up — rather
-than a factory the container calls per request. Either way the rule is the same:
-one instance for the process, built before the first request reaches it. A
-governor constructed inside a handler holds no policies until that handler loads
-them, so any path that skips the load denies everything, and the load is paid on
-every request.
+With a dependency container, register the governor as a long-lived singleton
+built at start-up, not a per-request factory. A governor constructed inside a
+handler holds no policies until that handler loads them.
 
 ## How many governors
 
@@ -92,11 +84,21 @@ const billing = govern.as("billing-agent");
 const research = govern.as("research-agent");
 ```
 
-Six named agents cost one policy load and one audit trail. Nothing is re-read,
-and `policy_count` / `policyCount` is the same number through every name.
+| Shared by every name off one governor | Not shared |
+|---|---|
+| the policy set — a policy added through any name applies to all of them | the agent name, stamped on every record as `agent` |
+| the audit trail: the local file and the sink you configured | the delegation chain, which only `delegate` builds |
+| the signing secret, the approval store and the counter source | |
+
+Records from every name land in one trail, told apart by `agent`:
+
+```text
+{"agent":"statements-api","principal":"User::\"db:4412\"","intent":"invoice","decision":"Allow", …}
+{"agent":"billing-agent","principal":"User::\"db:4412\"","intent":"invoice","decision":"Allow", …}
+```
 
 Construct a **second** governor when the policy set is genuinely different — a
-strict set for real traffic and a permissive one for a sandbox:
+strict set for real traffic, a permissive one for a sandbox:
 
 ```python
 from watchlight import Watchlight
@@ -113,54 +115,10 @@ sandbox.load("sandbox.policy.json");
 ```
 
 Wanting a separate audit trail is the other reason: two governors pointed at the
-same directory append to the same `audit.jsonl`, so a separate directory is what
-separates the files. Wanting a different name is not a reason.
+same directory append to the same `audit.jsonl`. Wanting a different name is not
+a reason.
 
-## What every name shares
-
-| Shared by everything named from one governor | Not shared |
-|---|---|
-| the policy set — a policy added through any name applies to all of them | the agent name, stamped on every record as `agent` |
-| the audit trail: the local file and the sink you configured | the delegation chain, which only `delegate` builds |
-| the signing secret, the approval store and the counter source | |
-
-```python
-from watchlight import principals
-from governance import govern
-
-billing = govern.as_("billing-agent")
-billing.allow('permit(principal is User, action == Action::"invoice", resource);')
-
-print(govern.policy_count == billing.policy_count)                        # one policy set
-govern.authorize(action="invoice", principal=principals.user("db:4412"))  # allowed under either name
-billing.authorize(action="invoice", principal=principals.user("db:4412"))
-```
-
-```ts
-import { principals } from "@watchlight/sdk";
-import { govern } from "./governance.mjs";
-
-const billing = govern.as("billing-agent");
-billing.allow('permit(principal is User, action == Action::"invoice", resource);');
-
-console.log(govern.policyCount === billing.policyCount);                              // one policy set
-await govern.authorize({ action: "invoice", principal: principals.user("db:4412") }); // allowed under either name
-await billing.authorize({ action: "invoice", principal: principals.user("db:4412") });
-```
-
-Both calls land in one trail, told apart by `agent`:
-
-```text
-{"agent":"statements-api","principal":"User::\"db:4412\"","intent":"invoice","decision":"Allow", …}
-{"agent":"billing-agent","principal":"User::\"db:4412\"","intent":"invoice","decision":"Allow", …}
-```
-
-That single readable stream is the point of naming rather than constructing. Two
-separate governors share none of it.
-
-## Three places it goes
-
-### A request handler
+## In a request handler
 
 The handler imports the governor and takes the subject from the session the
 request authenticated.
@@ -228,26 +186,20 @@ watchlight: ALLOW  read_statement account/acct-100
 watchlight: DENY   read_statement account/acct-100     not authorized
 ```
 
-200 for the owner; 403 and the uniform reason for the other signed-in user, in
-both lanes.
+200 for the owner, 403 and the uniform `DENY_REASON` for the other signed-in
+user. A caller probing the boundary learns nothing about which rule stopped it.
+[Where subjects come from →](identity-model.md#where-the-values-come-from)
 
-Both refusals in that block are the security contract of a handler: the subject
-is derived from what the application authenticated, and the 403 body is the
-uniform `DENY_REASON`, so a caller probing the boundary learns nothing about
-which rule stopped it. [Where subjects come
-from →](identity-model.md#where-the-values-come-from)
-
-### A background worker
+## In a background worker
 
 A worker is a different process, so it constructs its own governor over the same
 policy file. What crosses the boundary is the narrowed authority for one job, as
 a scope token, plus the subject the enqueuing request authenticated.
 
-Both processes must hold the **same** signing secret — add
-`signing_secret=os.environ["WATCHLIGHT_SIGNING_SECRET"]` /
-`signingSecret: process.env.WATCHLIGHT_SIGNING_SECRET` to the web process's
-governor as well, spelled exactly as the worker below does it. → [The signing
-secret](signing-secret.md)
+Both processes must hold the **same** signing secret — give the web process's
+governor `signing_secret=os.environ["WATCHLIGHT_SIGNING_SECRET"]` /
+`signingSecret: process.env.WATCHLIGHT_SIGNING_SECRET` too.
+→ [The signing secret](signing-secret.md)
 
 ```python
 # enqueue.py — runs in the web process.
@@ -327,24 +279,20 @@ export async function runJob(job) {
 }
 ```
 
-Three things a worker must get right, and all three are in that block:
+Three things to get right, all of them in that block:
 
-- **The worker's agent name matches the name the token was minted under**
-  (`as_("reports-worker")` on the enqueuing side). A token presented to a
-  governor under another name is refused.
-- **The rebuilt scope still has to be checked before the job runs.** A scope
-  bounds what a sub-agent may be handed; it is not consulted when a call is
-  authorized, so a job asking for something outside it must be refused by the
-  code, as the `allowed_tools` / `allowedTools` check does here.
-- **The subject travels in the job record, not in anything the agent produced.**
-  It is the value the enqueuing request authenticated, put there by your own web
-  process, and the queue is inside your trust boundary.
+- **The worker's agent name matches the name the token was minted under.** A
+  token presented to a governor under another name is refused.
+- **Check the rebuilt scope before running the job.** A scope is not consulted
+  when a call is authorized, so the `allowed_tools` / `allowedTools` check is
+  what refuses a job asking for something outside it.
+- **The subject travels in the job record**, put there by your web process —
+  never in anything the agent produced.
 
-### A test
+## In a test
 
-A throwaway governor with a temporary audit directory: the test's own records
-never mix into the `.watchlight/audit.jsonl` of whatever directory the suite
-happens to run in.
+A throwaway governor with a temporary audit directory keeps the test's records
+out of whatever `.watchlight/audit.jsonl` the suite happens to run next to.
 
 ```python
 # test_statements.py
@@ -410,20 +358,15 @@ test("statement policies", async () => {
 });
 ```
 
-Test the *deployed* policy file, not a copy pasted into the test — a suite that
-passes against a different policy set than the one production loads proves
-nothing. The `Deny` fixtures matter as much as the `Allow`: a policy that has
-been accidentally widened still passes every `Allow` case.
+Test the *deployed* policy file, not a copy pasted into the test. The `Deny`
+fixtures matter as much as the `Allow`: a policy that has been accidentally
+widened still passes every `Allow` case.
 
-## Lifecycle
-
-### The exported default governor
+## The exported default governor
 
 `from watchlight import govern` gives you a governor that is already
-constructed. It is the right one for a single-process program with a single
-policy set — a script, a CLI, a notebook, an example. Configure it before its
-first governed call, which is the only way to give it a name, an audit
-directory, a sink or a secret:
+constructed — the right one for a single-process script, CLI, notebook or
+example. Configure it before its first governed call:
 
 ```python
 from watchlight import configure_default, govern
@@ -445,42 +388,29 @@ govern.load("watchlight.policy.json");
 await govern.authorize({ action: "read_statement", resource: "account/acct-100", principal: 'User::"db:4412"' });
 ```
 
-Anything with more than one policy set — or anything where you would rather be
-explicit about what a module is governing — constructs its own, as at the top of
-this page.
+Anything with more than one policy set constructs its own, as at the top of this
+page.
 
-#### Configuring it twice
+### Configuring it twice
 
 Once the default governor has written its first record, its destination is
-fixed: records already written cannot be sent to a sink added afterwards, and a
-trail split across two destinations reads like a data bug. But re-applying the
-configuration that is *already in force* changes nothing, so it is accepted —
-the defensive second call, from a second entry point into one process, is not an
-exception path:
+fixed. Re-applying the configuration already in force is a no-op; changing an
+option raises.
 
 ```python
 configure_default(agent="report-cli", audit_sink=records.append)   # again, same options → no-op
 configure_default(agent="other")                                   # RuntimeError: agent would change …
 ```
 
-A conflict names the option that would change and what it would change from and
-to. Secret values are compared in constant time and never appear in the message.
-A callable or an object — `audit_sink`, `approval_store`, `counter_source` —
-matches when it is the **same function on the same object**. `audit_sink=records.append`
-or `audit_sink=my_store.insert` passed a second time is one sink, even though
-Python builds a new bound-method object on every attribute access; the same
-`store.insert` read twice in TypeScript is one function reference.
+The error names the option that would change, and what it would change from and
+to. Secret values are compared in constant time and never appear in it.
 
-A callable **built** a second time is a different sink and is reported as a
-conflict: a fresh `lambda` or arrow function, a new closure, and in TypeScript a
-new `fn.bind(obj)` — `.bind` returns a new function on every call, so bind once
-and pass the result around. Assuming a rebuilt callable equal to the first would
-silently keep the first one and quietly discard the records you believed you had
-just redirected, which is the failure the check exists to prevent. A class whose
-`__eq__` raises, or answers with anything but `True`, is read as a conflict and
-never allowed to break the configuration call.
+Two sinks match only if they are the same function on the same object.
+`audit_sink=my_store.insert` passed twice is one sink. A rebuilt lambda, a new
+closure or a fresh `fn.bind(obj)` is a different sink and conflicts, so bind
+once and pass the result around.
 
-To ask before calling, rather than wrapping the call:
+To ask before calling:
 
 ```python
 from watchlight import can_configure_default, configure_default
@@ -502,11 +432,10 @@ record is written and `false` afterwards; asking mutates nothing. `false` does
 not mean every call fails — options identical to the ones in force are still
 accepted.
 
-#### Configuring it from the environment
+### Configuring it from the environment
 
-Three variables configure the default governor without touching code, for the
-cases where the code is not yours to change — a test run,
-a container, a CI job:
+Three variables configure the default governor without touching code, for a test
+run, a container or a CI job:
 
 | Variable | Effect |
 |---|---|
@@ -514,48 +443,28 @@ a container, a CI job:
 | `WATCHLIGHT_AUDIT_FILE` | `0` / `false` / `no` / `off` writes no local file at all; `1` / `true` / `yes` / `on` keeps it |
 | `WATCHLIGHT_AGENT` | the agent name, when the `agent` option does not give one; blank counts as unset |
 
-`WATCHLIGHT_AUDIT_FILE=0` is `audit_file=False` by another route, with the same
-consequences: no `.watchlight` directory is created, `govern.counters(...)`
-raises rather than counting zero, `watchlight dev` has nothing to tail, and with
-no sink configured the SDK says once that records are being discarded. Redirect
-with `WATCHLIGHT_AUDIT_DIR` instead when you want the trail kept, just not here.
-
 ```bash
-WATCHLIGHT_AUDIT_FILE=0 pytest              # this run writes no trail into the working directory
+WATCHLIGHT_AUDIT_FILE=0 pytest                # this run writes no trail into the working directory
 WATCHLIGHT_AUDIT_DIR=.watchlight-test pytest  # …or keeps its own, next to the application's
 ```
 
 That is the fix for a test suite sharing a working directory with a running
-application. Policy tests (`govern.test()`, `watchlight policy test`) already
-write nothing — they run the engine's decision core directly — but a test that
-calls `authorize()`, or a governed tool, writes a record like any other governed
-call, under the default agent name, into the same `audit.jsonl` the application
-is appending to. Two views of "the same" trail then disagree, and the
-discrepancy reads as a data bug rather than a configuration one. One variable
-in the test process's environment ends it: no code change, no `try`/`except`, and
-no dependence on whether the SDK was imported before or after the variable was
-set — both are read lazily, at the default governor's first use.
+application. Policy tests (`govern.test()`, `watchlight policy test`) write
+nothing already, but a test that calls `authorize()` or a governed tool appends
+a record like any other call.
 
-**Precedence — option, then environment, then default.** An explicit
-`configure_default(audit_dir=…)` beats `WATCHLIGHT_AUDIT_DIR`, which beats
-`.watchlight`; the same order every other option in this SDK resolves in. A
-governor you construct yourself (`Watchlight(audit_dir=…)`) already names its
-own options at the call site, so neither variable touches it — the environment
-layer exists for the one governor an application never constructs. A value the
-SDK does not recognize in `WATCHLIGHT_AUDIT_FILE` is reported once and then
-ignored: the conservative reading of an audit switch is "keep writing the
-trail", so a typo can neither quietly turn a trail off nor take an application
-down. `watchlight dev` reads `WATCHLIGHT_AUDIT_DIR` too, so the dashboard
-follows the trail rather than having to be pointed at it twice.
+`WATCHLIGHT_AUDIT_FILE=0` is `audit_file=False` by another route: no
+`.watchlight` directory is created, `govern.counters(...)` raises rather than
+counting zero, and `watchlight dev` has nothing to tail. Use
+`WATCHLIGHT_AUDIT_DIR` when you want the trail kept, just not here.
 
-**Why the default still writes a file.** It would be simpler to make the default
-governor write nothing until it is configured, and that would make this class of
-contamination impossible rather than solvable. It would also break the first
-five minutes: `.watchlight/audit.jsonl` appearing with zero configuration *is*
-the quickstart, and `watchlight dev` reads that file and nothing else. So the
-default stays, and the opt-out is one variable away.
+**Precedence: option, then environment, then default.** A governor you construct
+yourself names its own options at the call site, so neither variable touches it.
+An unrecognised `WATCHLIGHT_AUDIT_FILE` value is reported once and ignored, so a
+typo cannot quietly turn a trail off. `watchlight dev` reads
+`WATCHLIGHT_AUDIT_DIR` too.
 
-### Loading policies
+## Loading policies
 
 ```python
 from watchlight import Watchlight
@@ -593,24 +502,18 @@ govern.load("watchlight.policy.json", { force: true });
 console.log(govern.policyCount);    // 6 — force adds another copy; nothing is ever removed
 ```
 
-- **Policies are only ever added.** There is no unload; `allow` with the same
-  code twice gives you two policies.
-- **`load` is idempotent per source.** Loading the same file twice loads it once,
-  so priming a governor in a factory and loading the same file again in an
-  initialiser cannot double the set. Two paths to one file are one source; give
-  two files a shared `source_id` / `sourceId` to make them one too.
-- **A file that does not exist is not remembered**, so it loads the first time it
-  appears.
+- **Policies are only ever added.** There is no unload.
+- **`load` is idempotent per source.** Two paths to one file are one source.
+  Give two files a shared `source_id` / `sourceId` to make them one too.
+- **A file that does not exist is not remembered**, so it loads the first time
+  it appears.
 - **Editing a loaded file and calling `load` again changes nothing.** No error,
-  no warning: the process carries on deciding with the policies it already
-  holds. Restart it to pick up an edit. `force=True` / `{ force: true }` loads
-  the file again, but since nothing is removed you then hold both the old copy
-  and the new — construct a fresh governor when the old set has to be gone.
+  no warning: the process carries on with the policies it already holds. A
+  policy change takes effect on a **restart**, not on a re-`load`. `force` loads
+  the file again, but since nothing is removed you then hold both copies —
+  construct a fresh governor when the old set has to be gone.
 
-That last point is the one that costs people an afternoon. A policy change takes
-effect on a restart, not on a re-`load`.
-
-### The enforcement effect is checked when the policy loads
+## The enforcement effect is checked when the policy loads
 
 A policy can carry an **enforcement effect** — what the engine does beyond
 allowing or denying:
@@ -621,14 +524,14 @@ permit(principal, action == Action::"wire", resource)
 when { context.amount > 1000 };
 ```
 
-That is the human-in-the-loop gate: the verdict is `NeedsApproval` rather than
-`Allow`, and a person has to release it. The effects the engine implements are
+That one is the human-in-the-loop gate: the verdict is `NeedsApproval` rather
+than `Allow`, and a person has to release it. The engine implements
 
 `attenuate`, `escalate`, `observe`, `quarantine`, `require_approval`, `revoke`,
 `sever_subtree`, `terminate`
 
-and **`allow` and `load` refuse anything else**, before the policy reaches the
-engine:
+and `allow` and `load` refuse anything else, in both lanes, before the policy
+reaches the engine:
 
 ```python
 govern.allow('@enforcement_effect("needs_approval")\npermit(principal, action, resource);')
@@ -637,31 +540,14 @@ govern.allow('@enforcement_effect("needs_approval")\npermit(principal, action, r
 # quarantine, require_approval, revoke, sever_subtree, terminate. …
 ```
 
-```ts
-govern.allow('@enforcement_effect("needs_approval")\npermit(principal, action, resource);');
-// PolicyError: policy "policy-0": @enforcement_effect("needs_approval") is not an
-// effect this engine implements. Accepted: attenuate, escalate, observe,
-// quarantine, require_approval, revoke, sever_subtree, terminate. …
-```
-
-- **Why it refuses rather than warns.** An effect the engine does not implement
-  is *dropped*. On a `forbid` that is harmless — `terminate` and `quarantine`
-  make a deny stronger, so dropping one leaves a plain deny. On a `permit` it
-  runs the other way: dropping `require_approval` leaves a plain **allow**. A
-  one-character typo would turn an approval gate into an unconditional permit,
-  and nothing in the verdict would say so. There is also nothing to pass the
-  value through *to* — unlike an unknown `@obligate_*`, which the engine hands
-  to the caller uninterpreted, an effect verb is read only by the engine.
-- **`load` is whole-file or nothing.** One refused policy in a file loads none of
-  it, and the source is not remembered — fix the file and load it again.
-- **A misspelled annotation NAME warns, and still loads.** `@enforcment_effect`
-  is not something the SDK can refuse: an annotation it does not read is
-  legitimate Cedar and may well be yours. A name that is a near miss for
-  `@enforcement_effect` prints a warning naming it; anything further away is
-  silent.
-- **The accepted set is the one the pinned engine implements**, and the SDK
-  ships it. That is why the SDK and the engine are released together; a verb
-  added to the engine is added to both SDK lanes in the same release.
+- **Why refuse rather than warn.** An unimplemented effect is *dropped*, and
+  dropping `require_approval` from a `permit` leaves a plain **allow**. A typo
+  would turn an approval gate into an unconditional permit, silently.
+- **`load` is whole-file or nothing.** One refused policy loads none of the
+  file, and the source is not remembered — fix it and load again.
+- **A misspelled annotation NAME warns and still loads.** `@enforcment_effect`
+  is legitimate Cedar and may well be yours. A near miss for
+  `@enforcement_effect` prints a warning; anything further away is silent.
 
 ## See also
 
