@@ -261,3 +261,17 @@ generators do.
 
 Every section above is also a one-liner in [`recipes.md`](./recipes.md) —
 handy on a host where only `jq` is available.
+
+## Is this example verified?
+
+Yes. [`check.sh`](./check.sh) in this folder is this showcase's declaration of
+how it is checked: which scripts run, in which order, and from what state. Run
+it on its own, or through [`examples/showcase/check.sh`](../check.sh), which
+runs every showcase's, or through `scripts/preflight.sh`, which runs that along
+with the rest of the suites.
+
+Order is the whole point in this folder: `forensics.py` reads the trail that
+`generate_trail.py` writes, so it exits 1 on its own and 0 afterwards. `check.sh`
+runs them in that order from an empty `trail/`, and asserts both the failure and
+the success — the drift in this example's field map went unnoticed precisely
+because whoever ran it last happened to have the state that made it pass.

@@ -200,3 +200,16 @@ Two habits that keep the gate honest:
 
 See [`examples/patterns/`](../../patterns/README.md) for more policy shapes,
 each with a suite that runs through the same harness.
+
+## Is this example verified?
+
+Yes. [`check.sh`](./check.sh) in this folder is this showcase's declaration of
+how it is checked: which scripts run, in which order, and from what state. Run
+it on its own, or through [`examples/showcase/check.sh`](../check.sh), which
+runs every showcase's, or through `scripts/preflight.sh`, which runs that along
+with the rest of the suites.
+
+Here `check.sh` simply declares [`run-local.sh`](./run-local.sh) — this
+showcase's own gate — as the way it is verified. The GitHub Actions file in this
+folder is a template for you to copy into your own repository, not a workflow
+this one runs.

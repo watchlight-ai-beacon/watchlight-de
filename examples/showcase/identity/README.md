@@ -319,3 +319,11 @@ one is deleted.
 - **Value-free trail.** The records carry who acted, through whose delegation,
   on whose behalf, the intent, the resource and the verdict — never an argument
   value.
+
+## Is this example verified?
+
+Yes. [`check.sh`](./check.sh) in this folder is this showcase's declaration of
+how it is checked: which scripts run, in which order, and from what state. Run
+it on its own, or through [`examples/showcase/check.sh`](../check.sh), which
+runs every showcase's, or through `scripts/preflight.sh`, which runs that along
+with the rest of the suites.

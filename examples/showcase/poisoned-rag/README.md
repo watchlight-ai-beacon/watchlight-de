@@ -209,3 +209,11 @@ text anywhere in the trail.
   [allow, but redact](../../patterns/allow-but-redact.md),
   [egress after read](../../patterns/egress-after-read.md),
   [PII before read](../../patterns/pii-before-read.md).
+
+## Is this example verified?
+
+Yes. [`check.sh`](./check.sh) in this folder is this showcase's declaration of
+how it is checked: which scripts run, in which order, and from what state. Run
+it on its own, or through [`examples/showcase/check.sh`](../check.sh), which
+runs every showcase's, or through `scripts/preflight.sh`, which runs that along
+with the rest of the suites.
