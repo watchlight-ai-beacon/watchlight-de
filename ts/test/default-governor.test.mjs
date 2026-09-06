@@ -276,11 +276,12 @@ ${WRITE}`, cwd);
     );
   }
 
-  console.log("a governor you construct names its own options and ignores the environment");
+  console.log("an option you passed beats the environment on a constructed governor");
   {
-    // The environment layer exists for the ONE governor an application never
-    // constructs. Letting it override an explicit constructor argument would
-    // invert the precedence every other option in this SDK resolves in.
+    // Letting the environment override an explicit constructor argument would
+    // invert the precedence every other option in this SDK resolves in. Naming
+    // `auditDir` is naming a file destination, so AUDIT_FILE_ENV does not get to
+    // silence a trail the caller gave a location to.
     const cwd = workdir();
     const out = run(`${WITH_FS}
 const g = new Watchlight({ agent: "mine", auditDir: "mine" });
@@ -290,6 +291,34 @@ console.log("mine:", fs.existsSync("mine/audit.jsonl"));
 console.log("elsewhere:", fs.existsSync("elsewhere/audit.jsonl"));
 `, cwd, { [AUDIT_DIR_ENV]: "elsewhere", [AUDIT_FILE_ENV]: "0" });
     ok("its own directory, and the file stays on", /^mine: true$/m.test(out.stdout) && /^elsewhere: false$/m.test(out.stdout), out.stderr);
+  }
+
+  console.log("the environment reaches an option a constructed governor did not name");
+  {
+    // The defect this answers: both variables were accepted and discarded
+    // unless the governor was the default one, so a process that asked for no
+    // local trail got one anyway. The Python twin is
+    // test_a_constructed_governor_honours_the_audit_file_variable.
+    const cwd = workdir();
+    const out = run(`${WITH_FS}
+const g = new Watchlight({ agent: "constructed", auditSink: () => {} });
+g.allow('permit(principal, action, resource);');
+await g.authorize({ action: "read", principal: 'User::"u"' });
+console.log("wrote:", fs.existsSync(".watchlight/audit.jsonl"));
+`, cwd, { [AUDIT_FILE_ENV]: "0" });
+    ok("the variable was honored", /^wrote: false$/m.test(out.stdout), out.stderr);
+  }
+
+  console.log("and an explicit auditFile still wins over it");
+  {
+    const cwd = workdir();
+    const out = run(`${WITH_FS}
+const g = new Watchlight({ agent: "constructed", auditFile: true });
+g.allow('permit(principal, action, resource);');
+await g.authorize({ action: "read", principal: 'User::"u"' });
+console.log("wrote:", fs.existsSync(".watchlight/audit.jsonl"));
+`, cwd, { [AUDIT_FILE_ENV]: "0" });
+    ok("the argument was honored", /^wrote: true$/m.test(out.stdout), out.stderr);
   }
 
   // ── precedence: option > environment > default ───────────────────

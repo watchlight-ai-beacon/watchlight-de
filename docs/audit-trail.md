@@ -56,6 +56,9 @@ change — a test run, a container, a CI job:
 |---|---|
 | `WATCHLIGHT_AUDIT_DIR` | directory `audit.jsonl` is written into (default `.watchlight`) |
 | `WATCHLIGHT_AUDIT_FILE` | `0` / `false` / `no` / `off` writes no local file at all |
+
+Both apply to the default governor and to one you construct, for any option you
+did not pass yourself.
 | `WATCHLIGHT_AGENT` | the agent name, when the `agent` option does not give one |
 
 ```bash
