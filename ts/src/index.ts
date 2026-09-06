@@ -362,8 +362,8 @@ export interface WatchlightOptions {
    *  restore the previous behaviour, where the BARE agent name — untyped, and
    *  indistinguishable on sight from a user id — stood in for the missing
    *  subject; that is transitional, warns once per process, and is removed in a
-   *  later version. See "Breaking in 0.8.0" in the identity model:
-   *  https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/docs/identity-model.md */
+   *  later version. See the 0.8.0 entry in the breaking-changes log:
+   *  https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/docs/breaking-changes.md */
   strictPrincipal?: boolean;
   /** Shared secret (>= 16 bytes) that approval tokens are signed under, so a
    *  token minted in one process verifies in another and survives a redeploy

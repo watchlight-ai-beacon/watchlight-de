@@ -12,15 +12,15 @@ pick up from there.
 | [The audit trail](audit-trail.md) | You want to watch decisions land, ship them to your own store, or count them for a quota. |
 | [Testing your policies](testing-policies.md) | Before a policy gates anything real. Golden fixtures, and the CLI that fails a CI run. |
 | [The signing secret](signing-secret.md) | A scope or an approval has to cross a process boundary — or the secret needs rotating. |
+| [Breaking changes](breaking-changes.md) | You are bumping the version. Every entry that flips a verdict, newest first. |
 | [Glossary](glossary.md) | A word is doing more work than you expected. |
 
 Runnable programs are in [`examples/`](../examples/README.md). The full
 reference — every option, every record field, every error — is on
 [docs.watchlight.ai/de](https://docs.watchlight.ai/de).
 
-**Upgrading?** The breaking changes for each release are in [the identity
-model](identity-model.md). Read them before you bump the version: only one of
-them announces itself with an error, and the rest surface as a denial that looks
+**Upgrading?** Read [breaking changes](breaking-changes.md) first. Only some of
+them announce themselves with an error; the rest surface as a denial that looks
 exactly like a policy of yours doing its job.
 
 **Found a mistake?** A documentation error is a bug. Every example here is

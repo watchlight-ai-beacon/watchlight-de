@@ -19,7 +19,7 @@ That call answers four questions:
 | Under what narrowed authority? | the attenuation **scope** | `govern.scope(tools=[…])` → `delegate(…)` |
 
 The subject and the actor are independent. An agent working for a person has
-both. An agent working for itself has one identity in both roles.
+both; an agent working for itself has one identity in both roles.
 
 ## The three cases
 
@@ -49,9 +49,6 @@ const seatPicker = govern.as("seat-picker");   // same engine, same policies, sa
 await seatPicker.authorize({ action: "pick_seat", principal: principals.user("db:4412") });
 ```
 
-All three run and assert their verdicts in
-[`examples/showcase/identity/`](../examples/showcase/identity/README.md).
-
 ## Where the actor comes from
 
 You choose the actor by choosing the handle, not by passing a field:
@@ -66,8 +63,7 @@ You choose the actor by choosing the handle, not by passing a field:
 
 `context.actor` and `context.actor_chain` are reserved and set by the SDK on
 every call. A caller-supplied value that differs raises `ReservedContextError`;
-an identical one is accepted. Neither key is ever read out of the request
-context, which is what lets a policy trust them.
+an identical one is accepted.
 
 `as` and the per-call `agent` override always start a fresh single-element
 chain. Only `delegate` appends.
@@ -80,7 +76,7 @@ chain. Only `delegate` appends.
 `context.actor_chain` is set-valued, so `contains` resolves. Outside any
 delegation it is the single-element `[agent]`, so both forms always work.
 
-Do not use a context key of your own called `agent`: the engine overwrites
+Do not use a context key of your own called `agent`. The engine overwrites
 `context.agent` with an object, so a policy comparing it to a string never
 matches and the call silently denies.
 
@@ -88,18 +84,15 @@ matches and the call silently denies.
 
 A governor built with neither an `agent` option nor `WATCHLIGHT_AGENT` (blank
 counts as unset) has no name. It still runs — the quickstart needs no
-configuration — but:
-
-* it sets **neither** actor key. `context has actor` is `false`, so a `permit`
-  reading `context.actor` cannot match and a `forbid` reading it still denies.
-* it records the reserved placeholder `<unconfigured>` — in `agent`, and as
-  `Agent::"<unconfigured>"` in `principal` when the call names no subject.
-  Passing `<unconfigured>` as an agent name raises, so that value on an audit
-  row always means the agent was never configured.
-* it says so once, on its first record.
+configuration — but it sets **neither** actor key, so a `permit` reading
+`context.actor` cannot match it and a `forbid` reading it still denies. It
+records the reserved placeholder `<unconfigured>` and says so once, on its first
+record.
 
 A policy naming `Agent::"<unconfigured>"` as its **principal** does match an
-unconfigured governor, so do not treat the placeholder as a guard.
+unconfigured governor, so do not treat the placeholder as a guard. Passing
+`<unconfigured>` as an agent name raises, so that value on an audit row always
+means the agent was never configured.
 
 ```python
 from watchlight import Watchlight
@@ -129,20 +122,18 @@ Any of these names it: `Watchlight({ agent })`, `WATCHLIGHT_AGENT`,
 
 ## What `principal` contains
 
-A typed Cedar entity reference:
+A typed Cedar entity reference. The accepted types are `User`, `Agent`, `Group`,
+`Role`, `Tool`, `Resource` and `Workflow`; an unrecognised one fails the request
+rather than silently denying it.
 
 | Shape | Meaning |
 |---|---|
 | `User::"<subject>"` | a person the call runs on behalf of |
-| `Agent::"<name>"` | the agent acting on its own behalf (what an omitted `principal` records) |
-| `Workflow::"<id>"`, `Group::"<id>"`, `Role::"<id>"` | other subjects the vocabulary accepts |
-
-The accepted types are `User`, `Agent`, `Group`, `Role`, `Tool`, `Resource` and
-`Workflow`. A machine caller with no human behind it is an `Agent`. An
-unrecognised type fails the request rather than silently denying it.
+| `Agent::"<name>"` | the agent on its own behalf — what an omitted `principal` records |
+| `Group::"<id>"`, `Role::"<id>"`, `Workflow::"<id>"` | other subjects the vocabulary accepts |
 
 Build the reference with the helpers. A subject id is an arbitrary string, and
-the request form and the policy form escape differently:
+the request form and the policy form escape it differently:
 
 ```python
 from watchlight import principals
@@ -181,8 +172,8 @@ records the agent as its own subject.
 
 ### The bare form is opaque
 
-The value is not parsed. A bare identifier — `team-42`, with no `Type::` — is
-accepted and recorded exactly as given. It is not typed, and it is not inert.
+A bare identifier — `team-42`, with no `Type::` — is accepted and recorded
+exactly as given. It is not typed, and it is not inert.
 
 A bare identifier matches a policy naming that id under `User`, `Agent`, `Group`
 or `Role`. It does not match one naming it under `Tool`, `Resource` or
@@ -190,56 +181,25 @@ or `Role`. It does not match one naming it under `Tool`, `Resource` or
 opposite of Cedar's usual rule. A `forbid` naming an agent can be defeated by a
 `permit` naming a user with the same id.
 
-**Name the type.** Only a typed reference discriminates by type, which is what
+**Name the type.** Only a typed reference discriminates, which is what
 `principals.user` / `principals.agent` are for. Treat `principal` in the audit
 trail the same way: a string to compare, not a shape to parse.
 
-## One engine, many named agents
+## Naming several agents
 
-Construct **one governor per policy set** and name every agent with `as`. It
-returns another `Watchlight` backed by the same engine — the same compiled
-policies, the same audit trail and sink, the same secrets — with a different
-stamped name. Six named agents cost one engine and one policy load.
+`as` returns another `Watchlight` on the same engine — the same compiled
+policies, the same trail and sink, the same secrets — with a different stamped
+name. Six named agents cost one engine and one policy load.
 
-```python
-from watchlight import Watchlight, principals
-
-govern = Watchlight(agent="platform", audit_sink=ship, signing_secret=SECRET)
-govern.load("watchlight.policy.json")          # compiled once
-
-broker = govern.as_("context-broker")
-digest = govern.as_("weekly-digest")
-
-broker.authorize(action="read", principal=principals.user("db:4412"))
-```
-
-```ts
-import { Watchlight, principals } from "@watchlight/sdk";
-
-const govern = new Watchlight({ agent: "platform", auditSink: ship, signingSecret: SECRET });
-govern.load("watchlight.policy.json");         // compiled once
-
-const broker = govern.as("context-broker");
-const digest = govern.as("weekly-digest");
-
-await broker.authorize({ action: "read", principal: principals.user("db:4412") });
-```
-
-`SECRET` is the signing secret — what to set it to and how to rotate it are on
-[its own page](./signing-secret.md).
-
-Four ways to name an agent without a second engine:
-
-| Way | Use it when |
+| Way to name an agent | Use it when |
 |---|---|
 | `as(name)` / `as_(name)` | a long-lived named agent shares the policy set |
 | the per-call or per-tool `agent` override | one call or one tool acts under another name |
 | `delegate(scope, name, …)` | a sub-agent acts under a parent's narrowed authority |
 | `configure_default(agent=…)` / `configureDefault({ agent })` | the exported `govern` is the one governor you use |
 
-**A second engine is for a different policy set** — a strict set for one tenant,
-a permissive one for a sandbox. Wanting a separate audit trail is the other
-reason. Wanting a different name is not.
+Wanting a different name is never a reason for a second governor. When you do
+need one is in [using the governor](using-the-governor.md#how-many-governors).
 
 ## Delegating to a sub-agent
 
@@ -289,26 +249,21 @@ The subject does not change on the way down. The actor does:
   +--------------------------------------------------------------+
 ```
 
-A delegate shares the engine, the policies, the trail and the sink;
-`picker.delegated_scope` / `picker.delegatedScope` is the narrowed scope it acts
-under. It cannot widen what its parent held (`AttenuationDenied`), and the chain
-is at most **`MAX_ACTOR_CHAIN` = 6** entries — the root agent plus the
-`DE_MAX_DEPTH` (5) attenuation levels. Past that, `delegate` raises
-`DevEditionCeiling`.
+Worth knowing:
 
-A delegate cannot be renamed: its name is what the delegation granted, and
-renaming it would drop the chain. Spawn a further sub-agent with `delegate`.
-
-**A scope is checked when you delegate, never when a call is authorized.** So
-confining a sub-agent means narrowing the scope *and* writing the policy. A
-scope also says nothing about the extent of a run — how many actions, what it
-may spend, how far toward an objective. That bound is a **goal**, evaluated in
-the governed control plane (Enterprise).
-
-**A scope token does not carry the chain.** `to_token()` / `toToken()`
-serialises capabilities only, so a scope re-established in another process
-starts a fresh chain from the receiving governor's agent. Call `delegate` there
-if the receiving side must record the delegation.
+* **A scope is checked when you delegate, never when a call is authorized.** So
+  confining a sub-agent means narrowing the scope *and* writing the policy.
+* **A scope token does not carry the chain.** `to_token()` / `toToken()`
+  serialises capabilities only, so a scope re-established in another process
+  starts a fresh chain from the receiving governor's agent. Call `delegate`
+  there if the receiving side must record the delegation.
+* A delegate cannot widen what its parent held (`AttenuationDenied`), and the
+  chain is at most **`MAX_ACTOR_CHAIN` = 6** entries. Past that, `delegate`
+  raises `DevEditionCeiling`.
+* A delegate cannot be renamed, because renaming it would drop the chain. Spawn
+  a further sub-agent with `delegate` instead.
+* `picker.delegated_scope` / `picker.delegatedScope` is the narrowed scope it
+  acts under.
 
 Each case is distinct in the trail — `principal` and `agent` on the same line:
 
@@ -388,155 +343,25 @@ parameter, a body field, or anything the model produced.
 **Use a stable internal identifier, not an email or a username.** An email
 changes and every policy written against it stops matching. A username can be
 released and reused, which makes an old audit row point at a different person.
-Prefer the primary key, the account id or the subject claim. If more than one
-identity source can produce subjects, namespace the id (`User::"db:4412"`,
-`User::"sso:8f3c…"`).
+Namespace the id when more than one identity source can produce subjects:
+`User::"db:4412"`, `User::"sso:8f3c…"`.
 
 **When there is no human subject** — a scheduled job, a CLI, an autonomous
 loop — omit `principal`. The agent is then recorded as `Agent::"<name>"`. Do not
 invent `User::"system"`, and do not coalesce a missing subject to `""`, which is
 [refused](#what-every-principal-must-satisfy).
 
-The vocabulary matches [RFC 8693 (OAuth 2.0 Token
-Exchange)](https://www.rfc-editor.org/rfc/rfc8693):
-
-| RFC 8693 claim | Watchlight input |
-|---|---|
-| `sub` — the party the request is made on behalf of | `principal` → `User::"<sub>"` |
-| `act.sub` — the party doing the acting | `context.actor` (the leaf) |
-| nested `act` — the chain of actors | `context.actor_chain`, root first |
-
-Passing both values is **delegation**. Passing only a subject is
-**impersonation**, and the trail can no longer say which runtime acted.
+The vocabulary matches [RFC 8693](https://www.rfc-editor.org/rfc/rfc8693): `sub`
+is the `principal`, `act.sub` is `context.actor`, and the nested `act` chain is
+`context.actor_chain`, root first.
 
 The Developer Edition authorizes the identities the application asserts. It
 authenticates nothing itself, so establishing who the subject is remains your
 job. See *A note on identity* in the
 [README](../README.md#a-note-on-identity).
 
-## Breaking in 0.8.0
-
-**An agent-scoped policy not spelled `Agent::` flips from Allow to Deny.** A
-call that names no `principal` now records the agent as `Agent::"<name>"` at
-every site. Before, the bare untyped name was substituted. The engine bound it
-to one of the entity types the policy set named that id with, and that binding
-could differ between processes running the same policy set. So a rule written
-against `User::"my-agent"` sometimes authorized the agent. Now it never does,
-and the Deny is silent.
-
-```cedar
-// before — matched the untyped substituted name
-permit(principal == User::"memory-writer", action == Action::"write", resource);
-
-// after — name the agent as an agent …
-permit(principal == Agent::"memory-writer", action == Action::"write", resource);
-
-// … or name the runtime, which works whoever the subject is
-permit(principal, action == Action::"write", resource)
-when { context.actor == "memory-writer" };
-```
-
-Audit your policy set for any `principal == <Type>::"<agent-name>"` that is not
-`Agent::`, and for `principal is User` rules relied on to match an agent. Do not
-audit by policy order — a rule that looks unreachable in this run may be the one
-that matched in the last.
-
-Three more consequences:
-
-* Anything comparing an audit record's `principal` to the bare agent name —
-  dashboards, log queries — must use `Agent::"<name>"`. `counters()` is keyed on
-  the principal exactly, so a quota that counted `"my-agent"` now counts
-  `Agent::"my-agent"`.
-* **Approval tokens** bind `(principal, action, resource)`, so a token minted
-  before the change does not verify after it.
-* `strict_principal=False` / `strictPrincipal: false` restores the old
-  substitution for one release and warns once per process. It restores the
-  unpredictable binding with it, so use it to unblock a deploy, not to stay on.
-
-```python
-Watchlight(agent="my-agent", strict_principal=False)   # transitional
-```
-
-```ts
-new Watchlight({ agent: "my-agent", strictPrincipal: false });   // transitional
-```
-
-**The reserved actor keys.** The SDK now stamps `context.actor` and
-`context.actor_chain` on every authorize and refuses a caller-supplied value
-that differs:
-
-```text
-ReservedContextError: context keys 'actor' and 'actor_chain' are reserved for the acting agent and are set by the SDK
-```
-
-An identical value is still accepted. What breaks is an application that already
-used `actor` for a value of its own. The migration is a rename, and there is no
-transitional flag — a flag would make every `context.actor` rule in the set
-forgeable while it was on.
-
-```python
-govern.authorize(action="refund", context={"actor": "billing-console"})         # before
-govern.authorize(action="refund", context={"requested_by": "billing-console"})  # after
-```
-
-```ts
-await govern.authorize({ action: "refund", context: { actor: "billing-console" } });         // before
-await govern.authorize({ action: "refund", context: { requested_by: "billing-console" } });  // after
-```
-
-```cedar
-// before
-permit(principal, action == Action::"refund", resource)
-when { context.actor == "billing-console" };
-
-// after
-permit(principal, action == Action::"refund", resource)
-when { context.requested_by == "billing-console" };
-```
-
-## Breaking in 0.8.3
-
-Four inputs that used to produce a **wrong record** now raise.
-
-| What raises now | What it did before | Fix |
-|---|---|---|
-| `principal=""` — or whitespace-only, or non-string — on `authorize`, `tool`, `mint_approval`, `counters`, `sanitize`, `screen`, or an adapter's `principal` binding | recorded the **agent** as the subject | omit `principal` to mean "no subject"; pass a real one otherwise |
-| a control character in a `principal` | recorded verbatim, splitting the audit line | strip it, or use `principals.user(sub)`, which has always refused it |
-| `agent=None` (Python) / `agent: null` (TS) | became the default name | omit the argument, or pass a name |
-| a **blank** `WATCHLIGHT_AGENT` | Python took the default; TS raised | unset it, or give it a name (both lanes now treat blank as unset) |
-
-`TypeError` from `authorize` / `tool` / `mint_approval` / `counters`;
-`SanitizeError` / `ScreenError` from `sanitize` / `screen`. Same message and
-same accepted input in both lanes.
-
-Wherever a subject may be missing, pass nothing instead of an empty string:
-
-```python
-# before — an absent user was recorded as the agent
-govern.authorize(action="read", principal=f'User::"{user.id or ""}"')
-# after  — an absent user names no subject, which the record then says
-govern.authorize(
-    action="read",
-    principal=principals.user(user.id) if user else None,
-)
-```
-
-```ts
-// before
-await govern.authorize({ action: "read", principal: user?.id ?? "" });
-// after
-await govern.authorize({
-  action: "read",
-  principal: user ? principals.user(user.id) : undefined,
-});
-```
-
-One verdict also changes: a governor with **no configured agent name** now sets
-neither actor key (see [An agent you did not
-name](#an-agent-you-did-not-name)), so a `permit` reading `context.actor` stops
-matching it and a `forbid` reading `context.actor` now denies it. The fix is to
-name the agent. The bare-identifier form of `principal` is deliberately not
-tightened.
+Upgrading? Every change on this page that flips a verdict is in [breaking
+changes](breaking-changes.md).
 
 ## See also
 
@@ -545,5 +370,7 @@ tightened.
 - [`README.md`](../README.md) — quickstart, the audit trail, the identity ladder
 - [`docs/using-the-governor.md`](using-the-governor.md) — where the governor lives in an
   application, and the request-handler / worker / test shapes
+- [The signing secret](signing-secret.md) — what a scope token needs before it
+  crosses a process boundary
 - [`examples/patterns/per-user-attribution.md`](../examples/patterns/per-user-attribution.md) — a policy that requires a named subject
 - [`examples/patterns/subagent-confinement.md`](../examples/patterns/subagent-confinement.md) — scope attenuation

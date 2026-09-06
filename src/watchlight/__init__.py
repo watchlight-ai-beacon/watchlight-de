@@ -1666,8 +1666,8 @@ class Watchlight:
             behaviour, where the BARE agent name — untyped, and
             indistinguishable on sight from a user id — stood in for the missing
             subject; that is transitional, warns once per process, and is
-            removed in a later version. See "Breaking in 0.8.0" in the identity
-            model: https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/docs/identity-model.md"""
+            removed in a later version. See the 0.8.0 entry in the
+            breaking-changes log: https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/docs/breaking-changes.md"""
         state = _GovernorState()
         self._shared = state
         # An explicitly passed name is validated as given — an empty one, or an

@@ -430,10 +430,8 @@ if (d.decision === "NeedsApproval") {
   The signed payload is length-prefixed and carries a version marker, so no two
   different `(principal, action, resource)` triples can sign the same bytes, and
   both language packages sign identical bytes (a token minted by either verifies
-  in the other under the same secret). **Breaking in 0.8.0:** approval tokens
-  minted by an earlier version do not verify against 0.8.0 — they were signed
-  under the previous payload format. Nothing else changes, and the tokens are
-  short-lived, so drain in-flight approvals across the upgrade.
+  in the other under the same secret). Tokens minted before 0.8.0 do not verify —
+  see [breaking changes](https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/docs/breaking-changes.md).
 - **Correlation id** — every decision returns `decisionId` (also in the audit
   line), so you can join it to your own records.
 - **Obligations** — a permit annotated `@obligate_redact("ssn")`,
@@ -484,10 +482,8 @@ const readDoc = govern.tool(fetchDocument, {
   is discarded, so a slow hook can never release a payload late. There is no
   value that switches the deadline off — `0`, a negative and `Infinity` are
   refused (`RangeError`) where the tool is wrapped; a hook that genuinely needs
-  longer takes a larger number. **Breaking in 0.9.1:** `govern.tool()` and the
-  LangChain adapters had no deadline before, so an egress hook that takes longer
-  than 8 s now withholds where it used to release late — pass a larger
-  `onResultTimeoutMs` if that hook is meant to be slow.
+  longer takes a larger number. The deadline reached these two paths in 0.9.1 —
+  see [breaking changes](https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/docs/breaking-changes.md).
 - Writes a **value-free** `egress` audit record — `{ ts, agent, principal,
   intent, event: "egress", resource, replaced, decision_id }` (plus
   `withheld: true` when the hook threw or timed out) — never the result. It
@@ -744,7 +740,7 @@ yourself already names its own options and is untouched. The default governor
 deliberately still writes `.watchlight/audit.jsonl` with no opt-in — that file
 appearing with zero configuration is the quickstart, and `watchlight dev` reads
 it and nothing else. Full guide:
-[`docs/using-the-governor.md`](../docs/using-the-governor.md#the-exported-default-governor).
+[`docs/using-the-governor.md`](../docs/using-the-governor.md#using-the-exported-default-governor).
 
 ### Count it — `govern.counters` for quota policies
 
