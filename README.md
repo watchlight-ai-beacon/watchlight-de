@@ -192,12 +192,12 @@ changes is what happens around the decision.
 
 | Capability | Developer Edition | Enterprise |
 |---|---|---|
-| Real-time enforcement effects — quarantine an agent, terminate a run, sever a delegation subtree, revoke authority | ❌ the policy loads and the call is denied; the containment action never fires | ✅ fires fleet-wide, mid-execution |
-| Drift detection | ❌ | ✅ an agent leaving its declared plan is quarantined at machine speed |
+| Real-time enforcement effects — quarantine an agent, terminate a run, sever a delegation subtree, revoke authority | ❌ the policy loads and the call is denied; the containment action never fires | ✅ the effect replaces the wire decision, the proxy refuses fail-closed, and a sever or quarantine durably collapses the delegation tree |
+| Drift detection | ❌ | ✅ an agent leaving its declared plan is detected and quarantined automatically |
 | Runtime enforcement proxy | ❌ governs in-process, plus a PEP in front of one MCP server | ✅ every wire request clears the proxy as well as the plugin |
 | Discovery and registry | ❌ | ✅ finds every agent and MCP server across your environments and tracks trust state |
-| Signed execution lineage | ❌ local JSONL, unsigned | ✅ tamper-evident, reconstructs the chain from the human who authorized it to the resource |
-| Fleet-wide revocation | ❌ one process | ✅ zero standing privileges, multi-tenant |
+| Signed execution lineage | ❌ local JSONL, unsigned | ✅ every emitted step is signed and verified fail-closed, and the audit chain is independently re-verifiable |
+| Fleet-wide revocation | ❌ one process | ✅ authority revoked centrally, across tenants |
 | Attested identity | ❌ the principal is asserted | ✅ OIDC federation and mTLS workload identity |
 | Air-gapped fleet deployment | ❌ the library itself runs offline, but there is no plane to deploy | ✅ on-premises and sovereign, with local policy evaluation |
 
