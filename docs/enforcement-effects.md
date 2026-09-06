@@ -47,15 +47,16 @@ The engine accepts `attenuate`, `escalate`, `observe`, `quarantine`,
 `require_approval`, `revoke`, `sever_subtree` and `terminate`.
 `ENFORCEMENT_EFFECTS` exports the set in code.
 
-| Policy | Annotation | The Developer Edition returns |
-|---|---|---|
-| `permit` | `require_approval` | `NeedsApproval` |
-| `forbid` | `observe` | `Allow` |
-| `forbid` | `escalate` | `Deny` |
-| `forbid` | `quarantine`, `revoke`, `sever_subtree`, `terminate` | `Deny` |
+Two combinations change the verdict your code receives here:
 
-Two of those change the verdict your code receives here: `require_approval` and
-`observe`. Both are covered below, and you can assert either in a test.
+| Policy | Annotation | Instead of | You get |
+|---|---|---|---|
+| `permit` | `require_approval` | `Allow` | `NeedsApproval` |
+| `forbid` | `observe` | `Deny` | whatever the rest of the set decides |
+
+Every other pairing leaves the verdict alone — an annotated `forbid` still
+denies, an annotated `permit` still allows. Both of the two are covered below,
+and you can assert either in a test.
 
 ## What containment does and does not do here
 
