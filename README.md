@@ -183,7 +183,7 @@ changes is what happens around the decision.
 | Allow / require approval / deny, on real Cedar | ✅ in-process engine, policies from a local file | ✅ a running, scaled decision service |
 | Strict-subset sub-agent attenuation | ✅ engine-side, to a depth of 5 | ✅ server-side, unbounded |
 | Human-in-the-loop approvals | ✅ single-use tokens | ✅ across the fleet, with an operator queue |
-| Content screening | ✅ rule-based: `govern.sanitize`, `govern.screen` | ✅ a guardrails service with ML classifiers |
+| Content screening | ✅ rule-based and in-process: `govern.sanitize`, `govern.screen` | ✅ the same class of check as a managed service — centrally authored policies, applied to traffic your code never touches |
 | Framework plugins | ✅ LangGraph, Pydantic AI, Claude Agent SDK, DeepAgents, LangChain.js, MCP | ✅ those plus Claude Code, Google ADK, AWS Bedrock, Microsoft Agent Framework, OpenClaw |
 | Scopes across a process boundary | ✅ HMAC scope token — integrity within one trust domain | ✅ independently attestable scopes |
 | Dashboard | ✅ `watchlight dev` → `localhost:7000` | ✅ the operator console |
