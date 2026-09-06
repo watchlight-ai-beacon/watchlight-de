@@ -477,8 +477,9 @@ AUDIT_FILE_ENV = "WATCHLIGHT_AUDIT_FILE"
 #
 #     an explicit configure_default(...) option  >  the environment  >  the default
 #
-# A governor you construct yourself already names its own `audit_dir` /
-# `audit_file` at the call site, so neither variable touches it.
+# A governor you construct yourself resolves the same way: an argument you pass
+# wins, and one you omit falls through to the variable. Omitting an argument is
+# not the same as passing its default, so both parameters carry a sentinel.
 
 _ENV_TRUE = frozenset({"1", "true", "yes", "on"})
 _ENV_FALSE = frozenset({"0", "false", "no", "off"})
@@ -1565,7 +1566,7 @@ class Watchlight:
     def __init__(
         self,
         agent: Any = _UNSET,
-        audit_dir: str | os.PathLike[str] = ".watchlight",
+        audit_dir: str | os.PathLike[str] = _UNSET,
         audit_sink: Optional[AuditSink] = None,
         *,
         signing_secret: Any = None,
@@ -1573,7 +1574,7 @@ class Watchlight:
         approval_secret: Any = None,
         approval_store: Optional[ApprovalStore] = None,
         counter_source: Optional[CounterSource] = None,
-        audit_file: bool = True,
+        audit_file: bool = _UNSET,
         strict_principal: bool = True,
     ) -> None:
         """:param agent: stable agent identity for the audit trail and the
@@ -1691,6 +1692,25 @@ class Watchlight:
         #: The scope a delegated governor acts under (``None`` otherwise).
         self.delegated_scope: Optional[Scope] = None
         state.engine = _engine.PolicyEngine()
+        # Precedence, the same order every other option resolves in: an explicit
+        # argument > the environment > the built-in default. A caller that names
+        # `audit_dir` / `audit_file` is authoritative; one that names neither
+        # gets the environment, because "I passed nothing" and "I passed the
+        # default" are different statements and only a sentinel can tell them
+        # apart. Accepting the variable and discarding it is the failure this
+        # avoids: a process that asked for no local trail got one anyway.
+        named_a_destination = audit_dir is not _UNSET
+        if audit_dir is _UNSET:
+            env_dir = os.environ.get(AUDIT_DIR_ENV)
+            audit_dir = env_dir if (env_dir or "").strip() else ".watchlight"
+        if audit_file is _UNSET:
+            # Naming `audit_dir` IS naming a file destination, so the variable
+            # does not get to silence a trail the caller just chose a location
+            # for — losing an audit trail is the failure that matters more than
+            # writing one. It applies to a governor that named no destination at
+            # all, which is the case that was silently ignoring it.
+            env_file = None if named_a_destination else _env_flag(AUDIT_FILE_ENV)
+            audit_file = True if env_file is None else env_file
         state.audit_options = {"dir": audit_dir, "file": audit_file, "sink": audit_sink}
         state.audit_path = (pathlib.Path(audit_dir) / "audit.jsonl") if audit_file else None
         state.trail = AuditTrail(state.audit_path, audit_sink)
@@ -2923,8 +2943,12 @@ class Watchlight:
 
         Lazy on purpose: reading it at import time would make the variable's
         effect depend on whether the application imported ``watchlight`` before
-        or after setting it. A governor constructed by an application names its
-        own audit options at the call site, so neither variable touches it."""
+        or after setting it. This re-read is what keeps the DEFAULT governor
+        order-independent — it is constructed at import, so the value it
+        resolved there may predate the variable being set.
+
+        A governor an application constructs resolves the same layer in
+        ``__init__``, at the moment it is built, and does not need this."""
         state = self._shared
         if state.audit_env_applied or not state.is_default:
             return

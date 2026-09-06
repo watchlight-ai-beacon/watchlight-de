@@ -673,8 +673,8 @@ export const AUDIT_FILE_ENV = "WATCHLIGHT_AUDIT_FILE";
 //
 //     an explicit configureDefault(...) option  >  the environment  >  the default
 //
-// A governor you construct yourself already names its own `auditDir` /
-// `auditFile` at the call site, so neither variable touches it.
+// A governor you construct yourself resolves the same way: an option you pass
+// wins, and one you leave undefined falls through to the variable.
 
 const ENV_TRUE = new Set(["1", "true", "yes", "on"]);
 const ENV_FALSE = new Set(["0", "false", "no", "off"]);
@@ -806,9 +806,18 @@ function newState(opts: WatchlightOptions): GovernorState {
   // Resolved once: the approval key falls back to the scope-token secret, so
   // both are derived from the same configured value.
   const signingSecrets = resolveSigningSecrets(opts);
+  // Precedence: an option you pass > the environment > the built-in default.
+  // An option left undefined falls through to the variable, so a process that
+  // asked for no local trail does not get one anyway. Naming `auditDir` IS
+  // naming a file destination, so AUDIT_FILE_ENV does not silence a trail the
+  // caller gave a location to — losing a trail is the worse failure.
+  const envDir = process.env[AUDIT_DIR_ENV];
+  const auditDir = opts.auditDir ?? (envDir && envDir.trim() ? envDir : undefined);
+  const auditFile =
+    opts.auditFile ?? (opts.auditDir !== undefined ? undefined : envFlag(AUDIT_FILE_ENV));
   return {
     trail: new AuditTrail(
-      opts.auditFile === false ? null : path.join(opts.auditDir ?? ".watchlight", "audit.jsonl"),
+      auditFile === false ? null : path.join(auditDir ?? ".watchlight", "audit.jsonl"),
       opts.auditSink
     ),
     backend: selectBackend({
@@ -827,7 +836,7 @@ function newState(opts: WatchlightOptions): GovernorState {
     announced: false,
     sources: new Set<string>(),
     strictPrincipal: opts.strictPrincipal !== false,
-    auditOptions: { dir: opts.auditDir, file: opts.auditFile, sink: opts.auditSink },
+    auditOptions: { dir: auditDir, file: auditFile, sink: opts.auditSink },
     backendOptions: { apdpUrl: opts.apdpUrl, token: opts.token, tenantId: opts.tenantId },
     auditEnvApplied: false,
     isDefault: false,

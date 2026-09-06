@@ -5,6 +5,23 @@ different verdict. Only some announce themselves; the rest surface as a denial
 that looks exactly like a policy of yours doing its job. Read every entry
 between the version you are on and the one you are moving to.
 
+## Unreleased
+
+**`WATCHLIGHT_AUDIT_FILE` and `WATCHLIGHT_AUDIT_DIR` now reach a governor you
+construct**, for any audit option you did not pass yourself. Before, both
+variables were accepted and discarded unless the governor was the default one,
+so a process that asked for no local trail got one anyway.
+
+If you construct a governor and rely on the local file while either variable is
+set in the environment, name the option and the argument wins as it always has:
+
+```python
+Watchlight(agent="svc", audit_file=True)
+```
+
+Naming `audit_dir` also counts as choosing a file destination, so
+`WATCHLIGHT_AUDIT_FILE` does not silence a trail you gave a location to.
+
 ## 0.9.1
 
 **An egress hook slower than 8 seconds now withholds the payload** instead of

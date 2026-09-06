@@ -415,8 +415,8 @@ WATCHLIGHT_AUDIT_FILE=0 pytest                # this run writes no trail into th
 WATCHLIGHT_AUDIT_DIR=.watchlight-test pytest  # …or keeps its own, next to the application's
 ```
 
-Three variables configure the default governor without touching code, for a test
-run, a container or a CI job:
+Three variables configure the governor without touching code, for a test run, a
+container or a CI job:
 
 | Variable | Effect |
 |---|---|
@@ -431,8 +431,11 @@ record like any other call.
 
 Worth knowing:
 
-- **Precedence is option, then environment, then default.** A governor you
-  construct names its own options, so neither variable touches it.
+- **Precedence is option, then environment, then default**, for the default
+  governor and for one you construct alike. An argument you pass always wins; an
+  argument you leave out falls through to the variable. Naming `audit_dir`
+  counts as choosing a file destination, so `WATCHLIGHT_AUDIT_FILE` does not
+  then silence it — pass `audit_file=False` to say that.
 - **`WATCHLIGHT_AUDIT_FILE=0` is `audit_file=False` by another route.** No
   `.watchlight` directory is created, `govern.counters(...)` raises rather than
   counting zero, and `watchlight dev` has nothing to tail. Use

@@ -500,3 +500,61 @@ def test_a_record_without_a_decision_id_reads_as_empty(tmp_path):
     path = tmp_path / "audit.jsonl"
     path.write_text('{"timestamp": "t", "principal": "p", "decision": "permit"}\n')
     assert cli._read_events(path)[0]["decision_id"] == ""
+
+
+# ── the environment layer reaches a governor the application constructs ──
+
+
+_CONSTRUCTED_HONOURS_ENV = """
+import pathlib
+from watchlight import Watchlight
+
+# Names the agent and nothing about the audit destination. Before the sentinel
+# defaults, `audit_file` read as an explicit True here and the variable was
+# accepted and discarded — a process that asked for no local trail got one.
+g = Watchlight(agent="constructed", audit_sink=lambda record: None)
+g.allow('permit(principal, action, resource);')
+g.authorize(action="read", principal='User::"u"')
+assert not pathlib.Path(".watchlight/audit.jsonl").exists(), "the variable was ignored"
+print("OK")
+"""
+
+_CONSTRUCTED_EXPLICIT_WINS = """
+import pathlib
+from watchlight import Watchlight
+
+# An argument the caller passed is authoritative over the environment, in both
+# directions. This is the half that must not regress while fixing the other.
+g = Watchlight(agent="constructed", audit_file=True)
+g.allow('permit(principal, action, resource);')
+g.authorize(action="read", principal='User::"u"')
+assert pathlib.Path(".watchlight/audit.jsonl").exists(), "an explicit option lost to the environment"
+print("OK")
+"""
+
+_CONSTRUCTED_DIR_FROM_ENV = """
+import pathlib
+from watchlight import Watchlight
+
+g = Watchlight(agent="constructed")
+g.allow('permit(principal, action, resource);')
+g.authorize(action="read", principal='User::"u"')
+assert pathlib.Path("elsewhere/audit.jsonl").exists(), "WATCHLIGHT_AUDIT_DIR was ignored"
+assert not pathlib.Path(".watchlight/audit.jsonl").exists()
+print("OK")
+"""
+
+
+def test_a_constructed_governor_honours_the_audit_file_variable(tmp_path):
+    out = _run(_CONSTRUCTED_HONOURS_ENV, cwd=tmp_path, env={AUDIT_FILE_ENV: "0"})
+    assert "OK" in out.stdout
+
+
+def test_an_explicit_audit_file_beats_the_variable_on_a_constructed_governor(tmp_path):
+    out = _run(_CONSTRUCTED_EXPLICIT_WINS, cwd=tmp_path, env={AUDIT_FILE_ENV: "0"})
+    assert "OK" in out.stdout
+
+
+def test_a_constructed_governor_honours_the_audit_dir_variable(tmp_path):
+    out = _run(_CONSTRUCTED_DIR_FROM_ENV, cwd=tmp_path, env={AUDIT_DIR_ENV: "elsewhere"})
+    assert "OK" in out.stdout
