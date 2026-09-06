@@ -192,12 +192,12 @@ changes is what happens around the decision.
 
 | Capability | Developer Edition | Enterprise |
 |---|---|---|
-| Real-time enforcement effects — quarantine an agent, terminate a run, sever a delegation subtree, revoke authority | ❌ the policy loads and the call is denied; the containment action never fires | ✅ the effect replaces the wire decision, the proxy refuses fail-closed, and a sever or quarantine durably collapses the delegation tree |
-| Drift detection | ❌ | ✅ an agent leaving its declared plan is detected and quarantined automatically |
+| Real-time enforcement effects — quarantine an agent, terminate a run, sever a delegation subtree, revoke authority | ❌ the policy loads and the call is denied; the containment action never fires | ✅ a contained agent's live connections are force-closed mid-run, server-side, with no cooperation from the agent; a sever durably collapses the delegation tree |
+| Drift detection | ❌ | ✅ an agent leaving its declared plan is quarantined automatically, and its live connections drop |
 | Runtime enforcement proxy | ❌ governs in-process, plus a PEP in front of one MCP server | ✅ every wire request clears the proxy as well as the plugin |
 | Discovery and registry | ❌ | ✅ finds every agent and MCP server across your environments and tracks trust state |
-| Signed execution lineage | ❌ local JSONL, unsigned | ✅ every emitted step is signed and verified fail-closed, and the audit chain is independently re-verifiable |
-| Fleet-wide revocation | ❌ one process | ✅ authority revoked centrally, across tenants |
+| Signed execution lineage | ❌ local JSONL, unsigned | ✅ each step is signed, persisted and verified fail-closed, over a hash-chained audit trail anyone can re-verify |
+| Fleet-wide revocation | ❌ one process | ✅ revocation is durable and enforced at the credential broker, across tenants |
 | Attested identity | ❌ the principal is asserted | ✅ OIDC federation and mTLS workload identity |
 | Air-gapped fleet deployment | ❌ the library itself runs offline, but there is no plane to deploy | ✅ on-premises and sovereign, with local policy evaluation |
 
