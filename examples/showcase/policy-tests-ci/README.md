@@ -1,8 +1,8 @@
 # Policy tests as a CI gate
 
-A policy is the only thing between an agent and a real action, so give it golden
-fixtures and run them on every pull request. Copy this folder's shape into your
-own repository.
+A policy is the only thing between an agent and a real action. Give it fixtures,
+and run them on every pull request. Copy this folder's shape into your own
+repository.
 
 ```bash
 cd examples/showcase/policy-tests-ci
@@ -77,8 +77,8 @@ watchlight policy test — widened/tickets.suite.json
 8 passed, 3 failed (11 total)
 ```
 
-Two `Deny` fixtures catch the read widening: one asserts the explicit `forbid`,
-the other asserts that a request with **no** classification fails closed. A
+Two `Deny` fixtures catch the read widening. One asserts the explicit `forbid`.
+The other asserts that a request with **no** classification fails closed. A
 permit with a `when` clause denies both; a bare permit allows both. Keep a
 missing-context fixture for every attribute a policy reads.
 
@@ -88,10 +88,10 @@ missing-context fixture for every attribute a policy reads.
 cp examples/showcase/policy-tests-ci/github-workflow.policy-tests.yml .github/workflows/policy-tests.yml
 ```
 
-The template runs three jobs: `typescript` and `python` run `$SUITE` through
-each CLI, and `gate-has-teeth` runs `$WIDENED_SUITE` and fails if it *passes*.
-Point `SUITE` at your own suite, keep one lane or both, and keep a widened
-variant of your policy next to it.
+The template runs three jobs. `typescript` and `python` each run `$SUITE`
+through one CLI. `gate-has-teeth` runs `$WIDENED_SUITE` and fails if it
+*passes*. Point `SUITE` at your own suite and keep one lane or both. Keep a
+widened variant of your policy next to it.
 
 Exit codes, identical in both CLIs:
 
@@ -102,10 +102,11 @@ Exit codes, identical in both CLIs:
 | `2` | the suite file is missing or not valid JSON, has no `tests`, or a fixture lacks `action` or `expect` |
 
 **A `policyFile` path that does not exist is not an error.** The engine is
-fail-closed, so a missing file loads nothing and every fixture runs against zero
-policies. Every `Allow` fixture then fails — but a suite of nothing but `Deny`
-fixtures would pass green. Keep at least one `Allow` fixture in every suite.
-`gate-has-teeth` also demands exit code exactly `1` from the widened suite, so a
+fail-closed. A missing file loads nothing, so every fixture runs against zero
+policies. Every `Allow` fixture then fails. But a suite of nothing but `Deny`
+fixtures would pass green, so keep at least one `Allow` fixture in every suite.
+
+`gate-has-teeth` also demands exit code exactly `1` from the widened suite. A
 missing CLI (`127`) or a malformed suite (`2`) can never read as a working gate.
 
 ## Add a case
@@ -132,24 +133,23 @@ missing CLI (`127`) or a malformed suite (`2`) can never read as a working gate.
 `policyFile` resolves relative to the suite file. Inline `policies`
 (`[{ "name", "code" }]`) work instead of, or alongside, a file.
 
-Two habits keep the gate honest. Write one fixture per boundary, on both sides —
-for `amount <= 100`, test 100 and 101. And when a real widening is needed,
-change the fixtures first and watch them go red before touching the policy.
+Two habits keep the gate honest. Write one fixture per boundary, on both sides:
+for `amount <= 100`, test 100 and 101. And when a widening is genuinely needed,
+change the fixtures first. Watch them go red before you touch the policy.
 
 ## Worth knowing
 
 - A **bare identifier** in a fixture's `principal` matches `User`, `Agent`,
-  `Group` and `Role` policies for that id, and when it matches more than one an
+  `Group` and `Role` policies for that id. When it matches more than one, an
   allow beats a forbid. Write the type — `User::"alice"` — to test what you
   mean.
 - `watchlight policy test` and `govern.test()` run the engine's decision core
   and write no records. A test that calls `authorize()` or a governed tool is a
-  governed call like any other: set `WATCHLIGHT_AUDIT_FILE=0` for the test run
+  governed call like any other. Set `WATCHLIGHT_AUDIT_FILE=0` for the test run
   to keep its records out of the application's trail.
 
-Verified by [`check.sh`](./check.sh), which runs
-[`run-local.sh`](./run-local.sh) and asserts that the workflow template's suite
-paths still resolve. Nothing here runs the template itself — it is for your
-repository. More policy shapes, each with its own suite, are in
-[`examples/patterns/`](../../patterns/README.md); the reference is
-[testing your policies](../../../docs/testing-policies.md).
+Verified by [`check.sh`](./check.sh). It runs [`run-local.sh`](./run-local.sh)
+and asserts that the workflow template's suite paths still resolve. Nothing here
+runs the template itself — that is for your repository. More policy shapes, each
+with its own suite, are in [`examples/patterns/`](../../patterns/README.md). The
+reference is [testing your policies](../../../docs/testing-policies.md).

@@ -1,8 +1,8 @@
 # Audit forensics
 
-Every decision joined to the record it produced, and the argument values in none
-of them. The trail answers one question: which principal, under which intent,
-did what to which resource, and what happened to the data afterwards.
+Generate an audit trail with every record kind, then read it back. It answers
+one question: which principal did what to which resource, and what happened to
+the data afterwards. No argument value is ever in it.
 
 ```bash
 cd examples/showcase/audit-forensics
@@ -74,14 +74,24 @@ Everything printed is an identifier, a count or a field name.
 
 ## Record kinds
 
-A **decision** record has no `event` field; every other kind names itself in
-`event`. That absence is the discriminant. TypeScript exports the five as a
-discriminated union `AuditRecord`; Python exports the same five names as
-`TypedDict`s. Annotate `UnknownAuditRecord` (TypeScript) or `dict` (Python) to
-take the record as an untyped bag instead.
+Five kinds, told apart by `event`. A decision has no `event` field; every other
+kind names itself there. One allowed read and the two records that followed it,
+abridged:
 
-Both generators assert every record against this table on every run, in both
-lanes, so it cannot drift from the code.
+```json
+{"ts": "…", "agent": "ticket-agent", "principal": "User::\"alice\"", "intent": "read", "resource": "ticket/T-1", "decision": "Allow", "decision_id": "5b096b77-…"}
+{"ts": "…", "agent": "ticket-agent", "intent": "read", "event": "sanitization", "resource": "ticket/T-1", "total": 3, "decision_id": "5b096b77-…"}
+{"ts": "…", "agent": "ticket-agent", "principal": "User::\"alice\"", "intent": "read", "event": "egress", "resource": "ticket/T-1", "replaced": true, "decision_id": "5b096b77-…"}
+```
+
+So `.event // "decision"` names any record's kind, and `select(.event == null)`
+picks out the decisions. `decision_id` is what joins the three.
+
+Both SDKs also ship types for these five records. They are described in
+[the audit trail](../../../docs/audit-trail.md#send-records-to-your-own-store).
+
+Both generators assert every record against the tables below, on every run and
+in both lanes. The tables cannot drift from the code.
 
 Two fields ride along on every kind but `attenuation`:
 
@@ -138,10 +148,10 @@ callers get a uniform one, and the trail carries the verdict.
 Three dispositions: `withheld` → **withheld**; else `replaced: true` →
 **replaced**; else **passthrough**. A denied call has no `egress` record.
 
-The deadline is `on_result_timeout_ms` / `onResultTimeoutMs`, 8 seconds by
-default, on every path since 0.9.1. The record carries the disposition of the
-payload, not the cause — a thrown hook and a slow one look the same here, and
-the caller gets the error.
+`withheld` says the payload never left. It does not say why: a hook that threw
+and a hook that outran its 8-second deadline look identical here. The caller
+gets the error. The deadline itself is in
+[governing what a tool returns](../../../docs/typescript.md#govern-what-a-tool-returns).
 
 ### `attenuation` — written by `scope()` and every `attenuate()`
 
