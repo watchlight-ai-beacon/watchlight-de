@@ -95,3 +95,5 @@ What it does with the value you give it:
 
 Enterprise replaces the shared secret with KMS-held keys and signed lineage, so
 a token names who issued it and can be verified without the power to mint one.
+Getting there is a change of edition rather than a setting, so
+[email sales@watchlight.ai](mailto:sales@watchlight.ai?subject=Watchlight%20Enterprise) when you need it.

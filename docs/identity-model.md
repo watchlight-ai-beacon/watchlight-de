@@ -358,7 +358,9 @@ is the `principal`, `act.sub` is `context.actor`, and the nested `act` chain is
 The Developer Edition authorizes the identities the application asserts. It
 authenticates nothing itself, so establishing who the subject is remains your
 job. See *A note on identity* in the
-[README](../README.md#a-note-on-identity).
+[README](../README.md#a-note-on-identity). Attested identity — federated OIDC
+and workload mTLS — is the Enterprise plane;
+[email sales@watchlight.ai](mailto:sales@watchlight.ai?subject=Watchlight%20Enterprise) if your deployment needs it.
 
 Upgrading? Every change on this page that flips a verdict is in [breaking
 changes](breaking-changes.md).
