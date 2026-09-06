@@ -181,7 +181,7 @@ changes is what happens around the decision.
 | Capability | Developer Edition | Enterprise |
 |---|---|---|
 | Allow / require approval / deny, on real Cedar | ✅ in-process engine, policies from a local file | ✅ a running, scaled decision service |
-| Strict-subset sub-agent attenuation | ✅ engine-side, to a depth of 5 | ✅ server-side, unbounded |
+| Strict-subset sub-agent attenuation | ✅ engine-side, to a depth of 5 | ✅ server-side, depth configurable per agent above a tenant default |
 | Human-in-the-loop approvals | ✅ single-use tokens | ✅ across the fleet, with an operator queue |
 | Content screening | ✅ rule-based and in-process: `govern.sanitize`, `govern.screen` | ✅ the same class of check as a managed service — centrally authored policies, applied to traffic your code never touches |
 | Framework plugins | ✅ LangGraph, Pydantic AI, Claude Agent SDK, DeepAgents, LangChain.js, MCP | ✅ those plus Claude Code, Google ADK, AWS Bedrock, Microsoft Agent Framework, OpenClaw |
@@ -194,12 +194,12 @@ changes is what happens around the decision.
 |---|---|---|
 | Real-time enforcement effects — quarantine an agent, terminate a run, sever a delegation subtree, revoke authority | ❌ the policy loads and the call is denied; the containment action never fires | ✅ a contained agent's live connections are force-closed mid-run, server-side, with no cooperation from the agent; a sever durably collapses the delegation tree |
 | Drift detection | ❌ | ✅ an agent leaving its declared plan is quarantined automatically, and its live connections drop |
-| Runtime enforcement proxy | ❌ governs in-process, plus a PEP in front of one MCP server | ✅ every wire request clears the proxy as well as the plugin |
-| Discovery and registry | ❌ | ✅ finds every agent and MCP server across your environments and tracks trust state |
+| Runtime enforcement proxy | ❌ governs in-process, plus a PEP in front of one MCP server | ✅ agent egress is mediated on the wire as well as in-process, so a call has to clear both |
+| Discovery and registry | ❌ | ✅ continuously scans your environments for agents and MCP servers, and tracks trust state |
 | Signed execution lineage | ❌ local JSONL, unsigned | ✅ each step is signed, persisted and verified fail-closed, over a hash-chained audit trail anyone can re-verify |
 | Fleet-wide revocation | ❌ one process | ✅ revocation is durable and enforced at the credential broker, across tenants |
 | Attested identity | ❌ the principal is asserted | ✅ OIDC federation and mTLS workload identity |
-| Air-gapped fleet deployment | ❌ the library itself runs offline, but there is no plane to deploy | ✅ on-premises and sovereign, with local policy evaluation |
+| Air-gapped fleet deployment | ❌ the library itself runs offline, but there is no plane to deploy | ✅ on-premises, with local policy evaluation |
 
 Everything the Developer Edition leaves out needs **state outside your process**
 — a fleet to revoke across, a plane to quarantine into, a key to sign lineage
