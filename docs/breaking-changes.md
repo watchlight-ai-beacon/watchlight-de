@@ -26,7 +26,7 @@ async def read_doc(doc_id): ...
 Nothing changes for a hook that finishes inside 8 seconds. No value turns the
 deadline off: `0`, a negative, `NaN` and `Infinity` are refused where the tool is
 wrapped. In Python, `on_result_timeout_ms` on a *synchronous* tool body raises
-`TypeError` — bound a synchronous hook yourself.
+`TypeError`, so put your own time bound on a synchronous hook.
 
 ## 0.9.0
 
