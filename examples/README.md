@@ -70,8 +70,8 @@ quotas.
 
 ## Showcase — end-to-end pipelines
 
-Complete, self-checking pipelines that combine several primitives. Each runs in
-both lanes and exits non-zero if any assertion fails.
+These are complete, self-checking pipelines that combine several primitives.
+Each runs in both lanes and exits non-zero if any assertion fails.
 
 | Example | What it shows |
 |---|---|

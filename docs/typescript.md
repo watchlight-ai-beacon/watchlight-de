@@ -1,6 +1,6 @@
 # The TypeScript / Node lane
 
-Same governance, in your Node app — no Python sidecar.
+You get the same governance in your Node app, with no Python sidecar.
 [`@watchlight/sdk`](https://www.npmjs.com/package/@watchlight/sdk) runs the same
 compiled engine in-process, as WebAssembly.
 

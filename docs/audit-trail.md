@@ -1,7 +1,7 @@
 # The audit trail
 
 Every decision is appended to `.watchlight/audit.jsonl` as one JSON line — the
-verdict, who it was for, what was asked. Never the argument values.
+verdict, who it was for, what was asked. It never records the argument values.
 
 ## Watch decisions land
 
@@ -9,8 +9,8 @@ verdict, who it was for, what was asked. Never the argument values.
 watchlight dev            # → http://127.0.0.1:7000
 ```
 
-Tails the audit file and streams every ALLOW and DENY as it happens. Run your
-agent in another terminal. It shows this machine only.
+That command tails the audit file and streams every ALLOW and DENY as it
+happens. Run your agent in another terminal. It shows this machine only.
 
 ## Send records to your own store
 

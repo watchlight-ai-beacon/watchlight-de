@@ -122,9 +122,9 @@ Any of these names it: `Watchlight({ agent })`, `WATCHLIGHT_AGENT`,
 
 ## What `principal` contains
 
-A typed Cedar entity reference. The accepted types are `User`, `Agent`, `Group`,
-`Role`, `Tool`, `Resource` and `Workflow`; an unrecognised one fails the request
-rather than silently denying it.
+`principal` holds a typed Cedar entity reference. The accepted types are `User`,
+`Agent`, `Group`, `Role`, `Tool`, `Resource` and `Workflow`; an unrecognised one
+fails the request rather than silently denying it.
 
 | Shape | Meaning |
 |---|---|

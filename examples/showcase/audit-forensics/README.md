@@ -74,9 +74,9 @@ Everything printed is an identifier, a count or a field name.
 
 ## Record kinds
 
-Five kinds, told apart by `event`. A decision has no `event` field; every other
-kind names itself there. One allowed read and the two records that followed it,
-abridged:
+The trail holds five record kinds, told apart by `event`. A decision has no
+`event` field; every other kind names itself there. One allowed read and the two
+records that followed it, abridged:
 
 ```json
 {"ts": "…", "agent": "ticket-agent", "principal": "User::\"alice\"", "intent": "read", "resource": "ticket/T-1", "decision": "Allow", "decision_id": "5b096b77-…"}
@@ -168,9 +168,9 @@ gets the error. The deadline itself is in
 | `parent_id` | string, optional | absent on the root |
 | `reason` | string, optional | on a `Deny`: the violated dimension, or the depth ceiling |
 
-The one kind with no `principal` and no `actor_chain` — a scope names
-capabilities, not a subject. Chains are `parent_id → node_id`, and what a child
-dropped is `parent.tools − child.tools`.
+This is the one kind with no `principal` and no `actor_chain`, because a scope
+names capabilities rather than a subject. Chains are `parent_id → node_id`, and
+what a child dropped is `parent.tools − child.tools`.
 
 ### `screening` — written by `screen()`
 

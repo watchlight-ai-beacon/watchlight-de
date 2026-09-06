@@ -1,8 +1,8 @@
 # Governed web backend
 
-One HTTP endpoint. The user the request authenticated as becomes the principal
-of the governed tool call, and every decision in the trail carries that user —
-never the service.
+The app exposes one HTTP endpoint. The user the request authenticated as becomes
+the principal of the governed tool call, and every decision in the trail carries
+that user — never the service.
 
 ```bash
 pip install -r requirements.txt      # FastAPI + uvicorn, for this example only
@@ -66,9 +66,10 @@ released it, so what the client keeps joins the trail:
 permit(principal == User::"alice", action == Action::"read_statement", resource == Resource::"account/acct-100");
 ```
 
-Scoped to the acting user *and* her account. The suite asserts all four ways
-that goes: alice on her account allows; bob on it denies; alice on another
-account denies; and a call with no principal — the service itself — denies.
+The policy is scoped to the acting user *and* her account. The suite asserts all
+four ways that goes: alice on her account allows; bob on it denies; alice on
+another account denies; and a call with no principal — the service itself —
+denies.
 
 ## What you see
 
