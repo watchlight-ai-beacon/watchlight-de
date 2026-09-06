@@ -10,6 +10,7 @@
 // token minted in one process is rebuilt in another with the same grants, while
 // a tampered or expired token is refused (ScopeTokenError) and the rebuilt scope
 // still cannot widen (AttenuationDenied).
+import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import { join } from "node:path";
@@ -77,7 +78,9 @@ try {
   // reason to construct more than one over the same policy set — an application
   // names several agents from a single governor with `as()`
   // (see docs/using-the-governor.md).
-  const secret = "example-shared-secret-0123456789";
+  // Generated, not written down. Both governors below share this one value;
+  // in a real deployment it comes from your secret manager.
+  const secret = randomBytes(32).toString("hex");
   const orchestrator = new Watchlight({ agent: "orchestrator", auditDir, signingSecret: secret });
   const worker = new Watchlight({ agent: "orchestrator", auditDir, signingSecret: secret });
   const minted = (await orchestrator.scope({ tools: ["read_file", "web_search", "send_email"], timeBudgetSeconds: 600 }))
@@ -92,7 +95,7 @@ try {
   const tampered = `${v}.${p.slice(0, 10)}${p[10] === "A" ? "B" : "A"}${p.slice(11)}.${sig}`;
   const forged = await worker.scopeFromToken(tampered).then(() => null, (e) => e);
   t.ok("a tampered payload is refused with ScopeTokenError", forged instanceof ScopeTokenError && forged.code === "signature", String(forged));
-  const wrongSecret = new Watchlight({ agent: "orchestrator", auditDir, signingSecret: "another-secret-0123456789abcdef" });
+  const wrongSecret = new Watchlight({ agent: "orchestrator", auditDir, signingSecret: randomBytes(32).toString("hex") });
   t.ok("a token verified with a different secret is refused",
     (await wrongSecret.scopeFromToken(token).then(() => null, (e) => e)) instanceof ScopeTokenError);
   // Expiry is checked in whole seconds against the wall clock and the public API

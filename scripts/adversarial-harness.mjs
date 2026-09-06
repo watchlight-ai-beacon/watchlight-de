@@ -34,6 +34,7 @@
  * The SDK and engine versions are printed in the header: a finding without a
  * version is not reproducible.
  */
+import { randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
@@ -96,7 +97,9 @@ const attempt = async (fn) => {
   catch (e) { return { err: (e && e.constructor && e.constructor.name) || "Error", msg: String(e && e.message).slice(0, 60) }; }
 };
 const mk = (o = {}) => new Watchlight({ agent: "probe", auditFile: false, ...o });
-const SECRET = "0123456789abcdef0123456789abcdef";
+// Generated per run. A secret in source is a habit worth not teaching, and
+// nothing here depends on the value being stable between runs.
+const SECRET = randomBytes(32).toString("hex");
 const NUL = String.fromCharCode(0);
 const BELL = String.fromCharCode(7);
 
