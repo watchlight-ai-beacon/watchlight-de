@@ -127,5 +127,7 @@ The full language is documented at
   high-stakes decision, each one run against the real engine on every commit.
 - [The identity model](identity-model.md) — what `principal` and `context.actor`
   contain, and what a policy can name.
+- [Enforcement effects](enforcement-effects.md) — the annotation that holds an
+  action for a person, and the one that runs a rule without enforcing it.
 - [Testing your policies](testing-policies.md) — golden fixtures, and the CLI
   that fails a CI run.

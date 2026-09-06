@@ -43,7 +43,7 @@ verifier — it authorizes the identity your application asserts.
 | **Delegation** | Delegation is spawning a sub-agent under a narrowed scope, which appends it to the actor chain. The subject does not change. | |
 | **Deny reason** | The deny reason is what a refused caller is told: a uniform *not authorized*. The specific reason stays in the trail. | |
 | **Egress** | An egress record is written when a result leaves a governed call, and it says whether the result was withheld or rewritten. | [data egress](../examples/patterns/data-egress.md) |
-| **Enforcement effect** | An enforcement effect is what a matched policy does beyond allow or deny, declared as `@enforcement_effect("<verb>")`. The Developer Edition acts on `require_approval`, and an unrecognised verb fails at load. | [testing your policies](testing-policies.md) |
+| **Enforcement effect** | An enforcement effect is what a matched policy does beyond allow or deny, declared as `@enforcement_effect("<verb>")`. The Developer Edition acts on `require_approval`, and an unrecognised verb fails at load. | [enforcement effects](enforcement-effects.md) |
 | **Fail closed** | Failing closed means that no matching policy denies, and that an evaluation which cannot be reached denies too. | |
 | **Governed tool** | A governed tool is a function wrapped so the engine authorizes before the body runs. On a Deny the body is never entered. | [denied before execute](../examples/showcase/denied-before-execute/README.md) |
 | **Intent** | The intent is the purpose you declare for a governed tool, and the action a policy matches. You declare it; it is never inferred. | |

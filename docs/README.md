@@ -7,6 +7,7 @@ pick up from there.
 |---|---|
 | [Using the governor](using-the-governor.md) | You are placing the governor in a real app — a request handler, a worker, a test. |
 | [How policy works](policies.md) | You are writing Cedar and want the request shape, default deny, and what the engine resolves. |
+| [Enforcement effects](enforcement-effects.md) | You want a policy to hold an action for a person, run a rule in monitor mode, or you are reading `@enforcement_effect`. |
 | [The identity model](identity-model.md) | You need a decision to say *who it was for*: the subject, the acting runtime, the delegation chain. |
 | [The TypeScript / Node lane](typescript.md) | You are governing a Node app: approvals, egress hooks, obligations, the framework adapters. |
 | [Governing an agent you already have](integrations.md) | You want to govern an agent or an MCP server without changing its code. |
