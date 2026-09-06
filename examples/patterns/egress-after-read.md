@@ -132,39 +132,5 @@ the same trail as the first. Pair with [PII before read](./pii-before-read.md) f
 the minimization step and [data egress](./data-egress.md) for the pre-call
 boundary.
 
-## Breaking in 0.9.1 — the deadline now applies to every path
-
-**What changed.** `EgressRecord.withheld` has always been documented as "the hook
-threw, **or outran its deadline** — the payload was never released", but only
-`governedHooks` enforced a deadline. `govern.tool()` and the LangChain adapters
-had none: a hook that took 12 s released the payload after 12 s, and the record
-said nothing was withheld. All three paths now bound the hook at the same 8 s
-default.
-
-**Who is affected.** Anyone whose egress hook can take longer than 8 seconds —
-in practice a hook that calls a model, a classifier or a remote policy service.
-That hook now **withholds** where it used to release late: the call raises
-`EgressTimeout` (Python) / rejects with `EgressTimeout` (TypeScript) and the
-`egress` record says `withheld: true`. Nothing changes for a hook that finishes
-inside 8 seconds. This is the closed direction — a payload is refused, never
-released — so it fails safe, but a slow hook that used to succeed will now be
-seen as a refusal at the call site.
-
-**The one-line opt-out**, for a hook that genuinely needs longer:
-
-```ts
-govern.tool(fn, { intent: "read", onResult: slowClassifier, onResultTimeoutMs: 300_000 });
-```
-
-```python
-@govern.tool("read", on_result=slow_classifier, on_result_timeout_ms=300_000)
-async def read_doc(doc_id): ...
-```
-
-There is deliberately **no value that disables the deadline** — `0`, a negative
-and `Infinity` / `inf` are refused (`RangeError` / `ValueError`) where the tool is
-wrapped. An unbounded hook is the defect this closes, so it is not something a
-config value can reintroduce by accident; a large explicit number says so in
-review. Python additionally refuses `on_result_timeout_ms` on a **synchronous**
-tool body (`TypeError`): a synchronous hook cannot be interrupted, and a deadline
-that enforces nothing would be a deadline in name only.
+The deadline reached `govern.tool()` and the LangChain adapters in 0.9.1 — see
+[breaking changes](../../docs/breaking-changes.md).
