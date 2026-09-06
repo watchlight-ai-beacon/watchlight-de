@@ -1461,7 +1461,16 @@ export class Watchlight {
     return runPolicyTests(
       (req) => this._decide(req).then((d) => d.result),
       (challenge) => this.mintApproval(challenge),
-      cases
+      cases,
+      (name) => {
+        // A renamed view shares this governor's engine, policies, secrets and
+        // approval store — the same loaded set under a different `context.actor`.
+        const other = this.as(name);
+        return {
+          decide: (req) => other._decide(req).then((d) => d.result),
+          mint: (challenge) => other.mintApproval(challenge),
+        };
+      }
     );
   }
 

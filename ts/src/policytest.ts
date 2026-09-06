@@ -36,6 +36,9 @@ export interface PolicyTestCase {
   /** Mint a valid single-use approval token for this case and assert the
    *  human-confirmed downgrade (turns a `NeedsApproval` into `Allow`). */
   approved?: boolean;
+  /** Evaluate the case as this agent, so a policy matching on `context.actor`
+   *  can be exercised. Shares the governor's engine, policies and secrets. */
+  actor?: string;
   /** The verdict this case must produce. Case-insensitive. */
   expect: "Allow" | "Deny" | "NeedsApproval";
   /** The obligations the `Allow` must carry — compared exactly: `redact` as a
@@ -230,10 +233,26 @@ function canonicalObligations(o: Obligations | undefined): string {
  * `expect`), or carrying an ill-typed `obligations` expectation, is a malformed
  * suite and throws.
  */
+/** Every key a fixture may carry. A suite is a specification, so a key this
+ *  runner does not implement is a statement the run cannot honour: dropping it
+ *  silently lets a fixture pass while proving something other than what it says. */
+export const KNOWN_CASE_KEYS: ReadonlySet<string> = new Set([
+  "name",
+  "action",
+  "expect",
+  "actor",
+  "principal",
+  "resource",
+  "context",
+  "approved",
+  "obligations",
+]);
+
 export async function runPolicyTests(
   decide: DecideFn,
   mint: MintFn,
-  cases: readonly PolicyTestCase[]
+  cases: readonly PolicyTestCase[],
+  forActor?: (name: string) => { decide: DecideFn; mint: MintFn }
 ): Promise<PolicyTestReport> {
   const results: PolicyTestResult[] = [];
   let index = 0;
@@ -245,6 +264,31 @@ export async function runPolicyTests(
       }
     }
     index += 1;
+    const unknown = Object.keys(c)
+      .filter((k) => !KNOWN_CASE_KEYS.has(k))
+      .sort();
+    if (unknown.length) {
+      throw new Error(
+        `${where}: unknown key${unknown.length > 1 ? "s" : ""} ` +
+          `${unknown.map((k) => JSON.stringify(k)).join(", ")}. A fixture key this ` +
+          `runner does not implement would be dropped, and the case would pass ` +
+          `while proving something else. Accepted: ` +
+          `${[...KNOWN_CASE_KEYS].sort().join(", ")}.`
+      );
+    }
+    let caseDecide = decide;
+    let caseMint = mint;
+    if (c.actor !== undefined) {
+      if (!forActor) {
+        throw new Error(
+          `${where}: this runner cannot resolve an 'actor'. Call Watchlight.test(), which supplies one.`
+        );
+      }
+      if (typeof c.actor !== "string" || !c.actor.trim()) {
+        throw new Error(`${where}: 'actor' must be a non-empty string`);
+      }
+      ({ decide: caseDecide, mint: caseMint } = forActor(c.actor));
+    }
     const expected = normalizeVerdict(c.expect);
     const expectedObligations =
       c.obligations !== undefined ? normalizeExpectedObligations(c.obligations, where) : undefined;
@@ -252,9 +296,9 @@ export async function runPolicyTests(
       throw new Error(`${where}: 'obligations' can only be expected on an Allow, not ${expected}`);
     }
     const approval = c.approved
-      ? mint({ action: c.action, principal: c.principal, resource: c.resource })
+      ? caseMint({ action: c.action, principal: c.principal, resource: c.resource })
       : undefined;
-    const d = await decide({
+    const d = await caseDecide({
       action: c.action,
       principal: c.principal,
       resource: c.resource,

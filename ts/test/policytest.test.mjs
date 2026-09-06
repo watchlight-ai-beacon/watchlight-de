@@ -123,6 +123,44 @@ async function main() {
   const r4 = spawnSync(process.execPath, [CLI, "policy", "test", malSuite], { encoding: "utf8" });
   ok("CLI malformed fixture exits 2", r4.status === 2, `- status ${r4.status}`);
 
+  // ── 10. a fixture can name the actor, and an unknown key is refused ──
+  {
+    const ACTOR_POLICY =
+      'permit(principal, action == Action::"review", resource) when { context.actor == "document-reader" };';
+    const ga = new Watchlight({ agent: "orchestrator", auditFile: false });
+    ga.allow(ACTOR_POLICY);
+
+    const named = await ga.test([{ action: "review", actor: "document-reader", expect: "Allow" }]);
+    ok("a fixture evaluated as the named actor", named.failed === 0, JSON.stringify(named.results));
+
+    const other = await ga.test([{ action: "review", actor: "auditor", expect: "Deny" }]);
+    ok("a different actor is denied", other.failed === 0, JSON.stringify(other.results));
+
+    const none = await ga.test([{ action: "review", expect: "Deny" }]);
+    ok("an actorless case runs as the governor", none.failed === 0, JSON.stringify(none.results));
+
+    // The defect: an unsupported key was dropped, so the case passed while
+    // proving something other than what it said.
+    let threwUnknown = false, threwBlank = false;
+    try { await ga.test([{ action: "review", expect: "Deny", actr: "x" }]); }
+    catch { threwUnknown = true; }
+    try { await ga.test([{ action: "review", expect: "Deny", actor: "  " }]); }
+    catch { threwBlank = true; }
+    ok("an unknown fixture key throws", threwUnknown);
+    ok("a blank actor throws", threwBlank);
+
+    const actorSuite = join(suiteDir, "actor.json");
+    fs.writeFileSync(actorSuite, JSON.stringify({
+      policies: [{ name: "reader-only", code: ACTOR_POLICY }],
+      tests: [
+        { action: "review", actor: "document-reader", expect: "Allow" },
+        { action: "review", actor: "auditor", expect: "Deny" },
+      ],
+    }));
+    const r5 = spawnSync(process.execPath, [CLI, "policy", "test", actorSuite], { encoding: "utf8" });
+    ok("CLI runs an actor-scoped suite", r5.status === 0, `- status ${r5.status} ${r5.stdout}${r5.stderr}`);
+  }
+
   console.log(`\npolicytest: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 }

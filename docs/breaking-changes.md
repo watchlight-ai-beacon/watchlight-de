@@ -7,6 +7,19 @@ between the version you are on and the one you are moving to.
 
 ## Unreleased
 
+**A policy fixture carrying an unknown key now raises** instead of dropping it.
+A key the runner does not implement was silently ignored, so a case could pass
+while proving something other than what it said — a misspelled `"actr"`, or a
+key from a runner of your own. `watchlight policy test` exits 2.
+
+Accepted keys: `name`, `action`, `expect`, `actor`, `principal`, `resource`,
+`context`, `approved`, `obligations`. Remove anything else, or move it into
+`context`.
+
+**Fixtures can now name an `actor`**, so a policy matching on `context.actor`
+can be tested. This adds a key; it changes nothing that worked before.
+
+
 **`WATCHLIGHT_AUDIT_FILE` and `WATCHLIGHT_AUDIT_DIR` now reach a governor you
 construct**, for any audit option you did not pass yourself. Before, both
 variables were accepted and discarded unless the governor was the default one,
