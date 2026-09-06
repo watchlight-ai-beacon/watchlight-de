@@ -1,200 +1,121 @@
-# Human in the loop, end to end
+# Human in the loop
 
-A governed `delete` whose permit is annotated `@enforcement_effect("require_approval")`.
-The engine answers **NeedsApproval** instead of Allow; the agent pauses and
-writes a pending request; a separate command-line approver signs a grant for
-exactly that request; the agent resumes, the approval is recorded, and the
-delete runs **once**. The example then tries to replay the grant and to replay
-the SDK's approval token, and asserts both are refused.
-
-The annotation is checked when the policy loads: `allow` / `load` refuse an
-`@enforcement_effect` value the engine does not implement, so a typo cannot
-quietly turn this permit into a plain Allow that deletes without asking. A near
-miss for the annotation *name* warns instead — an annotation the SDK does not
-read may well be yours.
-
-| File | Purpose |
-|---|---|
-| [`agent.py`](agent.py) / [`agent.mjs`](agent.mjs) | The governed agent: `request` holds, `resume` completes and runs the replay checks. |
-| [`approve.py`](approve.py) / [`approve.mjs`](approve.mjs) | The out-of-band approver. Shows the pending request, signs a grant (`--deny` refuses it). |
-| [`hitl.py`](hitl.py) / [`hitl.mjs`](hitl.mjs) | Shared helpers: pending/grant file formats, HMAC, audit-trail lookups. Same format in both lanes. |
-| [`policy.suite.json`](policy.suite.json) | The Cedar policy **and** its golden tests (`NeedsApproval`, `approved → Allow`, unlisted → `Deny`). |
-
-## Run
+A governed `delete` holds for a person. The engine answers `NeedsApproval`, a
+separate approver signs a grant, and the agent resumes and deletes exactly once
+— across two processes.
 
 ```bash
-pip install watchlight                        # or: npm i -g @watchlight/sdk
 cd examples/showcase/human-in-the-loop
-export APPROVER_SECRET="$(openssl rand -hex 32)"   # shared by approver and agent, via env only
+export APPROVER_SECRET="$(openssl rand -hex 32)"   # both commands read it from the environment
 
-python agent.py request      # 1. NeedsApproval → .watchlight/hitl/pending.json; nothing deleted
-python approve.py            # 2. a human approves → .watchlight/hitl/grant.json (or: --deny); pending.json stays
-python agent.py resume       # 3. grant verified → approved decision → delete runs once; replays refused
+python agent.py request      # holds: writes a pending request, deletes nothing
+python approve.py            # a person approves (or: --deny), signing a grant
+python agent.py resume       # grant verified → the delete runs once
 ```
 
-The Node lane is `node agent.mjs request`, `node approve.mjs`, `node agent.mjs resume`.
-The two lanes share file formats, so a request held by one can be approved by
-the other. Every phase exits non-zero on a failed assertion. The policy on its own:
+The Node lane is `node agent.mjs request`, `node approve.mjs`, `node agent.mjs
+resume`. Both lanes share the file formats, so a request held by one can be
+approved by the other. Every phase exits non-zero on a failed assertion.
 
-```bash
-watchlight policy test examples/showcase/human-in-the-loop/policy.suite.json
+## The policy
+
+```cedar
+@enforcement_effect("require_approval")
+permit(principal, action == Action::"delete", resource);
 ```
+
+The annotation goes on a **`permit`**. On a `forbid` it is silently a plain
+deny and nothing ever asks a person. The verdict becomes `NeedsApproval` instead
+of `Allow`, and a person has to release it.
+
+The effect value is checked at load, so a misspelled one raises `PolicyError`
+rather than leaving this permit as an unguarded allow. A misspelled annotation
+*name* only warns — and that permit does become an unguarded allow.
 
 ## What you see
 
-**request** — the hook writes the pending request and returns `false`; the
-SDK raises `NeedsApproval`; the store's `deletes` is still `0`:
-
-```
-attempt: delete record/rec-42
-watchlight: governing 'records-agent' (dev mode, in-process engine)
+```text
+$ python agent.py request
 watchlight: APPRV? delete    record/rec-42     approval required
 hold:    pending request written to .watchlight/hitl/pending.json; the delete did not run
-held:    watchlight requires human approval for intent 'delete' on tool/delete
-pending decision record:
-  {"…","intent":"delete","resource":"record/rec-42","decision":"NeedsApproval","decision_id":"bbbd176c-…"}
+  {"…", "decision": "NeedsApproval", "decision_id": "22ae936d-…"}
   ✓ the record store never received the delete (deletes=0)
-```
 
-**approve** — the human sees only the identity of the request, never a payload:
-
-```
+$ python approve.py
 pending request
-  decision_id  bbbd176c-80e4-4966-8b88-d42ab06ffb4b
+  decision_id  22ae936d-f8a4-46d3-8bfb-55ad063049d9
   principal    records-agent
   action       delete
   resource     record/rec-42
-
 approved — grant written to .watchlight/hitl/grant.json
-  bound to            records-agent / delete / record/rec-42
-  valid for           300s, single use
-```
 
-**resume** — the hook verifies and consumes the grant and returns `true`; the
-SDK mints a single-use approval token — here in-process, since this example
-configures no secret — re-authorizes, and runs the body once. The two decision records and how they join:
-
-```
-attempt: delete record/rec-42 (grant on disk for pending bbbd176c-…)
-watchlight: governing 'records-agent' (dev mode, in-process engine)
-watchlight: APPRV? delete    record/rec-42     approval required
-resume:  grant verified and consumed — approves pending bbbd176c-…
+$ python agent.py resume
+resume:  grant verified and consumed — approves pending 22ae936d-…
 watchlight: OK✓    delete    record/rec-42
 result:  delete #1: record/rec-42 removed
-
-pending decision record (written by 'request'):
-  {"…","decision":"NeedsApproval","decision_id":"bbbd176c-80e4-4966-8b88-d42ab06ffb4b"}
-approved decision record (written now):
-  {"…","decision":"Allow","decision_id":"969d5421-7f0e-458f-b437-a9dbc9e4b319","approved":true}
-join:    grant.pending_decision_id bbbd176c-… → approved decision 969d5421-…
+  {"…", "decision": "Allow", "decision_id": "42bc2fb0-…", "approved": true}
+join:    grant.pending_decision_id 22ae936d-… → approved decision 42bc2fb0-…
   ✓ the delete ran exactly once (deletes=1)
-  ✓ both records name the same principal, intent and resource
-  ✓ the resume re-evaluated the policy (a fresh hold) before applying the approval
-
-replay: presenting the consumed grant again
-refused: grant already used (replay); the delete did not run
   ✓ the replayed grant was refused; deletes still 1
-
-replay: presenting a signed grant for a request that is not the outstanding one
-refused: grant does not match the outstanding pending request; the delete did not run
-  ✓ the grant for a non-outstanding request was refused; deletes still 1
-
-replay: presenting the same SDK approval token twice (probe resource)
-  ✓ a fresh token downgrades NeedsApproval to Allow once
-  ✓ the same token presented again is refused (single use)
 ```
 
-## How the records join
+The approver sees who wants to do what to which resource — never a payload.
 
-The pending record (`decision: NeedsApproval`, id **A**) is written when the
-agent first asks. The grant carries `pending_decision_id: A`. When the agent
-resumes, the SDK evaluates the policy again (a second `NeedsApproval` hold is
-recorded — the approval is never assumed), calls the hook, mints the token, and
-re-authorizes; the resulting record is `decision: Allow, approved: true` with a
-new id **B**. So the chain is: record **A** ← grant(`pending_decision_id` = A) →
-record **B**, with the same `principal`, `intent` and `resource` on both
-records. The example prints A and B and asserts the join. The grant is accepted
-only if A is the request currently outstanding in `pending.json`; on success
-the agent removes `pending.json` and `grant.json` together.
+## How the two records join
 
-## Why the approver signs a grant, not the SDK token — and what that does not give you
+The hold writes record **A** (`NeedsApproval`). The grant carries
+`pending_decision_id: A`. On resume the engine evaluates the policy again — the
+approval is never assumed — the hook verifies the grant, and the SDK mints a
+single-use token that downgrades the verdict. That writes record **B**
+(`Allow`, `approved: true`) with the same principal, intent and resource. The
+script prints both ids and asserts the join.
 
-The DE's approval tokens (`mint_approval` / `mintApproval`) are HMAC-signed and
-recorded as used, which makes them single-use and tamper-proof. **This example
-configures no secret and no store**, so both defaults apply: the signing key is
-random per process and the used-token record is that process's memory. A token
-minted by `approve.py` therefore cannot be verified by `agent.py` (observed in
-both lanes: the agent answers `NeedsApproval`, `approved: false`).
+## Why the approver signs a grant
 
-Configure a [signing secret](../../../docs/signing-secret.md) — or an
-`approval_secret` / `approvalSecret` — and a token does verify in another
-process; add an `approval_store` / `approvalStore` over a shared store and
-single use holds across replicas too. Expiry of those reservations is the
-store's own job — the SDK never deletes one — so give the row a TTL or implement
-the optional `prune(before)`; see
-[destructive actions](../../patterns/destructive-actions.md). The grant below is what this example uses
-*instead*, and it stays useful either way: it is signed by the approver, so the
-agent can tell an approval apart from anything it could have minted itself.
+The SDK's own approval token is minted and consumed inside one process. This
+example configures no signing secret, so a token from `approve.py` would not
+verify in `agent.py`. The grant is a separate, signed artifact — bound to one
+`pending_decision_id`, five-minute TTL, single use — that crosses the process
+boundary instead.
 
-The example therefore separates the two roles:
+For a real deployment:
 
-- the **approver** signs a *grant* — `{pending_decision_id, principal, action,
-  resource, exp, nonce, sig}`, HMAC-SHA256 under `$APPROVER_SECRET`, bound to
-  one request, five-minute TTL;
-- the **agent's hook** verifies the grant (signature, binding, expiry, nonce
-  not yet consumed) and returns `true`; the **SDK** then mints and consumes its
-  own token inline, which is what actually downgrades `NeedsApproval` to `Allow`.
+- Give both processes a [signing secret](../../../docs/signing-secret.md) and
+  the SDK token verifies across them; add an `approval_store` /
+  `approvalStore` and single use holds across replicas. Those reservations need
+  a TTL of your own — the SDK never deletes one.
+- **The HMAC here is symmetric.** Whoever holds `APPROVER_SECRET` can sign a
+  grant, the agent included, so the role split is procedural rather than
+  cryptographic. Production shape is an asymmetric signature: the approver holds
+  the private key, the agent verifies with the public one.
 
-Nothing secret is ever written to disk: the pending request and the grant carry
-ids and names only; the secret lives in the environment of the two processes.
-`APPROVER_SECRET` must be at least 16 characters — generate a fresh one per
-session with `openssl rand -hex 32`; any placeholder such as
-`replace-me-with-a-random-secret` works for a local walk-through.
+→ [Destructive actions](../../patterns/destructive-actions.md)
 
-**The HMAC is symmetric.** The agent process verifies the grant with the same
-`APPROVER_SECRET` the approver signs with, so whoever holds the secret — the
-agent included — can sign a grant for anything. The approver/agent role
-separation in this example is procedural (two commands, one secret), not
-cryptographic; the example itself demonstrates this by signing a grant from
-inside the agent for a request that is not the outstanding one (refused on a
-different check, not on the signature). The production shape is an asymmetric signature: the approver
-holds a private key and the agent verifies with the public key, so the agent can
-check approvals it could never mint. That is not implemented here.
+## What is refused
 
-## Replay behaviour (observed)
-
-| Replay | Result |
+| Presented | Result |
 |---|---|
-| The same grant file presented again after it was consumed | Refused: `grant already used (replay)`. The nonce is recorded in `.watchlight/hitl/consumed.json` on first use; the file is deleted on sight, and a refused grant does **not** open a new pending request. |
-| A grant edited after signing (e.g. a different `resource`) | Refused: `signature does not verify`. `resume` exits 1. |
-| A correctly signed grant for a request that is not the outstanding one (e.g. approved for an earlier request, planted for a later one with the same principal/action/resource) | Refused: `grant does not match the outstanding pending request`. The agent compares `pending_decision_id`, principal, action and resource against the `pending.json` it wrote itself; `approve` leaves that file in place and the agent removes it only when a grant is consumed. |
-| A grant for a different `(principal, action, resource)` | Refused: `grant is bound to a different request`. |
-| The same SDK approval token passed to `authorize` twice | First call `Allow, approved: true`; second call `NeedsApproval`. Single use per mint. |
-| An SDK token minted in another process | `NeedsApproval` — with no signing secret configured (as here) each process has its own random key. Configure one and it verifies. |
-| `resume` with `APPROVER_SECRET` unset | Exits 2 before reading the grant, which stays on disk. |
+| The consumed grant, again | `grant already used (replay)` — the nonce is kept in `consumed.json` |
+| A grant edited after signing | `signature does not verify`, exit 1 |
+| A valid grant for a request that is not the outstanding one | `grant does not match the outstanding pending request` |
+| The SDK's approval token, twice | `Allow` then `NeedsApproval` — single use per mint |
+| `resume` with `APPROVER_SECRET` unset | exit 2, before the grant is read |
 
-## Notes
+A refused grant never opens a new pending request, and nothing secret reaches
+disk: `pending.json`, `grant.json` and `consumed.json` carry ids and names only.
 
-- **Python hook signature.** `on_needs_approval(decision)` receives the decision
-  dict only, so `agent.py` binds the resource in a small per-call wrapper and
-  hands it to the hook. The TS hook receives `{ intent, resource, principal,
-  decisionId }` directly.
-- **Files.** `.watchlight/hitl/` holds `pending.json`, `grant.json` and
-  `consumed.json`; the audit trail is `.watchlight/audit.jsonl`, next to the
-  scripts. Both are ignored by git. `consumed.json` (used grant nonces) grows
-  with every approval and is never reset by design — a nonce forgotten is a
-  nonce replayable; `request` clears only `pending.json` and `grant.json`.
+## Worth knowing
 
-## Is this example verified?
+- `consumed.json` grows with every approval and is never pruned. A forgotten
+  nonce is a replayable one.
+- Python's `on_needs_approval(decision)` hook receives the decision dict only,
+  so `agent.py` binds the resource in a small per-call wrapper. The TypeScript
+  hook receives `{ intent, resource, principal, decisionId }` directly.
+- `watchlight policy test policy.suite.json` runs the fixtures beside the
+  policy: the hold, the approved downgrade, and an unlisted action failing
+  closed.
 
-Yes. [`check.sh`](./check.sh) in this folder is this showcase's declaration of
-how it is checked: which scripts run, in which order, and from what state. Run
-it on its own, or through [`examples/showcase/check.sh`](../check.sh), which
-runs every showcase's, or through `scripts/preflight.sh`, which runs that along
-with the rest of the suites.
-
-Note what a runner would get wrong here without that declaration: `agent.py`
-needs a subcommand, `approve.py` means nothing without a pending request, and
-`hitl.py` is a helper module with no entry point — running it exits 0 having
-checked nothing at all. `check.sh` drives the real sequence, request → approve →
-resume, once per lane and once across the two.
+Verified by [`check.sh`](./check.sh), which drives request → approve → resume in
+each lane and once across the two. Run the files individually and you check
+nothing: `agent.py` needs a subcommand, `approve.py` needs a pending request,
+and `hitl.py` is a helper module.
