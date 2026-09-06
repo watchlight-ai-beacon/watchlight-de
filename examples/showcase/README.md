@@ -1,7 +1,7 @@
 # Showcases
 
-Runnable programs, not snippets. Each one governs a real agent path end to end
-and prints what the engine decided.
+These are runnable programs, not snippets. Each one governs a real agent path
+end to end and prints what the engine decided.
 
 Every showcase runs in **Python and Node** and asserts its own outcome, so what
 a showcase claims and what the engine does can't drift.
@@ -13,11 +13,11 @@ a showcase claims and what the engine does can't drift.
 | [Denied before it executed](./denied-before-execute/) | The tool body never runs. The side effect never happens. |
 | [Human in the loop](./human-in-the-loop/) | `NeedsApproval`, a person approves, the call resumes — across two processes. |
 | [The identity model](./identity/) | Three identities through one engine and one policy set. |
-| [Audit forensics](./audit-forensics/) | Read the trail. Every decision joined to the record it produced, values never in it. |
+| [Audit forensics](./audit-forensics/) | You read the trail: every decision joins the record it produced, and no value is ever in it. |
 | [Poisoned RAG](./poisoned-rag/) | A retrieved document hides an injection. It gets screened and redacted before the model sees it. |
 | [Red team](./red-team/) | An adversarial corpus against a governed agent. Nothing gets through. |
 | [Governed web backend](./web-backend/) | The authenticated user becomes the principal of the tool call. |
-| [Policy tests as a CI gate](./policy-tests-ci/) | Policies get golden fixtures and go red on a pull request. A workflow, not a program. |
+| [Policy tests as a CI gate](./policy-tests-ci/) | Policies get golden fixtures and go red on a pull request. This one is a workflow rather than a program. |
 
 ## Run one
 

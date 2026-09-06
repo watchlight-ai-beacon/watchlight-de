@@ -14,12 +14,12 @@ would have received, assert it, and exit non-zero on any failure. Run
 
 ## The corpus
 
-Four synthetic documents. `vendor-faq` is poisoned: an invisible
-`<div style="display:none">` block carries an instruction override, an e-mail
-address, an SSN-shaped number and a customer name. `ticket-4471` is clean but
-names the same customer, so the redact obligation has work to do on a document
-that *passes* screening. The retriever is a keyword scorer; what matters is that
-every hit goes through the governed tool.
+The corpus holds four synthetic documents. `vendor-faq` is poisoned: an
+invisible `<div style="display:none">` block carries an instruction override, an
+e-mail address, an SSN-shaped number and a customer name. `ticket-4471` is clean
+but names the same customer, so the redact obligation has work to do on a
+document that *passes* screening. The retriever is a keyword scorer; what matters
+is that every hit goes through the governed tool.
 
 ## The policy
 

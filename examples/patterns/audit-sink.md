@@ -21,16 +21,17 @@ govern = Watchlight(agent="billing-agent", audit_sink=store)  # sync, or async i
 
 ## What the sink receives
 
-Its own copy of exactly the fields the `audit.jsonl` line carries — never
-argument values, never text, never secrets. In TypeScript the copy is frozen, and
-in both lanes the file is written first, so nothing the sink does can alter it.
+The sink gets its own copy of exactly the fields the `audit.jsonl` line carries —
+never argument values, never text, never secrets. In TypeScript the copy is
+frozen, and in both lanes the file is written first, so nothing the sink does can
+alter it.
 
-Five record kinds, discriminated by `event`: a **decision** (no `event` at all), a
-**`sanitization`**, a **`screening`**, an **`egress`** and an **`attenuation`**.
-A record from a `delegate()`d governor also carries `actor_chain`. The kinds are
-types — a TypeScript discriminated union, Python `TypedDict`s of the same names —
-so renaming a field breaks a sink at build time instead of producing a column of
-nulls.
+Records come in five kinds, discriminated by `event`: a **decision** (no `event`
+at all), a **`sanitization`**, a **`screening`**, an **`egress`** and an
+**`attenuation`**. A record from a `delegate()`d governor also carries
+`actor_chain`. The kinds are types — a TypeScript discriminated union, Python
+`TypedDict`s of the same names — so renaming a field breaks a sink at build time
+instead of producing a column of nulls.
 
 ```ts
 import { Watchlight, type AuditRecord } from "@watchlight/sdk";
@@ -79,8 +80,8 @@ in the sink and drain with retries out of band.
 
 ## Three reference sinks
 
-Shapes to adapt, not first-party integrations. Each keeps the sink body tiny so a
-slow store never sits on the decision path.
+These are shapes to adapt, not first-party integrations. Each keeps the sink body
+tiny so a slow store never sits on the decision path.
 
 **A Postgres row.** One `jsonb` column holds every kind and lets you join on
 `decision_id`:

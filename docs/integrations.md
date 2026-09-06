@@ -73,7 +73,7 @@ watchlight_mcp.serve(
 Point your MCP client at `http://127.0.0.1:9700/mcp` instead of the server. Every
 governed call — `tools/call`, `resources/read`, `resources/subscribe`,
 `prompts/get` — is authorized in-process before it reaches the server, so a
-denied call never executes. MCP spec `2026-07-28`.
+denied call never executes. The PEP implements MCP spec `2026-07-28`.
 
 [`examples/governed_mcp_server.py`](../examples/governed_mcp_server.py) fires an
 allowed and a denied call and proves the denied one never ran.

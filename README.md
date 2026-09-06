@@ -165,7 +165,7 @@ Identity hardens as you grow, **without changing your policies**:
 - **Developer Edition** — the principal is asserted (cooperative, local dev).
 - **Next** — an optional signed session token binds the principal to a key your
   process holds, so a prompt-injected sub-agent cannot rewrite a header to
-  escalate. Still no external infrastructure.
+  escalate. It still needs no external infrastructure.
 - **Enterprise** — identity is attested: federated (OIDC) and workload (mTLS),
   verified across the fleet.
 

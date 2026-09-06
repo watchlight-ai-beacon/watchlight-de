@@ -26,7 +26,7 @@ what a pattern claims and what the engine does cannot drift.
 | [Screen before model](./screen-before-model.md) | Catch prompt-injection shapes in what a read returns. | [script](./scripts/screen-before-model.mjs) |
 | [Sub-agent confinement](./subagent-confinement.md) | A spawned agent can only ever do less than its parent. | [script](./scripts/subagent-confinement.mjs) |
 | [Audit sink](./audit-sink.md) | Ship the value-free trail to a store you already run. | [script](./scripts/audit-sink.mjs) |
-| [Quotas](./quotas.md) | This many reads per hour, folded from the trail into Cedar `context`. | [suite](./suites/quotas.suite.json) + [script](./scripts/quotas.mjs) |
+| [Quotas](./quotas.md) | Allow this many reads per hour, folded from the trail into Cedar `context`. | [suite](./suites/quotas.suite.json) + [script](./scripts/quotas.mjs) |
 
 The reference material these build on is in [`docs/`](../../docs/README.md).
 
