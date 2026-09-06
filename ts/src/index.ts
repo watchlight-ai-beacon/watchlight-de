@@ -62,6 +62,7 @@ import {
 import { screen as screenText, ScreenError, type ScreenOptions, type ScreenResult } from "./screen";
 import { assertPrincipal, principals } from "./principals";
 import { checkPolicyAnnotations } from "./annotations";
+import { DEFAULT_ON_RESULT_TIMEOUT_MS, EgressTimeout, resolveEgressTimeoutMs } from "./egress";
 import {
   runPolicyTests,
   type PolicyTestCase,
@@ -98,7 +99,8 @@ export {
 export { CounterSourceError } from "./counters";
 export type { Counters, CountersOptions, CounterOutcome, CounterWindow } from "./counters";
 export type { CounterQuery, CounterSource, CounterSourceKind } from "./counters";
-export { governedHooks, DEFAULT_ON_RESULT_TIMEOUT_MS } from "./claude-agent";
+export { governedHooks } from "./claude-agent";
+export { DEFAULT_ON_RESULT_TIMEOUT_MS, EgressTimeout } from "./egress";
 export type {
   GovernedHooksOptions,
   GovernedHooksResult,
@@ -221,7 +223,13 @@ export interface EgressInfo {
  *  a second `authorize` against the result's classification. Return a value to
  *  REPLACE the payload (e.g. a redacted copy); return `undefined` or `null`
  *  (Python: `None`) to pass it through unchanged. Throw to WITHHOLD it: the
- *  error propagates and the raw result is never handed back (fail-closed). */
+ *  error propagates and the raw result is never handed back (fail-closed).
+ *  Bounded: a hook that has not settled within `onResultTimeoutMs`
+ *  ({@link DEFAULT_ON_RESULT_TIMEOUT_MS} by default) withholds the payload the
+ *  same way, rejecting with {@link EgressTimeout} — on `tool()`, on
+ *  `governTool` / `governTools` and on `governedHooks` alike. A hook that
+ *  settles after the deadline is ignored, so a slow hook cannot release a
+ *  payload late. */
 export type OnResult<R> = (
   result: R,
   info: EgressInfo
@@ -241,15 +249,6 @@ export interface ApprovalRequest {
  *  return `true` to proceed (which records an approval), `false` (or nothing) to
  *  hold — the call is refused and the body never runs. */
 export type OnNeedsApproval = (info: ApprovalRequest) => boolean | Promise<boolean>;
-
-/** Thrown (internally) when an egress hook outruns its deadline; the payload is
- *  withheld. Carries no payload-derived data. */
-class EgressTimeout extends Error {
-  constructor() {
-    super("egress hook deadline exceeded");
-    this.name = "EgressTimeout";
-  }
-}
 
 /** Full result of {@link Watchlight.authorize}. */
 export interface AuthorizeResult {
@@ -1229,10 +1228,23 @@ export class Watchlight {
        *  the raw result is withheld (fail-closed). Writes a value-free `egress`
        *  audit record joined to the decision by `decision_id`. */
       onResult?: OnResult<Awaited<R>>;
+      /** Deadline for `onResult`, in ms (default
+       *  {@link DEFAULT_ON_RESULT_TIMEOUT_MS}). A hook that has not settled
+       *  within it withholds the payload exactly as a throwing hook does: the
+       *  call rejects with {@link EgressTimeout}, the `egress` record says
+       *  `withheld: true`, and a hook that settles later is ignored — the
+       *  payload is never released late. Must be a positive, finite number;
+       *  there is no value that disables the deadline (see
+       *  {@link DEFAULT_ON_RESULT_TIMEOUT_MS}). Validated here, where the tool
+       *  is wrapped. */
+      onResultTimeoutMs?: number;
     }
   ): Governed<A, R> {
     const intent = opts.intent;
     const name = fn.name || "anonymous";
+    // Eager: a bad deadline is a wiring mistake, and it should not wait for the
+    // first call — let alone the first payload it fails to bound — to say so.
+    const timeoutMs = resolveEgressTimeoutMs(opts.onResultTimeoutMs);
     // A per-tool `agent` is exactly a rename of this governor (same engine, same
     // policies, same trail) with a different name on it.
     const gov = opts.agent ? this.as(opts.agent) : this;
@@ -1249,7 +1261,7 @@ export class Watchlight {
         if (!opts.onResult) return out;
         const info: EgressInfo = { intent, resource, principal, decisionId: d.decisionId };
         if (d.obligations) info.obligations = d.obligations;
-        const { value } = await gov._applyOnResult(out, opts.onResult, info);
+        const { value } = await gov._applyOnResult(out, opts.onResult, info, { timeoutMs });
         return value;
       };
 
@@ -1644,11 +1656,14 @@ export class Watchlight {
    * Shared by {@link tool} and the framework adapters (`governTool`, the Claude
    * `PostToolUse` hook) so all three behave identically. An `undefined` or
    * `null` return passes the payload through; any other value replaces it. If
-   * the hook throws — or outruns `timeoutMs`, when given — the error propagates
-   * and NO value is returned — the raw result is withheld (fail-closed) — after
-   * an `egress` record marks the payload as withheld. A hook that settles after
-   * the deadline is ignored (never audited twice, never released). The record
-   * is value-free: never the result, nor anything derived from it.
+   * the hook throws — or outruns `timeoutMs`, which every caller now supplies
+   * (`onResultTimeoutMs`, defaulting to {@link DEFAULT_ON_RESULT_TIMEOUT_MS}) —
+   * the error propagates and NO value is returned — the raw result is withheld
+   * (fail-closed) — after an `egress` record marks the payload as withheld. A
+   * hook that settles after the deadline is ignored (never audited twice, never
+   * released), and the deadline's timer is always cleared, so neither the timer
+   * nor this frame outlives the call. The record is value-free: never the
+   * result, nor anything derived from it.
    * @internal
    */
   async _applyOnResult<R>(

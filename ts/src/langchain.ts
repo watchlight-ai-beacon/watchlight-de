@@ -17,9 +17,10 @@
 // `StructuredTool` (which is what LangGraph.js tools are).
 //
 // `governTool` is a thin shim over `govern.tool()`: it takes the same
-// `principal`, `agent`, `resource`, `context`, `onNeedsApproval` and `onResult`
-// as a hand-written governed tool, so a policy that reads Cedar `context.*`
-// reaches the same verdict here as it does there. Each of `principal`,
+// `principal`, `agent`, `resource`, `context`, `onNeedsApproval`, `onResult` and
+// `onResultTimeoutMs` as a hand-written governed tool, so a policy that reads
+// Cedar `context.*` reaches the same verdict here as it does there, and an
+// egress hook is bounded by the same deadline on every path. Each of `principal`,
 // `resource` and `context` is a fixed value OR a function of the tool's own
 // `invoke(input, config)` arguments, because a framework tool's subject is
 // usually per-invocation rather than fixed at wrap time.
@@ -82,6 +83,14 @@ export interface GovernToolOptions {
    *  propagates and the raw result is withheld (fail-closed). Writes a
    *  value-free `egress` audit record joined to the decision by `decision_id`. */
   onResult?: OnResult<unknown>;
+  /** Deadline for `onResult`, in ms (default `DEFAULT_ON_RESULT_TIMEOUT_MS`,
+   *  8000 — the same deadline `govern.tool()` and `governedHooks` apply). A
+   *  hook that has not settled within it withholds the payload exactly as a
+   *  throwing hook does: `invoke` rejects with `EgressTimeout`, the `egress`
+   *  record says `withheld: true`, and a hook that settles later is ignored.
+   *  Must be a positive, finite number; there is no value that disables the
+   *  deadline. */
+  onResultTimeoutMs?: number;
 }
 
 export interface GovernToolsOptions {
@@ -109,6 +118,9 @@ export interface GovernToolsOptions {
   onNeedsApproval?: OnNeedsApproval;
   /** Egress hook applied to every governed tool — see {@link GovernToolOptions.onResult}. */
   onResult?: OnResult<unknown>;
+  /** Deadline for `onResult` on every tool in the array — see
+   *  {@link GovernToolOptions.onResultTimeoutMs}. */
+  onResultTimeoutMs?: number;
 }
 
 /**
@@ -147,6 +159,7 @@ export function governTool<T extends LangChainToolLike>(tool: T, opts: GovernToo
     context: opts.context,
     onNeedsApproval: opts.onNeedsApproval,
     onResult: opts.onResult,
+    onResultTimeoutMs: opts.onResultTimeoutMs,
   });
 
   return new Proxy(tool, {
@@ -163,8 +176,8 @@ export function governTool<T extends LangChainToolLike>(tool: T, opts: GovernToo
 /**
  * Govern an array of LangChain / LangGraph.js tools. `intentFor` maps each tool
  * name to an intent (default: the tool name) and `resourceFor` to a resource
- * (default: `tool/<name>`); `principal`, `agent`, `context`, `onNeedsApproval`
- * and `onResult` apply to every tool in the array — pass the `(input, config)
+ * (default: `tool/<name>`); `principal`, `agent`, `context`, `onNeedsApproval`,
+ * `onResult` and `onResultTimeoutMs` apply to every tool in the array — pass the `(input, config)
  * => value` form where the subject or the context varies per call.
  */
 export function governTools<T extends LangChainToolLike>(
@@ -182,6 +195,7 @@ export function governTools<T extends LangChainToolLike>(
       context: opts.context,
       onNeedsApproval: opts.onNeedsApproval,
       onResult: opts.onResult,
+      onResultTimeoutMs: opts.onResultTimeoutMs,
     })
   );
 }

@@ -153,7 +153,9 @@ The specific reason stays in the trail, never in the refusal.
 → [README](../README.md)
 
 **Egress** — a record written when a result leaves a governed call, including
-whether it was withheld or rewritten.
+whether it was withheld or rewritten. The hook that decides is bounded by a
+deadline (`onResultTimeoutMs` / `on_result_timeout_ms`, 8 s by default): outrun
+it and the payload is withheld, exactly as a throwing hook's is.
 → [data egress](../examples/patterns/data-egress.md)
 
 **Enforcement effect** — what a matched policy does beyond allowing or denying,

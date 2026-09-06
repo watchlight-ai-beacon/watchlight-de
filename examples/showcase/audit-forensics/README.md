@@ -189,7 +189,7 @@ verdict only.
 | `replaced` | boolean | `true` when the hook returned a value that replaced the payload |
 | `actor_chain` | string[], optional | the delegation chain — see above |
 | `decision_id` | string, optional | the id of the decision that let the body run — present for `govern.tool`; on a framework adapter without a `tool_use_id` there is none |
-| `withheld` | `true`, optional | the hook threw, or outran its deadline — the payload was never released; `replaced` is `false` |
+| `withheld` | `true`, optional | the hook threw, or outran its deadline (`onResultTimeoutMs` / `on_result_timeout_ms`, 8 s by default) — the payload was never released; `replaced` is `false`. The record does not distinguish the two: it carries the disposition of the payload, not the cause, which reaches the caller as the error |
 
 Three dispositions: `withheld` (present) → **withheld**; else `replaced: true`
 → **replaced**; else **passthrough**. A denied call has no `egress` record, since

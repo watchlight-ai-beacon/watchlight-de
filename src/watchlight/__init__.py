@@ -28,6 +28,7 @@ Guarantees that are identical to production and MUST NOT be relaxed here:
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import functools
 import hashlib
@@ -146,6 +147,10 @@ __all__ = [
     "MAX_COUNTERS_WINDOW_SECONDS",
     "Denied",
     "NeedsApproval",
+    "EgressTimeout",
+    "DEFAULT_ON_RESULT_TIMEOUT_MS",
+    "EGRESS_TIMEOUT_MESSAGE",
+    "SYNC_TIMEOUT_MESSAGE",
     "AuthorizeError",
     "PolicyError",
     "ENFORCEMENT_EFFECTS",
@@ -668,6 +673,66 @@ class NeedsApproval(PermissionError):
         super().__init__(f"watchlight requires human approval for intent '{intent}' on tool/{tool}")
 
 
+#: Default deadline for an egress (``on_result``) hook, in milliseconds — the
+#: same 8 seconds the TypeScript lane applies on every path that runs a hook.
+#: A hook that has not settled within it withholds the payload: the call raises
+#: :class:`EgressTimeout` and the ``egress`` record says ``withheld: True``. The
+#: payload is never released late.
+#:
+#: The deadline needs a moment in which to fire, so it is enforced on an
+#: **async** tool body, where the hook is awaited. Python cannot interrupt
+#: running code, so a hook that blocks the event loop — a synchronous hook, a
+#: blocking network call — cannot be preempted by it: bound such a hook
+#: yourself. Passing ``on_result_timeout_ms`` on a *synchronous* tool body is
+#: refused fail-closed rather than silently ignored (see
+#: :data:`SYNC_TIMEOUT_MESSAGE`).
+DEFAULT_ON_RESULT_TIMEOUT_MS = 8000
+
+#: Fixed, value-free message of :class:`EgressTimeout`.
+EGRESS_TIMEOUT_MESSAGE = "egress hook deadline exceeded"
+
+#: What ``on_result_timeout_ms`` on a synchronous tool body is told. A
+#: synchronous hook runs on the caller's own thread with nothing left to run the
+#: clock, and Python cannot interrupt it; accepting the argument and enforcing
+#: nothing would be a deadline in name only.
+SYNC_TIMEOUT_MESSAGE = (
+    "`on_result_timeout_ms` needs an async tool body: a synchronous `on_result` "
+    "runs on the calling thread and cannot be interrupted. Declare the tool "
+    "`async def` (with an `async def` hook), or bound the hook itself"
+)
+
+
+class EgressTimeout(TimeoutError):
+    """Raised when an egress (``on_result``) hook outruns its deadline. The
+    payload it was inspecting is withheld — never returned, never logged — and
+    the ``egress`` record says ``withheld: True``. Carries nothing derived from
+    the payload: a fixed message, so it is safe to log."""
+
+    def __init__(self) -> None:
+        super().__init__(EGRESS_TIMEOUT_MESSAGE)
+
+
+def _resolve_timeout_ms(ms: Optional[float]) -> float:
+    """Resolve ``on_result_timeout_ms`` to the deadline to enforce, applying
+    :data:`DEFAULT_ON_RESULT_TIMEOUT_MS` when it is absent. Validated where the
+    tool is decorated, not where it is called, so a misconfigured deadline
+    surfaces at import rather than on the first payload it fails to bound.
+
+    There is deliberately no "no deadline" value: ``0``, a negative, ``NaN`` and
+    ``inf`` are all refused. An unbounded hook is the defect this deadline
+    closes, so disabling it is not a value you can pass by accident; a hook that
+    genuinely needs longer takes an explicit large number
+    (``on_result_timeout_ms=300_000``), which says so in review."""
+    if ms is None:
+        return float(DEFAULT_ON_RESULT_TIMEOUT_MS)
+    if isinstance(ms, bool) or not isinstance(ms, (int, float)):
+        raise ValueError("on_result_timeout_ms must be a positive number of milliseconds")
+    value = float(ms)
+    if not (value > 0 and value != float("inf")):
+        raise ValueError("on_result_timeout_ms must be a positive number of milliseconds")
+    return value
+
+
 # ── approval tokens (DE: local, single-use, HMAC, TTL) ──────────────────────
 # Minting, verification, the signing key and the seen-token store all live in
 # ``watchlight._approval`` — including the per-process defaults and what they do
@@ -830,6 +895,19 @@ def _resolve_context(binding: Any, args: tuple, kwargs: dict) -> Any:
     if binding is None:
         return {}
     return binding(*args, **kwargs) if callable(binding) else binding
+
+
+async def _cancel_and_drain(task: "asyncio.Future") -> None:
+    """Cancel a hook that outran its deadline and wait for it to finish
+    unwinding, so nothing it was doing outlives the call and no exception of its
+    own surfaces later as an unretrieved one. Whatever it raises on the way out
+    is dropped: it is the abandoned hook's, not the caller's, and the caller is
+    already being told the payload was withheld."""
+    task.cancel()
+    try:
+        await task
+    except BaseException:
+        pass
 
 
 def _discard_awaitable(pending: Any) -> None:
@@ -1976,6 +2054,7 @@ class Watchlight:
         context: Union[dict, Callable[..., Union[dict, Awaitable[dict]]], None] = None,
         on_needs_approval: Optional[Callable[[dict], bool]] = None,
         on_result: Optional[Callable[[Any, dict], Any]] = None,
+        on_result_timeout_ms: Optional[float] = None,
         agent: Optional[str] = None,
     ) -> Callable[[_F], _F]:
         """Decorate a function as a governed tool.
@@ -2014,6 +2093,25 @@ class Watchlight:
         the body is a coroutine the hook runs once it is awaited (an awaitable
         hook return is awaited too). An async hook on a *synchronous* body is
         refused fail-closed: the payload is withheld and ``TypeError`` is raised.
+
+        ``on_result_timeout_ms`` is the hook's deadline, in milliseconds
+        (default :data:`DEFAULT_ON_RESULT_TIMEOUT_MS`, 8000 — the same deadline
+        the TypeScript lane applies). A hook that has not settled within it
+        withholds the payload exactly as a raising hook does: it is cancelled,
+        :class:`EgressTimeout` is raised, and the ``egress`` record says
+        ``withheld: True``. A hook that finishes after the deadline cannot
+        release the payload. There is no value that switches the deadline off —
+        ``0``, a negative and ``inf`` are refused with ``ValueError``; a hook
+        that genuinely needs longer takes a larger number.
+
+        The deadline needs a moment in which to fire, so it applies to an
+        **async** tool body, where the hook is awaited. On a synchronous body,
+        ``on_result_timeout_ms`` is refused fail-closed with ``TypeError``
+        (:data:`SYNC_TIMEOUT_MESSAGE`) rather than accepted and ignored: a
+        synchronous hook runs on the calling thread and Python cannot interrupt
+        it. For the same reason a hook that BLOCKS the event loop is not
+        preempted by the deadline on an async body either — bound such a hook
+        yourself.
         """
 
         # A per-tool `agent` is exactly a rename of this governor (same engine,
@@ -2023,6 +2121,11 @@ class Watchlight:
         def decorator(fn: _F) -> _F:
             name = fn.__name__
             body_is_async = inspect.iscoroutinefunction(fn)
+            # Validated at decoration: a misconfigured deadline says so at
+            # import, not on the first payload it fails to bound.
+            timeout_ms = _resolve_timeout_ms(on_result_timeout_ms)
+            if on_result_timeout_ms is not None and not body_is_async:
+                raise TypeError(SYNC_TIMEOUT_MESSAGE)
 
             def decide_and_run(ctx: Any, prin: str, res: str, args: tuple, kwargs: dict) -> Any:
                 def run(d: dict) -> Any:
@@ -2034,7 +2137,10 @@ class Watchlight:
                     if d.get("obligations"):
                         info["obligations"] = d["obligations"]  # only when the Allow carries any
                     if inspect.isawaitable(out):
-                        return gov._apply_on_result_async(out, on_result, info)
+                        return gov._apply_on_result_async(out, on_result, info, timeout_ms)
+                    # A synchronous body's hook runs inline on this thread with
+                    # nothing left to run the clock; the deadline is refused for
+                    # that combination at decoration rather than pretended here.
                     return gov._apply_on_result(out, on_result, info)[0]
 
                 d = gov.authorize(action=intent, principal=prin, resource=res, context=ctx)
@@ -2500,14 +2606,56 @@ class Watchlight:
         self._audit_egress(info, replaced=replaced)
         return (replacement if replaced else result), replaced
 
-    async def _apply_on_result_async(self, awaitable: Any, on_result: Callable[[Any, dict], Any], info: dict) -> Any:
+    async def _apply_on_result_async(
+        self,
+        awaitable: Any,
+        on_result: Callable[[Any, dict], Any],
+        info: dict,
+        timeout_ms: Optional[float] = None,
+    ) -> Any:
         """:meth:`_apply_on_result` for a coroutine body: await the result, run
-        the hook (awaiting its return if awaitable), same fail-closed semantics."""
+        the hook (awaiting its return if awaitable), same fail-closed semantics —
+        under a deadline (``timeout_ms``, :data:`DEFAULT_ON_RESULT_TIMEOUT_MS` by
+        default).
+
+        A hook that has not settled by the deadline is CANCELLED and awaited to
+        completion, so no task and no timer outlive the call, and its payload is
+        withheld: the ``egress`` record says ``withheld: True`` and
+        :class:`EgressTimeout` is raised. A hook that finishes late therefore
+        cannot release the payload. The deadline fires only when the hook yields
+        control; a hook that blocks the event loop cannot be preempted (Python
+        cannot interrupt running code) and runs to completion.
+
+        Because the hook runs as its own task, it sees a COPY of the caller's
+        context: ``contextvars`` set inside the hook do not propagate back to the
+        caller. Nothing else about how it is called changes."""
         result = await awaitable
-        try:
+        deadline = _resolve_timeout_ms(timeout_ms)
+
+        async def _run_hook() -> Any:
             replacement = on_result(result, info)
             if inspect.isawaitable(replacement):
                 replacement = await replacement
+            return replacement
+
+        # A task, not a bare await: the deadline needs something it can cancel,
+        # and `asyncio.wait` distinguishes OUR deadline from a `TimeoutError` the
+        # hook itself raised (which stays the hook's own error).
+        task = asyncio.ensure_future(_run_hook())
+        try:
+            done, _pending = await asyncio.wait({task}, timeout=deadline / 1000)
+        except BaseException:
+            # The caller was cancelled out from under us: the hook is abandoned
+            # and its payload withheld, exactly as a raising hook's is.
+            await _cancel_and_drain(task)
+            self._audit_egress(info, replaced=False, withheld=True)
+            raise
+        if task not in done:
+            await _cancel_and_drain(task)
+            self._audit_egress(info, replaced=False, withheld=True)
+            raise EgressTimeout()
+        try:
+            replacement = task.result()
         except BaseException:
             self._audit_egress(info, replaced=False, withheld=True)
             raise

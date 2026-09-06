@@ -130,8 +130,10 @@ export type EgressRecord = AuditRecordBase &
     /** The id of the decision that let the body run. Absent on a framework
      *  adapter call that carries no id of its own. */
     readonly decision_id?: string;
-    /** The hook threw, or outran its deadline — the payload was never
-     *  released. `replaced` is then `false`. */
+    /** The hook threw, or outran its deadline (`onResultTimeoutMs`, 8 s by
+     *  default — on `tool()`, on `governTool` / `governTools` and on
+     *  `governedHooks` alike) — the payload was never released. `replaced` is
+     *  then `false`. */
     readonly withheld?: true;
   };
 
