@@ -515,6 +515,11 @@ govern.allow('@enforcement_effect("needs_approval")\npermit(principal, action, r
 # quarantine, require_approval, revoke, sever_subtree, terminate. …
 ```
 
+The Developer Edition acts on `require_approval`; the containment verbs load
+and validate, and the verdict stays a plain `Deny`. Acting on `quarantine`,
+`revoke`, `sever_subtree` or `terminate` is the Enterprise plane, so
+[email sales@watchlight.ai](mailto:sales@watchlight.ai?subject=Watchlight%20Enterprise) if you need it.
+
 Worth knowing:
 
 - **A refusal is whole-file or nothing.** One bad policy loads none of the file,
