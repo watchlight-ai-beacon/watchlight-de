@@ -2,124 +2,161 @@
 
 Same governance, in your Node app — no Python sidecar.
 [`@watchlight/sdk`](https://www.npmjs.com/package/@watchlight/sdk) runs the same
-compiled engine in-process (WebAssembly).
-
-**Prerequisites:** Node **≥ 18**. `@watchlight/sdk` pulls in the compiled engine
-(`@watchlight/engine`) automatically — no native toolchain.
+compiled engine in-process, as WebAssembly.
 
 ```bash
-npm install @watchlight/sdk
+npm install @watchlight/sdk     # Node >= 18, no native toolchain
 ```
 
-The five-minute `DENY` — install, one policy, two tools, one of them refused —
-is in the [repository README](../README.md#quickstart), which shows it in both
-lanes side by side. This page is what the Node lane gives you once that runs.
+The five-minute `DENY` is in the [repository README](../README.md#quickstart),
+side by side with Python. This page is what the lane gives you after that.
 
-## It mirrors the Python package feature-for-feature
+Everything below has a Python equivalent under a `snake_case` name.
 
-- **Runtime context, per-user, human-in-the-loop:**
-  `govern.tool(fn, { intent, principal?, resource?, context?, onNeedsApproval?, onResult?, onResultTimeoutMs? })`
-  — runtime facts into Cedar `context.*`, per-call `principal`, and a three-state
-  `Allow` / `Deny` / **`NeedsApproval`** verdict with a single-use approval token.
-  Approval tokens are signed with a **random per-process key** and recorded as
-  used in an **in-process map** unless you configure otherwise — so by default a
-  token cannot cross a process boundary, a restart invalidates outstanding
-  approvals, and behind two replicas the same token can be consumed once on
-  *each*. `approvalSecret` / `approval_secret` (or `WATCHLIGHT_APPROVAL_SECRET`,
-  or the existing `signingSecret`, which covers both kinds of token — see
-  [the signing secret](signing-secret.md)) makes a token portable; an `approvalStore` /
-  `approval_store` (one method: `add(id, expiresAt)`) backed by a shared store
-  makes single-use hold across replicas. `add` must be an **atomic
-  check-and-set** — reserve the id only if absent, and say whether the
-  reservation was new; a read followed by an unconditional write cannot enforce
-  single use, because concurrent consumes of one token would all pass through
-  the gap. The built-in default is atomic, so within one process N parallel
-  consumes of one token yield exactly one `Allow`. A store that fails, times
-  out, or will not report **refuses** the approval — it never admits one. The
-  reservations are yours: the SDK never deletes one, and `expiresAt` /
-  `expires_at` is the epoch-millisecond deadline after which an id is safe to
-  drop — give the row a TTL, or implement the optional `prune(before)` and the
-  SDK asks for the deletion on the same code path as the reservation. A store
-  without `prune` is unchanged, and a failing `prune` never moves a decision.
-  **Breaking in 0.8.0:** the signed payload is now length-prefixed and versioned,
-  so no two different `(principal, action, resource)` triples can sign the same
-  bytes — approval tokens minted by an earlier version do not verify against
-  0.8.0. The tokens are short-lived, so drain in-flight approvals across the
-  upgrade.
-- **Govern what a tool returns:** `onResult(result, { intent, resource, principal,
-  decisionId, obligations? })` (Python `on_result`) runs after the body and before
-  the caller sees the result — sanitize, screen, honour the decision's
-  obligations, or re-authorize on its classification; a
-  returned value replaces the payload, a throw withholds it (fail-closed). Writes
-  a value-free `egress` audit record joined to the decision by `decision_id`.
-  The hook is **bounded**: `onResultTimeoutMs` / `on_result_timeout_ms`, 8 s by
-  default, on `govern.tool()`, on `governTool` / `governTools` and on
-  `governedHooks` alike. A hook that outruns it withholds the payload the same
-  way a throwing one does — `EgressTimeout`, `withheld: true`, and a hook that
-  settles later is discarded, so it can never release a payload late. There is no
-  value that switches the deadline off; a hook that genuinely needs longer takes
-  a larger number. **Breaking in 0.9.1:** only the Claude Agent path had a
-  deadline before, so an egress hook slower than 8 s now withholds on
-  `govern.tool()` and the LangChain adapters where it used to release late.
-  Python enforces the deadline on an **async** tool body — it cannot interrupt a
-  synchronous hook, so `on_result_timeout_ms` on a synchronous body is refused
-  (`TypeError`) rather than silently ignored.
-- **Obligations on an `Allow`:** a permit annotated `@obligate_redact("ssn")`,
-  `@obligate_max_items("25")`, `@obligate_log_values("false")` (or any
-  `@obligate_<name>("raw")`) yields `d.obligations` — `{ redact, maxItems,
-  logValues, extra }` (Python `result["obligations"]`: `redact` / `max_items` /
-  `log_values` / `extra`, the last as `{name: [values]}`) — constraints your code
-  or `onResult` must honour. Several carriers merge to the strictest reading;
-  only an `Allow` carries them; `Deny` and `NeedsApproval` never do; an
-  unreadable obligation fails closed (`AuthorizeError`). Needs engine >= 0.2.0.
-  See the [allow-but-redact pattern](../examples/patterns/allow-but-redact.md).
-- **Frameworks:** `governedHooks()` for the Claude Agent SDK; `governTool()` /
-  `governTools()` for LangChain / LangGraph.js. Each takes the same governance
-  terms as `govern.tool()` — `principal`, `agent`, `resource` (`resourceFor` on
-  the mapping forms), `context`, `onNeedsApproval`, `onResult`,
-  `onResultTimeoutMs` — so a policy that
-  reads Cedar `context.*` reaches the same verdict through an adapter as it does
-  through a hand-written governed tool, and the record names the person the call
-  was made for. Each is a fixed value or a function of the call. Pass none and
-  the defaults are unchanged: the agent is the subject, the resource is
-  `tool/<name>`, the context is empty. See the
-  [context-through-an-adapter pattern](../examples/patterns/context-through-an-adapter.md).
-- **Data minimization:** `govern.sanitize(text, { resource, decisionId, principal?, known? })`
-  — strip PII before an agent reads a document: structured detectors (email,
-  phone, SSN, card, IBAN, IPv4, API key, labelled passport / date of birth), an
-  app-supplied `known` dictionary (`KNOWN`; simple case-insensitive match —
-  Unicode case folding differs between lanes), and opt-in `PERSON` / `ADDRESS`
-  heuristics. Pass the `decisionId` from `authorize` and the `sanitization`
-  audit line joins the decision on `decision_id`; pass `principal` (Python
-  `principal=`) and the line names *whose* data was redacted, under the same key
-  the decision line uses. Omit it and the line still names a subject — this
-  agent, typed as `Agent::"<name>"`, exactly as a decision that names no
-  principal is recorded — so naming the person is what turns "redacted for the
-  agent" into an answer a data-minimisation audit can use, and it is the only
-  way to get one when the sanitization runs *before* any decision exists to
-  join to.
-- **Content screening:** `govern.screen(text, { resource, decisionId?, principal? })`
-  — flag or redact prompt-injection shapes in what a read returns, before it
-  reaches the model; with the `decisionId` the `screening` audit line joins the
-  decision, and `principal` names whom it was screened for. Both fields are
-  identifiers you supply — never anything derived from the content — and carry
-  the same validation (1–128 characters, no control or line-separator
-  characters).
-- **Attenuation & graduation:** `govern.scope().attenuate()`; `scope.toToken()` /
-  `govern.scopeFromToken()` carry an attenuated scope to a worker process (HMAC
-  integrity; the receiving engine re-proves the subset); every decision returns a
-  `decisionId` to join to your records; `WATCHLIGHT_APDP_URL` graduates the
-  *same code* to the control plane.
+## Govern a tool
 
-Full API + runnable examples: [`ts/`](../ts/) · npm: `@watchlight/sdk` (glue,
-Apache-2.0) + `@watchlight/engine` (the compiled engine). Docs:
-[docs.watchlight.ai/de/typescript](https://docs.watchlight.ai/de/typescript).
+```ts
+const search = govern.tool(webSearch, {
+  intent: "research",
+  principal: (q) => `User::"${q.userId}"`,   // who the call is for
+  resource: "index/web",
+  context: (q) => ({ tier: q.tier }),        // what a policy reads as context.*
+});
+```
+
+Each option is a fixed value or a function of the call. Omit them all and the
+agent is the subject, the resource is `tool/<name>`, the context is empty.
+
+## Ask a human first
+
+A policy annotated `@enforcement_effect("require_approval")` yields a third
+verdict, `NeedsApproval`, and a single-use approval token.
+
+```ts
+const wire = govern.tool(transfer, { intent: "wire", onNeedsApproval: askOps });
+```
+
+By default that token is signed with a **random per-process key** and marked
+used in an in-process map. It cannot cross a process boundary, a restart
+invalidates outstanding approvals, and behind two replicas the same token is
+consumable once on *each*. Two options fix that:
+
+- `approvalSecret` makes a token portable. So does the `signingSecret`, which
+  covers both kinds of token — see [the signing secret](signing-secret.md).
+- `approvalStore` makes single use hold across replicas. One method,
+  `add(id, expiresAt)`, which must be an **atomic check-and-set**: reserve the id
+  only if absent, and report whether the reservation was new.
+
+A store that fails, times out, or will not report **refuses** the approval.
+
+**The reservations are yours.** The SDK never deletes one. `expiresAt` is the
+epoch-millisecond deadline after which an id is safe to drop, so give the row a
+TTL. Or implement the optional `prune(before)`, which the SDK calls
+opportunistically alongside a reservation. A failing `prune` never moves a
+decision.
+
+## Govern what a tool returns
+
+```ts
+const read = govern.tool(readDoc, {
+  intent: "read",
+  onResult: (doc, { obligations, decisionId }) => redact(doc, obligations),
+  onResultTimeoutMs: 8_000,
+});
+```
+
+`onResult` runs after the body and before the caller sees the result. Sanitize,
+screen, honour the decision's obligations, or re-authorize on the payload. A
+returned value replaces it; a throw withholds it. Either way an `egress` record
+is written, joined to the decision by `decision_id`.
+
+**The hook is bounded.** `onResultTimeoutMs` defaults to 8 seconds, on
+`govern.tool()`, `governTool` / `governTools` and `governedHooks` alike. Outrun
+it and the payload is withheld exactly as a throw withholds it —
+`EgressTimeout`, `withheld: true` — and a hook that settles later is discarded.
+The deadline cannot be switched off; a hook that needs longer takes a larger
+number.
+
+Python enforces it on an **async** tool body only. It cannot interrupt a
+synchronous hook, so `on_result_timeout_ms` on a synchronous body raises
+`TypeError` rather than being ignored.
+
+## Read the obligations on an Allow
+
+```ts
+const d = await govern.authorize({ action: "read", resource: "doc/1" });
+d.obligations;   // { redact: ["ssn"], maxItems: 25 } — only the keys a policy set
+```
+
+A permit annotated `@obligate_redact("ssn")`, `@obligate_max_items("25")`,
+`@obligate_log_values("false")` — or any `@obligate_<name>("raw")` — attaches
+constraints your code or `onResult` must honour. Several carriers merge to the
+strictest reading. Only an `Allow` carries them, and an unreadable obligation
+fails closed with `AuthorizeError`. Needs engine >= 0.2.0. See the
+[allow-but-redact pattern](../examples/patterns/allow-but-redact.md).
+
+Fields: `redact`, `maxItems`, `logValues`, and `extra` for any
+`@obligate_<name>` the SDK does not interpret. Python spells them `redact`,
+`max_items`, `log_values`, `extra` under `result["obligations"]`.
+
+## Frameworks
+
+```ts
+const { hooks } = governedHooks({ intentFor: (name) => TOOL_INTENTS[name] ?? name });   // Claude Agent SDK
+const tools = governTools(myTools, { intentFor: (name) => TOOL_INTENTS[name] ?? name });
+```
+
+Each takes the same governance terms as `govern.tool()` — `principal`, `agent`,
+`resource` (`resourceFor` on the mapping forms), `context`, `onNeedsApproval`,
+`onResult`, `onResultTimeoutMs` — so a policy reaches the same verdict through
+an adapter as through a hand-written governed tool. See the
+[context-through-an-adapter pattern](../examples/patterns/context-through-an-adapter.md).
+
+## Strip PII, and screen what comes back
+
+```ts
+const clean  = govern.sanitize(text, { resource: "doc/1", decisionId, principal });
+const vetted = govern.screen(text,   { resource: "doc/1", decisionId, principal });
+```
+
+`sanitize` strips structured PII before an agent reads a document — email,
+phone, SSN, card, IBAN, IPv4, API key, labelled passport and date of birth —
+plus a `known` dictionary you supply and opt-in `PERSON` / `ADDRESS` heuristics.
+`screen` flags or redacts prompt-injection shapes before text reaches the model.
+
+`decisionId` joins the audit line to a decision. `principal` names *whose* data
+it was. Omit `principal` and the line names this agent instead, as
+`Agent::"<name>"` — so pass it when a data-minimisation audit has to name the
+person. Both are identifiers you supply, never derived from the content, and
+both are validated: 1–128 characters, no control characters.
+
+## Attenuate, and graduate
+
+```ts
+const root  = await govern.scope({ tools: ["read", "write"] });
+const child = root.attenuate({ tools: ["read"] });   // strictly a subset
+const token = child.toToken();                       // carry it to a worker
+```
+
+`govern.scopeFromToken()` rebuilds it on the far side, and the receiving engine
+re-proves the subset. Setting `WATCHLIGHT_APDP_URL` graduates the same code to
+the control plane.
+
+## Upgrading
+
+- **0.9.1** — only the Claude Agent path had an egress deadline before. A hook
+  slower than 8 s now withholds on `govern.tool()` and the LangChain adapters
+  where it used to release late.
+- **0.8.0** — the approval payload is length-prefixed and versioned, so no two
+  `(principal, action, resource)` triples can sign the same bytes. Tokens minted
+  by an earlier version do not verify. They are short-lived, so drain in-flight
+  approvals across the upgrade.
 
 ## See also
 
 - [`ts/README.md`](../ts/README.md) — the full package reference: every option,
-  every adapter, and the longer worked examples.
-- [`ts/examples/`](../ts/examples/) — runnable programs, starting with
-  [`agent.mjs`](../ts/examples/agent.mjs).
-- [The audit trail](audit-trail.md) — `auditSink`, `counterSource` and the
-  record kinds, which are the same records both lanes write.
+  every adapter, the longer examples.
+- [`ts/examples/agent.mjs`](../ts/examples/agent.mjs) — runnable programs.
+- [The audit trail](audit-trail.md) — `auditSink` and `counterSource`; both
+  lanes write the same records.
+- [docs.watchlight.ai/de/typescript](https://docs.watchlight.ai/de/typescript).

@@ -1,21 +1,16 @@
 # The signing secret
 
-A **scope token** carries an attenuated scope from one process to another. An
-**approval token** carries a human's confirmation from the process that asked to
-the process that acts. Both are signed, and the signing secret is what makes them
-verifiable on the other side.
-
-Set one whenever a token has to leave the process that made it.
+Scope tokens and approval tokens are signed. The signing secret is what makes
+them verifiable in another process. Set one whenever a token leaves the process
+that made it.
 
 ## Set it
 
-Generate thirty-two random bytes, once, and keep the value:
-
 ```bash
-openssl rand -base64 32
+export WATCHLIGHT_SIGNING_SECRET="$(openssl rand -base64 32)"
 ```
 
-Give it to the governor:
+The governor reads that variable, or takes the value directly:
 
 ```python
 import os
@@ -33,130 +28,70 @@ const govern = new Watchlight({
 });
 ```
 
-Or set `WATCHLIGHT_SIGNING_SECRET` in the environment and pass nothing — the
-governor reads it:
-
-```bash
-export WATCHLIGHT_SIGNING_SECRET="$(openssl rand -base64 32)"
-```
-
 **Every process that exchanges tokens needs the same value.** A web process that
-mints a scope token and a worker that rebuilds it are two processes; so are the
-process that mints an approval and the one that consumes it. Different values, or
-a value in one and none in the other, and the token does not verify.
+mints a scope token and the worker that rebuilds it are two processes. So are
+the process that asks for an approval and the one that acts on it.
 
-Minimum thirty-two bytes is a good default; a shorter value is refused when you
-construct the governor. One exception, for the unfilled `.env` placeholder: an
-empty or whitespace-only value is treated as **unset** rather than weak, so the
-governor still constructs — and the first attempt to mint or verify a token
-fails closed with `no_secret` instead.
+## Rotate it in two deploys
 
-> **Renamed.** This option used to be called `tokenSecret` / `token_secret`
-> (`WATCHLIGHT_TOKEN_SECRET`). The old name still works and warns once; setting
-> both to different values is refused rather than resolved silently.
-
-## What it signs
-
-| | Signed with |
-|---|---|
-| Scope tokens — `scope.to_token()` / `govern.scope_from_token()` | the signing secret |
-| Approval tokens — `govern.mint_approval()` | the signing secret, unless `approval_secret` / `approvalSecret` is set, which then takes over for approvals only |
-
-One value covers both. The two kinds of token cannot be swapped for each other.
-
-## When it is missing
-
-Minting and verifying a scope token fail closed — there is no built-in default
-and nothing weaker to fall back to:
+Swapping a single value is an immediate cutover: every outstanding scope token
+and unconsumed approval is refused the moment the new one goes live. Pass a list
+instead. The first entry signs, every entry verifies:
 
 ```python
-govern = Watchlight(agent="my-agent")            # no secret
-govern.scope(tools=["read"]).to_token()          # ScopeTokenError: no_secret
-```
-
-Approvals still work *within* one process (they fall back to a random key that
-process makes at startup), but a token cannot cross to another process and a
-restart invalidates every approval still outstanding.
-
-## When it changes
-
-Every token signed with the old value stops verifying. Scope tokens fail with
-`ScopeTokenError("signature")`; approvals stay held with the usual
-`approval required`.
-
-Rotate in **two deploys** instead, by passing a list — the first entry signs,
-every entry verifies:
-
-```python
-# deploy 1: the new secret goes to the FRONT, the old one stays
+# deploy 1 — the new secret goes to the front, the old one stays
 govern = Watchlight(agent="my-agent", signing_secret=[NEW, OLD])
 ```
 
 ```ts
-// deploy 1
 const govern = new Watchlight({ agent: "my-agent", signingSecret: [NEW, OLD] });
 ```
 
-Now wait. Tokens signed with the old secret are still being presented until the
-last of them expires, so wait out **the longest lifetime any token in flight can
-have** — the `ttl_seconds` you pass to `to_token()` (which cannot exceed the
-scope's remaining time budget), and the `ttl_ms` of an approval (two minutes by
-default). Then:
+Then wait out the longest lifetime a token in flight can have — the
+`ttl_seconds` of a scope token, or the `ttl_ms` of an approval (two minutes by
+default). Then deploy again with `[NEW]`.
 
-```python
-# deploy 2: the old secret is gone
-govern = Watchlight(agent="my-agent", signing_secret=[NEW])
-```
-
-The environment variable takes a list too, separated by commas, newest first:
+The environment variable takes a comma-separated list, newest first:
 
 ```bash
 export WATCHLIGHT_SIGNING_SECRET="$NEW,$OLD"
 ```
 
-**A secret must not contain a comma.** In the environment variable a comma
-separates entries, so a value containing one is split into pieces and only the
-first piece signs. Base64 and hex values — what `openssl rand` above produces —
-never contain one. A variable that is set but holds no usable secret (a lone
-comma, a space) is refused when you construct the governor rather than treated
-as unset.
+**A secret must not contain a comma**, or it is split and only the first piece
+signs. Base64 and hex values never contain one.
 
-Rotating a single value is an immediate cutover: the moment the new one is live,
-every outstanding scope token and every unconsumed approval is refused. That is
-the failure the list exists to avoid.
-
-## It is yours, not ours
+## The secret is yours
 
 The library runs inside your process. It has no key management, cannot tell
-where a value came from, and never stores one. Generating the secret, keeping it,
-and getting it to every process that needs it are yours — the same way the
-acting principal is yours to supply (see the
-[identity model](./identity-model.md)).
+where a value came from, and never stores one. Generating it, keeping it, and
+getting it to every process that needs it are yours.
 
-What the library does with the value it is given:
+What it does with the value you give it:
 
-- refuses one that is too short, when you construct the governor;
-- never logs it, never writes it to the audit trail, and never puts it in an
-  error message;
-- keeps scope tokens and approval tokens on separate keys, so one value can drive
-  both;
+- refuses anything under sixteen bytes when you construct the governor (use
+  thirty-two random bytes, as above);
+- never logs it, writes it to the trail, or puts it in an error message;
+- keeps scope tokens and approval tokens on separate keys, so one value drives
+  both and the two kinds cannot be swapped;
 - fails closed when it is missing, rather than signing with something weaker.
 
-## What it is not
+## Worth knowing
 
-- **Not encryption.** A token is signed, not sealed. Its claims — the granted
-  tools, resources, intents and the time window — are readable by anyone holding
-  the token. Do not put anything confidential in a scope.
-- **Not the audit trail's signature.** The Developer Edition's trail is a plain
-  local file; this secret does not sign it.
-- **Not the engine's identity, and not attestation.** It says a token was made by
-  someone holding the secret — not by which agent, on which host, or under whose
-  authority.
-- **Not authority.** Anyone holding the secret can mint any token, including a
-  root scope. A scope token adds no authority beyond what its holder could grant
-  itself. The secret buys integrity between processes inside **one trust domain**
-  — it is not a way to extend trust to a party you do not already trust.
+- With no secret, minting a scope token raises `ScopeTokenError("no_secret")`.
+  Approvals still work inside one process, on a random key made at startup, but
+  cannot cross to another and do not survive a restart.
+- `approval_secret` / `approvalSecret` overrides the signing secret for
+  approvals only.
+- An empty or whitespace-only value counts as **unset**, not weak, so an
+  unfilled `.env` placeholder still constructs. A value that is set but unusable
+  (a lone comma, a space) is refused.
+- The option used to be `token_secret` / `tokenSecret`. The old name still works
+  and warns once; setting both to different values is refused.
+- A token is **signed, not sealed**. Its claims — granted tools, resources,
+  intents, time window — are readable by anyone holding it.
+- Anyone holding the secret can mint any token, including a root scope. It buys
+  integrity between your own processes, not attestation, and it does not sign
+  the Developer Edition's audit trail.
 
 Enterprise replaces the shared secret with KMS-held keys and signed lineage, so
-a token names who issued it and can be verified without holding the power to
-mint one.
+a token names who issued it and can be verified without the power to mint one.
