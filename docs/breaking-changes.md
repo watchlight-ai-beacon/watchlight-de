@@ -83,9 +83,9 @@ Fix: narrow on `event`, or annotate `UnknownAuditRecord` to keep the untyped bag
 ## 0.8.2 — the framework-plugin path only
 
 **Cedar entity types now discriminate on the plugin path.** Every term used to
-reach the engine as a bare name, and a bare name matches every entity type with
-the same id. A policy naming the agent under any type other than `Agent::` goes
-from allow to deny.
+reach the engine as a bare name, and a bare name matches `User`, `Agent`,
+`Group` and `Role` policies for that id. A policy naming the agent under any
+type other than `Agent::` goes from allow to deny.
 
 ```cedar
 // before
