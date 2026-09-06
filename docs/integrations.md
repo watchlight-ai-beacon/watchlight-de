@@ -27,6 +27,27 @@ running policy service.
 
 Runnable agents for all three frameworks are in [`examples/`](../examples/).
 
+### Framework-created subagents inherit framework tools
+
+Some frameworks auto-register a general-purpose subagent with the parent's
+tool list. Watchlight cannot narrow a scope that the framework never asks it to
+authorize. For example, in deepagents, pass an explicit same-named spec as
+`subagents` to `create_deep_agent(...)` to prevent inheritance of the parent's
+custom tools:
+
+```python
+subagents=[{
+    "name": "general-purpose",
+    "description": "General-purpose agent without parent custom tools.",
+    "system_prompt": "Complete the delegated task.",
+    "tools": [],
+}]
+```
+
+An empty `tools` list does not remove tools added by the framework's middleware,
+including deepagents' filesystem tools. Configure those separately when the
+subagent needs tighter confinement.
+
 ### Per-call governance goes on the run handle
 
 `governed_plugin()` is constructor wiring. The terms of a single call belong to
