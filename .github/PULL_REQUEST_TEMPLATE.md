@@ -16,7 +16,8 @@
 - [ ] `pip install -e .` still works and the affected examples run.
 
 <!--
-Security issue? Please do NOT open a public PR — email security@watchlight.ai.
+Security issue? Please do NOT open a public PR — open a private security
+advisory instead; see SECURITY.md.
 The authorization engine (watchlight-engine) is a compiled wheel and lives
 outside this repository; engine changes are handled separately.
 -->

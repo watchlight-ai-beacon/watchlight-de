@@ -4,8 +4,7 @@
 
 Please report security issues **privately** — do not open a public issue or PR.
 
-- **Preferred:** [open a private security advisory](https://github.com/watchlight-ai-beacon/watchlight-de/security/advisories/new) on this repository.
-- Or email **security@watchlight.ai**.
+[Open a private security advisory](https://github.com/watchlight-ai-beacon/watchlight-de/security/advisories/new) on this repository.
 
 We aim to acknowledge reports within 3 business days.
 
