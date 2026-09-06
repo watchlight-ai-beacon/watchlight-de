@@ -32,8 +32,9 @@ watchlight dev
 
 ## Before you open a pull request
 
-Run the preflight. It is one command, it runs everything, and it is the same
-set of checks a reviewer will expect to have passed:
+Run the preflight. It is one command, it runs everything, and it is exactly what
+CI runs on your pull request — the same script, in the same order, so a green
+run here and a green check there mean the same thing:
 
 ```bash
 scripts/preflight.sh
@@ -55,6 +56,12 @@ did — and `3`, distinctly, if it could not run at all for want of a
 prerequisite. `examples/showcase/check.sh` draws the same distinction, through
 the same helpers, so a missing interpreter never arrives disguised as a wall of
 failing examples.
+
+CI runs it on Python 3.9 — the floor this package supports — and on a current
+release, so a feature newer than we claim to support fails there even when it
+passes on your machine. Nothing in that workflow uses a repository secret, and a
+pull request from a fork gets a read-only token, so the gate is the same for a
+first-time contributor as for a maintainer.
 
 From a fresh clone it will install and build the Node side for you (both are
 git-ignored build output inside the clone). It will never install Python
