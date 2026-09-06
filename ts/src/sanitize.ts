@@ -228,7 +228,10 @@ const DETECTORS: Detector[] = [
     re: /\b(?:sk-[A-Za-z0-9]{16,}|ghp_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16})\b/g,
     defaultOn: true,
   },
-  { type: "SSN", re: /\b(?!000|666|9\d\d)\d{3}-(?!00)\d{2}-(?!0000)\d{4}\b/g, defaultOn: true },
+  // Redaction, not validation: the excluded area/group ranges are not ISSUABLE
+  // SSNs, but a mistyped one on a form is still somebody's disclosure. Matching
+  // the shape over-redacts at worst; excluding the ranges leaks.
+  { type: "SSN", re: /\b\d{3}-\d{2}-\d{4}\b/g, defaultOn: true },
   {
     type: "CREDIT_CARD",
     re: /\b(?:\d[ -]?){13,19}\b/g,
@@ -347,15 +350,18 @@ function trieRegex(values: string[]): string {
   return render(root);
 }
 
-/** Every occurrence of every known value, case-insensitive, overlapping
- *  occurrences merged into one span. One escaped trie alternation compiled once
+/** Every occurrence of every known value, case-insensitive and matched as a
+ *  whole word, overlapping occurrences merged into one span. One escaped trie alternation compiled once
  *  per call; at each position the longest value wins and the scan resumes one
  *  character later, so every occurrence of every value is covered. Values are
  *  never logged or thrown. */
 function detectKnown(text: string, known: string[]): Span[] {
   const values = Array.from(new Set(known.filter((v) => v.trim().length > 0)));
   if (values.length === 0) return [];
-  const re = new RegExp(trieRegex(values), "gi");
+  // Bounded so a value that is also an ordinary word does not rewrite prose,
+  // and a name is not an occurrence inside a longer name. `\w` boundaries
+  // rather than `\b` so a value whose own edge is punctuation still matches.
+  const re = new RegExp(`(?<!\\w)(?:${trieRegex(values)})(?!\\w)`, "gi");
   const raw: Array<[number, number]> = [];
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {

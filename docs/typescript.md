@@ -124,6 +124,12 @@ phone, SSN, card, IBAN, IPv4, API key, labelled passport and date of birth —
 plus a `known` dictionary you supply and opt-in `PERSON` / `ADDRESS` heuristics.
 `screen` flags or redacts prompt-injection shapes before text reaches the model.
 
+A `known` value matches as a whole word, case-insensitively — `"Smith"` covers
+`Smith's` but not `Smithfield`. It cannot tell a name from the same word used
+ordinarily, so a single-token name that is also a common word (`Will`, `May`,
+`Grace`) redacts every use of that word. Pass the full name, and treat a bare
+first name as a deliberate choice.
+
 `decisionId` joins the audit line to a decision. `principal` names *whose* data
 it was. Omit `principal` and the line names this agent instead, as
 `Agent::"<name>"` — so pass it when a data-minimisation audit has to name the

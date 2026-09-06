@@ -7,6 +7,21 @@ between the version you are on and the one you are moving to.
 
 ## Unreleased
 
+**`sanitize` now redacts every SSN-shaped value.** The detector previously
+skipped the area and group ranges that cannot be issued — `000`, `666`, `9xx`,
+group `00`, serial `0000` — which is right for validating an SSN and wrong for
+removing one. A mistyped SSN on a hand-completed form is still a disclosure.
+Expect more `SSN` redactions and a higher count in the report.
+
+**A `known` value now matches as a whole word.** `known=["Smith"]` no longer
+redacts inside `Smithfield`, and `known=["aa"]` no longer matches inside
+`aaaa`. Punctuation at either edge is still a boundary, so `Smith's` still
+matches. If you relied on substring matching, pass the fuller value.
+
+Neither changes what is written to the report or the audit trail: counts by
+label, never values.
+
+
 **A policy fixture carrying an unknown key now raises** instead of dropping it.
 A key the runner does not implement was silently ignored, so a case could pass
 while proving something other than what it said — a misspelled `"actr"`, or a
