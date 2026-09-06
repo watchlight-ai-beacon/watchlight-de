@@ -249,8 +249,10 @@ def _warn_unconfigured_agent() -> None:
     _warned_unconfigured_agent = True
     print(
         f"watchlight: no agent name configured — recorded as {UNCONFIGURED_AGENT!r}, and it "
-        f"asserts no actor (context.{ACTOR_CONTEXT_KEY} and context.{ACTOR_CHAIN_CONTEXT_KEY} "
-        "are unset), so a policy naming it cannot match. Name it: "
+        f"asserts no actor: context.{ACTOR_CONTEXT_KEY} and "
+        f"context.{ACTOR_CHAIN_CONTEXT_KEY} are unset, so a policy reading either cannot "
+        "match it. It is still the recorded subject when a call names no principal, and a "
+        "policy naming that subject does match. Name the agent: "
         'Watchlight(agent="…"), configure_default(agent="…") for the exported `govern`, '
         f"or {AGENT_ENV}.",
         file=sys.stderr,
