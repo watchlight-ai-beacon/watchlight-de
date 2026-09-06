@@ -1,47 +1,43 @@
 # Pattern: kill-switch / quarantine
 
-**Problem.** Something is wrong — a suspected compromise, a runaway loop, an
-incident. You need to stop an agent **cold**, across every action, with one flag,
-and have that stop beat every grant it otherwise has.
-
-**Policy** — [`suites/kill-switch.suite.json`](./suites/kill-switch.suite.json):
+One flag stops an agent across every action, and beats every grant it otherwise
+has.
 
 ```cedar
-permit(principal == User::"assistant", action, resource);   // the agent's normal grants
+permit(principal == Agent::"assistant", action, resource);   // its normal grants
 
-// one flag halts everything — forbid overrides any permit
+// one flag halts everything — a forbid overrides any permit
 forbid(principal, action, resource) when { context.quarantined == true };
 ```
 
-**Govern the tool** — supply the flag from your own state (a DB column, a cache
-key, an incident switch):
+## Govern the tool
+
+Supply the flag from your own state — a database column, a cache key, an
+incident switch.
 
 ```ts
 const act = govern.tool(runTool, {
   intent: "act",
-  principal: () => `User::"assistant"`,
-  context:  () => ({ quarantined: isQuarantined(agentId) }),  // your source of truth
+  context: () => ({ quarantined: isQuarantined(agentId) }),   // your source of truth
 });
 ```
 
-**Verdicts** (verified):
+## Verdicts
+
+Proved by [`suites/kill-switch.suite.json`](./suites/kill-switch.suite.json).
 
 | `quarantined` | action | verdict |
 |---|---|---|
 | false | `read` | **Allow** |
 | true | `read` | **Deny** |
-| true | `charge` | **Deny** — the switch beats even a broad permit |
+| true | `charge` | **Deny** — the switch beats a broad permit |
 
-**Two things to know.**
+## Worth knowing
 
-- **`forbid` is the kill-switch primitive** — it overrides every `permit`, so a
-  single quarantine rule neutralizes an agent no matter what else it's granted.
-- **It's fail-closed on the flag, too.** The `forbid` reads `context.quarantined`;
-  if you *don't* supply that key, the Developer Edition treats the missing input
-  as denying (a deliberate, safer-than-raw-Cedar deviation). So always pass
-  `quarantined: false` on the healthy path — as the tool above does — and a
-  dropped flag fails safe rather than open.
-
-In the Developer Edition the flag is your app's own state. Enterprise makes this a
-first-class control plane action — drift/anomaly detection can flip it
-automatically, and revocation applies fleet-wide.
+- **`forbid` is the primitive.** It overrides every `permit`, so one rule
+  neutralises an agent whatever else it holds.
+- **Always pass `quarantined: false` on the healthy path.** A missing key makes
+  the condition unevaluable, which denies — safe, but it denies everything.
+- The agent acting on its own behalf is `Agent::"assistant"`, which is what a
+  governed tool records when you pass no `principal`. Naming it under `User::`
+  would not match.

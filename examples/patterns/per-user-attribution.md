@@ -1,16 +1,16 @@
 # Pattern: per-user attribution
 
-**Problem.** One agent serves many end-users. A decision must be attributed to the
-*acting user* — for liability and reconstruction — and policy must be scoped to
-them, not to the agent as a whole.
-
-**Policy** — [`suites/per-user-attribution.suite.json`](./suites/per-user-attribution.suite.json):
+One agent serves many end-users. Each decision names the acting user, and policy
+is scoped to them rather than to the agent.
 
 ```cedar
 permit(principal == User::"alice", action == Action::"pay", resource);
 ```
 
-**Govern the tool** — bind the principal per call from the acting user:
+## Govern the tool
+
+Bind the principal per call, from the user your application already
+authenticated.
 
 ```ts
 const pay = govern.tool(payOut, {
@@ -24,22 +24,25 @@ const pay = govern.tool(payOut, {
 def pay_out(o): ...
 ```
 
-**Verdicts** (verified):
+## Verdicts
+
+Proved by [`suites/per-user-attribution.suite.json`](./suites/per-user-attribution.suite.json).
 
 | principal | verdict |
 |---|---|
 | `User::"alice"` | **Allow** |
 | `User::"bob"` | **Deny** |
-| *(unset — the agent itself)* | **Deny** — an unattributed call can't pay |
+| *(unset — the agent itself)* | **Deny** — an unattributed call cannot pay |
 
-**Why it matters.** The per-call `principal` is what lands in the audit line and
-what `principal == User::"…"` matches — so decisions are scoped to and recorded
-against the real user, and an action with no attributed user is denied rather than
-falling back to the agent's identity. Per-call principals are for attribution and
-policy; they do **not** count against the free-tier "governed agent" limit (that
-counts distinct `agent_id`s — see the
-[overview](https://docs.watchlight.ai/de/overview)).
+## Worth knowing
 
-Combine with [money-bounded](./money-bounded-agent.md) to enforce *this user's*
-limit on *this user's* spend, and join the returned `decisionId` to your record
-for a per-user audit trail.
+- The per-call `principal` is what lands on the audit line and what
+  `principal == User::"…"` matches.
+- **Write the type.** A bare `alice` matches a policy naming that id under
+  `User`, `Agent`, `Group` or `Role`, and when it matches more than one an allow
+  beats a forbid.
+- **Never derive it from client-controlled input**, and use a stable internal id
+  rather than an email — see the [identity model](../../docs/identity-model.md).
+
+Combine with [money-bounded](./money-bounded-agent.md) to bound *this user's*
+spend, and join the returned `decisionId` to your own record.

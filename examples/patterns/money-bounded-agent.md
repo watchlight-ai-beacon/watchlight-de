@@ -1,23 +1,20 @@
 # Pattern: money-bounded agent
 
-**Problem.** An agent can trigger charges. It should spend only within a
-per-action limit, only on refundable items, and anything above a threshold should
-go to a human — decided *before* the charge, not audited after.
-
-**Policy** — [`suites/money-bounded-agent.suite.json`](./suites/money-bounded-agent.suite.json):
+An agent can charge a card. Small refundable charges go through; large ones wait
+for a human.
 
 ```cedar
-// small, refundable charges within the limit are fine
+// small, refundable, inside the caller's own limit
 permit(principal, action == Action::"charge", resource)
 when { context.amount <= context.limit && context.refundable };
 
-// anything large routes to a human (returns NeedsApproval)
+// anything large returns NeedsApproval instead of Allow
 @enforcement_effect("require_approval")
 permit(principal, action == Action::"charge", resource)
 when { context.amount > 1000 };
 ```
 
-**Govern the tool** (TypeScript; Python is identical in shape):
+## Govern the tool
 
 ```ts
 import { govern } from "@watchlight/sdk";
@@ -27,7 +24,7 @@ const charge = govern.tool(chargeCard, {
   intent: "charge",
   principal: (o) => `User::"${o.userId}"`,            // the acting end-user
   context:   (o) => ({ amount: o.amount, limit: o.perActionLimit, refundable: o.refundable }),
-  onNeedsApproval: async ({ decisionId }) => askAHuman(decisionId),  // one-tap confirm
+  onNeedsApproval: async ({ decisionId }) => askAHuman(decisionId),
 });
 ```
 
@@ -43,21 +40,25 @@ govern.load("charge.policy.json")
 def charge_card(o): ...
 ```
 
-**Verdicts** (from the suite, verified against the engine):
+## Verdicts
+
+Proved by [`suites/money-bounded-agent.suite.json`](./suites/money-bounded-agent.suite.json).
 
 | amount | limit | refundable | verdict |
 |---|---|---|---|
-| 50 | 200 | ✅ | **Allow** |
-| 500 | 200 | ✅ | **Deny** (over limit) |
-| 50 | 200 | ❌ | **Deny** (non-refundable) |
-| 5000 | 200 | ✅ | **NeedsApproval** → **Allow** once a human confirms |
+| 50 | 200 | yes | **Allow** |
+| 500 | 200 | yes | **Deny** — over the limit |
+| 50 | 200 | no | **Deny** — not refundable |
+| 5000 | 200 | yes | **NeedsApproval**, then **Allow** once a human confirms |
 
-**Guarantees.** Fail-closed — no matching policy denies. The tool body never runs
-on `Deny`/`NeedsApproval`. Each decision returns a `decisionId` you can store next
-to the charge record. The `@enforcement_effect` value is checked when the policy
-loads: a misspelling raises `PolicyError` naming the accepted set, instead of
-loading a permit that would quietly charge without asking a human. Graduate to the
-control plane with `WATCHLIGHT_APDP_URL` — same policy, same code.
+## Worth knowing
 
-See also: [Enforcement effects](https://docs.watchlight.ai/de/enforcement-effects)
-· [Testing & rollout](https://docs.watchlight.ai/de/testing).
+- The body never runs on a `Deny` or a `NeedsApproval`. Nothing matching denies.
+- `@enforcement_effect` only works on a `permit`. On a `forbid` it is ignored and
+  you get a plain `Deny`.
+- A misspelled effect raises `PolicyError` at load, so a typo cannot become a
+  permit that charges without asking.
+- Store the returned `decisionId` next to the charge record.
+- An approval is valid in the process that minted it until you configure a
+  secret and a store — see
+  [destructive actions](./destructive-actions.md#approvals-across-processes).
