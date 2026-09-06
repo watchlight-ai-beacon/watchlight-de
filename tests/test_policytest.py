@@ -9,6 +9,8 @@ import os
 import subprocess
 import sys
 
+import pytest
+
 from watchlight import Watchlight, load_test_suite, run_policy_tests
 
 # A representative money-movement policy set: a funded-balance check.
@@ -163,5 +165,92 @@ def test_malformed_fixture_raises(tmp_path):
 def test_cli_malformed_fixture_exits_two(tmp_path):
     suite = tmp_path / "mal.json"
     suite.write_text(json.dumps({"policies": POLICIES, "tests": [{"action": "book"}]}))
+    r = _run_cli(suite)
+    assert r.returncode == 2, r.stdout + r.stderr
+
+
+# ── a fixture can name the actor, and an unknown key is refused ─────
+
+ACTOR_POLICY = (
+    'permit(principal, action == Action::"review", resource) '
+    'when { context.actor == "document-reader" };'
+)
+
+
+def _actor_governor():
+    gov = Watchlight(agent="orchestrator", audit_file=False)
+    gov.allow(ACTOR_POLICY)
+    return gov
+
+
+def test_a_fixture_can_be_evaluated_as_a_named_actor():
+    # The policy the 0.8 identity model exists to enable. Without `actor` the
+    # case runs as the governor's own agent and reads as a denial, so a suite
+    # could only ever assert the negative half.
+    report = _actor_governor().test(
+        [{"action": "review", "actor": "document-reader", "expect": "Allow"}]
+    )
+    assert report["failed"] == 0, report["results"]
+
+
+def test_a_different_actor_is_denied_by_the_same_policy():
+    report = _actor_governor().test(
+        [{"action": "review", "actor": "auditor", "expect": "Deny"}]
+    )
+    assert report["failed"] == 0, report["results"]
+
+
+def test_an_actorless_case_still_runs_as_the_governor():
+    report = _actor_governor().test([{"action": "review", "expect": "Deny"}])
+    assert report["failed"] == 0, report["results"]
+
+
+def test_an_unknown_fixture_key_is_refused_rather_than_dropped():
+    # The defect: a misspelled or unsupported key was dropped, so the case
+    # passed while proving something other than what it said.
+    with pytest.raises(ValueError) as exc:
+        _actor_governor().test([{"action": "review", "expect": "Deny", "actr": "x"}])
+    assert "actr" in str(exc.value)
+
+
+def test_a_blank_actor_is_refused():
+    with pytest.raises(ValueError):
+        _actor_governor().test([{"action": "review", "actor": "  ", "expect": "Deny"}])
+
+
+def test_the_bare_runner_refuses_an_actor_it_cannot_resolve():
+    # `run_policy_tests` called without a resolver must not silently evaluate
+    # the case under the wrong identity.
+    with pytest.raises(ValueError) as exc:
+        run_policy_tests(
+            lambda **req: {"decision": "Deny"},
+            lambda **ch: "",
+            [{"action": "review", "actor": "document-reader", "expect": "Deny"}],
+        )
+    assert "actor" in str(exc.value)
+
+
+def test_the_cli_runs_an_actor_scoped_suite(tmp_path):
+    suite = tmp_path / "actor.json"
+    suite.write_text(
+        json.dumps(
+            {
+                "policies": [{"name": "reader-only", "code": ACTOR_POLICY}],
+                "tests": [
+                    {"action": "review", "actor": "document-reader", "expect": "Allow"},
+                    {"action": "review", "actor": "auditor", "expect": "Deny"},
+                ],
+            }
+        )
+    )
+    r = _run_cli(suite)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_the_cli_rejects_an_unknown_fixture_key(tmp_path):
+    suite = tmp_path / "unknown.json"
+    suite.write_text(
+        json.dumps({"policies": POLICIES, "tests": [{"action": "book", "expect": "Deny", "ctx": {}}]})
+    )
     r = _run_cli(suite)
     assert r.returncode == 2, r.stdout + r.stderr

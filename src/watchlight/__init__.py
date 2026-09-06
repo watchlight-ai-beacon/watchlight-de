@@ -2334,14 +2334,27 @@ class Watchlight:
         mint a valid approval token and assert the human-confirmed downgrade;
         set ``"obligations": {"redact": [...], "max_items": n, "log_values":
         bool, "extra": {...}}`` to also assert the obligations an ``Allow`` must
-        carry. Does NOT write to the audit trail. A verdict mismatch is a failed
+        carry; set ``"actor"`` to evaluate the case as that agent, which is what
+        a policy matching on ``context.actor`` needs. A key this runner does not
+        implement raises rather than being dropped. Does NOT write to the audit trail. A verdict mismatch is a failed
         result (inspect ``report["failed"]`` and assert on it in your test
         runner); a malformed fixture — missing ``action`` or ``expect``, or an
         ill-typed ``obligations`` — raises ``ValueError``."""
+        def for_actor(name: str):
+            # A renamed view shares this governor's engine, policies, secrets and
+            # approval store, so a case runs against the same loaded set under a
+            # different `context.actor` — not a second engine.
+            other = self.as_(name)
+            return (
+                lambda **req: other._decide(**req)[0],
+                lambda **ch: other.mint_approval(**ch),
+            )
+
         return run_policy_tests(
             lambda **req: self._decide(**req)[0],
             lambda **ch: self.mint_approval(**ch),
             cases,
+            for_actor,
         )
 
     def mint_approval(

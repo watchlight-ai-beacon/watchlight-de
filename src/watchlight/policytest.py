@@ -119,16 +119,40 @@ def _canonical_obligations(o: Optional[dict]) -> str:
     return json.dumps(c, sort_keys=True, separators=(",", ":"))
 
 
+#: Every key a fixture may carry. A suite is a specification, so a key this
+#: runner does not implement is a statement the run cannot honour: dropping it
+#: silently lets a fixture pass while proving something other than what it says.
+KNOWN_CASE_KEYS = frozenset(
+    {
+        "name",
+        "action",
+        "expect",
+        "actor",
+        "principal",
+        "resource",
+        "context",
+        "approved",
+        "obligations",
+    }
+)
+
+
 def run_policy_tests(
     decide: Callable[..., dict],
     mint: Callable[..., str],
     cases: Sequence[dict],
+    for_actor: Optional[Callable[[str], tuple[Callable[..., dict], Callable[..., str]]]] = None,
 ) -> dict:
     """Run policy fixtures through a decision function and report pass/fail.
 
     ``decide(action=, principal=, resource=, context=, approval=)`` returns the
     engine verdict dict; ``mint(action=, principal=, resource=)`` mints a valid
-    approval token (used when a case sets ``"approved": True``). A verdict
+    approval token (used when a case sets ``"approved": True``).
+
+    ``for_actor(name)`` returns the ``(decide, mint)`` pair for a case that names
+    an ``actor``, so a policy written against ``context.actor`` can be exercised
+    as the agent it names. Without it, a case carrying ``actor`` raises rather
+    than being evaluated under the wrong identity. A verdict
     mismatch — or, when the case states ``"obligations"``, an obligations
     mismatch — is recorded as a failed result rather than raised — inspect
     ``report["failed"]``. A fixture missing a required key (``action`` or
@@ -141,6 +165,26 @@ def run_policy_tests(
         for required in ("action", "expect"):
             if required not in case:
                 raise ValueError(f"{where}: missing required key '{required}'")
+        unknown = sorted(set(case) - KNOWN_CASE_KEYS)
+        if unknown:
+            raise ValueError(
+                f"{where}: unknown key{'s' if len(unknown) > 1 else ''} "
+                f"{', '.join(repr(k) for k in unknown)}. A fixture key this runner "
+                f"does not implement would be dropped, and the case would pass "
+                f"while proving something else. Accepted: "
+                f"{', '.join(sorted(KNOWN_CASE_KEYS))}."
+            )
+        case_decide, case_mint = decide, mint
+        actor = case.get("actor")
+        if actor is not None:
+            if for_actor is None:
+                raise ValueError(
+                    f"{where}: this runner cannot resolve an 'actor'. Call "
+                    f"Watchlight.test(), which supplies one."
+                )
+            if not isinstance(actor, str) or not actor.strip():
+                raise ValueError(f"{where}: 'actor' must be a non-empty string")
+            case_decide, case_mint = for_actor(actor)
         expected = _normalize_verdict(case["expect"])
         expected_obligations = (
             normalize_expected_obligations(case["obligations"], where)
@@ -153,11 +197,11 @@ def run_policy_tests(
         resource = case.get("resource")
         context = case.get("context")
         approval = (
-            mint(action=action, principal=principal, resource=resource)
+            case_mint(action=action, principal=principal, resource=resource)
             if case.get("approved")
             else None
         )
-        decision = decide(
+        decision = case_decide(
             action=action,
             principal=principal,
             resource=resource,

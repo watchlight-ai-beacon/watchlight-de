@@ -26,12 +26,39 @@ A wrong expectation fails the suite.
 decision core directly, so it writes nothing to the audit trail and holds no
 decision logic of its own.
 
-Two more fixture keys:
+Three more fixture keys:
 
 - `"approved": true` mints a single-use token and asserts the
   `NeedsApproval → Allow` downgrade.
 - `"obligations": {"redact": ["ssn"]}` asserts the obligations an `Allow`
   carries. Exact match; `{}` asserts none.
+- `"actor": "document-reader"` evaluates the case as that agent, which is what a
+  policy matching on `context.actor` needs.
+
+## Testing a policy that names the actor
+
+A policy written against the acting agent needs a fixture that can act as one:
+
+```cedar
+permit(principal, action == Action::"review", resource)
+when { context.actor == "document-reader" };
+```
+
+```python
+report = govern.test([
+    {"action": "review", "actor": "document-reader", "expect": "Allow"},
+    {"action": "review", "actor": "auditor", "expect": "Deny"},
+])
+```
+
+The case runs against the same loaded policies under a different `context.actor`
+— it is the governor renamed, not a second engine, so secrets and the approval
+store are shared. Without the key the case runs as the governor's own agent, and
+an actor-conditioned permit reads as a denial.
+
+A key the runner does not implement raises rather than being dropped, so a
+misspelled `"actr"` fails the suite instead of passing a case that proves
+something else.
 
 ## Run it in CI
 
