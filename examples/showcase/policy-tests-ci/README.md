@@ -1,38 +1,34 @@
-# Showcase: policy tests as a CI gate
+# Policy tests as a CI gate
 
-A policy is the only thing between an agent and a real action, so it gets the
-same treatment as code: golden fixtures, run on every pull request, red when a
-verdict changes. This folder is a copy-and-paste setup for that gate.
+A policy is the only thing between an agent and a real action, so give it golden
+fixtures and run them on every pull request. Copy this folder's shape into your
+own repository.
 
-```
-policy-tests-ci/
-├── policies/ticket-agent.policy.json     the policy set under test
-├── tickets.suite.json                    11 fixtures: Allow / Deny / NeedsApproval / approved
-├── widened/
-│   ├── ticket-agent.policy.json          a deliberately widened copy (two `when` clauses dropped)
-│   └── tickets.suite.json                the same 11 fixtures, pointed at the widened policy
-├── github-workflow.policy-tests.yml      GitHub Actions TEMPLATE — copy into .github/workflows/
-└── run-local.sh                          reproduces the gate locally, in every installed lane
+```bash
+cd examples/showcase/policy-tests-ci
+
+watchlight policy test tickets.suite.json            # exit 0
+watchlight policy test widened/tickets.suite.json    # exit 1
+./run-local.sh                                       # both, in every installed lane
 ```
 
-The suite runs through `watchlight policy test`, which exists in both lanes —
-the TypeScript CLI (`npm i -g @watchlight/sdk`) and the Python CLI
-(`pip install watchlight`) — and drives the same engine. Every verdict below
-comes from the engine; the harness has no decision logic of its own and never
-writes to the audit trail.
+`watchlight policy test` ships in both lanes — `pip install watchlight` and
+`npm i -g @watchlight/sdk` — and drives the same engine. It writes nothing to
+the audit trail.
 
-That last point holds for `watchlight policy test` and `govern.test()`, which
-run the engine's decision core directly. A test that calls `authorize()` — or a
-governed tool — is a governed call like any other, and appends a record to
-`.watchlight/audit.jsonl` in whatever working directory it runs in. If that is
-also the directory an application is writing, set `WATCHLIGHT_AUDIT_FILE=0` (or
-`WATCHLIGHT_AUDIT_DIR=.watchlight-test`) for the test run and its verdicts stay
-out of the application's trail.
+## What is here
 
-## The policy set
+```text
+policies/ticket-agent.policy.json     the policy set under test
+tickets.suite.json                    11 fixtures: Allow / Deny / NeedsApproval / approved
+widened/                              a deliberately widened copy, and the same 11 fixtures
+github-workflow.policy-tests.yml      GitHub Actions template — copy into .github/workflows/
+run-local.sh                          the same gate, locally
+```
 
-A support-ticket agent: reads gated on classification, refunds banded by amount,
-closing reserved to one principal, and no policy at all for `delete`.
+The policy set is a support-ticket agent: reads gated on classification, refunds
+banded by amount, closing reserved to one principal, and no policy at all for
+`delete`.
 
 ```cedar
 permit(principal, action == Action::"read", resource)
@@ -50,42 +46,11 @@ permit(principal, action == Action::"refund", resource)
 permit(principal == User::"ops", action == Action::"close", resource);
 ```
 
-## Run it locally
-
-```bash
-pip install watchlight            # and/or: npm i -g @watchlight/sdk
-cd examples/showcase/policy-tests-ci
-
-watchlight policy test tickets.suite.json            # exit 0
-watchlight policy test widened/tickets.suite.json    # exit 1
-./run-local.sh                                       # both, in every installed lane
-```
-
-Both CLIs print the same report. Green, on the correct policy:
-
-```
-watchlight policy test — tickets.suite.json
-
-  ✓ public ticket may be read → Allow
-  ✓ internal ticket may be read → Allow
-  ✓ restricted ticket is never read → Deny
-  ✓ unclassified ticket fails closed → Deny
-  ✓ small refund is allowed → Allow
-  ✓ mid-size refund holds for a human → NeedsApproval
-  ✓ mid-size refund proceeds once approved → Allow
-  ✓ refund above the approval band is denied → Deny
-  ✓ ops may close a ticket → Allow
-  ✓ anyone else may not close → Deny
-  ✓ delete has no policy and is denied → Deny
-
-11 passed, 0 failed (11 total)
-```
-
 ## The widened policy
 
-`widened/ticket-agent.policy.json` is what a careless edit looks like: the
-`when` clause fell off the read permit (and the `forbid` went with it), and the
-close permit lost its principal.
+`widened/ticket-agent.policy.json` is what a careless edit looks like. The
+`when` clause fell off the read permit, the `forbid` went with it, and the close
+permit lost its principal:
 
 ```diff
 -permit(principal, action == Action::"read", resource)
@@ -98,73 +63,52 @@ close permit lost its principal.
 +permit(principal, action == Action::"close", resource);
 ```
 
-The same fixtures now fail — and the process exits 1, which is what fails the CI
-check:
+The same fixtures go red, and the process exits 1:
 
-```
+```text
 watchlight policy test — widened/tickets.suite.json
 
   ✓ public ticket may be read → Allow
-  ✓ internal ticket may be read → Allow
   ✗ restricted ticket is never read — expected Deny, got Allow
   ✗ unclassified ticket fails closed — expected Deny, got Allow
-  ✓ small refund is allowed → Allow
   ✓ mid-size refund holds for a human → NeedsApproval
-  ✓ mid-size refund proceeds once approved → Allow
-  ✓ refund above the approval band is denied → Deny
-  ✓ ops may close a ticket → Allow
   ✗ anyone else may not close — expected Deny, got Allow
-  ✓ delete has no policy and is denied → Deny
-
+  …
 8 passed, 3 failed (11 total)
 ```
 
-Note the two deny fixtures that catch the read widening: one asserts the
-explicit `forbid`, the other asserts that a request with **no** classification
-fails closed. A permit with a `when` clause denies both; a bare permit allows
-both. Keep a "missing context" fixture for every attribute a policy reads.
+Two `Deny` fixtures catch the read widening: one asserts the explicit `forbid`,
+the other asserts that a request with **no** classification fails closed. A
+permit with a `when` clause denies both; a bare permit allows both. Keep a
+missing-context fixture for every attribute a policy reads.
 
 ## Wire it into CI
-
-`github-workflow.policy-tests.yml` is a template. It is not under this repo's
-`.github/workflows/` on purpose — copy it into yours:
 
 ```bash
 cp examples/showcase/policy-tests-ci/github-workflow.policy-tests.yml .github/workflows/policy-tests.yml
 ```
 
-It defines three jobs:
-
-| job | what it does |
-|---|---|
-| `typescript` | `npm install -g @watchlight/sdk` → `watchlight policy test "$SUITE"` |
-| `python` | `pip install watchlight` → `watchlight policy test "$SUITE"` |
-| `gate-has-teeth` | runs the suite against `WIDENED_SUITE` and fails if it **passes** — proof the fixtures still catch the widening |
-
-Set `SUITE` to your own suite path; keep one or both lanes; drop
-`gate-has-teeth` or keep a widened variant of your own next to your policy.
+The template runs three jobs: `typescript` and `python` run `$SUITE` through
+each CLI, and `gate-has-teeth` runs `$WIDENED_SUITE` and fails if it *passes*.
+Point `SUITE` at your own suite, keep one lane or both, and keep a widened
+variant of your policy next to it.
 
 Exit codes, identical in both CLIs:
 
-| exit | when |
+| Exit | When |
 |---|---|
 | `0` | every fixture produced its expected verdict |
 | `1` | at least one verdict differed from `expect` |
 | `2` | the suite file is missing or not valid JSON, has no `tests`, or a fixture lacks `action` or `expect` |
 
-One thing the loader does **not** treat as an error: a `policyFile` path that
-does not exist. The engine is fail-closed, so a missing policy file loads
-nothing and every fixture is evaluated against zero policies — every `Allow` and
-`NeedsApproval` fixture then fails (exit `1`), but a suite whose fixtures all
-expect `Deny` would pass (exit `0`). Keep at least one `Allow` fixture in every
-suite so a mistyped `policyFile` shows up as a red run, not a green one. The
-`gate-has-teeth` job also requires exit code exactly `1` from the widened suite
-and a passing run of the correct one in the same job, so a missing CLI (exit
-`127`) or a malformed suite (exit `2`) can never read as "the gate works".
+**A `policyFile` path that does not exist is not an error.** The engine is
+fail-closed, so a missing file loads nothing and every fixture runs against zero
+policies. Every `Allow` fixture then fails — but a suite of nothing but `Deny`
+fixtures would pass green. Keep at least one `Allow` fixture in every suite.
+`gate-has-teeth` also demands exit code exactly `1` from the widened suite, so a
+missing CLI (`127`) or a malformed suite (`2`) can never read as a working gate.
 
 ## Add a case
-
-A fixture is one object in `tests`:
 
 ```json
 { "name": "refund on a restricted ticket is denied",
@@ -175,41 +119,37 @@ A fixture is one object in `tests`:
   "expect": "Deny" }
 ```
 
-| field | required | meaning |
+| Field | Required | Meaning |
 |---|---|---|
 | `action` | yes | the intent, matched by `action == Action::"<action>"` |
-| `expect` | yes | `Allow`, `Deny`, or `NeedsApproval` (case-insensitive; `permit` / `needs_approval` accepted) |
+| `expect` | yes | `Allow`, `Deny` or `NeedsApproval` (case-insensitive; `permit` / `needs_approval` accepted) |
 | `name` | no | label in the report; defaults to `<action> on <resource>` |
 | `principal` | no | Cedar entity, e.g. `User::"alice"`; defaults to the agent identity |
 | `resource` | no | Cedar resource, e.g. `ticket/T-1`; defaults to `resource` |
-| `context` | no | attributes visible as `context.*`; omit an attribute to test the fail-closed path |
-| `approved` | no | `true` mints a valid single-use approval token for this case, asserting the human-confirmed downgrade from `NeedsApproval` to `Allow` |
+| `context` | no | attributes visible as `context.*`; omit one to test the fail-closed path |
+| `approved` | no | `true` mints a single-use approval token and asserts the `NeedsApproval → Allow` downgrade |
 
-`policyFile` is resolved relative to the suite file. Inline `policies`
-(`[{ "name", "code" }]`) can be used instead of, or in addition to, a file. The
-suite is plain JSON, so the same file is read by both CLIs.
+`policyFile` resolves relative to the suite file. Inline `policies`
+(`[{ "name", "code" }]`) work instead of, or alongside, a file.
 
-Two habits that keep the gate honest:
+Two habits keep the gate honest. Write one fixture per boundary, on both sides —
+for `amount <= 100`, test 100 and 101. And when a real widening is needed,
+change the fixtures first and watch them go red before touching the policy.
 
-1. **One fixture per boundary, on both sides.** For `amount <= 100`, test 100
-   and 101; for a classification list, test each member, one non-member, and
-   the missing attribute.
-2. **Keep the widened variant.** When a real widening is needed, change the
-   fixtures first and watch them go red before touching the policy — the
-   `gate-has-teeth` job does the same thing on every run.
+## Worth knowing
 
-See [`examples/patterns/`](../../patterns/README.md) for more policy shapes,
-each with a suite that runs through the same harness.
+- A **bare identifier** in a fixture's `principal` matches `User`, `Agent`,
+  `Group` and `Role` policies for that id, and when it matches more than one an
+  allow beats a forbid. Write the type — `User::"alice"` — to test what you
+  mean.
+- `watchlight policy test` and `govern.test()` run the engine's decision core
+  and write no records. A test that calls `authorize()` or a governed tool is a
+  governed call like any other: set `WATCHLIGHT_AUDIT_FILE=0` for the test run
+  to keep its records out of the application's trail.
 
-## Is this example verified?
-
-Yes. [`check.sh`](./check.sh) in this folder is this showcase's declaration of
-how it is checked: which scripts run, in which order, and from what state. Run
-it on its own, or through [`examples/showcase/check.sh`](../check.sh), which
-runs every showcase's, or through `scripts/preflight.sh`, which runs that along
-with the rest of the suites.
-
-Here `check.sh` simply declares [`run-local.sh`](./run-local.sh) — this
-showcase's own gate — as the way it is verified. The GitHub Actions file in this
-folder is a template for you to copy into your own repository, not a workflow
-this one runs.
+Verified by [`check.sh`](./check.sh), which runs
+[`run-local.sh`](./run-local.sh) and asserts that the workflow template's suite
+paths still resolve. Nothing here runs the template itself — it is for your
+repository. More policy shapes, each with its own suite, are in
+[`examples/patterns/`](../../patterns/README.md); the reference is
+[testing your policies](../../../docs/testing-policies.md).

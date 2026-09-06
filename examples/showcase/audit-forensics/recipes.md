@@ -1,8 +1,7 @@
 # jq recipes for the audit trail
 
-Every recipe reads the value-free `audit.jsonl` the SDK writes (one JSON object
-per line) and prints identifiers and counts only. Set `TRAIL` to the file you
-want to look at:
+The same questions `forensics.py` answers, for a host where only `jq` is
+installed. Point `TRAIL` at any `audit.jsonl`:
 
 ```bash
 TRAIL=trail/audit.jsonl              # what generate_trail.py / generate-trail.mjs wrote
@@ -10,7 +9,7 @@ TRAIL=.watchlight/audit.jsonl        # what any other example leaves behind
 ```
 
 A **decision** record has no `event` field; every other kind names itself in
-`event`. The join key across kinds is `decision_id`. Field names are listed in
+`event`. `decision_id` joins them. Field names are in
 [README.md](./README.md#record-kinds).
 
 ## Records by kind
@@ -21,8 +20,8 @@ jq -r '.event // "decision"' "$TRAIL" | sort | uniq -c
 
 ## Per principal: allowed / approved / held / denied
 
-`approved` is an `Allow` that carries `approved: true` (a human confirmed a
-`NeedsApproval`); `held` is a `NeedsApproval` that was not (yet) confirmed.
+`approved` is an `Allow` carrying `approved: true`; `held` is a
+`NeedsApproval` nobody has confirmed yet.
 
 ```bash
 jq -r 'select(.event == null)
@@ -33,9 +32,7 @@ jq -r 'select(.event == null)
 
 ## Join sanitization and egress records to their decision
 
-Index the decisions by `decision_id`, then look each follow-up record up. The
-result says which principal's decision, on which resource, led to how many
-redactions and to which egress disposition.
+Index the decisions by `decision_id`, then look each follow-up record up.
 
 ```bash
 jq -s '
@@ -54,8 +51,8 @@ jq -s '
 
 ## Which allowed reads were followed by a sanitization or an egress record
 
-Group by `decision_id`; an allowed decision with nothing after it is a body that
-ran with no egress hook (or a hook that never reported).
+An allowed decision with nothing after it is a body that ran with no egress
+hook.
 
 ```bash
 jq -s '
@@ -72,10 +69,9 @@ jq -s '
 
 ## Attenuation chains: parent → child and what was dropped
 
-`tools` on an `attenuation` record is the set the child was **granted** (the
-engine's clamped grant, not the request). Subtracting it from the parent's set
-gives what the child gave up. A `Deny` record is a refused attenuation — its
-`node_id` was never granted, so it heads no chain.
+`tools` is the set the child was **granted**, so subtracting it from the
+parent's gives what the child gave up. A `Deny` was never granted and heads no
+chain.
 
 ```bash
 jq -s '
@@ -111,8 +107,8 @@ jq -r 'select(.event == null and .decision == "Deny") | "\(.principal) \(.intent
 
 ## Integrity: follow-up records that join nothing
 
-A `sanitization` or `egress` record whose `decision_id` has no decision record
-in this file (the decision went to another trail, or the file was truncated).
+A follow-up record whose `decision_id` has no decision in this file: the
+decision went to another trail, or the file was truncated.
 
 ```bash
 jq -s '
@@ -122,9 +118,8 @@ jq -s '
         | {event, decision_id, resource})' "$TRAIL"
 ```
 
-And records that never carried a join key at all — a `sanitize()` called
-without `decision_id`, or an egress hook on a framework adapter that had no
-`tool_use_id` to bind to:
+And records that never carried a join key — a `sanitize()` called without
+`decision_id`, or an egress hook on an adapter with no `tool_use_id`:
 
 ```bash
 jq -r 'select((.event == "sanitization" or .event == "egress") and (.decision_id | not)) | .event' "$TRAIL" | sort | uniq -c
