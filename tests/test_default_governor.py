@@ -469,3 +469,34 @@ def test_the_dashboard_default_follows_the_audit_directory(monkeypatch):
     assert cli._default_audit_path() == os.path.join("elsewhere", "audit.jsonl")
     monkeypatch.setenv(AUDIT_DIR_ENV, "   ")
     assert cli._default_audit_path() == os.path.join(".watchlight", "audit.jsonl")
+
+
+# ── the dev dashboard surfaces the decision id ─────────────────────────────
+# The id is what joins a verdict to the sanitization, screening and egress
+# records it produced, so the trail is only navigable if the UI shows it.
+
+
+def test_the_dashboard_reader_returns_the_decision_id(tmp_path):
+    from watchlight import cli
+
+    from watchlight import Watchlight
+
+    gov = Watchlight(agent="ticket-agent", audit_dir=str(tmp_path / ".watchlight"))
+    gov.allow('permit(principal, action == Action::"read", resource);')
+    decision = gov.authorize(
+        action="read", resource="ticket/T-1", principal='User::"alice"'
+    )
+
+    events = cli._read_events(tmp_path / ".watchlight" / "audit.jsonl")
+    assert events, "the reader found no events"
+    assert events[-1]["decision_id"] == decision["decision_id"]
+
+
+def test_a_record_without_a_decision_id_reads_as_empty(tmp_path):
+    # The reader also parses the MCP enforcement point's shape, which carries
+    # no decision id. It must return "" rather than raising or None.
+    from watchlight import cli
+
+    path = tmp_path / "audit.jsonl"
+    path.write_text('{"timestamp": "t", "principal": "p", "decision": "permit"}\n')
+    assert cli._read_events(path)[0]["decision_id"] == ""

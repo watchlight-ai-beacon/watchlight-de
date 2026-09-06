@@ -79,6 +79,9 @@ def _read_events(audit_path: pathlib.Path, limit: int = 500) -> list[dict[str, A
                 "allowed": decision.lower() in ("allow", "permit"),
                 "reason": str(raw.get("reason", "")).strip(),
                 "via": str(raw.get("upstream", "")).strip(),
+                # The id that joins this verdict to the sanitization, screening
+                # and egress records it produced.
+                "decision_id": str(raw.get("decision_id") or raw.get("decisionId") or "").strip(),
             }
         )
     return events
@@ -384,6 +387,11 @@ _PAGE = """<!doctype html>
   .pill.allow { color:var(--green); background:rgba(52,211,153,.12); }
   .pill.deny { color:var(--red); background:rgba(248,113,113,.12); }
   .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; color:#cbd5e1; }
+  /* A decision id is a uuid. Truncate so it cannot widen the table; the whole
+     value stays in the DOM, so selecting the cell still copies all of it. */
+  .did { max-width:14ch; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted); }
+  footer a { color:var(--muted); }
+  footer a:hover { color:var(--amber); }
   .empty { text-align:center; color:var(--muted); padding:52px 20px; border:1px dashed var(--border); border-radius:14px; }
   .enterprise { margin-top:30px; background:linear-gradient(180deg,rgba(251,191,36,.07),rgba(251,191,36,.02));
     border:1px solid rgba(251,191,36,.22); border-radius:16px; padding:20px 22px; }
@@ -440,7 +448,7 @@ _PAGE = """<!doctype html>
     <a class="cta" href="mailto:sales@watchlight.ai?subject=Watchlight%20Enterprise">Talk to us — sales@watchlight.ai →</a>
   </div>
 </main>
-<footer>Watchlight Developer Edition · in-process governance.</footer>
+<footer>Watchlight Developer Edition · in-process governance · <a href="https://www.watchlight.ai" target="_blank" rel="noopener noreferrer">watchlight.ai</a></footer>
 
 <script>
 function esc(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -473,9 +481,10 @@ async function tick(){
     const reason = (!e.allowed && e.reason) ? `<div style="color:var(--muted);font-size:12px;margin-top:2px">${esc(e.reason)}</div>` : '';
     rows += `<tr class="${cls}"><td>${timefmt(e.ts)}</td><td class="mono">${esc(e.agent)}</td>`
          +  `<td class="mono">${esc(e.action)}</td><td class="mono">${esc(e.resource)}${via}${reason}</td>`
-         +  `<td><span class="pill ${cls}">${label}</span></td></tr>`;
+         +  `<td><span class="pill ${cls}">${label}</span></td>`
+         +  `<td class="mono did" title="${esc(e.decision_id)}">${esc(e.decision_id)}</td></tr>`;
   }
-  feed.innerHTML = `<table><thead><tr><th>Time</th><th>Agent</th><th>Intent / method</th><th>Resource</th><th>Decision</th></tr></thead><tbody>${rows}</tbody></table>`;
+  feed.innerHTML = `<table><thead><tr><th>Time</th><th>Agent</th><th>Intent / method</th><th>Resource</th><th>Decision</th><th>Decision id</th></tr></thead><tbody>${rows}</tbody></table>`;
   renderAttn(data.attenuation);
 }
 function renderAttn(nodes){
