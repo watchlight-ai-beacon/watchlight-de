@@ -293,7 +293,7 @@ watchlight denied intent 'transfer' on tool/transferFunds: not authorized
 It mirrors the Python package feature-for-feature:
 
 - **Runtime context, per-user, human-in-the-loop:**
-  `govern.tool(fn, { intent, principal?, resource?, context?, onNeedsApproval?, onResult? })`
+  `govern.tool(fn, { intent, principal?, resource?, context?, onNeedsApproval?, onResult?, onResultTimeoutMs? })`
   — runtime facts into Cedar `context.*`, per-call `principal`, and a three-state
   `Allow` / `Deny` / **`NeedsApproval`** verdict with a single-use approval token.
   Approval tokens are signed with a **random per-process key** and recorded as
@@ -327,6 +327,18 @@ It mirrors the Python package feature-for-feature:
   obligations, or re-authorize on its classification; a
   returned value replaces the payload, a throw withholds it (fail-closed). Writes
   a value-free `egress` audit record joined to the decision by `decision_id`.
+  The hook is **bounded**: `onResultTimeoutMs` / `on_result_timeout_ms`, 8 s by
+  default, on `govern.tool()`, on `governTool` / `governTools` and on
+  `governedHooks` alike. A hook that outruns it withholds the payload the same
+  way a throwing one does — `EgressTimeout`, `withheld: true`, and a hook that
+  settles later is discarded, so it can never release a payload late. There is no
+  value that switches the deadline off; a hook that genuinely needs longer takes
+  a larger number. **Breaking in 0.9.1:** only the Claude Agent path had a
+  deadline before, so an egress hook slower than 8 s now withholds on
+  `govern.tool()` and the LangChain adapters where it used to release late.
+  Python enforces the deadline on an **async** tool body — it cannot interrupt a
+  synchronous hook, so `on_result_timeout_ms` on a synchronous body is refused
+  (`TypeError`) rather than silently ignored.
 - **Obligations on an `Allow`:** a permit annotated `@obligate_redact("ssn")`,
   `@obligate_max_items("25")`, `@obligate_log_values("false")` (or any
   `@obligate_<name>("raw")`) yields `d.obligations` — `{ redact, maxItems,
@@ -339,7 +351,8 @@ It mirrors the Python package feature-for-feature:
 - **Frameworks:** `governedHooks()` for the Claude Agent SDK; `governTool()` /
   `governTools()` for LangChain / LangGraph.js. Each takes the same governance
   terms as `govern.tool()` — `principal`, `agent`, `resource` (`resourceFor` on
-  the mapping forms), `context`, `onNeedsApproval`, `onResult` — so a policy that
+  the mapping forms), `context`, `onNeedsApproval`, `onResult`,
+  `onResultTimeoutMs` — so a policy that
   reads Cedar `context.*` reaches the same verdict through an adapter as it does
   through a hand-written governed tool, and the record names the person the call
   was made for. Each is a fixed value or a function of the call. Pass none and

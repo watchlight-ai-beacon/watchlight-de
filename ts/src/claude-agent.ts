@@ -40,6 +40,7 @@ import {
   type OnResult,
   type EgressInfo,
 } from "./index";
+import { DEFAULT_ON_RESULT_TIMEOUT_MS } from "./egress";
 import type {
   HooksOption,
   HookCallback,
@@ -60,9 +61,11 @@ export type {
   HooksOption,
 } from "./claude-agent-types";
 
-/** Default internal deadline for `onResult` (ms). The SDK-side matcher timeout is
- *  derived from it so the deadline sits at 80% of the SDK's. */
-export const DEFAULT_ON_RESULT_TIMEOUT_MS = 8_000;
+// The deadline and its default are shared with `tool()` and the LangChain
+// adapters so every egress path bounds the hook identically; the SDK-side
+// matcher timeout below is derived from it, so the deadline sits at 80% of the
+// SDK's.
+export { DEFAULT_ON_RESULT_TIMEOUT_MS } from "./egress";
 
 /** What the SDK is about to run — the argument every per-call binding on
  *  {@link governedHooks} receives, so a subject, a resource or a context

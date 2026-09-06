@@ -213,7 +213,8 @@ agent:
 | `resourceFor(call)` | the Cedar resource | `tool/<name>` |
 | `context` | attributes for `context.*` | none (a rule that reads them denies) |
 | `onNeedsApproval(info)` | confirm a `require_approval` permit and proceed | deny |
-| `onResult`, `onResultTimeoutMs` | egress hook over the tool's output | none |
+| `onResult` | egress hook over the tool's output | none |
+| `onResultTimeoutMs` | the egress hook's deadline, in ms | `DEFAULT_ON_RESULT_TIMEOUT_MS` (8000) |
 
 `principal` and `context` are each a fixed value **or** a function of the call
 the SDK is about to make — `({ toolName, toolInput }) => value` — because a
@@ -280,6 +281,7 @@ context-dependent policy is decidable here and a decision can name its subject:
 | `context` | attributes for `context.*` | none (a rule that reads them denies) |
 | `onNeedsApproval(info)` | confirm a `require_approval` permit and proceed | throw `NeedsApproval` |
 | `onResult` | egress hook over the tool's result | none |
+| `onResultTimeoutMs` | the egress hook's deadline, in ms | `DEFAULT_ON_RESULT_TIMEOUT_MS` (8000) |
 
 `principal`, `resource` and `context` are each a fixed value **or** a function of
 the tool's own `invoke(input, config)` arguments:
@@ -296,8 +298,8 @@ On `governTools`, `intentFor(name)` and `resourceFor(name)` map per tool —
 `resourceFor` returns a value, or a `(input, config) => value` binding, or
 `undefined` to keep that tool's `tool/<name>`. A single shared `resource` is not
 offered: it would collapse every tool in the array onto one anchor. `principal`,
-`agent`, `context`, `onNeedsApproval` and `onResult` apply to every tool in the
-array — use the binding form where the subject varies per call.
+`agent`, `context`, `onNeedsApproval`, `onResult` and `onResultTimeoutMs` apply
+to every tool in the array — use the binding form where the subject varies per call.
 
 Pass none of these and nothing changes: the subject is the agent, the resource is
 `tool/<name>`, the context is empty. One behaviour differs once a policy asks for
@@ -474,17 +476,32 @@ const readDoc = govern.tool(fetchDocument, {
 - **Return a value** → it replaces the payload. **Return `undefined` or `null`**
   → passthrough (Python: `None`). **Throw** → the error propagates and the raw
   result is never returned (fail-closed).
+- **The hook is bounded.** `onResultTimeoutMs` (default
+  `DEFAULT_ON_RESULT_TIMEOUT_MS`, 8000) is its deadline — the same one on
+  `govern.tool()`, on `governTool` / `governTools` and on `governedHooks`. A hook
+  that has not settled by then withholds the payload exactly as a throwing hook
+  does: the call rejects with `EgressTimeout`, and a hook that settles afterwards
+  is discarded, so a slow hook can never release a payload late. There is no
+  value that switches the deadline off — `0`, a negative and `Infinity` are
+  refused (`RangeError`) where the tool is wrapped; a hook that genuinely needs
+  longer takes a larger number. **Breaking in 0.9.1:** `govern.tool()` and the
+  LangChain adapters had no deadline before, so an egress hook that takes longer
+  than 8 s now withholds where it used to release late — pass a larger
+  `onResultTimeoutMs` if that hook is meant to be slow.
 - Writes a **value-free** `egress` audit record — `{ ts, agent, principal,
   intent, event: "egress", resource, replaced, decision_id }` (plus
   `withheld: true` when the hook threw or timed out) — never the result. It
-  joins the decision record on `decision_id`.
-- The same option is on `governTool(tool, { onResult })` / `governTools` and on
-  `governedHooks({ onResult, onResultTimeoutMs? })`, which installs a Claude
-  Agent SDK `PostToolUse` hook: a returned value becomes the `updatedToolOutput`
-  the model receives; a throw — or outrunning the internal deadline (default
-  8 s; the SDK matcher timeout is set above it) — replaces the output with the
-  opaque `"not authorized"`. The join uses the SDK's `tool_use_id`; without one
-  the egress record carries no `decision_id`.
+  joins the decision record on `decision_id`. The record does not say which of
+  the two it was: the trail records the disposition of the payload, and the
+  cause reaches the caller as the error.
+- The same option is on `governTool(tool, { onResult, onResultTimeoutMs })` /
+  `governTools` and on `governedHooks({ onResult, onResultTimeoutMs? })`, which
+  installs a Claude Agent SDK `PostToolUse` hook: a returned value becomes the
+  `updatedToolOutput` the model receives; a throw — or outrunning the deadline
+  (there the SDK matcher timeout is set above it, so ours fires first) —
+  replaces the output with the opaque `"not authorized"` rather than throwing
+  back to the SDK. The join uses the SDK's `tool_use_id`; without one the egress
+  record carries no `decision_id`.
 
 Pattern: [egress after read](../examples/patterns/egress-after-read.md).
 

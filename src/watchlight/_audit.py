@@ -180,7 +180,12 @@ class EgressRecord(_EgressRequired, total=False):
     #: adapter call that carries no id of its own.
     decision_id: str
     #: Present, and always ``True``, when the hook raised or outran its deadline
-    #: — the payload was never released. ``replaced`` is then ``False``.
+    #: (``on_result_timeout_ms``, 8 s by default, enforced on an async tool body;
+    #: ``on_result_timeout_ms`` is refused on a synchronous one, which cannot be
+    #: interrupted) — the payload was never released. ``replaced`` is then
+    #: ``False``. Which of the two it was is not recorded: the line carries the
+    #: disposition of the payload, and the cause reaches the caller as the
+    #: exception.
     withheld: Literal[True]
 
 
