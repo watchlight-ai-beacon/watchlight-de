@@ -85,14 +85,17 @@ building blocks are:
 - **`context.*`** — any field you pass, compared with `==` `!=` `<` `<=` `>`
   `>=`, combined with `&&` `||` `!`;
 - **identity `==`** on the request triple;
-- **`is`** (entity-type test), **`like`** (glob on strings), and **`.contains()`**
-  on a set you put in `context`.
+- **`is`** (entity-type test), **`like`** (glob on strings), and **`.contains()`**,
+  **`.containsAny()`** and **`.containsAll()`** on a set you put in `context`.
 
-Two things do **not** resolve, in either edition, and deny silently: entity
-relationships (`principal in Group::"admins"`) and app-defined entity attributes
-(`principal.clearance`). There is no entity store to consult. Pass those facts in
-`context` instead — `context.groups.contains("admins")`, `context.role ==
-"editor"` — and the policy behaves identically everywhere.
+Three things do **not** resolve, in either edition, and deny silently: entity
+relationships (`principal in Group::"admins"`), app-defined entity attributes
+(`principal.clearance`), and `in` against a list of strings
+(`context.role in ["admin", "ops"]` denies even when the role *is* `admin` —
+`in` is the entity-hierarchy operator, not list membership). There is no entity
+store to consult. Pass those facts in `context` and test membership with a set:
+`context.roles.contains("admins")`, `context.roles.containsAny(["admin", "ops"])`,
+`context.role == "editor"`.
 
 :::note String matching uses `like`, not `.startsWith()`
 Cedar has no `.startsWith()` / `.endsWith()` / `.contains()` on **strings**, and a
@@ -129,5 +132,9 @@ The full language is documented at
   contain, and what a policy can name.
 - [Enforcement effects](enforcement-effects.md) — the annotation that holds an
   action for a person, and the one that runs a rule without enforcing it.
+- [Role-based access control](rbac.md) — passing one role or several, and the
+  membership test to use.
+- [Attribute-based access control](abac.md) — deciding on runtime facts, and
+  bounding a role with them.
 - [Testing your policies](testing-policies.md) — golden fixtures, and the CLI
   that fails a CI run.
