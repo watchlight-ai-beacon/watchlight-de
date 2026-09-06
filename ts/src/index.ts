@@ -1441,17 +1441,18 @@ export class Watchlight {
    * pass — a golden-test harness for CI, so a policy change is verified before
    * it gates real actions. Each case asserts the expected verdict
    * (`Allow` / `Deny` / `NeedsApproval`) for a `(principal, action, resource,
-   * context)`; set `approved: true` to mint a valid approval token and assert
+   * context)`. An `actor` resolves an {@link as} handle internally; set `approved: true` to mint a valid approval token and assert
    * the human-confirmed downgrade; set `obligations: { redact, maxItems,
    * logValues, extra }` to also assert the obligations an `Allow` must carry.
    * Does NOT write to the audit trail. A verdict mismatch is a failed result
    * (inspect `report.failed` and assert on it in your test runner); a malformed
-   * fixture — missing `action`/`expect`, or an ill-typed `obligations` — throws.
+   * fixture — missing `action`/`expect`, an unknown key, or an ill-typed
+   * `actor`/`obligations` — throws.
    */
   async test(cases: readonly PolicyTestCase[]): Promise<PolicyTestReport> {
     return runPolicyTests(
-      (req) => this._decide(req).then((d) => d.result),
-      (challenge) => this.mintApproval(challenge),
+      ({ actor, ...req }) => (actor === undefined ? this : this.as(actor))._decide(req).then((d) => d.result),
+      ({ actor, ...challenge }) => (actor === undefined ? this : this.as(actor)).mintApproval(challenge),
       cases
     );
   }

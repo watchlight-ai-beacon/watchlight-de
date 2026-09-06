@@ -53,6 +53,47 @@ function loadGovernor(auditDir) {
 async function main() {
   const auditDir = fs.mkdtempSync(join(os.tmpdir(), "wl-ptest-"));
 
+  // Actor fixtures must exercise the same real engine as an explicit handle.
+  const actorGovAuditDir = fs.mkdtempSync(join(os.tmpdir(), "wl-actor-"));
+  const actorGov = new Watchlight({ agent: "policy-test", auditDir: actorGovAuditDir });
+  actorGov.allow('permit(principal, action == Action::"document_review", resource == Resource::"tool/read_document") when { context.actor == "document-reader" };');
+  const request = { action: "document_review", resource: "tool/read_document" };
+  ok("real engine actor handle allows", (await actorGov.as("document-reader").authorize(request)).decision === "Allow");
+  const actorAudit = join(actorGovAuditDir, "audit.jsonl");
+  const beforeActorAudit = fs.readFileSync(actorAudit, "utf8");
+  const actorReport = await actorGov.test([
+    { ...request, actor: "document-reader", expect: "Allow" },
+    { ...request, actor: "other-reader", expect: "Deny" },
+    { ...request, expect: "Deny" },
+    { ...request, actor: "document-reader", principal: 'User::"alice"', expect: "Allow" },
+  ]);
+  ok("fixture actor allows", actorReport.failed === 0, JSON.stringify(actorReport));
+  let unknownRejected = false;
+  try { await actorGov.test([{ action: "missing", expect: "Deny", actro: "document-reader" }]); }
+  catch (e) { unknownRejected = /unknown fixture key/.test(e.message); }
+  ok("unknown fixture key throws", unknownRejected);
+  ok("actor fixtures leave governor identity unchanged", actorGov.agent === "policy-test" && JSON.stringify(actorGov.actorChain) === '["policy-test"]');
+  ok("actor fixtures do not write audit", fs.readFileSync(actorAudit, "utf8") === beforeActorAudit);
+  actorGov.allow('@enforcement_effect("require_approval")\npermit(principal == Agent::"document-reader", action == Action::"review", resource) when { context.actor == "document-reader" && context.actor_chain == ["document-reader"] };');
+  const actorApproval = await actorGov.test([
+    { action: "review", actor: "document-reader", expect: "NeedsApproval" },
+    { action: "review", actor: "document-reader", approved: true, expect: "Allow" },
+    { action: "review", actor: "document-reader", approved: true, expect: "Allow" },
+    { action: "review", actor: "document-reader", principal: 'User::"alice"', approved: true, expect: "Deny" },
+  ]);
+  ok("actor approval tokens use the actor principal and chain", actorApproval.failed === 0, JSON.stringify(actorApproval));
+  ok("actor approvals do not write audit", fs.readFileSync(actorAudit, "utf8") === beforeActorAudit);
+  for (const actor of [null, 17, "", " ", "reader\nother"]) {
+    let rejected = false;
+    try { await actorGov.test([{ action: "review", actor, expect: "Deny" }]); }
+    catch { rejected = true; }
+    ok(`invalid actor rejected: ${JSON.stringify(actor)}`, rejected);
+  }
+  let reservedRejected = false;
+  try { await actorGov.test([{ action: "review", actor: "reader", context: { actor: "other" }, expect: "Deny" }]); }
+  catch (e) { reservedRejected = e.name === "ReservedContextError"; }
+  ok("actor fixture cannot override reserved context", reservedRejected);
+
   // ── 1. programmatic: every fixture passes against the real engine ──
   const g = loadGovernor(auditDir);
   const report = await g.test(CASES);
@@ -122,6 +163,15 @@ async function main() {
   fs.writeFileSync(malSuite, JSON.stringify({ policies: POLICIES, tests: [{ action: "book" }] }));
   const r4 = spawnSync(process.execPath, [CLI, "policy", "test", malSuite], { encoding: "utf8" });
   ok("CLI malformed fixture exits 2", r4.status === 2, `- status ${r4.status}`);
+
+  const actorSuite = join(suiteDir, "actor.json");
+  const actorPolicies = [{ code: 'permit(principal, action == Action::"document_review", resource == Resource::"tool/read_document") when { context.actor == "document-reader" };' }];
+  fs.writeFileSync(actorSuite, JSON.stringify({ policies: actorPolicies, tests: [{ ...request, actor: "document-reader", expect: "Allow" }] }));
+  const actorCli = spawnSync(process.execPath, [CLI, "policy", "test", actorSuite], { encoding: "utf8" });
+  ok("CLI actor fixture allows", actorCli.status === 0, actorCli.stdout + actorCli.stderr);
+  fs.writeFileSync(actorSuite, JSON.stringify({ policies: actorPolicies, tests: [{ ...request, actro: "document-reader", expect: "Deny" }] }));
+  const unknownCli = spawnSync(process.execPath, [CLI, "policy", "test", actorSuite], { encoding: "utf8" });
+  ok("CLI unknown fixture key exits 2", unknownCli.status === 2 && /unknown fixture key 'actro'/.test(unknownCli.stderr), unknownCli.stderr);
 
   console.log(`\npolicytest: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

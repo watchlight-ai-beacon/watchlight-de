@@ -42,6 +42,9 @@ def _normalize_verdict(value: Any) -> str:
     return value if value else "Deny"
 
 
+_CASE_KEYS = {"name", "action", "actor", "principal", "resource", "context", "approved", "expect", "obligations"}
+
+
 _EXPECTED_OBLIGATION_KEYS = {"redact", "maxItems", "max_items", "logValues", "log_values", "extra"}
 
 
@@ -126,18 +129,27 @@ def run_policy_tests(
 ) -> dict:
     """Run policy fixtures through a decision function and report pass/fail.
 
-    ``decide(action=, principal=, resource=, context=, approval=)`` returns the
+    ``decide(action=, principal=, resource=, context=, approval=, actor=)`` returns the
     engine verdict dict; ``mint(action=, principal=, resource=)`` mints a valid
-    approval token (used when a case sets ``"approved": True``). A verdict
+    approval token (used when a case sets ``"approved": True``). When a case
+    names an ``actor``, both callbacks receive it to resolve the same handle;
+    the keyword is omitted for existing actor-free fixtures. A verdict
     mismatch — or, when the case states ``"obligations"``, an obligations
     mismatch — is recorded as a failed result rather than raised — inspect
     ``report["failed"]``. A fixture missing a required key (``action`` or
-    ``expect``), or carrying an ill-typed ``obligations`` expectation, is a
+    ``expect``), an unknown key, or an ill-typed ``actor`` or ``obligations``, is a
     malformed suite and raises ``ValueError``.
     """
     results: list[dict] = []
     for index, case in enumerate(cases):
+        if not isinstance(case, dict):
+            raise ValueError(f"fixture {index}: must be an object")
         where = f"fixture {index} ({case.get('name', '?')})"
+        for key in case:
+            if key not in _CASE_KEYS:
+                raise ValueError(f"{where}: unknown fixture key '{key}'")
+        if "actor" in case and (not isinstance(case["actor"], str) or not case["actor"].strip()):
+            raise ValueError(f"{where}: 'actor' must be a non-blank string")
         for required in ("action", "expect"):
             if required not in case:
                 raise ValueError(f"{where}: missing required key '{required}'")
@@ -152,8 +164,9 @@ def run_policy_tests(
         principal = case.get("principal")
         resource = case.get("resource")
         context = case.get("context")
+        actor = {"actor": case["actor"]} if "actor" in case else {}
         approval = (
-            mint(action=action, principal=principal, resource=resource)
+            mint(action=action, principal=principal, resource=resource, **actor)
             if case.get("approved")
             else None
         )
@@ -163,6 +176,7 @@ def run_policy_tests(
             resource=resource,
             context=context,
             approval=approval,
+            **actor,
         )
         actual = _normalize_verdict(decision.get("decision"))
         obligations_ok = expected_obligations is None or (

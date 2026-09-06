@@ -27,6 +27,8 @@ export interface PolicyTestCase {
   name?: string;
   /** The intent / action being authorized (Cedar `action == Action::"<action>"`). */
   action: string;
+  /** Agent handle resolved internally with governor.as(actor). */
+  actor?: string;
   /** Acting principal, e.g. `User::"alice"`. Defaults to the governor's agent. */
   principal?: string;
   /** Cedar resource entity. Defaults to `"resource"`. */
@@ -100,6 +102,7 @@ type Verdict = "Allow" | "Deny" | "NeedsApproval";
  *  uses, minus the audit write. */
 export type DecideFn = (req: {
   action: string;
+  actor?: string;
   principal?: string;
   resource?: string;
   context?: Record<string, unknown>;
@@ -110,6 +113,7 @@ export type DecideFn = (req: {
  *  sets `approved: true` to exercise the human-confirmed path. */
 export type MintFn = (challenge: {
   action: string;
+  actor?: string;
   principal?: string;
   resource?: string;
 }) => string;
@@ -222,12 +226,14 @@ function canonicalObligations(o: Obligations | undefined): string {
   return sortedJson(c);
 }
 
+const CASE_KEYS = new Set(["name", "action", "actor", "principal", "resource", "context", "approved", "expect", "obligations"]);
+
 /**
  * Run policy fixtures through a decision function and report pass/fail. A
  * verdict mismatch — or, when the fixture states `obligations`, an obligations
  * mismatch — is recorded as a failed result rather than thrown — inspect
  * {@link PolicyTestReport.failed}. A fixture missing a required key (`action` or
- * `expect`), or carrying an ill-typed `obligations` expectation, is a malformed
+ * `expect`), an unknown key, or an ill-typed `actor`/`obligations`, is a malformed
  * suite and throws.
  */
 export async function runPolicyTests(
@@ -238,7 +244,16 @@ export async function runPolicyTests(
   const results: PolicyTestResult[] = [];
   let index = 0;
   for (const c of cases) {
+    if (!c || typeof c !== "object" || Array.isArray(c)) {
+      throw new Error(`fixture ${index}: must be an object`);
+    }
     const where = `fixture ${index} (${c.name ?? "?"})`;
+    for (const key of Object.keys(c)) {
+      if (!CASE_KEYS.has(key)) throw new Error(`${where}: unknown fixture key '${key}'`);
+    }
+    if ("actor" in c && (typeof c.actor !== "string" || !c.actor.trim())) {
+      throw new Error(`${where}: 'actor' must be a non-blank string`);
+    }
     for (const required of ["action", "expect"] as const) {
       if (c[required] === undefined) {
         throw new Error(`${where}: missing required key '${required}'`);
@@ -251,8 +266,9 @@ export async function runPolicyTests(
     if (expectedObligations && Object.keys(expectedObligations).length && expected !== "Allow") {
       throw new Error(`${where}: 'obligations' can only be expected on an Allow, not ${expected}`);
     }
+    const actor = c.actor === undefined ? {} : { actor: c.actor };
     const approval = c.approved
-      ? mint({ action: c.action, principal: c.principal, resource: c.resource })
+      ? mint({ action: c.action, principal: c.principal, resource: c.resource, ...actor })
       : undefined;
     const d = await decide({
       action: c.action,
@@ -260,6 +276,7 @@ export async function runPolicyTests(
       resource: c.resource,
       context: c.context,
       approval,
+      ...actor,
     });
     const actual = normalizeVerdict(d.decision);
     const obligationsOk =

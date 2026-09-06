@@ -26,12 +26,29 @@ A wrong expectation fails the suite.
 decision core directly, so it writes nothing to the audit trail and holds no
 decision logic of its own.
 
-Two more fixture keys:
+Additional fixture keys:
 
+- `"actor": "document-reader"` evaluates through that named agent handle
+  (`govern.as_(...)` in Python, `govern.as(...)` in Node), using the same loaded
+  policies. It sets the SDK-owned `context.actor` and `context.actor_chain`
+  internally and defaults the principal to that actor; an explicit `principal`
+  still names the subject independently. Omit it to use the current governor.
 - `"approved": true` mints a single-use token and asserts the
-  `NeedsApproval → Allow` downgrade.
+  `NeedsApproval → Allow` downgrade through the same actor handle.
 - `"obligations": {"redact": ["ssn"]}` asserts the obligations an `Allow`
   carries. Exact match; `{}` asserts none.
+
+For example, a policy conditioned on `context.actor == "document-reader"`
+can be tested with `{"action": "document_review", "resource":
+"tool/read_document", "actor": "document-reader", "expect": "Allow"}`.
+Do not put an actor override in `context`: those keys remain reserved.
+
+Fixtures accept only `name`, `action`, `actor`, `principal`, `resource`,
+`context`, `approved`, `expect`, and `obligations`. Unknown keys (including
+misspellings) and invalid actor names are malformed fixtures: the API raises
+and the CLI exits 2, rather than silently testing different input. Actor names
+follow the normal handle rules, including the restriction on renaming a
+delegated governor.
 
 ## Run it in CI
 

@@ -2310,17 +2310,26 @@ class Watchlight:
         a golden-test harness for CI, so a policy change is verified before it
         gates a real action. Each case is a dict with ``action`` and ``expect``
         (``"Allow"`` / ``"Deny"`` / ``"NeedsApproval"``), plus optional
-        ``principal`` / ``resource`` / ``context``; set ``"approved": True`` to
+        ``actor`` / ``principal`` / ``resource`` / ``context``. An ``actor``
+        resolves an :meth:`as_` handle internally; set ``"approved": True`` to
         mint a valid approval token and assert the human-confirmed downgrade;
         set ``"obligations": {"redact": [...], "max_items": n, "log_values":
         bool, "extra": {...}}`` to also assert the obligations an ``Allow`` must
         carry. Does NOT write to the audit trail. A verdict mismatch is a failed
         result (inspect ``report["failed"]`` and assert on it in your test
         runner); a malformed fixture — missing ``action`` or ``expect``, or an
-        ill-typed ``obligations`` — raises ``ValueError``."""
+        unknown key, or ill-typed ``actor``/``obligations`` — raises ``ValueError``."""
+        def for_actor(actor: Optional[str]) -> "Watchlight":
+            if actor is None:
+                return self
+            try:
+                return self.as_(actor)
+            except TypeError as exc:
+                raise ValueError(f"fixture actor: {exc}") from exc
+
         return run_policy_tests(
-            lambda **req: self._decide(**req)[0],
-            lambda **ch: self.mint_approval(**ch),
+            lambda actor=None, **req: for_actor(actor)._decide(**req)[0],
+            lambda actor=None, **ch: for_actor(actor).mint_approval(**ch),
             cases,
         )
 

@@ -9,7 +9,7 @@ import os
 import subprocess
 import sys
 
-from watchlight import Watchlight, load_test_suite, run_policy_tests
+from watchlight import Watchlight, ReservedContextError, load_test_suite, run_policy_tests
 
 # A representative money-movement policy set: a funded-balance check.
 POLICIES = [
@@ -165,3 +165,70 @@ def test_cli_malformed_fixture_exits_two(tmp_path):
     suite.write_text(json.dumps({"policies": POLICIES, "tests": [{"action": "book"}]}))
     r = _run_cli(suite)
     assert r.returncode == 2, r.stdout + r.stderr
+
+
+ACTOR_POLICY = {
+    "name": "document-reader",
+    "code": 'permit(principal, action == Action::"document_review", resource == Resource::"tool/read_document") when { context.actor == "document-reader" };',
+}
+
+
+def test_fixture_actor_uses_real_engine_handle(tmp_path):
+    g = Watchlight(agent="policy-test", audit_dir=str(tmp_path))
+    g.allow(ACTOR_POLICY["code"], ACTOR_POLICY["name"])
+    request = {"action": "document_review", "resource": "tool/read_document"}
+    # Positive control: the published engine honours this exact actor policy.
+    assert g.as_("document-reader").authorize(**request)["decision"] == "Allow"
+    before = (tmp_path / "audit.jsonl").read_bytes()
+    report = g.test([
+        {**request, "actor": "document-reader", "expect": "Allow"},
+        {**request, "actor": "other-reader", "expect": "Deny"},
+        {**request, "expect": "Deny"},
+        {**request, "actor": "document-reader", "principal": 'User::"alice"', "expect": "Allow"},
+    ])
+    assert report["failed"] == 0, report
+    assert g.agent == "policy-test" and g.actor_chain == ("policy-test",)
+    assert (tmp_path / "audit.jsonl").read_bytes() == before
+
+
+def test_unknown_fixture_key_is_rejected(tmp_path):
+    import pytest
+    with pytest.raises(ValueError, match="unknown fixture key"):
+        _gov(tmp_path).test([{"action": "missing", "expect": "Deny", "actro": "document-reader"}])
+
+
+def test_actor_fixture_approval_uses_actor_principal_and_writes_no_audit(tmp_path):
+    g = Watchlight(agent="policy-test", audit_dir=str(tmp_path))
+    g.allow('@enforcement_effect("require_approval")\npermit(principal == Agent::"document-reader", action == Action::"review", resource) when { context.actor == "document-reader" && context.actor_chain == ["document-reader"] };')
+    report = g.test([
+        {"action": "review", "actor": "document-reader", "expect": "NeedsApproval"},
+        {"action": "review", "actor": "document-reader", "approved": True, "expect": "Allow"},
+        {"action": "review", "actor": "document-reader", "approved": True, "expect": "Allow"},
+        {"action": "review", "actor": "document-reader", "principal": 'User::"alice"', "approved": True, "expect": "Deny"},
+    ])
+    assert report["failed"] == 0, report
+    assert not (tmp_path / "audit.jsonl").exists()
+
+
+def test_actor_fixture_rejects_invalid_names_and_reserved_context(tmp_path):
+    import pytest
+    g = _gov(tmp_path)
+    for actor in [None, 17, "", " ", "reader\nother"]:
+        with pytest.raises(ValueError, match="actor"):
+            g.test([{"action": "book", "actor": actor, "expect": "Deny"}])
+    with pytest.raises(ReservedContextError):
+        g.test([{"action": "book", "actor": "reader", "context": {"actor": "other"}, "expect": "Deny"}])
+
+
+def test_actor_fixture_cli_and_unknown_key(tmp_path):
+    suite = tmp_path / "actors.json"
+    fixture = {"action": "document_review", "resource": "tool/read_document", "actor": "document-reader", "expect": "Allow"}
+    suite.write_text(json.dumps({"policies": [ACTOR_POLICY], "tests": [fixture]}))
+    result = _run_cli(suite)
+    assert result.returncode == 0, result.stdout + result.stderr
+    fixture["actro"] = fixture.pop("actor")
+    fixture["expect"] = "Deny"
+    suite.write_text(json.dumps({"policies": [ACTOR_POLICY], "tests": [fixture]}))
+    result = _run_cli(suite)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "unknown fixture key 'actro'" in result.stderr
