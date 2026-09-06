@@ -520,6 +520,9 @@ and validate, and the verdict stays a plain `Deny`. Acting on `quarantine`,
 `revoke`, `sever_subtree` or `terminate` is the Enterprise plane, so
 [email sales@watchlight.ai](mailto:sales@watchlight.ai?subject=Watchlight%20Enterprise) if you need it.
 
+[Enforcement effects](enforcement-effects.md) covers every verb, including the
+`observe` annotation that runs a `forbid` without enforcing it.
+
 Worth knowing:
 
 - **A refusal is whole-file or nothing.** One bad policy loads none of the file,
