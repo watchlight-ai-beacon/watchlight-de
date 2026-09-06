@@ -154,8 +154,8 @@ the control plane.
 
 ## See also
 
-- [`ts/README.md`](../ts/README.md) — the full package reference: every option,
-  every adapter, the longer examples.
+- [`ts/README.md`](../ts/README.md) — the npm package page: install, the denial,
+  and what else is in the box.
 - [`ts/examples/agent.mjs`](../ts/examples/agent.mjs) — runnable programs.
 - [The audit trail](audit-trail.md) — `auditSink` and `counterSource`; both
   lanes write the same records.
