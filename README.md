@@ -31,11 +31,6 @@ evaluating the model and shipping governed agents; the code you write here is th
 code you run in production — going to production is pointing the same code at the
 running control plane, not a rewrite.
 
-> **For enterprises**, Watchlight provides the wider **Agent Runtime Governance
-> Control Plane**: signed, tamper-evident lineage; multi-tenant isolation;
-> drift & anomaly detection → automatic quarantine; and fleet-wide revocation
-> across every agent and environment. → **[watchlight.ai](https://www.watchlight.ai)**
-
 ## How the pieces fit together
 
 There are two lanes — **Python** and **TypeScript / Node** — and they are one
@@ -81,47 +76,31 @@ pip install "watchlight[all]"   # Python — the SDK, every framework plugin, th
 npm install @watchlight/sdk     # Node   — the SDK, and the engine with it
 ```
 
-> `watchlight[all]` is one install for the whole Python lane, so every example on
-> [docs.watchlight.ai/de](https://docs.watchlight.ai/de) runs after it. Note the
-> lifecycle SDK's module name is **`watchlight_core`** (there is no
-> `watchlight-core` package on PyPI). On the Node lane `@watchlight/sdk` is the
-> only install you need.
->
-> The `watchlight dev` dashboard ships in the Python `watchlight` package, and it
-> tails `.watchlight/audit.jsonl` — the file **both** lanes write by default — so
-> it shows a Node agent's decisions too.
-
-Runnable, self-contained examples for every one of these are in
-[`examples/`](examples/) — start with
-[`examples/governed_research_agent.py`](examples/governed_research_agent.py) in
-Python, or [`ts/examples/agent.mjs`](ts/examples/agent.mjs) in TypeScript / Node.
+> `watchlight[all]` is one install for the whole Python lane, so every example in
+> the documentation runs after it; note the lifecycle SDK's module name is
+> **`watchlight_core`** (there is no `watchlight-core` package on PyPI). On the
+> Node lane `@watchlight/sdk` is the only install you need. The `watchlight dev`
+> dashboard ships in the Python `watchlight` package and tails
+> `.watchlight/audit.jsonl` — the file **both** lanes write by default — so it
+> shows a Node agent's decisions too.
 
 ---
 
 ## Quickstart
 
-> The `govern` decorator, `watchlight dev`, and the framework + MCP integrations
-> below all work today. Full guide: [Developer Edition docs](https://docs.watchlight.ai/de).
-
-This is the Python lane. **On Node?** The same five-minute `DENY` is
-`npm install @watchlight/sdk` → **[TypeScript / Node](#typescript--node)**.
-
-**Prerequisites:** Python **3.9+**. Prebuilt wheels ship for Linux, macOS, and
-Windows — no Rust toolchain, no build step, no account.
+Five minutes to a governed `DENY`, in either lane. Prebuilt wheels and a
+prebuilt Wasm engine: no Rust toolchain, no build step, no server, no database,
+no account.
 
 ```bash
-pip install watchlight
+pip install watchlight        # Python — 3.9+, prebuilt wheels for Linux, macOS, Windows
+npm install @watchlight/sdk   # Node   — 18+, the compiled engine comes with it
 ```
 
-Prefer an isolated environment? Install into a virtual environment instead:
+Prefer an isolated environment on the Python side? `python -m venv .venv &&
+source .venv/bin/activate` first (Windows: `.venv\Scripts\activate`).
 
-```bash
-python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install watchlight
-```
-
-Save this as `agent.py` and run `python agent.py`:
+**Python** — save this as `agent.py` and run `python agent.py`:
 
 ```python
 # agent.py — a complete, runnable program (copy, paste, run).
@@ -158,104 +137,10 @@ watchlight: DENY   transfer  tool/transfer_funds     not authorized
 watchlight denied intent 'transfer' on tool/transfer_funds: not authorized
 ```
 
-**That `DENY` line — in your own terminal, in under five minutes, with no
-account — is the product.** The `transfer_funds` body never ran.
-
----
-
-## Who is acting, and on whose behalf
-
-A governed call answers these questions, and they are separate inputs:
-
-| Question | Where it goes | Example |
-|---|---|---|
-| On whose behalf does this run? | `principal` — the subject | `User::"db:4412"` |
-| Which runtime is acting? | the reserved `actor` context key, set by the SDK | `context.actor == "flight-booker"` |
-| Through whose delegation? | the reserved `actor_chain` context key | `context.actor_chain.contains("flight-booker")` |
-| Under what narrowed authority? | the attenuation scope | `govern.scope(tools=[...])` |
-
-```python
-from watchlight import govern, principals
-
-# the agent acting for a person
-govern.authorize(action="book", principal=principals.user("db:4412"))
-# the agent acting on its own behalf — an omitted principal is Agent::"<name>"
-govern.authorize(action="cache")
-```
-
-```cedar
-// this runtime may book for any user — whoever it acts for
-permit(principal is User, action == Action::"book", resource)
-when { context.actor == "flight-booker" };
-```
-
-`principal` is always a typed entity reference; build it with `principals.user`
-/ `principals.agent`, which escape an identifier that came from outside. The
-SDK sets `context.actor` on every call from the governor's agent name, and
-refuses a caller-supplied value that disagrees, so a policy can trust it.
-
-**One engine per policy set, many named agents.** Construct once (with the sink
-and the secrets), load the policies once, then name each agent with `as`: it
-returns another `Watchlight` with a different name, backed by the same engine —
-the same compiled policies and their load memo, the same audit trail, sink and
-secrets, and only the stamped name differs. Construct a second governor for a
-genuinely different policy set — not to give an agent a name.
-
-```python
-billing = govern.as_("billing-agent")     # no second engine, no second policy load
-research = govern.as_("research-agent")
-```
-
-Renamed governors share the trail, so every named agent's records land in one
-destination, told apart by the `agent` field — which is what makes a single audit stream
-readable. Separate governors are how you get a separate trail per agent.
-
-A sub-agent is a *delegation*, not a rename: `delegate` narrows a scope for it
-(engine-enforced strict subset) and extends the actor chain, so the decision and
-every record name both the sub-agent and whose delegation it acts under.
-
-```python
-root = govern.scope(tools=["search", "book"])
-picker = govern.delegate(root, "seat-picker", tools=["search"])
-picker.authorize(action="pick_seat", principal=principals.user("db:4412"))
-# records agent "seat-picker", actor_chain ["flight-booker", "seat-picker"]
-```
-
-The subject is a stable identifier for whoever your application already
-authenticated — a users-table primary key is as valid as a token's subject
-claim, and no identity provider is required. Derive it from something you
-authenticated, never from a request header or body a caller can set, and prefer
-an id that never moves over an email or a username.
-
-**→ [Using the governor](https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/docs/using-the-governor.md)** — where the
-governor lives in an application: construct it once at start-up, how many you
-need, what every name shares, and the request-handler / worker / test shapes.
-
-**→ Full reference: [The identity model](https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/docs/identity-model.md)** — the
-one-engine shape, the three cases with exact values, worked policies, where the
-values come from, and the 0.8.0 migration note.
-
-**→ [Glossary](https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/docs/glossary.md)** — governor, subject,
-actor and chain, then every other term this documentation uses, with the
-easy-to-confuse pairs contrasted side by side.
-
----
-
-## TypeScript / Node
-
-Same governance, in your Node app — no Python sidecar.
-[`@watchlight/sdk`](https://www.npmjs.com/package/@watchlight/sdk) runs the same
-compiled engine in-process (WebAssembly).
-
-**Prerequisites:** Node **≥ 18**. `@watchlight/sdk` pulls in the compiled engine
-(`@watchlight/engine`) automatically — no native toolchain.
-
-```bash
-npm install @watchlight/sdk
-```
-
-Then, in an ES-module / TypeScript file (`await` at top level needs `"type":
-"module"` or a `.mjs` file):
+**TypeScript / Node** — the same program, and the same four output lines,
+naming `tool/webSearch` and `tool/transferFunds`. Save it in an ES-module or
+TypeScript file (`await` at top level needs `"type": "module"` or a `.mjs`
+file):
 
 ```ts
 // agent.ts — the same DENY line, in Node.
@@ -282,525 +167,63 @@ try {
 }
 ```
 
-```text
-watchlight: governing 'research-agent' (dev mode, in-process engine)
-watchlight: ALLOW  research  tool/webSearch
-results for: watchlight docs
-watchlight: DENY   transfer  tool/transferFunds     not authorized
-watchlight denied intent 'transfer' on tool/transferFunds: not authorized
-```
+**That `DENY` line — in your own terminal, in under five minutes, with no
+account — is the product.** The `transfer_funds` body never ran.
 
-It mirrors the Python package feature-for-feature:
-
-- **Runtime context, per-user, human-in-the-loop:**
-  `govern.tool(fn, { intent, principal?, resource?, context?, onNeedsApproval?, onResult?, onResultTimeoutMs? })`
-  — runtime facts into Cedar `context.*`, per-call `principal`, and a three-state
-  `Allow` / `Deny` / **`NeedsApproval`** verdict with a single-use approval token.
-  Approval tokens are signed with a **random per-process key** and recorded as
-  used in an **in-process map** unless you configure otherwise — so by default a
-  token cannot cross a process boundary, a restart invalidates outstanding
-  approvals, and behind two replicas the same token can be consumed once on
-  *each*. `approvalSecret` / `approval_secret` (or `WATCHLIGHT_APPROVAL_SECRET`,
-  or the existing `signingSecret`, which covers both kinds of token — see
-  [the signing secret](docs/signing-secret.md)) makes a token portable; an `approvalStore` /
-  `approval_store` (one method: `add(id, expiresAt)`) backed by a shared store
-  makes single-use hold across replicas. `add` must be an **atomic
-  check-and-set** — reserve the id only if absent, and say whether the
-  reservation was new; a read followed by an unconditional write cannot enforce
-  single use, because concurrent consumes of one token would all pass through
-  the gap. The built-in default is atomic, so within one process N parallel
-  consumes of one token yield exactly one `Allow`. A store that fails, times
-  out, or will not report **refuses** the approval — it never admits one. The
-  reservations are yours: the SDK never deletes one, and `expiresAt` /
-  `expires_at` is the epoch-millisecond deadline after which an id is safe to
-  drop — give the row a TTL, or implement the optional `prune(before)` and the
-  SDK asks for the deletion on the same code path as the reservation. A store
-  without `prune` is unchanged, and a failing `prune` never moves a decision.
-  **Breaking in 0.8.0:** the signed payload is now length-prefixed and versioned,
-  so no two different `(principal, action, resource)` triples can sign the same
-  bytes — approval tokens minted by an earlier version do not verify against
-  0.8.0. The tokens are short-lived, so drain in-flight approvals across the
-  upgrade.
-- **Govern what a tool returns:** `onResult(result, { intent, resource, principal,
-  decisionId, obligations? })` (Python `on_result`) runs after the body and before
-  the caller sees the result — sanitize, screen, honour the decision's
-  obligations, or re-authorize on its classification; a
-  returned value replaces the payload, a throw withholds it (fail-closed). Writes
-  a value-free `egress` audit record joined to the decision by `decision_id`.
-  The hook is **bounded**: `onResultTimeoutMs` / `on_result_timeout_ms`, 8 s by
-  default, on `govern.tool()`, on `governTool` / `governTools` and on
-  `governedHooks` alike. A hook that outruns it withholds the payload the same
-  way a throwing one does — `EgressTimeout`, `withheld: true`, and a hook that
-  settles later is discarded, so it can never release a payload late. There is no
-  value that switches the deadline off; a hook that genuinely needs longer takes
-  a larger number. **Breaking in 0.9.1:** only the Claude Agent path had a
-  deadline before, so an egress hook slower than 8 s now withholds on
-  `govern.tool()` and the LangChain adapters where it used to release late.
-  Python enforces the deadline on an **async** tool body — it cannot interrupt a
-  synchronous hook, so `on_result_timeout_ms` on a synchronous body is refused
-  (`TypeError`) rather than silently ignored.
-- **Obligations on an `Allow`:** a permit annotated `@obligate_redact("ssn")`,
-  `@obligate_max_items("25")`, `@obligate_log_values("false")` (or any
-  `@obligate_<name>("raw")`) yields `d.obligations` — `{ redact, maxItems,
-  logValues, extra }` (Python `result["obligations"]`: `redact` / `max_items` /
-  `log_values` / `extra`, the last as `{name: [values]}`) — constraints your code
-  or `onResult` must honour. Several carriers merge to the strictest reading;
-  only an `Allow` carries them; `Deny` and `NeedsApproval` never do; an
-  unreadable obligation fails closed (`AuthorizeError`). Needs engine >= 0.2.0.
-  See the [allow-but-redact pattern](examples/patterns/allow-but-redact.md).
-- **Frameworks:** `governedHooks()` for the Claude Agent SDK; `governTool()` /
-  `governTools()` for LangChain / LangGraph.js. Each takes the same governance
-  terms as `govern.tool()` — `principal`, `agent`, `resource` (`resourceFor` on
-  the mapping forms), `context`, `onNeedsApproval`, `onResult`,
-  `onResultTimeoutMs` — so a policy that
-  reads Cedar `context.*` reaches the same verdict through an adapter as it does
-  through a hand-written governed tool, and the record names the person the call
-  was made for. Each is a fixed value or a function of the call. Pass none and
-  the defaults are unchanged: the agent is the subject, the resource is
-  `tool/<name>`, the context is empty. See the
-  [context-through-an-adapter pattern](examples/patterns/context-through-an-adapter.md).
-- **Data minimization:** `govern.sanitize(text, { resource, decisionId, principal?, known? })`
-  — strip PII before an agent reads a document: structured detectors (email,
-  phone, SSN, card, IBAN, IPv4, API key, labelled passport / date of birth), an
-  app-supplied `known` dictionary (`KNOWN`; simple case-insensitive match —
-  Unicode case folding differs between lanes), and opt-in `PERSON` / `ADDRESS`
-  heuristics. Pass the `decisionId` from `authorize` and the `sanitization`
-  audit line joins the decision on `decision_id`; pass `principal` (Python
-  `principal=`) and the line names *whose* data was redacted, under the same key
-  the decision line uses. Omit it and the line still names a subject — this
-  agent, typed as `Agent::"<name>"`, exactly as a decision that names no
-  principal is recorded — so naming the person is what turns "redacted for the
-  agent" into an answer a data-minimisation audit can use, and it is the only
-  way to get one when the sanitization runs *before* any decision exists to
-  join to.
-- **Content screening:** `govern.screen(text, { resource, decisionId?, principal? })`
-  — flag or redact prompt-injection shapes in what a read returns, before it
-  reaches the model; with the `decisionId` the `screening` audit line joins the
-  decision, and `principal` names whom it was screened for. Both fields are
-  identifiers you supply — never anything derived from the content — and carry
-  the same validation (1–128 characters, no control or line-separator
-  characters).
-- **Attenuation & graduation:** `govern.scope().attenuate()`; `scope.toToken()` /
-  `govern.scopeFromToken()` carry an attenuated scope to a worker process (HMAC
-  integrity; the receiving engine re-proves the subset); every decision returns a
-  `decisionId` to join to your records; `WATCHLIGHT_APDP_URL` graduates the
-  *same code* to the control plane.
-
-Full API + runnable examples: [`ts/`](ts/) · npm: `@watchlight/sdk` (glue,
-Apache-2.0) + `@watchlight/engine` (the compiled engine). Docs:
-[docs.watchlight.ai/de/typescript](https://docs.watchlight.ai/de/typescript).
-
-## Already using a framework? Govern it in-process
-
-Bring your existing **LangGraph**, **Pydantic AI**, or **Claude Agent SDK**
-agent under governance with zero infrastructure — the *same* plugin you ship to
-production, wired to the in-process engine:
-
-```bash
-pip install 'watchlight[langgraph]'   # or [pydantic-ai], [claude-agent]
-```
-
-```python
-from watchlight.langgraph import governed_plugin   # .pydantic_ai / .claude_agent
-
-plugin = governed_plugin("watchlight.policy.json")   # in-process, zero infra
-
-async with await plugin.start_run("research-agent") as handle:
-    if not await handle.authorize_action("read", "tool/web_search"):
-        raise PermissionError("denied before it executed")
-    ...  # your tool runs, every action governed + recorded to .watchlight/audit.jsonl
-```
-
-Going to production is one environment variable, not a rewrite — set
-`WATCHLIGHT_APDP_URL` and the identical code authorizes against a running policy
-service. Runnable examples for all three frameworks are in
-[`examples/`](examples/).
-
-### What a plugin can express, and where
-
-`governed_plugin()` is constructor wiring: it builds the published plugin and
-hands it the in-process engine. The governance terms of a single call belong to
-the plugin's own run handle, not to the factory.
-
-- **Cedar `context` and the resource: yes, per call.**
-  `await handle.authorize_action("read_ticket", "tool/read_ticket", context={"caller": caller, "owner": owner})`
-  — a policy that reads `context.*` is satisfiable this way. (`tenant_id` is the
-  plugin's own and wins over a value passed here.)
-- **An acting subject: yes, per call.**
-  `await handle.authorize_action("read_ticket", "tool/read_ticket", principal=f'User::"{user_id}"')`
-  — a policy that must name the person or tenant a call is made **for** is
-  satisfiable this way. Omitted, the subject defaults to the agent that runs,
-  so an existing call is unchanged. Needs `watchlight-agent-sdk` 0.7.0 or
-  later, which `watchlight[langgraph|pydantic-ai|claude-agent]` requires.
-
-`governed_plugin()` refuses `principal=`, `context=` and `resource=` by name
-rather than forwarding them into a constructor that would drop them — a term you
-believe is reaching the decision, and is not, is a policy that never matches.
-All three belong on the run handle, and the error says so.
-
-**Name the entity type.** On this path `principal`, `resource` and the action
-reach the engine exactly as you write them. A typed reference discriminates:
-`User::"u-1"` is not matched by a policy naming `Agent::"u-1"`. A **bare** name is
-not typed and not inert: it matches a policy naming that id under `User`,
-`Agent`, `Group` or `Role`, and when it matches more than one, an allow beats a
-forbid — the opposite of Cedar's usual rule. Name the type. The action is always Cedar
-type `Action`; the engine rejects a policy that gives it any other type.
+The Node lane's feature-for-feature parity list — approvals, egress hooks,
+obligations, the framework adapters — is [the TypeScript / Node
+lane](https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/docs/typescript.md).
 
 ---
 
-## Watch every decision live — `watchlight dev`
+## Who is acting, and on whose behalf
 
-A zero-dependency local dashboard that tails your value-free audit trail and
-shows every governance decision as it happens — the ALLOWs, and the DENYs that
-stopped a tool **before** it ran.
+A governed call answers these questions, and they are separate inputs:
 
-```bash
-watchlight dev            # → http://127.0.0.1:7000
-```
-
-Run your governed agent in another terminal and watch the decisions stream in.
-It shows only *this* process — fleet-wide lineage, signed audit, and
-drift→quarantine are the governed control plane (Enterprise).
-
-On an ephemeral host, keep the trail: pass an `audit_sink` and every record —
-decisions, sanitizations, screenings, egress dispositions, attenuations — is also
-handed to your code with exactly the fields the file line carries (the file stays
-on). The sink is fire-and-forget and can never block or change a decision; a
-failure is reported once.
-
-```python
-govern = Watchlight(agent="my-agent", audit_sink=lambda record: my_store.insert(record))
-```
-
-The five kinds are **typed**, discriminated by `event` — absent on a decision, a
-literal on every other kind. TypeScript exports them as a union
-(`AuditRecord = DecisionRecord | SanitizationRecord | ScreeningRecord |
-EgressRecord | AttenuationRecord`, common fields on `AuditRecordBase`) and Python
-as `TypedDict`s of the same names, so a sink that maps fields breaks at build
-time when a kind changes shape rather than quietly writing `null`s. A sink that
-just forwards records can stay untyped: annotate `UnknownAuditRecord` (or a plain
-`dict`) and nothing changes. The field table, kind by kind, is in
-[`examples/showcase/audit-forensics`](examples/showcase/audit-forensics/README.md).
-
-Reference sinks — a Postgres row, an OTLP log record, a webhook — are in
-[`examples/patterns/audit-sink.md`](examples/patterns/audit-sink.md).
-
-`audit_file=False` makes the sink the **sole** destination: no `.watchlight`
-directory, no file, and `govern.counters(...)` — which reads the local file —
-raises rather than counting zero. `watchlight dev` tails that same file, so it
-has nothing to show once the file is off; read your sink's store instead. With neither a file nor a sink the SDK says so
-once instead of discarding records silently. Note that the file is shared: every
-governor pointed at the same directory, including concurrent instances in one
-process and a test run in the same working directory, appends to the same
-`audit.jsonl`, so those records interleave and are told apart only by their
-fields.
-
-The module-level `govern` is pre-constructed, so configure it before its first
-governed call — otherwise it has no sink, and it says so the first time it
-writes:
-
-```python
-from watchlight import govern, configure_default
-
-configure_default(agent="billing-agent", audit_sink=my_store.insert)
-```
-
-Once it has written a record its destination is fixed: records already written
-cannot reach a sink added later, and a trail split across two destinations reads
-like a data bug. Re-applying the configuration *already in force* is a no-op, so
-the defensive second call is not an exception path; a call that would CHANGE an
-option raises and names which one. A sink matches when it is the same function
-on the same object, so passing `audit_sink=my_store.insert` twice is one sink —
-but a `lambda` written out a second time is a different one, and conflicts.
-`can_configure_default()` asks the question outright, and mutates nothing:
-
-```python
-from watchlight import can_configure_default, configure_default
-
-if can_configure_default():
-    configure_default(audit_sink=my_store.insert)
-```
-
-Three environment variables configure the default governor where the code
-is not yours to change — a test run, a container, a CI job:
-
-| Variable | Effect |
-|---|---|
-| `WATCHLIGHT_AUDIT_DIR` | the directory `audit.jsonl` is written into (default `.watchlight`) |
-| `WATCHLIGHT_AUDIT_FILE` | `0` / `false` / `no` / `off` writes no local file at all |
-| `WATCHLIGHT_AGENT` | the agent name, when the `agent` option does not give one; blank counts as unset |
-
-```bash
-WATCHLIGHT_AUDIT_FILE=0 pytest    # this run adds nothing to the application's audit.jsonl
-```
-
-Both are read lazily, at first use, so setting them before or after importing
-`watchlight` works the same. Precedence is option, then environment, then
-default: an explicit `configure_default(audit_dir=…)` wins, and a governor you
-construct yourself already names its own options and is untouched. `watchlight
-dev` reads `WATCHLIGHT_AUDIT_DIR` too, so the dashboard follows the trail. The
-default governor deliberately still writes `.watchlight/audit.jsonl` with no
-opt-in — that file appearing with zero configuration is the quickstart, and
-`watchlight dev` reads it and nothing else. Full guide:
-[`docs/using-the-governor.md`](docs/using-the-governor.md#the-exported-default-governor).
-
-The trail is also an input: `govern.counters(...)` folds it into a number for a
-quota policy — decisions for exactly this principal (and intent / resource) in
-the last `window`, from the record timestamps — so `context.reads_this_hour < 100`
-has something to compare against. Streams the local file (bounded, 64 MiB by
-default); malformed lines are skipped and counted, never echoed.
-
-```python
-c = govern.counters(principal='User::"u1"', intent="read", window="1h")   # {"count": 7, "window": {...}, ...}
-govern.authorize(action="read", principal='User::"u1"', context={"reads_this_hour": c["count"]})
-```
-
-By default that count comes from the local file, which is per-container and does
-not survive a deploy. `counter_source` / `counterSource` is the **read side** of
-the sink: the same query, answered by the durable store the sink writes to, so
-the quota spans every replica.
-
-```python
-govern = Watchlight(
-    agent="my-agent",
-    audit_sink=lambda record: my_store.insert(record),
-    counter_source=lambda query: my_store.count_decisions(query),
-)
-c = govern.counters(principal='User::"u1"', intent="read", window="1h")   # c["source"] == "external"
-```
-
-The source is handed the validated, resolved query — `principal`, `outcome`, a
-`window` whose `start` is exclusive and `end` inclusive, plus `intent` /
-`resource` when the caller filtered on them — and must return a non-negative
-integer. It has to count **decision rows only**, exactly as the local scan does:
-the trail also carries `sanitization`, `screening`, `egress` and `attenuation`
-records, so a query filtered on principal and window alone over-counts and the
-quota denies early. Fail-closed: it never falls back to the local file, so a
-quota can never quietly under-count.
-
-An async source — a durable store is a network call — is read with
-`counters_async(...)` / `countersAsync(...)`, and a `context` binding may itself
-be async: it is awaited before the decision, so the durable count is what the
-policy evaluates and the quota works through a governed tool.
-
-```python
-async def quota(o):
-    c = await govern.counters_async(principal=user(o), intent="read", window="1h")
-    return {} if c["truncated"] else {"reads_this_hour": c["count"]}
-
-# An async binding needs an `async def` body: the decision is made before the
-# body runs, so a synchronous tool cannot await one and raises `TypeError`.
-@govern.tool("read", principal=user, context=quota)
-async def fetch_document(o): ...
-```
-
-A synchronous binding reads the local file or a synchronous source; an async
-source needs the async binding — calling the synchronous `counters()` on one
-raises, naming `counters_async`, rather than answering from the file.
-
-The async form is a property of the tool binding, not of `authorize`, which
-takes a context you have already resolved. Handing `authorize` an unresolved
-awaitable raises `UnresolvedContextError` before anything reaches the engine,
-and records no decision — the attributes it was going to carry are not there
-yet, and a policy evaluated without them denies for a reason that has nothing
-to do with the caller.
-
-The [quotas pattern](examples/patterns/quotas.md) has the policy, the tool
-binding, and the exact counting rules.
-
----
-
-## Test your policies before they gate real actions
-
-A policy is the only thing standing between an agent and a real action, so unit-test
-it like any other code. Golden fixtures assert the expected verdict
-(`Allow` / `Deny` / `NeedsApproval`) for a `(principal, action, resource, context)`;
-a wrong expectation fails the suite. Run it in CI.
-
-`govern.load(path)` is **idempotent per source**: the real path (symlinks
-resolved) or an explicit `source_id=` is remembered, so priming an engine in a
-factory and loading the same file again from an initialiser cannot double the
-set. A missing file is not remembered, so it loads once it appears. The memo is
-keyed on identity, not content — editing a loaded file and calling `load` again
-is a no-op; pass `force=True` to load it again (additively). `govern.allow(code)` is
-always additive — the same code twice is two policies. `govern.policy_count` and
-`govern.has_policies` report what an engine holds, which is worth asserting at
-start-up: no policies means every call is denied.
-
-Both entry points **check the enforcement effect before the policy loads**. A
-policy annotated with an `@enforcement_effect` the engine does not implement —
-anything outside `attenuate`, `escalate`, `observe`, `quarantine`,
-`require_approval`, `revoke`, `sever_subtree`, `terminate` — raises `PolicyError`
-naming the value and the accepted set, and `load` adds nothing from that file. An
-unrecognised effect is otherwise *dropped*, which on a `forbid` is harmless (a
-deny stays a deny) but on a `permit` turns a `require_approval` hold into an
-unconditional allow, so a one-character typo would quietly remove a
-human-in-the-loop gate. A near miss for the annotation *name* (`@enforcment_effect`)
-warns instead of raising — an annotation the SDK does not read may well be yours.
-See [the enforcement effect](docs/using-the-governor.md#the-enforcement-effect-is-checked-when-the-policy-loads).
-
-```python
-from watchlight import govern
-
-govern.load("watchlight.policy.json")
-assert govern.has_policies, "no policies loaded — every call would be denied"
-report = govern.test([
-    {"name": "under limit allows", "action": "book",
-     "context": {"amount": 200, "limit": 500, "refundable": True}, "expect": "Allow"},
-    {"name": "over limit denies", "action": "book",
-     "context": {"amount": 800, "limit": 500, "refundable": True}, "expect": "Deny"},
-    {"name": "big wire needs a human", "action": "wire",
-     "context": {"amount": 5000}, "expect": "NeedsApproval"},
-])
-assert report["failed"] == 0, report
-```
-
-`govern.test(...)` (Node: `await govern.test([...])`) drives the engine's decision
-core directly, so it **never writes the audit trail** and holds zero decision logic —
-every verdict is the engine's. Set `"approved": true` on a fixture to mint a
-single-use token and assert the human-confirmed `NeedsApproval → Allow` downgrade;
-set `"obligations": {"redact": ["ssn"]}` to also assert the obligations an `Allow`
-carries (exact match; `{}` asserts none).
-
-Or from CI, with the CLI — a `suite.json` of `{ policyFile?, policies?, tests: [...] }`,
-exit 1 on any failure:
-
-```bash
-watchlight policy test suite.json                                 # Python
-npx --package @watchlight/sdk watchlight policy test suite.json   # Node
-```
-
----
-
-## Patterns — advanced policies for high-stakes decisions
-
-Past the quickstart, the interesting question is *what to write in the policy*.
-The [**governance patterns**](./examples/patterns/) library is a set of
-copy-paste recipes for the decisions people reach for the Developer Edition to
-govern — spending money, deleting things, messaging the outside world, moving
-data, killing a runaway agent. Each is a *problem shape*: a policy, the code that
-governs the tool, and tests that prove the verdicts. Every policy is run through
-the real engine by [`check.sh`](./examples/patterns/check.sh), so what a pattern
-claims and what the engine does can't drift.
-
-The advanced policy JSON — each a runnable `{ policies, tests }` suite with Cedar
-`context` conditions and `@enforcement_effect` gates — lives under
-[`examples/patterns/suites/`](./examples/patterns/suites/):
-
-| Pattern | The high-stakes question | Verified by |
+| Question | Where it goes | Example |
 |---|---|---|
-| [Money-bounded agent](./examples/patterns/money-bounded-agent.md) | Spend *this much*, on *this*, now — or does a human decide? | [`money-bounded-agent.suite.json`](./examples/patterns/suites/money-bounded-agent.suite.json) |
-| [Destructive actions](./examples/patterns/destructive-actions.md) | Delete / drop / deploy: require a human; make some things undeletable. | [`destructive-actions.suite.json`](./examples/patterns/suites/destructive-actions.suite.json) |
-| [External messaging](./examples/patterns/external-messaging.md) | May the agent message *outside* — allowlisted destinations only, with review? | [`external-messaging.suite.json`](./examples/patterns/suites/external-messaging.suite.json) |
-| [Data egress](./examples/patterns/data-egress.md) | May *this classification* of data cross *this boundary*? | [`data-egress.suite.json`](./examples/patterns/suites/data-egress.suite.json) |
-| [Egress after read](./examples/patterns/egress-after-read.md) | Govern what a tool *returns* — decide on the result's classification after the fetch. | [`egress-after-read.suite.json`](./examples/patterns/suites/egress-after-read.suite.json) |
-| [Allow, but redact](./examples/patterns/allow-but-redact.md) | Say "yes, but…" *in the policy* — `@obligate_redact` / `@obligate_max_items` / `@obligate_log_values` ride on the `Allow`, and the suite asserts them. | [`allow-but-redact.suite.json`](./examples/patterns/suites/allow-but-redact.suite.json) |
-| [Kill-switch / quarantine](./examples/patterns/kill-switch.md) | Stop a suspect agent cold — a hard boundary that beats every grant. | [`kill-switch.suite.json`](./examples/patterns/suites/kill-switch.suite.json) |
-| [Per-user attribution](./examples/patterns/per-user-attribution.md) | Attribute the decision to the acting end-user, and scope policy to them. | [`per-user-attribution.suite.json`](./examples/patterns/suites/per-user-attribution.suite.json) |
-| [PII before read](./examples/patterns/pii-before-read.md) | Strip PII from a document *before* the agent ever sees it; read only through the sanitizing path. | [`pii-before-read.suite.json`](./examples/patterns/suites/pii-before-read.suite.json) + [`pii-before-read.mjs`](./examples/patterns/scripts/pii-before-read.mjs) |
-| [Screen before model](./examples/patterns/screen-before-model.md) | Catch prompt-injection shapes in what a read returns *before* the model reads it. | [`screen-before-model.mjs`](./examples/patterns/scripts/screen-before-model.mjs) |
-| [Sub-agent confinement](./examples/patterns/subagent-confinement.md) | A spawned agent can only ever do *less* than its parent — never more. | [`subagent-confinement.mjs`](./examples/patterns/scripts/subagent-confinement.mjs) |
-| [Audit sink](./examples/patterns/audit-sink.md) | Ship the value-free trail to a store you already run, without touching a decision. | [`audit-sink.mjs`](./examples/patterns/scripts/audit-sink.mjs) |
-| [Quotas](./examples/patterns/quotas.md) | *This many* reads per hour, writes per day — a counter from the audit trail in `context`. | [`quotas.suite.json`](./examples/patterns/suites/quotas.suite.json) |
+| On whose behalf does this run? | `principal` — the subject | `User::"db:4412"` |
+| Which runtime is acting? | the reserved `actor` context key, set by the SDK | `context.actor == "flight-booker"` |
+| Through whose delegation? | the reserved `actor_chain` context key | `context.actor_chain.contains("flight-booker")` |
+| Under what narrowed authority? | the attenuation scope | `govern.scope(tools=[...])` |
 
-Patterns whose guarantee is not a policy verdict — sanitization, content
-screening, scope attenuation, the audit sink — are verified by a Node script under
-[`examples/patterns/scripts/`](./examples/patterns/scripts/) instead. Run every
-suite and script at once:
-
-```bash
-examples/patterns/check.sh          # every pattern must have a suite or script; runs them all
+```cedar
+// this runtime may book for any user — whoever it acts for
+permit(principal is User, action == Action::"book", resource)
+when { context.actor == "flight-booker" };
 ```
+
+That is the difference from an `if`: the policy does not name a caller, it names
+*whichever runtime is acting* and *whoever it acts for* — and the SDK sets
+`context.actor` itself, from the governor's agent name, refusing a
+caller-supplied value that disagrees, so a policy can trust it.
+
+**→ [The identity model](https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/docs/identity-model.md)** — the three cases with exact
+values, one engine and many named agents, delegating to a sub-agent, and where
+the values come from.
 
 ---
 
-## Govern an MCP server
+## Where to go next
 
-Put a **policy enforcement point (PEP)** in front of any
-[MCP](https://modelcontextprotocol.io) server (spec `2026-07-28`). The MCP PEP
-authorizes every governed call — `tools/call`, `resources/read`,
-`resources/subscribe`, `prompts/get` — in-process **before** it reaches the
-server, so a denied call never executes.
+`watchlight dev` opens a local dashboard that streams every decision as it
+happens. `govern.test(...)` unit-tests a policy before it gates anything real.
+Framework plugins bring an existing LangGraph, Pydantic AI or Claude Agent SDK
+agent under governance without touching its code, and an MCP policy enforcement
+point governs any MCP server from in front of it. All of that, and the reference
+for every option, is behind one door:
 
-```bash
-pip install watchlight-mcp
-```
+→ **[The documentation index](https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/docs/README.md)** — every page, and
+when to read it.
 
-```python
-import watchlight_mcp
-
-watchlight_mcp.serve(
-    listen_addr="127.0.0.1:9700",
-    upstream_url="http://localhost:3000/mcp",   # the MCP server you're governing
-    upstream_server="github",
-    policy_files=["examples/mcp.policy.json"],
-    audit_path=".watchlight/audit.jsonl",       # ← the file `watchlight dev` tails
-)
-```
-
-Point your MCP client at `http://127.0.0.1:9700/mcp` instead of the server. A
-self-contained, self-demonstrating example (it fires an allowed and a denied
-call and proves the denied one never ran) is in
-[`examples/governed_mcp_server.py`](examples/governed_mcp_server.py).
-
-For a stdio-launched server use `serve_stdio(...)`; to run non-blocking and
-hot-reload policies use `serve_background(...)`. Pass `tls_cert=`/`tls_key=` to
-terminate HTTPS on the listener, and `upstream_ca=` to trust a private
-`https://` upstream. See the [MCP server guide](https://docs.watchlight.ai/de/mcp-server).
-
-### Watch the MCP decisions live
-
-`watchlight dev` tails `.watchlight/audit.jsonl` — so give the PEP the **same**
-`audit_path` (above) and run the console beside it, from the same directory:
-
-```bash
-# terminal 1 — the governed MCP server, auditing to the file the console tails
-python examples/governed_mcp_server.py
-
-# terminal 2 — the live console
-watchlight dev                # → http://127.0.0.1:7000
-```
-
-Every `tools/call` decision streams in — the tool, the upstream it fronts, and
-the reason a call was denied. (The example prints the exact
-`watchlight dev --audit …` command for its own audit file.)
-
----
-
-## What runs locally
-
-| Capability | Developer Edition (free / open) | Enterprise |
-|---|---|---|
-| Policy engine | in-process Cedar, policies from a local `.cedar` file | a running, scaled policy service |
-| Sub-agent scope attenuation | engine-side strict-subset validation | same, server-side |
-| Scope across processes | HMAC scope token — integrity within one trust domain, not attestation (a secret holder can mint any scope, root included); the receiving engine re-proves the subset | independently attestable scopes |
-| Content screening | rule-based, in-process, value-free: `govern.sanitize` (structured PII) + `govern.screen` (prompt-injection / output-leak shapes); not ML classification | a running guardrails service (ML classifiers, NER) |
-| Audit | local JSONL, greppable, value-free | a signed, tamper-evident audit service |
-| Dashboard | `watchlight dev` → `localhost:7000` (policies + execution lineage) | the full operator console |
-
-Everything the Developer Edition removes is **infrastructure**, never a
-**guarantee**. Fail-closed semantics, engine-side attenuation, explicit scopes,
-and value-free audit are identical in every mode.
-
----
-
-## Open source, and the compiled engine
-
-Everything you write against is **open** and Apache-2.0 — read it, audit it, fork it:
-
-- `watchlight` — the `govern` decorator, `govern.scope` attenuation, the CLI, and the `watchlight dev` dashboard
-- the framework plugins — `watchlight-langgraph`, `watchlight-pydantic-ai`, `watchlight-claude-agent`
-- the MCP PEP's transport layer, and every example in this repo
-
-The **decision engine** ships as a **compiled wheel** — `watchlight-engine` (the Cedar authorization pipeline) and the `watchlight-mcp` runtime — both **free to use, including in production and commercially — for up to 25 governed agents per organization** (a commercial license is needed only above that, or to re-offer the engine itself as a hosted authorization service). The engine source is the part Watchlight sells; the code you integrate with is not.
-
-You don't have to trust a black box to trust the decisions:
-
-- **The policy language is open.** Decisions are standard [Cedar](https://www.cedarpolicy.com/) — an open, formally-specified language; the same policy yields the same decision, deterministically.
-- **The integration layer is open.** The SDK, plugins, CLI, and PEP transport are all readable here, so you can see exactly what the engine is asked and what it returns.
-- **Every decision is yours to read.** Each `ALLOW`/`DENY` is emitted value-free to whatever destination you configure — by default `.watchlight/audit.jsonl`, so you can inspect the engine's behaviour on your own machine, tool by tool, with nothing set up.
-
-Want the **engine source** or an **air-gapped build**? That's Enterprise — [email sales@watchlight.ai](mailto:sales@watchlight.ai?subject=Watchlight%20Enterprise).
+Runnable, self-contained programs live in [`examples/`](examples/) — start with
+[`governed_research_agent.py`](examples/governed_research_agent.py) in Python or
+[`ts/examples/agent.mjs`](ts/examples/agent.mjs) in Node. The copy-paste policy
+recipes for the high-stakes decisions — spending money, deleting things,
+messaging the outside world, moving data, stopping a runaway agent — are in
+[`examples/patterns/`](examples/patterns/), each one run through the real engine
+so what a pattern claims and what the engine does cannot drift. The full
+reference is on [docs.watchlight.ai/de](https://docs.watchlight.ai/de).
 
 ---
 
@@ -828,20 +251,44 @@ points the *same code* — no rewrite — at the governed control plane, adding
 signed tamper-evident lineage, multi-tenant isolation, drift→quarantine, and
 fleet-wide revocation across every agent and environment.
 
+| Capability | Developer Edition (free / open) | Enterprise |
+|---|---|---|
+| Policy engine | in-process Cedar, policies from a local `.cedar` file | a running, scaled policy service |
+| Sub-agent scope attenuation | engine-side strict-subset validation | same, server-side |
+| Scope across processes | HMAC scope token — integrity within one trust domain, not attestation (a secret holder can mint any scope, root included); the receiving engine re-proves the subset | independently attestable scopes |
+| Content screening | rule-based, in-process, value-free: `govern.sanitize` (structured PII) + `govern.screen` (prompt-injection / output-leak shapes); not ML classification | a running guardrails service (ML classifiers, NER) |
+| Audit | local JSONL, greppable, value-free | a signed, tamper-evident audit service |
+| Dashboard | `watchlight dev` → `localhost:7000` (policies + execution lineage) | the full operator console |
+
+Everything the Developer Edition removes is **infrastructure**, never a
+**guarantee**. Fail-closed semantics, engine-side attenuation, explicit scopes,
+and value-free audit are identical in every mode.
+
 → **[watchlight.ai](https://www.watchlight.ai)**
 
 ---
 
-## License
+## Open source, and the license
 
-The Developer-Edition SDK, the framework plugins, this repository, and the
-`watchlight dev` dashboard are **Apache-2.0** — use, fork, and ship them freely.
-The authorization **engine** (`watchlight-engine`) and the MCP runtime
-(`watchlight-mcp`) ship as **compiled wheels** under the Watchlight Developer
-Edition license; they are **free to use, including in production and
-commercially, for up to 25 governed agents per organization** — a commercial
-license is needed only above that, or to re-offer the engine itself as a hosted
-authorization service.
+Everything you write against is **open** and Apache-2.0 — read it, audit it, fork it:
+
+- `watchlight` — the `govern` decorator, `govern.scope` attenuation, the CLI, and the `watchlight dev` dashboard
+- the framework plugins — `watchlight-langgraph`, `watchlight-pydantic-ai`, `watchlight-claude-agent`
+- the MCP PEP's transport layer, and every example in this repo
+
+You don't have to trust a black box to trust the decisions:
+
+- **The policy language is open.** Decisions are standard [Cedar](https://www.cedarpolicy.com/) — an open, formally-specified language; the same policy yields the same decision, deterministically.
+- **The integration layer is open.** The SDK, plugins, CLI, and PEP transport are all readable here, so you can see exactly what the engine is asked and what it returns.
+- **Every decision is yours to read.** Each `ALLOW`/`DENY` is emitted value-free to whatever destination you configure — by default `.watchlight/audit.jsonl`, so you can inspect the engine's behaviour on your own machine, tool by tool, with nothing set up.
+
+The **decision engine** ships as a **compiled wheel** — `watchlight-engine`
+(the Cedar authorization pipeline) and the `watchlight-mcp` runtime — under the
+Watchlight Developer Edition license. Both are **free to use, including in
+production and commercially, for up to 25 governed agents per organization**; a
+commercial license is needed only above that, or to re-offer the engine itself
+as a hosted authorization service. The engine source is the part Watchlight
+sells; the code you integrate with is not.
 
 Want the **engine source**, an **air-gapped build**, or to govern a **fleet** in
 production? That's the Enterprise plane — [email
