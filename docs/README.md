@@ -7,6 +7,8 @@ pick up from there.
 |---|---|
 | [Using the governor](using-the-governor.md) | You are placing the governor in a real app — a request handler, a worker, a test. |
 | [How policy works](policies.md) | You are writing Cedar and want the request shape, default deny, and what the engine resolves. |
+| [Role-based access control](rbac.md) | You are carrying a user's role, or several, into a decision. |
+| [Attribute-based access control](abac.md) | You are deciding on runtime facts — an amount, a region, a verified session. |
 | [Enforcement effects](enforcement-effects.md) | You want a policy to hold an action for a person, run a rule in monitor mode, or you are reading `@enforcement_effect`. |
 | [The identity model](identity-model.md) | You need a decision to say *who it was for*: the subject, the acting runtime, the delegation chain. |
 | [The TypeScript / Node lane](typescript.md) | You are governing a Node app: approvals, egress hooks, obligations, the framework adapters. |
