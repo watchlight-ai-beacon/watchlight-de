@@ -94,7 +94,7 @@ larger number.
 TypeScript races the hook, so the deadline applies everywhere. Python enforces it
 on an **async** tool body, where the hook is awaited; a synchronous body with
 `on_result_timeout_ms` raises `TypeError` rather than accepting a deadline it
-cannot honour, so bound a synchronous hook yourself.
+cannot honour, so put your own time bound on a synchronous hook.
 
 On `governedHooks` the adapter also raises the SDK's own matcher timeout above
 its deadline, so ours fires first and withholds instead of letting the raw output
