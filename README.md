@@ -173,23 +173,42 @@ Only *how strongly the principal is proven* changes. The policies do not.
 
 ## Developer Edition vs Enterprise
 
-Enterprise points the *same code* at a running control plane — no rewrite.
+Enterprise points the *same code* at a running control plane — no rewrite. What
+changes is what happens around the decision.
 
-| | Developer Edition (free / open) | Enterprise |
+**What the Developer Edition does, and Enterprise keeps**
+
+| Capability | Developer Edition | Enterprise |
 |---|---|---|
-| Policy engine | in-process Cedar, policies from a local file | a running, scaled policy service |
-| Sub-agent attenuation | engine-side strict-subset validation | same, server-side |
-| Scope across processes | HMAC scope token — integrity inside one trust domain, not attestation | independently attestable scopes |
-| Content screening | rule-based and in-process: `govern.sanitize` + `govern.screen` | a guardrails service with ML classifiers |
-| Audit | local JSONL, greppable, value-free | signed, tamper-evident audit service |
-| Dashboard | `watchlight dev` → `localhost:7000` | the full operator console |
-| Fleet | one process | multi-tenant, drift→quarantine, fleet-wide revocation |
+| Allow / require approval / deny, on real Cedar | ✅ in-process engine, policies from a local file | ✅ a running, scaled decision service |
+| Strict-subset sub-agent attenuation | ✅ engine-side, to a depth of 5 | ✅ server-side, unbounded |
+| Human-in-the-loop approvals | ✅ single-use tokens | ✅ across the fleet, with an operator queue |
+| Content screening | ✅ rule-based: `govern.sanitize`, `govern.screen` | ✅ a guardrails service with ML classifiers |
+| Framework plugins | ✅ LangGraph, Pydantic AI, Claude Agent SDK, DeepAgents, LangChain.js, MCP | ✅ those plus Claude Code, Google ADK, AWS Bedrock, Microsoft Agent Framework, OpenClaw |
+| Scopes across a process boundary | ✅ HMAC scope token — integrity within one trust domain | ✅ independently attestable scopes |
+| Dashboard | ✅ `watchlight dev` → `localhost:7000` | ✅ the operator console |
 
-Everything the Developer Edition removes is **infrastructure**, never a
-**guarantee**. Fail-closed semantics, engine-side attenuation, explicit scopes
-and value-free audit are identical in every mode.
+**What only Enterprise does**
 
-→ **[watchlight.ai](https://www.watchlight.ai)**
+| Capability | Developer Edition | Enterprise |
+|---|---|---|
+| Real-time enforcement effects — quarantine an agent, terminate a run, sever a delegation subtree, revoke authority | ❌ the policy loads and the call is denied; the containment action never fires | ✅ fires fleet-wide, mid-execution |
+| Drift detection | ❌ | ✅ an agent leaving its declared plan is quarantined at machine speed |
+| Runtime enforcement proxy | ❌ governs in-process, plus a PEP in front of one MCP server | ✅ every wire request clears the proxy as well as the plugin |
+| Discovery and registry | ❌ | ✅ finds every agent and MCP server across your environments and tracks trust state |
+| Signed execution lineage | ❌ local JSONL, unsigned | ✅ tamper-evident, reconstructs the chain from the human who authorized it to the resource |
+| Fleet-wide revocation | ❌ one process | ✅ zero standing privileges, multi-tenant |
+| Attested identity | ❌ the principal is asserted | ✅ OIDC federation and mTLS workload identity |
+| Air-gapped deployment | ❌ | ✅ on-premises, with local policy evaluation |
+
+Everything the Developer Edition leaves out needs **state outside your process**
+— a fleet to revoke across, a plane to quarantine into, a key to sign lineage
+with. What it keeps is every guarantee that fits in one process: fail-closed
+semantics, engine-side attenuation, explicit scopes, and value-free audit are
+identical in both.
+
+→ **[The platform](https://www.watchlight.ai/platform)** ·
+[email sales@watchlight.ai](mailto:sales@watchlight.ai?subject=Watchlight%20Enterprise)
 
 ## Open source, and the license
 
