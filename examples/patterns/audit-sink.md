@@ -1,15 +1,8 @@
 # Pattern: ship the audit trail somewhere durable
 
-**Problem.** Every decision, sanitization and attenuation is appended to a local
-`.watchlight/audit.jsonl`. On an ephemeral host — a container, a serverless
-function, a CI runner — that file is gone on the next deploy, and the
-`decision_id` you stored next to your own record has nothing left to join to.
-You want the same value-free records in a store you already run.
-
-This one isn't a policy decision — it's **where the trail goes** — so it uses
-the `auditSink` / `audit_sink` option, not a policy.
-
-**Use it:**
+`.watchlight/audit.jsonl` is gone on the next deploy of a container or a
+serverless function, and the `decision_id` you stored has nothing left to join
+to. A sink puts the same value-free records in a store you already run.
 
 ```ts
 import { Watchlight } from "@watchlight/sdk";
@@ -23,26 +16,21 @@ const govern = new Watchlight({
 ```python
 from watchlight import Watchlight
 
-govern = Watchlight(agent="billing-agent", audit_sink=store)  # sync callable, or async in a running loop
+govern = Watchlight(agent="billing-agent", audit_sink=store)  # sync, or async in a running loop
 ```
 
-**What the sink receives.** Its own copy of **exactly** the fields the
-`audit.jsonl` line carries. Five record kinds go through it, discriminated by
-`event` — a **decision** (no `event` at all: `ts, agent, principal, intent,
-resource, decision, decision_id?, approved?`), a **`sanitization`** and a
-**`screening`** (counts by type or rule family + mode), an **`egress`** (the
-disposition of a governed tool's payload) and an **`attenuation`**
-(`node_id, parent_id?, tools, depth, reason?`), including the attenuations of
-every scope derived from the governor. A record written through a `delegate()`d
-governor also carries `actor_chain`. Never argument values, never text, never
-secrets. In TypeScript the copy is frozen; in both languages the file is written
-**first**, so nothing the sink does can alter it.
+## What the sink receives
 
-The full field table, kind by kind, is in
-[`examples/showcase/audit-forensics`](../showcase/audit-forensics/README.md) —
-and it is also a type. TypeScript exports the kinds as a discriminated union, and
-Python as `TypedDict`s of the same names, so a sink reads a kind's fields by name
-instead of guessing at a bag:
+Its own copy of exactly the fields the `audit.jsonl` line carries — never
+argument values, never text, never secrets. In TypeScript the copy is frozen, and
+in both lanes the file is written first, so nothing the sink does can alter it.
+
+Five record kinds, discriminated by `event`: a **decision** (no `event` at all), a
+**`sanitization`**, a **`screening`**, an **`egress`** and an **`attenuation`**.
+A record from a `delegate()`d governor also carries `actor_chain`. The kinds are
+types — a TypeScript discriminated union, Python `TypedDict`s of the same names —
+so renaming a field breaks a sink at build time instead of producing a column of
+nulls.
 
 ```ts
 import { Watchlight, type AuditRecord } from "@watchlight/sdk";
@@ -75,37 +63,35 @@ def audit_sink(record: AuditRecord) -> None:
         store.scope_node(record["node_id"], record.get("parent_id"), record["tools"])
 ```
 
-Renaming or dropping a field then breaks the sink where its author wants to hear
-about it — at build time — instead of turning into a column of `null`s. The
-sinks below stay on the untyped form deliberately: they forward the record whole,
-which is the case the escape hatch (`UnknownAuditRecord` in TypeScript, `dict` in
-Python) exists for. Both forms satisfy the `auditSink` / `audit_sink` option.
+A sink that forwards records whole can stay untyped — `UnknownAuditRecord` in
+TypeScript, `dict` in Python. The field table for each kind is in
+[`examples/showcase/audit-forensics`](../showcase/audit-forensics/README.md).
 
-**What the sink can't do: hurt a decision.** The sink is **fire-and-forget**. It
-is called synchronously after the file append, a returned promise/awaitable is
-never awaited inline (in Python it is scheduled on the running event loop), and a
-throw or a rejection is caught, reported **once** on stderr (error *type* only —
-never the record), and swallowed. `authorize` returns the same verdict, in the
-same time, with the same file line, whether the sink works, hangs, or fails. It
-also means delivery is *best-effort*: if you need every record acknowledged,
-enqueue in the sink and drain with retries out of band.
+## The sink cannot hurt a decision
+
+It is fire-and-forget. A returned promise or awaitable is never awaited inline,
+and a throw is caught, reported once on stderr by error type only, and swallowed.
+`authorize` returns the same verdict in the same time whether the sink works,
+hangs or fails.
+
+Delivery is therefore best-effort. If you need every record acknowledged, enqueue
+in the sink and drain with retries out of band.
 
 ## Three reference sinks
 
-Reference shapes, not first-party integrations — adapt the client to your own
-stack. Each keeps the sink body tiny (hand the record off) so a slow store never
-sits in the sink call.
+Shapes to adapt, not first-party integrations. Each keeps the sink body tiny so a
+slow store never sits on the decision path.
 
-**A Postgres row** — one `jsonb` column keeps every record kind in one table and
-lets you join on `decision_id`:
+**A Postgres row.** One `jsonb` column holds every kind and lets you join on
+`decision_id`:
 
 ```sql
 create table agent_audit (
   id          bigserial primary key,
   ts          timestamptz not null,
   agent       text        not null,
-  event       text        not null,          -- 'decision' | 'sanitization' | 'screening' | 'egress' | 'attenuation'
-  decision_id text,                           -- join key to your own records
+  event       text        not null,   -- 'decision' | 'sanitization' | 'screening' | 'egress' | 'attenuation'
+  decision_id text,                    -- join key to your own records
   record      jsonb       not null
 );
 ```
@@ -118,7 +104,7 @@ const auditSink = (r: Record<string, unknown>) =>
   pool.query(
     "insert into agent_audit (ts, agent, event, decision_id, record) values ($1,$2,$3,$4,$5)",
     [r.ts, r.agent, r.event ?? "decision", r.decision_id ?? null, JSON.stringify(r)]
-  );  // returns a promise — not awaited by the SDK; a failure is reported once
+  );  // a promise the SDK never awaits; a failure is reported once
 ```
 
 ```python
@@ -145,12 +131,11 @@ def _drain() -> None:
 threading.Thread(target=_drain, daemon=True).start()
 ```
 
-**An OTLP log record** — the trail becomes log records in whatever backend your
-collector feeds, correlated by `decision_id` as an attribute:
+**An OTLP log record**, correlated by `decision_id` as an attribute:
 
 ```ts
 import { logs, SeverityNumber } from "@opentelemetry/api-logs";
-const logger = logs.getLogger("watchlight-audit");   // your SDK/exporter setup elsewhere
+const logger = logs.getLogger("watchlight-audit");   // your exporter setup elsewhere
 
 const auditSink = (r: Record<string, unknown>) =>
   logger.emit({
@@ -162,27 +147,15 @@ const auditSink = (r: Record<string, unknown>) =>
   });
 ```
 
-```python
-import json
-from opentelemetry._logs import get_logger
+In Python, `opentelemetry._logs.get_logger(...).emit(body=..., attributes=...)`
+takes the same two arguments.
 
-logger = get_logger("watchlight-audit")             # your SDK/exporter setup elsewhere
-
-def audit_sink(record: dict) -> None:
-    logger.emit(
-        body=f"watchlight {record.get('event', 'decision')}",
-        attributes={f"watchlight.{k}": (json.dumps(v) if isinstance(v, (dict, list)) else v)
-                    for k, v in record.items()},
-    )
-```
-
-**A webhook** — POST each record to an endpoint you own. Batch in the sink
-(records arrive one per decision) and let the endpoint be idempotent on
+**A webhook.** Batch in the sink, and make the endpoint idempotent on
 `(ts, agent, decision_id)`:
 
 ```ts
 const url = process.env.AUDIT_WEBHOOK_URL!;
-const auth = "Bearer " + process.env.AUDIT_WEBHOOK_TOKEN;  // from your secret store, never in code
+const auth = "Bearer " + process.env.AUDIT_WEBHOOK_TOKEN;  // from your secret store
 let batch: Record<string, unknown>[] = [];
 let timer: NodeJS.Timeout | undefined;
 
@@ -202,69 +175,50 @@ import asyncio, json, os, urllib.request
 URL = os.environ["AUDIT_WEBHOOK_URL"]
 AUTH = "Bearer " + os.environ["AUDIT_WEBHOOK_TOKEN"]        # from your secret store
 
-async def audit_sink(record: dict) -> None:                  # async: scheduled on the running loop
+async def audit_sink(record: dict) -> None:                  # scheduled on the running loop
     req = urllib.request.Request(URL, data=json.dumps(record).encode(), method="POST",
                                  headers={"content-type": "application/json", "authorization": AUTH})
     await asyncio.to_thread(urllib.request.urlopen, req, None, 5)
 ```
 
-**Two rules that matter.**
-
-- **Keep the sink body cheap.** It runs on the decision path (synchronously, once
-  per record) even though its result is never awaited. Hand the record to a
-  queue, a logger or a promise and return; do the slow work elsewhere.
-- **Don't add fields, and don't decode them into values.** The record is
-  value-free by contract — the same contract the production audit service
-  enforces. A sink that enriches it with tool arguments, message text or user
-  data re-creates exactly the exposure the trail is designed not to have.
-
 ## Reading the store back
 
-The sink is write-only: nothing in the SDK reads it back by itself. Two options
-turn the same store into an input, for the two places where the local file is
-otherwise the only source:
+The sink is write-only. Two options turn the same store into an input, and both
+are read *on* the decision path, so both fail closed.
 
-- **`counterSource` / `counter_source`** — the read side of this sink.
-  `govern.counters(...)` then folds your store instead of the local file, so a
-  quota spans every replica and survives a deploy. Count **decision rows only**:
-  the same table holds `sanitization`, `screening`, `egress` and `attenuation`
-  records, and a `sanitization` / `screening` record can carry a `principal` of
-  its own, so a query filtered on principal and window alone counts them too and
-  the quota denies early.
+**`counterSource` / `counter_source`** answers `govern.counters(...)` from your
+store, so a quota spans replicas and survives a deploy. **Count decision rows
+only** — the table also holds `sanitization`, `screening`, `egress` and
+`attenuation` records, some carrying a `principal` of their own, so a filter on
+principal and window alone over-counts and denies early.
 
-  ```sql
-  select count(*) from agent_audit
-  where record->>'event' is null          -- decisions only
-    and record->>'principal' = $1
-    and record->>'decision'  = 'Allow'
-    and ts > $2 and ts <= $3;             -- start exclusive, end inclusive
-  ```
+```sql
+select count(*) from agent_audit
+where record->>'event' is null          -- decisions only
+  and record->>'principal' = $1
+  and record->>'decision'  = 'Allow'
+  and ts > $2 and ts <= $3;             -- start exclusive, end inclusive
+```
 
-  See the [quotas pattern](./quotas.md).
-- **`approvalStore` / `approval_store`** — where consumed approval-token ids are
-  reserved, so an approval is single-use across replicas rather than once per
-  replica. Its `add(id, expiresAt)` must be an **atomic check-and-set** — an
-  insert that fails on a duplicate key, `SET … NX` — returning `false` when the
-  id was already present; a read followed by an unconditional write cannot
-  enforce single use. The reservations are yours — the SDK never deletes one, and
-  `expiresAt` is the epoch-millisecond deadline after which an id is safe to
-  drop; give the row a TTL, or add the optional `prune(before)` and the SDK asks
-  for the deletion on the same code path as the reservation. See
-  [destructive actions](./destructive-actions.md).
+See [quotas](./quotas.md).
 
-Both are separate from the sink deliberately: the sink is fire-and-forget and
-must never affect a decision, while these two are read *on* the decision path and
-so must fail closed — a source that cannot answer refuses the read, and a store
-that cannot answer refuses the approval.
+**`approvalStore` / `approval_store`** reserves consumed approval-token ids, so
+an approval is single-use across replicas rather than once per replica. Its
+`add(id, expiresAt)` must be an atomic check-and-set. See
+[destructive actions](./destructive-actions.md#approvals-across-processes).
 
-**Verify.** This pattern is a delivery contract, not a policy verdict, so it has
-no `.suite.json`; `check.sh` runs [`scripts/audit-sink.mjs`](./scripts/audit-sink.mjs)
-instead. It asserts that all five record kinds reach the sink with exactly the
-fields of their `audit.jsonl` line — and with exactly the fields the table above
-documents and the exported types declare (frozen, value-free, joined on
-`decision_id`) — and that a throwing sink changes neither the verdicts nor the
-file and is reported once, by error type only.
+## Worth knowing
 
-In the Developer Edition the sink is your own store. Enterprise replaces it with a
-signed, tamper-evident audit service — every record KMS-signed and joined into a
-fleet-wide execution graph — with no sink code at all.
+- **Keep the sink body cheap.** It runs on the decision path, once per record,
+  even though its result is never awaited. Hand the record off and return.
+- **Do not add fields, and do not decode them into values.** The record is
+  value-free by contract; enriching it with arguments, message text or user data
+  re-creates the exposure the trail exists to avoid.
+
+## Verified by
+
+[`scripts/audit-sink.mjs`](./scripts/audit-sink.mjs) — this is a delivery
+contract, not a policy verdict, so there is no suite. It asserts that all five
+kinds reach the sink with exactly the fields of their `audit.jsonl` line, frozen
+and value-free. A throwing sink changes neither the verdicts nor the file, and is
+reported once by error type.
