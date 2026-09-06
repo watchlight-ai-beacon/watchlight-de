@@ -101,3 +101,11 @@ action (`withdraw`) are both `Deny`, because nothing permits them.
 - **Same shape in both lanes.** Python writes `ts` with microseconds and
   spaces after `:`; Node writes millisecond ISO timestamps and compact JSON.
   Fields and values are otherwise identical.
+
+## Is this example verified?
+
+Yes. [`check.sh`](./check.sh) in this folder is this showcase's declaration of
+how it is checked: which scripts run, in which order, and from what state. Run
+it on its own, or through [`examples/showcase/check.sh`](../check.sh), which
+runs every showcase's, or through `scripts/preflight.sh`, which runs that along
+with the rest of the suites.

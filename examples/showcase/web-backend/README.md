@@ -175,3 +175,15 @@ refused before governance ran. Nothing in the trail is a token or a statement.
 - **Loopback only.** Both apps bind `127.0.0.1`; there is no TLS here because
   nothing leaves the machine. A real deployment terminates TLS in front.
 - Related pattern: [per-user attribution](../../patterns/per-user-attribution.md).
+
+## Is this example verified?
+
+Yes. [`check.sh`](./check.sh) in this folder is this showcase's declaration of
+how it is checked: which scripts run, in which order, and from what state. Run
+it on its own, or through [`examples/showcase/check.sh`](../check.sh), which
+runs every showcase's, or through `scripts/preflight.sh`, which runs that along
+with the rest of the suites.
+
+The web frameworks are optional, so both lanes here are reported as SKIP rather
+than as passes when FastAPI or Express is missing. A skip is counted and printed
+loudly at the end of a run: it never reads as a pass.

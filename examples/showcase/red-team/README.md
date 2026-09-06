@@ -193,3 +193,11 @@ it induces.
   is that nothing depends on it doing so.
 - Related: [poisoned-document RAG](../poisoned-rag/README.md) (the same hook
   on retrieved documents), [screen before model](../../patterns/screen-before-model.md).
+
+## Is this example verified?
+
+Yes. [`check.sh`](./check.sh) in this folder is this showcase's declaration of
+how it is checked: which scripts run, in which order, and from what state. Run
+it on its own, or through [`examples/showcase/check.sh`](../check.sh), which
+runs every showcase's, or through `scripts/preflight.sh`, which runs that along
+with the rest of the suites.

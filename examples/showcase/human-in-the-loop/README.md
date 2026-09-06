@@ -184,3 +184,17 @@ check approvals it could never mint. That is not implemented here.
   scripts. Both are ignored by git. `consumed.json` (used grant nonces) grows
   with every approval and is never reset by design — a nonce forgotten is a
   nonce replayable; `request` clears only `pending.json` and `grant.json`.
+
+## Is this example verified?
+
+Yes. [`check.sh`](./check.sh) in this folder is this showcase's declaration of
+how it is checked: which scripts run, in which order, and from what state. Run
+it on its own, or through [`examples/showcase/check.sh`](../check.sh), which
+runs every showcase's, or through `scripts/preflight.sh`, which runs that along
+with the rest of the suites.
+
+Note what a runner would get wrong here without that declaration: `agent.py`
+needs a subcommand, `approve.py` means nothing without a pending request, and
+`hitl.py` is a helper module with no entry point — running it exits 0 having
+checked nothing at all. `check.sh` drives the real sequence, request → approve →
+resume, once per lane and once across the two.

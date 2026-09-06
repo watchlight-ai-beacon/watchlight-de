@@ -42,6 +42,13 @@ their policy and golden tests in one `policy.suite.json`.
 Verify a showcase policy on its own:
 `watchlight policy test examples/showcase/<name>/policy.suite.json`.
 
+Every showcase declares how it is checked, in an executable `check.sh` of its
+own — which scripts run, in which order, from what state, in both lanes.
+[`showcase/check.sh`](showcase/check.sh) runs all of them and fails on a
+showcase that declares none, so none of them can quietly rot; a lane whose
+optional extra is missing is reported as a counted, printed SKIP, never as a
+pass. `scripts/preflight.sh` runs that alongside the rest of the suites.
+
 Where a governor belongs in an application — construct once at start-up, one per
 policy set, and the request-handler / worker / test shapes — is
 [Using the governor](../docs/using-the-governor.md).
