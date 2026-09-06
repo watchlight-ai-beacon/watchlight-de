@@ -199,7 +199,7 @@ changes is what happens around the decision.
 | Signed execution lineage | ❌ local JSONL, unsigned | ✅ tamper-evident, reconstructs the chain from the human who authorized it to the resource |
 | Fleet-wide revocation | ❌ one process | ✅ zero standing privileges, multi-tenant |
 | Attested identity | ❌ the principal is asserted | ✅ OIDC federation and mTLS workload identity |
-| Air-gapped deployment | ❌ | ✅ on-premises, with local policy evaluation |
+| Air-gapped fleet deployment | ❌ the library itself runs offline, but there is no plane to deploy | ✅ on-premises and sovereign, with local policy evaluation |
 
 Everything the Developer Edition leaves out needs **state outside your process**
 — a fleet to revoke across, a plane to quarantine into, a key to sign lineage
