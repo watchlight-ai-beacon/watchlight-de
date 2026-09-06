@@ -87,6 +87,22 @@ name, and:
 * it **says so once**, on the first record it writes, naming both the option and
   the environment variable.
 
+The actor route is closed and the principal route is not, and the difference is
+worth being exact about. A policy reading `context.actor` cannot match an
+unconfigured governor, because the key is absent. A policy naming
+`Agent::"<unconfigured>"` as its **principal** *does* match one, because that is
+the subject recorded when a call names no principal of its own.
+
+It stays that way deliberately. The engine requires a principal, so an
+unconfigured governor cannot assert nothing the way it does for the actor
+without refusing every call that names no subject, which is the zero-configuration
+path. And the placeholder cannot be made unnameable: a Cedar entity id is an
+arbitrary string, so any id a governor can carry is an id a policy can write.
+
+Naming it in a policy is a strange thing to do on purpose, and it can only ever
+match a deployment that was never configured. But it is not inert, so do not
+treat it as a guard.
+
 ```python
 from watchlight import Watchlight, UNCONFIGURED_AGENT
 

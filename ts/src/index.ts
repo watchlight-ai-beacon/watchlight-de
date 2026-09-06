@@ -553,8 +553,10 @@ function warnUnconfiguredAgent(): void {
   // eslint-disable-next-line no-console
   console.warn(
     `watchlight: no agent name configured — recorded as '${UNCONFIGURED_AGENT}', and it ` +
-      `asserts no actor (context.${ACTOR_CONTEXT_KEY} and context.${ACTOR_CHAIN_CONTEXT_KEY} ` +
-      "are unset), so a policy naming it cannot match. Name it: " +
+      `asserts no actor: context.${ACTOR_CONTEXT_KEY} and ` +
+      `context.${ACTOR_CHAIN_CONTEXT_KEY} are unset, so a policy reading either cannot ` +
+      "match it. It is still the recorded subject when a call names no principal, and a " +
+      "policy naming that subject does match. Name the agent: " +
       'new Watchlight({ agent: "…" }), configureDefault({ agent: "…" }) for the exported ' +
       `\`govern\`, or ${AGENT_ENV}.`
   );
