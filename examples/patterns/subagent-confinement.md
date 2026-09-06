@@ -39,6 +39,37 @@ summarizer = root.attenuate(tools=["read_file"])     # subset of the parent
   Confining a sub-agent means narrowing the scope *and* writing the policy.
 - The check is in-process and cooperative.
 
+## The policy half
+
+A scope is checked when you delegate, never when a call is authorized. So the
+scope alone does not stop a confined child from asking for something else — a
+policy does, and it reads the chain.
+
+```cedar
+permit(principal, action, resource);
+
+forbid(principal, action == Action::"transfer", resource)
+when { context.actor_chain.contains("research") };
+```
+
+The orchestrator may still transfer. Anything acting below `research` may not:
+
+```
+orchestrator          search    -> Allow
+orchestrator          transfer  -> Allow
+research (delegated)  search    -> Allow
+research (delegated)  transfer  -> Deny
+```
+
+`delegate` appends to `context.actor_chain`, so the rule holds however deep the
+tree goes. Renaming with `as` does not append, so it does not confine.
+
+In the Developer Edition the check is in-process and cooperative: a child is
+confined because your code asked the governor before it acted. Enterprise
+confines it for you — the policy is distributed to the plugins and the
+enforcement proxy, so a sub-agent is bounded whether or not its code
+cooperates. See [the platform](https://www.watchlight.ai/platform).
+
 ## Crossing a process boundary
 
 A queue worker cannot hold the parent's in-memory `Scope`, and it must not

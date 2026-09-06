@@ -112,4 +112,27 @@ try {
 } finally {
   fs.rmSync(auditDir, { recursive: true, force: true });
 }
+// ── the policy half ────────────────────────────────────────────────────────
+// A scope is checked at delegate, never at authorize, so the policy is what
+// stops a confined child asking for something else. These are the four verdicts
+// the pattern prints.
+{
+  const g = new Watchlight({ agent: "orchestrator", auditFile: false, auditSink: () => {} });
+  g.allow("permit(principal, action, resource);", "baseline");
+  g.allow(
+    'forbid(principal, action == Action::"transfer", resource)\n' +
+      'when { context.actor_chain.contains("research") };',
+    "no-money-below-research",
+  );
+  const root = await g.scope({ tools: ["search", "transfer"] });
+  const child = g.delegate(root, "research", { tools: ["search"] });
+  const verdict = async (gov, action) => (await gov.authorize({ action, resource: "r" })).decision;
+
+  t.ok("the orchestrator may search", (await verdict(g, "search")) === "Allow");
+  t.ok("the orchestrator may transfer", (await verdict(g, "transfer")) === "Allow");
+  t.ok("the delegated child may search", (await verdict(child, "search")) === "Allow");
+  t.ok("the delegated child may not transfer", (await verdict(child, "transfer")) === "Deny");
+  t.ok("delegate appended to the chain", child.actorChain.join(",") === "orchestrator,research");
+}
+
 t.done();
