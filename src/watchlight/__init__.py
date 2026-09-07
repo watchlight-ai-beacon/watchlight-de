@@ -2281,6 +2281,96 @@ class Watchlight:
         self._shared.sources.add(key)
         return self
 
+    def reload(
+        self,
+        path: "str | os.PathLike[str] | None" = None,
+        *,
+        policies: Optional[Sequence[dict]] = None,
+        source_id: str | None = None,
+    ) -> "Watchlight":
+        """REPLACE the policy set with this one. The counterpart to :meth:`load`,
+        which only ever adds.
+
+        Give it a file, the way :meth:`load` takes one, or an in-memory bundle:
+
+        >>> govern.reload("watchlight.policy.json")                    # doctest: +SKIP
+        >>> govern.reload(policies=[{"name": "read", "code": "permit(...);"}])  # doctest: +SKIP
+
+        Everything the governor held is gone afterwards — policies from earlier
+        ``load`` calls, and every inline :meth:`allow`. That is the point: with
+        only ``load`` and ``allow``, a live reload could add a permit but never
+        remove one, so it could only ever WIDEN authority. An operator console
+        that can edit a policy set has to be able to take one away.
+
+        ATOMIC, AND FAIL-CLOSED ON THE WAY IN. The new set is parsed, checked
+        and compiled into a fresh engine before anything is swapped, so a set
+        that does not compile leaves the governor exactly as it was and raises.
+        There is no window in which the engine holds half of either set.
+
+        A missing file (``FileNotFoundError``) or an empty set (``ValueError``)
+        RAISES rather than replacing the policies with nothing. Cedar default-denies, so an accidental empty
+        reload would be safe but total — every governed call in the process
+        refused — and that is a failure to refuse loudly, not to absorb.
+
+        The swap is a single rebinding: a decision already in flight finishes
+        against the set it started with, and every call after the swap sees the
+        new one. Governors made by :meth:`as_` share the state and so share the
+        reload. A :class:`~watchlight.attenuation.Scope` created earlier keeps
+        the engine it was built with, which changes nothing — scope attenuation
+        is strict-subset arithmetic and consults no policy.
+
+        The :meth:`load` memo is cleared, so a file loaded before can be loaded
+        again without ``force``.
+        """
+        if (path is None) == (policies is None):
+            raise ValueError("reload takes exactly one of a path or policies=")
+
+        if policies is not None:
+            entries = list(policies)
+            where = "the policies given"
+        else:
+            p = pathlib.Path(path)  # type: ignore[arg-type]
+            if not p.exists():
+                # `load` treats a missing file as "nothing to add yet"; for a
+                # REPLACE that reading would empty the set, so it is an error.
+                raise FileNotFoundError(f"reload: no such policy file: {p}")
+            data = json.loads(p.read_text())
+            entries = data if isinstance(data, list) else data.get("policies", [])
+            where = str(p)
+
+        if not entries:
+            raise ValueError(
+                f"reload: {where} defines no policies. Replacing the set with nothing "
+                f"would deny every governed call in this process; load a set, or "
+                f"construct a governor with none deliberately."
+            )
+
+        # Check every policy BEFORE building anything, so a refused annotation
+        # leaves the governor untouched — the same contract `load` gives.
+        for offset, entry in enumerate(entries):
+            check_policy_annotations(
+                entry["code"], entry.get("name") or f"policy-{offset}", warn=False
+            )
+
+        # Compile into a FRESH engine. Only a set that has fully loaded is
+        # allowed to become the one in force.
+        engine = _engine.PolicyEngine()
+        for offset, entry in enumerate(entries):
+            engine.add_policy(
+                json.dumps(
+                    {"name": entry.get("name") or f"policy-{offset}", "code": entry["code"]}
+                )
+            )
+
+        state = self._shared
+        state.engine = engine
+        state.policy_count = len(entries)
+        state.sources = set()
+        if policies is None:
+            key = source_id if source_id is not None else str(pathlib.Path(path).resolve())  # type: ignore[arg-type]
+            state.sources.add(key)
+        return self
+
     # ── sub-agent scope attenuation ─────────────────────────────────
 
     def scope(

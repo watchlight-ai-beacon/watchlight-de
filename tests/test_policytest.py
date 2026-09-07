@@ -11,7 +11,7 @@ import sys
 
 import pytest
 
-from watchlight import Watchlight, load_test_suite, run_policy_tests
+from watchlight import PolicyError, Watchlight, load_test_suite, run_policy_tests
 
 # A representative money-movement policy set: a funded-balance check.
 POLICIES = [
@@ -254,3 +254,104 @@ def test_the_cli_rejects_an_unknown_fixture_key(tmp_path):
     )
     r = _run_cli(suite)
     assert r.returncode == 2, r.stdout + r.stderr
+
+
+# ── reload: replacing the set, not adding to it ─────────────────────
+
+WIDE = [
+    {"name": "read", "code": 'permit(principal, action == Action::"read", resource);'},
+    {"name": "write", "code": 'permit(principal, action == Action::"write", resource);'},
+]
+NARROW = [WIDE[0]]
+
+
+def _reload_gov():
+    return Watchlight(agent="svc", audit_file=False, audit_sink=lambda record: None)
+
+
+def _reload_decide(gov, action):
+    return gov.authorize(action=action, principal='User::"u"', resource='Resource::"r"')["decision"]
+
+
+def _reload_write(tmp_path, name, entries):
+    p = tmp_path / name
+    p.write_text(json.dumps(entries))
+    return p
+
+
+def test_reload_can_narrow_authority(tmp_path):
+    # The whole point: with only load/allow a live reload could add a permit but
+    # never remove one, so it could only ever WIDEN authority.
+    gov = _reload_gov()
+    gov.load(_reload_write(tmp_path, "wide.json", WIDE))
+    assert _reload_decide(gov, "write") == "Allow"
+    gov.reload(_reload_write(tmp_path, "narrow.json", NARROW))
+    assert _reload_decide(gov, "write") == "Deny"
+    assert _reload_decide(gov, "read") == "Allow"
+    assert gov.policy_count == 1
+
+
+def test_reload_drops_inline_policies_too(tmp_path):
+    gov = _reload_gov()
+    gov.allow('permit(principal, action == Action::"delete", resource);')
+    assert _reload_decide(gov, "delete") == "Allow"
+    gov.reload(_reload_write(tmp_path, "narrow.json", NARROW))
+    assert _reload_decide(gov, "delete") == "Deny"
+
+
+def test_reload_accepts_an_in_memory_bundle():
+    gov = _reload_gov()
+    gov.reload(policies=NARROW)
+    assert _reload_decide(gov, "read") == "Allow" and gov.policy_count == 1
+
+
+def test_a_failed_reload_leaves_the_set_exactly_as_it_was(tmp_path):
+    # Atomic: the new set is compiled into a fresh engine before anything is
+    # swapped, so there is no window holding half of either set.
+    gov = _reload_gov()
+    gov.load(_reload_write(tmp_path, "wide.json", WIDE))
+    bad = _reload_write(tmp_path, "bad.json",
+                 [{"name": "x", "code": '@enforcement_effect("nope")\npermit(principal, action, resource);'}])
+    with pytest.raises(PolicyError):
+        gov.reload(bad)
+    assert _reload_decide(gov, "read") == "Allow" and _reload_decide(gov, "write") == "Allow"
+    assert gov.policy_count == 2
+
+
+def test_reload_refuses_to_empty_the_set(tmp_path):
+    # Cedar default-denies, so an accidental empty reload would be safe but
+    # total — every governed call in the process refused.
+    gov = _reload_gov()
+    gov.load(_reload_write(tmp_path, "wide.json", WIDE))
+    with pytest.raises(ValueError):
+        gov.reload(policies=[])
+    with pytest.raises(ValueError):
+        gov.reload(_reload_write(tmp_path, "empty.json", []))
+    with pytest.raises(FileNotFoundError):
+        gov.reload(tmp_path / "absent.json")
+    assert _reload_decide(gov, "read") == "Allow" and gov.policy_count == 2
+
+
+def test_reload_takes_exactly_one_source(tmp_path):
+    gov = _reload_gov()
+    with pytest.raises(ValueError):
+        gov.reload()
+    with pytest.raises(ValueError):
+        gov.reload(_reload_write(tmp_path, "n.json", NARROW), policies=NARROW)
+
+
+def test_a_renamed_view_shares_the_reload(tmp_path):
+    gov = _reload_gov()
+    gov.load(_reload_write(tmp_path, "wide.json", WIDE))
+    view = gov.as_("worker")
+    gov.reload(_reload_write(tmp_path, "narrow.json", NARROW))
+    assert _reload_decide(view, "write") == "Deny"
+
+
+def test_reload_clears_the_load_memo(tmp_path):
+    gov = _reload_gov()
+    wide = _reload_write(tmp_path, "wide.json", WIDE)
+    gov.load(wide)
+    gov.reload(policies=NARROW)
+    gov.load(wide)  # loadable again without force: the memo went with the set
+    assert _reload_decide(gov, "write") == "Allow"
