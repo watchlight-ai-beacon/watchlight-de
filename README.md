@@ -210,6 +210,14 @@ identical in both.
 → **[The platform](https://www.watchlight.ai/platform)** ·
 [email sales@watchlight.ai](mailto:sales@watchlight.ai?subject=Watchlight%20Enterprise)
 
+## Watchlight Cloud — coming soon
+
+Using the Developer Edition with a team? Watchlight Cloud is a lightweight
+control centre for centrally managing your Watchlight deployments, policies,
+environments and governance activity.
+
+→ **[Join the early-access list](mailto:sales@watchlight.ai?subject=Watchlight%20Cloud%20early%20access)**
+
 ## Open source, and the license
 
 Everything you write against is **open** and Apache-2.0 — the `govern` decorator
