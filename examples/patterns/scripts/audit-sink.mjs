@@ -92,4 +92,29 @@ t.ok("verdicts are unchanged when the sink throws", broken.allow.allowed && !bro
 t.ok("the file is still written when the sink throws", broken.lines.length === lines.length);
 t.ok("the failure is reported once, by error type only",
   warnings.length === 1 && warnings[0].includes("(Error)") && !warnings[0].includes("store unavailable"), warnings.join(" | "));
+// ── batching: the destination that cannot be cheap ──
+{
+  const batches = [];
+  const slowSink = (batch) => {
+    batches.push(batch.length);
+    const until = Date.now() + 20;     // a durable destination, 20ms per call
+    while (Date.now() < until) { /* block, as a synchronous driver would */ }
+  };
+  const gb = new Watchlight({
+    agent: "batched", auditFile: false, auditSink: slowSink,
+    auditSinkBatch: 5, auditSinkInterval: 50,
+  });
+  gb.allow('permit(principal, action, resource);');
+  const started = Date.now();
+  for (let i = 0; i < 20; i++) {
+    await gb.authorize({ action: "read", principal: 'User::"u"', resource: 'Resource::"r"' });
+  }
+  const elapsed = Date.now() - started;
+  gb._shared.trail.flush();
+  t.ok("a batching sink receives lists, not records", batches.length > 0 && batches.every((n) => n > 1), JSON.stringify(batches));
+  t.ok("every record is still delivered", batches.reduce((a, b) => a + b, 0) === 20, JSON.stringify(batches));
+  // Inline, 20 records through a 20ms sink would be ~400ms.
+  t.ok("the decisions did not wait for it", elapsed < 300, `${elapsed}ms`);
+}
+
 t.done();
