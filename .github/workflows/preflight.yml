@@ -1,0 +1,81 @@
+# Run scripts/preflight.sh on every pull request and every push to main.
+#
+# This is the gate a contributor's PR meets. It runs exactly what CONTRIBUTING.md
+# asks a contributor to run locally — the same script, in the same order — so a
+# green check here and a green run on their machine mean the same thing, and
+# neither can drift from the other without the script itself changing.
+#
+# ─── WHY `pull_request` AND NOT `pull_request_target` ───
+#
+# `pull_request` runs the fork's code with a read-only token and NO access to
+# repository secrets. `pull_request_target` would run with our secrets in scope
+# while checking out the contributor's branch — handing write credentials to
+# unreviewed code. That trade is never worth it for a test gate: this workflow
+# needs no secret, so it is given none.
+#
+# Everything else follows from the same principle. The token is read-only, it is
+# not persisted into the checkout for later steps to reuse, and every action is
+# pinned to a full commit SHA rather than a moving tag, so a compromised or
+# retagged release cannot silently change what runs here.
+
+name: Preflight
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Least privilege: reading the checkout is the only thing this needs.
+permissions:
+  contents: read
+
+# A new push supersedes the run in flight for the same ref.
+concurrency:
+  group: preflight-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preflight:
+    name: preflight (python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor named in pyproject.toml and one current release. The floor
+        # is what catches a syntax or typing feature newer than we claim to
+        # support — the failure a developer on a current interpreter never sees.
+        python: ["3.9", "3.13"]
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      # preflight deliberately never installs the Python side for you — which
+      # interpreter this repo belongs in is the developer's choice. In CI that
+      # choice is a throwaway venv, made explicit here rather than guessed at
+      # by the script.
+      - name: Install the package under test
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install -e . pytest
+
+      # The whole gate, in one line: the Python suite, the TypeScript suite, the
+      # patterns check, the showcase check and the adversarial harness. The
+      # script continues through a failing step and reports every lane, so one
+      # run tells a contributor everything that needs fixing rather than the
+      # first thing.
+      - name: scripts/preflight.sh
+        env:
+          WL_PYTHON: ${{ github.workspace }}/.venv/bin/python
+        run: bash scripts/preflight.sh

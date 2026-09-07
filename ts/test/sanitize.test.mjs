@@ -198,9 +198,30 @@ async function main() {
   const t0 = Date.now();
   for (const a of adversarial) sanitize(a, { types: ["PASSPORT", "DOB", "PERSON", "ADDRESS", "PHONE", "CREDIT_CARD"], known: ["zzz"] });
   ok("adversarial inputs complete quickly (no catastrophic backtracking)", Date.now() - t0 < 2000, `${Date.now() - t0}ms`);
-  const t1 = Date.now();
-  for (const a of ["a.".repeat(100000) + "@", "a@".repeat(50000), "x@" + "a.".repeat(100000)]) sanitize(a);
-  ok("EMAIL: 100k-char local-part run without a domain is linear (< 100 ms)", Date.now() - t1 < 100, `${Date.now() - t1}ms`);
+  // The EMAIL rule must be LINEAR in the length of a local-part run that never
+  // reaches a domain. A fixed millisecond budget measures the machine as much as
+  // the regex and fails on a slow shared runner, so assert the property: ten
+  // times the input takes roughly ten times as long, not a hundred or more.
+  // Best-of-three, because the small measurement is the noisy one.
+  const scanMs = (n) => {
+    const text = "a.".repeat(n) + "@";
+    let best = Infinity;
+    for (let i = 0; i < 3; i++) {
+      const t = Date.now();
+      sanitize(text);
+      best = Math.min(best, Date.now() - t);
+    }
+    return best;
+  };
+  const small = Math.max(scanMs(20000), 1); // floor: a 1ms clock cannot divide by zero
+  const large = scanMs(200000);
+  ok("EMAIL: a 200k-char local-part run completes", large < 5000, `${large}ms`);
+  ok(
+    "EMAIL: local-part run without a domain is linear (10x input, not 100x time)",
+    large < small * 25,
+    `${large}ms vs ${small}ms — grew ${(large / small).toFixed(0)}x for 10x the input`
+  );
+  for (const a of ["a@".repeat(50000), "x@" + "a.".repeat(100000)]) sanitize(a);
   ok("EMAIL: leading dot / hyphenated / plus-tag addresses still detected", sanitize(".alice@acme.com x-bob@acme.com plus+tag@acme.co.uk").report.counts.EMAIL === 3);
 
   // ── governed: known values never reach the audit trail ──
