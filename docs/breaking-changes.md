@@ -1,5 +1,8 @@
 # Breaking changes
 
+What to do about each change, and which direction it fails in. For what a version
+*added*, see [the changelog](../CHANGELOG.md).
+
 Newest first. Every entry can turn a call that worked into an error or a
 different verdict. Only some announce themselves; the rest surface as a denial
 that looks exactly like a policy of yours doing its job. Read every entry

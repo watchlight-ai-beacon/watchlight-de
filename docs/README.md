@@ -16,6 +16,7 @@ pick up from there.
 | [The audit trail](audit-trail.md) | You want to watch decisions land, ship them to your own store, or count them for a quota. |
 | [Testing your policies](testing-policies.md) | You want to prove a policy behaves before it gates anything real, and fail a CI run when it does not. |
 | [The signing secret](signing-secret.md) | You need a scope or an approval to cross a process boundary, or you are rotating the secret. |
+| [Changelog](../CHANGELOG.md) | You want to know what a version added before deciding to upgrade. |
 | [Breaking changes](breaking-changes.md) | You are bumping the version and need to know what flips a verdict. |
 | [Extending Watchlight](extending.md) | You are plugging your own code in — a detector, a screening rule, an audit sink, a counter source. |
 | [Glossary](glossary.md) | A word is doing more work than you expected and you want it pinned down. |
@@ -24,7 +25,7 @@ Runnable programs are in [`examples/`](../examples/README.md). The full
 reference — every option, every record field, every error — is on
 [docs.watchlight.ai/de](https://docs.watchlight.ai/de).
 
-**Upgrading?** Read [breaking changes](breaking-changes.md) first. Only some of
+**Upgrading?** [The changelog](../CHANGELOG.md) says what each version added; [breaking changes](breaking-changes.md) says what to do about it. Read that one first. Only some of
 them announce themselves with an error; the rest surface as a denial that looks
 exactly like a policy of yours doing its job.
 
