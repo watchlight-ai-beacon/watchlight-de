@@ -137,7 +137,16 @@ export type {
 export { principals, entityRef, policyEntityRef, escapeCedarString } from "./principals";
 export { PolicyError, ENFORCEMENT_EFFECTS, ENFORCEMENT_EFFECT_ANNOTATION } from "./annotations";
 export type { EnforcementEffect } from "./annotations";
-export { screen, ScreenError, SCREEN_DETECTOR_VERSION, SCREEN_FAMILIES } from "./screen";
+export {
+  screen,
+  ScreenError,
+  SCREEN_DETECTOR_VERSION,
+  SCREEN_FAMILIES,
+  registerScreenFamily,
+  registeredScreenFamilies,
+  _clearCustomScreenFamilies,
+} from "./screen";
+export type { ScreenLabel } from "./screen";
 export type { ScreenFamily, ScreenMode, ScreenOptions, ScreenReport, ScreenResult } from "./screen";
 export type { GovernanceBackend, Decision, AuthorizeRequest } from "./backend";
 export { InProcessBackend, NetworkedBackend } from "./backend";

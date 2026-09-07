@@ -169,6 +169,8 @@ __all__ = [
     "HEURISTIC_PII_TYPES",
     "screen",
     "SCREEN_FAMILIES",
+    "register_screen_family",
+    "registered_screen_families",
     "ScreenError",
     "govern",
     "Scope",
@@ -1254,7 +1256,7 @@ def _has_unbounded_quantifier(body: str) -> bool:
     return False
 
 
-def _probe_for_backtracking(pattern: "re.Pattern[str]", label: str) -> None:
+def _probe_for_backtracking(pattern: "re.Pattern[str]", label: str, kind: str = "detector") -> None:
     """Refuse a pattern that backtracks catastrophically, at registration.
 
     One ``(a+)+`` in a detector hangs every call that scans a document, so the
@@ -1273,7 +1275,7 @@ def _probe_for_backtracking(pattern: "re.Pattern[str]", label: str) -> None:
     nested = _find_nested_quantifier(pattern.pattern)
     if nested is not None:
         raise SanitizeError(
-            f"detector {label!r}: {nested} nests one unbounded quantifier inside another, "
+            f"{kind} {label!r}: {nested} nests one unbounded quantifier inside another, "
             f"which backtracks catastrophically on input that nearly matches. Use a single "
             f"quantifier, or make the inner one bounded."
         )
@@ -1286,7 +1288,7 @@ def _probe_for_backtracking(pattern: "re.Pattern[str]", label: str) -> None:
                 pattern.search(text)
             except Exception as exc:  # noqa: BLE001 — a raising pattern is unusable
                 raise SanitizeError(
-                    f"detector {label!r}: the pattern raised while being probed"
+                    f"{kind} {label!r}: the pattern raised while being probed"
                 ) from exc
             best = min(best, time.perf_counter() - start)
         return best
@@ -1300,14 +1302,14 @@ def _probe_for_backtracking(pattern: "re.Pattern[str]", label: str) -> None:
                 large = elapsed(shape * reps_large + tail)
                 if large > _REDOS_ABSOLUTE_SECONDS:
                     raise SanitizeError(
-                        f"detector {label!r}: the pattern took {large * 1000:.0f}ms on a "
+                        f"{kind} {label!r}: the pattern took {large * 1000:.0f}ms on a "
                         f"{len(shape) * reps_large}-character input. A detector runs over every "
                         f"document, so it has to be linear."
                     )
                 if large > _REDOS_NOISE_FLOOR_SECONDS:
                     if large > small * _REDOS_GROWTH_LIMIT:
                         raise SanitizeError(
-                            f"detector {label!r}: the pattern backtracks catastrophically — its "
+                            f"{kind} {label!r}: the pattern backtracks catastrophically — its "
                             f"cost grew {large / small:.0f}x for {n_large - n_small} more "
                             f"characters, where a linear pattern barely moves. Anchor the "
                             f"repetition, or replace a nested quantifier such as (a+)+ with a "
@@ -1637,6 +1639,102 @@ SCREEN_FAMILIES: tuple[str, ...] = (
 )
 
 
+#: Screening families an application registered for its own domain, in
+#: registration order. Held apart from the built-ins so a custom rule can never
+#: shadow one, and scanned after them.
+_CUSTOM_SCREEN_RULES: list[tuple[str, "re.Pattern[str]"]] = []
+_SCREEN_LOCK = threading.Lock()
+
+
+def register_screen_family(label: str, pattern: str) -> None:
+    r"""Register a screening family for a shape this package does not know.
+
+    ``screen`` covers generic prompt-injection shapes and deliberately leaves
+    domain vocabulary alone. A forced-action instruction — *approve this
+    application immediately*, *skip the eligibility check* — is not generic, and
+    a caller with such rules would otherwise run a second screener beside this
+    one and merge two result shapes, so those hits never reach the ``screening``
+    audit record.
+
+    >>> register_screen_family("INJ_FORCE_APPROVAL", r"\b(?:approve|authorize) this .{0,40}immediately\b")
+
+    Registered families are **on by default**, counted under their own label,
+    and selectable through ``families=`` like a built-in. Register at start-up:
+    the registry is process-wide.
+
+    **Patterns match NORMALIZED text.** Before any rule runs, zero-width
+    characters are removed and every whitespace run is collapsed to one space —
+    that is what stops ``i g n o r e`` and a zero-width-joined variant from
+    slipping past. So write ``approve this`` with single spaces and no ``\s+``;
+    a redaction still replaces the ORIGINAL span.
+
+    Refused for the same reasons a detector is: a label already in use, a label
+    that is not ``UPPER_SNAKE_CASE``, and a pattern that backtracks
+    catastrophically — a screening rule runs over every submission, so one
+    ``(a+)+`` hangs the intake path. Registering the same label with an
+    identical pattern again is a no-op.
+
+    The report stays value-free: counts by label, never the matched text.
+    """
+    if not isinstance(label, str) or not _LABEL_RE.match(label):
+        raise ScreenError(
+            "screen family label must be UPPER_SNAKE_CASE (letters, digits, underscores)"
+        )
+    if label in SCREEN_FAMILIES:
+        raise ScreenError(f"screen family {label!r}: that family is built in and cannot be replaced")
+    if not isinstance(pattern, str) or not pattern:
+        raise ScreenError(f"screen family {label!r}: pattern must be a non-empty string")
+    try:
+        compiled = re.compile(pattern, re.IGNORECASE)
+    except re.error as exc:
+        raise ScreenError(
+            f"screen family {label!r}: the pattern is not a valid regex: {exc}"
+        ) from None
+    with _SCREEN_LOCK:
+        for existing_label, existing in _CUSTOM_SCREEN_RULES:
+            if existing_label == label:
+                if existing.pattern == pattern:
+                    return  # identical re-registration: an import that ran twice
+                raise ScreenError(
+                    f"screen family {label!r} is already registered with a different pattern"
+                )
+        try:
+            _probe_for_backtracking(compiled, label, kind="screen family")
+        except SanitizeError as exc:
+            # One guard, two entry points: report it as a screening error here.
+            raise ScreenError(str(exc)) from None
+        _CUSTOM_SCREEN_RULES.append((label, compiled))
+
+
+def registered_screen_families() -> tuple[str, ...]:
+    """The families registered through :func:`register_screen_family`, in
+    registration order. The patterns are not returned: a rule written for a
+    domain is not something to hand back out."""
+    with _SCREEN_LOCK:
+        return tuple(label for label, _ in _CUSTOM_SCREEN_RULES)
+
+
+def _clear_custom_screen_families() -> None:
+    """Empty the registry. **For tests only** — deliberately private and absent
+    from ``__all__``: an application that could unregister a family mid-run
+    could quietly stop screening for a shape, and nothing in the audit trail
+    would distinguish that from a submission that did not contain it."""
+    with _SCREEN_LOCK:
+        _CUSTOM_SCREEN_RULES.clear()
+
+
+def _effective_screen_version() -> str:
+    """:data:`SCREEN_DETECTOR_VERSION`, carrying a digest of the registered
+    families when there are any — so a ``screening`` record says what was
+    actually screening. A hash, not the patterns."""
+    with _SCREEN_LOCK:
+        if not _CUSTOM_SCREEN_RULES:
+            return SCREEN_DETECTOR_VERSION
+        material = "\n".join(f"{label}\x00{p.pattern}" for label, p in _CUSTOM_SCREEN_RULES)
+    digest = hashlib.sha256(material.encode("utf-8")).hexdigest()[:8]
+    return f"{SCREEN_DETECTOR_VERSION}+custom.{digest}"
+
+
 class ScreenError(RuntimeError):
     """Fail-closed: screening could not complete; do NOT treat the content as clean."""
 
@@ -1804,11 +1902,15 @@ def screen(
         raise ScreenError("input must be a string")
     if mode not in ("report", "redact"):
         raise ScreenError("unknown mode (expected 'report' or 'redact')")
-    requested = tuple(families) if families is not None else SCREEN_FAMILIES
+    custom_labels = registered_screen_families()
+    # A registered family is on by default the way a built-in is — registering
+    # it IS the opt-in — and is selectable through `families` like any other.
+    requested = tuple(families) if families is not None else SCREEN_FAMILIES + custom_labels
     if not requested:
         raise ScreenError("families must name at least one family")
+    known_families = set(SCREEN_FAMILIES) | set(custom_labels)
     for fam in requested:
-        if fam not in SCREEN_FAMILIES:
+        if fam not in known_families:
             raise ScreenError("unknown family")
     enabled = set(requested)
     decision_id = _validate_decision_id(decision_id, error=ScreenError)
@@ -1820,7 +1922,10 @@ def screen(
     try:
         norm, idx = _screen_normalize(text)
         spans: list[tuple[int, int, str]] = []
-        for fam, pat in _SCREEN_RULES:
+        with _SCREEN_LOCK:
+            custom_rules = list(_CUSTOM_SCREEN_RULES)
+        # Built-ins first, so a custom rule can never take a span from one.
+        for fam, pat in (*_SCREEN_RULES, *custom_rules):
             if fam not in enabled:
                 continue
             for m in pat.finditer(norm):
@@ -1849,7 +1954,7 @@ def screen(
             out = "".join(parts)
         report: dict[str, Any] = {
             "mode": mode,
-            "detector_version": SCREEN_DETECTOR_VERSION,
+            "detector_version": _effective_screen_version(),
             "counts": counts,
             "total": len(kept),
             "flagged": len(kept) > 0,

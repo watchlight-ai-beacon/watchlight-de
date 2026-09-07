@@ -78,6 +78,42 @@ list or a malformed correlation id raises rather than returning a clean result.
 Narrow the families with `families: ["HTML_INJECTION", "INSTRUCTION_OVERRIDE"]`
 (TypeScript) / `families=[...]` (Python).
 
+## Register a family for your own domain
+
+The seven are generic on purpose: they leave domain vocabulary alone, which is
+what makes screening usable on text about substance history or firearms storage
+without rejecting the applications that mention them. The cost is that a shape
+specific to your domain — a forced approval, a skipped check, a job title in
+place of an AI role — is not covered, and a second screener beside this one puts
+those hits outside the `screening` record.
+
+```python
+from watchlight import register_screen_family
+
+register_screen_family(
+    "INJ_FORCE_APPROVAL",
+    r"\b(?:approve|mark) this [a-z ]{0,30}(?:immediately|as approved)\b",
+)
+```
+
+```ts
+registerScreenFamily("INJ_FORCE_APPROVAL", /\b(?:approve|mark) this .{0,30}immediately\b/);
+```
+
+Registered families are on by default, counted and redacted under their own
+label, and selectable through `families` like a built-in.
+
+**Write the pattern against normalized text.** Zero-width characters are removed
+and every whitespace run is collapsed to one space before any rule runs — that is
+what stops an evasive spelling — so use single spaces and no `\s+`. A redaction
+still replaces the original span.
+
+A pattern that backtracks catastrophically is refused at registration: a
+screening rule runs over every submission, so one `(a+)+` hangs the intake path.
+A built-in family cannot be replaced. Once anything is registered,
+`detector_version` carries a digest of the set, so the `screening` record says
+what was actually screening.
+
 ## Worth knowing
 
 - **It is rules, not a classifier.** It does not decode leetspeak, homoglyphs,

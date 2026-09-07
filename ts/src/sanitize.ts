@@ -571,11 +571,11 @@ function findNestedQuantifier(pattern: string): string | null {
 /** Refuse a pattern that backtracks catastrophically, at registration. A floor,
  *  not a proof: one that passes can still be slow on an input these shapes do
  *  not model; one that fails is definitely unsafe. */
-function probeForBacktracking(re: RegExp, label: string): void {
+export function probeForBacktracking(re: RegExp, label: string, kind = "detector"): void {
   const nested = findNestedQuantifier(re.source);
   if (nested !== null) {
     throw new SanitizeError(
-      `detector "${label}": ${nested} nests one unbounded quantifier inside another, which ` +
+      `${kind} "${label}": ${nested} nests one unbounded quantifier inside another, which ` +
         `backtracks catastrophically on input that nearly matches. Use a single quantifier, ` +
         `or make the inner one bounded.`
     );
@@ -597,14 +597,14 @@ function probeForBacktracking(re: RegExp, label: string): void {
         const large = elapsed(shape.repeat(Math.max(2, Math.floor(nLarge / shape.length))) + tail);
         if (large > REDOS_ABSOLUTE_MS) {
           throw new SanitizeError(
-            `detector "${label}": the pattern took ${large.toFixed(0)}ms on a short input. ` +
+            `${kind} "${label}": the pattern took ${large.toFixed(0)}ms on a short input. ` +
               `A detector runs over every document, so it has to be linear.`
           );
         }
         if (large > REDOS_NOISE_FLOOR_MS) {
           if (large > small * REDOS_GROWTH_LIMIT) {
             throw new SanitizeError(
-              `detector "${label}": the pattern backtracks catastrophically — its cost grew ` +
+              `${kind} "${label}": the pattern backtracks catastrophically — its cost grew ` +
                 `${(large / small).toFixed(0)}x for ${nLarge - nSmall} more characters, where a ` +
                 `linear pattern barely moves. Anchor the repetition, or replace a nested ` +
                 `quantifier such as (a+)+ with a single one.`
