@@ -124,6 +124,8 @@ const vetted = govern.screen(text,   { resource: "doc/1", decisionId, principal 
 phone, SSN, card, IBAN, IPv4, API key, labelled passport and date of birth —
 plus a `known` dictionary you supply and opt-in `PERSON` / `ADDRESS` heuristics.
 `screen` flags or redacts prompt-injection shapes before text reaches the model.
+`registerScreenFamily` adds a shape specific to your domain — a forced approval,
+a skipped check — under a label of your own, guarded and versioned the same way.
 
 `registerDetector` adds an identifier the built-ins do not know — an alien
 registration number, an internal case reference — under a label of your own:

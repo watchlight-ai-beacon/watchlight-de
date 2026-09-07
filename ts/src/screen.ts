@@ -22,7 +22,8 @@
 // TS/Python divergence is case folding of the Turkish dotted capital İ (U+0130):
 // `İgnore …` matches in Python's re, not in JavaScript.
 
-import { DECISION_ID_MAX_LENGTH, validateOpaqueId } from "./sanitize";
+import { createHash } from "node:crypto";
+import { DECISION_ID_MAX_LENGTH, probeForBacktracking, validateOpaqueId } from "./sanitize";
 import { assertPrincipal } from "./principals";
 
 /** Rule families the screener recognizes. Each is a named counter in the report. */
@@ -34,6 +35,10 @@ export type ScreenFamily =
   | "AUTHORITY_IMPERSONATION"
   | "HTML_INJECTION"
   | "PROMPT_LEAK";
+
+/** A built-in {@link ScreenFamily}, or one registered with
+ *  {@link registerScreenFamily}. */
+export type ScreenLabel = ScreenFamily | (string & {});
 
 /** `report` leaves the text untouched (counts only); `redact` replaces every
  *  matched span with a family marker such as `[INSTRUCTION_OVERRIDE]`. */
@@ -54,6 +59,94 @@ export const SCREEN_FAMILIES: readonly ScreenFamily[] = [
 
 /** Raised when screening cannot complete — fail-closed: the caller must NOT
  *  fall back to treating the content as clean. */
+// ── registering a family for your own domain ──
+//
+// Held apart from RULES so a custom rule can never shadow a built-in, and
+// scanned after them.
+const CUSTOM_RULES: Rule[] = [];
+const SCREEN_LABEL_RE = /^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*$/;
+
+/**
+ * Register a screening family for a shape this package does not know.
+ *
+ * `screen` covers generic prompt-injection shapes and deliberately leaves
+ * domain vocabulary alone. A forced-action instruction — *approve this
+ * application immediately* — is not generic, and a caller who cannot add one
+ * runs a second screener beside this one, so those hits never reach the
+ * `screening` audit record.
+ *
+ * ```ts
+ * registerScreenFamily("INJ_FORCE_APPROVAL", /\b(?:approve|mark) this .{0,30}(?:immediately|as approved)\b/);
+ * ```
+ *
+ * Registered families are on by default, counted under their own label, and
+ * selectable through `families`. Register at start-up: the registry is
+ * module-wide.
+ *
+ * **Patterns match NORMALIZED text.** Zero-width characters are removed and
+ * every whitespace run is collapsed to one space before any rule runs — that is
+ * what stops an evasive spelling — so write single spaces and no `\s+`. A
+ * redaction still replaces the ORIGINAL span.
+ *
+ * Refused: a label already in use, a label that is not `UPPER_SNAKE_CASE`, and
+ * a pattern that backtracks catastrophically — a screening rule runs over every
+ * submission, so one `(a+)+` hangs the intake path.
+ */
+export function registerScreenFamily(label: string, pattern: RegExp): void {
+  if (typeof label !== "string" || !SCREEN_LABEL_RE.test(label)) {
+    throw new ScreenError(
+      "screen family label must be UPPER_SNAKE_CASE (letters, digits, underscores)"
+    );
+  }
+  if ((SCREEN_FAMILIES as readonly string[]).includes(label)) {
+    throw new ScreenError(`screen family "${label}": that family is built in and cannot be replaced`);
+  }
+  if (!(pattern instanceof RegExp)) {
+    throw new ScreenError(`screen family "${label}": pattern must be a RegExp`);
+  }
+  const existing = CUSTOM_RULES.find((r) => r.family === label);
+  if (existing) {
+    if (existing.re.source === pattern.source) return; // an import that ran twice
+    throw new ScreenError(`screen family "${label}" is already registered with a different pattern`);
+  }
+  try {
+    probeForBacktracking(pattern, label, "screen family");
+  } catch (err) {
+    // One guard, two entry points. Strip the sanitize prefix the shared probe
+    // adds, so the message reads once rather than "screen failed: sanitize
+    // failed: ...".
+    const raw = (err as Error).message.replace(/^sanitize failed \(fail-closed\): /, "");
+    throw new ScreenError(raw);
+  }
+  const flags = pattern.flags.includes("g") ? pattern.flags : pattern.flags + "g";
+  CUSTOM_RULES.push({
+    family: label,
+    re: new RegExp(pattern.source, flags.includes("i") ? flags : flags + "i"),
+  });
+}
+
+/** The families registered with {@link registerScreenFamily}, in registration
+ *  order. The patterns are not returned: a rule written for a domain is not
+ *  something to hand back out. */
+export function registeredScreenFamilies(): readonly string[] {
+  return CUSTOM_RULES.map((r) => r.family as string);
+}
+
+/** Empty the registry. **For tests only** — an application that could
+ *  unregister a family mid-run could quietly stop screening for a shape. */
+export function _clearCustomScreenFamilies(): void {
+  CUSTOM_RULES.length = 0;
+}
+
+/** {@link SCREEN_DETECTOR_VERSION}, carrying a digest of the registered
+ *  families when there are any, so a `screening` record says what was actually
+ *  screening. A hash, not the patterns. */
+export function effectiveScreenVersion(): string {
+  if (CUSTOM_RULES.length === 0) return SCREEN_DETECTOR_VERSION;
+  const material = CUSTOM_RULES.map((r) => `${r.family}\u0000${r.re.source}`).join("\n");
+  return `${SCREEN_DETECTOR_VERSION}+custom.${createHash("sha256").update(material, "utf8").digest("hex").slice(0, 8)}`;
+}
+
 export class ScreenError extends Error {
   constructor(message: string) {
     super(`screen failed (fail-closed): ${message}`);
@@ -65,7 +158,7 @@ export interface ScreenOptions {
   /** `"report"` (default) or `"redact"`. */
   mode?: ScreenMode;
   /** Restrict to these families. Default: all. Unknown names are an error. */
-  families?: ScreenFamily[];
+  families?: ScreenLabel[];
   /** Correlation id of the `authorize` decision that governed the read. Echoed
    *  onto `report.decisionId` and written as `decision_id` on the `screening`
    *  audit line, so it joins the decision's line. Opaque, never interpreted:
@@ -85,7 +178,7 @@ export interface ScreenReport {
   mode: ScreenMode;
   detectorVersion: string;
   /** Matches per family. Value-free by construction — never the matched text. */
-  counts: Partial<Record<ScreenFamily, number>>;
+  counts: Partial<Record<ScreenLabel, number>>;
   /** Total matches across families. */
   total: number;
   /** `total > 0` — for callers that want to refuse rather than redact. */
@@ -174,7 +267,7 @@ const LEAK_NOUN =
   "(?:instructions|guidelines|rules|configuration|prompt|directives))";
 
 interface Rule {
-  family: ScreenFamily;
+  family: ScreenLabel;
   re: RegExp;
 }
 
@@ -340,12 +433,13 @@ const RULES: Rule[] = [
 interface Span {
   start: number;
   end: number;
-  family: ScreenFamily;
+  family: ScreenLabel;
 }
 
-function detect(norm: string, families: Set<ScreenFamily>): Span[] {
+function detect(norm: string, families: Set<ScreenLabel>): Span[] {
   const spans: Span[] = [];
-  for (const r of RULES) {
+  // Built-ins first, so a custom rule can never take a span from one.
+  for (const r of [...RULES, ...CUSTOM_RULES]) {
     if (!families.has(r.family)) continue;
     r.re.lastIndex = 0;
     let m: RegExpExecArray | null;
@@ -392,14 +486,18 @@ export function screen(text: string, opts: ScreenOptions = {}): ScreenResult {
   if (mode !== "report" && mode !== "redact") {
     throw new ScreenError("unknown mode (expected 'report' or 'redact')");
   }
-  const requested = opts.families ?? SCREEN_FAMILIES;
+  // A registered family is on by default the way a built-in is — registering it
+  // IS the opt-in — and is selectable through `families` like any other.
+  const customLabels = registeredScreenFamilies();
+  const requested = opts.families ?? [...SCREEN_FAMILIES, ...customLabels];
   if (!Array.isArray(requested) || requested.length === 0) {
     throw new ScreenError("families must name at least one family");
   }
+  const known = new Set<string>([...SCREEN_FAMILIES, ...customLabels]);
   for (const f of requested) {
-    if (!SCREEN_FAMILIES.includes(f)) throw new ScreenError("unknown family");
+    if (!known.has(f)) throw new ScreenError("unknown family");
   }
-  const families = new Set<ScreenFamily>(requested);
+  const families = new Set<ScreenLabel>(requested);
   const decisionId = validateOpaqueId(opts.decisionId, "decisionId", screenError);
   // Length-bounded first (an audit field), then the ONE principal rule every
   // boundary applies — non-empty, no control characters.
@@ -409,7 +507,7 @@ export function screen(text: string, opts: ScreenOptions = {}): ScreenResult {
   try {
     const { norm, map } = normalize(text);
     const spans = detect(norm, families);
-    const counts: Partial<Record<ScreenFamily, number>> = {};
+    const counts: Partial<Record<ScreenLabel, number>> = {};
     for (const s of spans) counts[s.family] = (counts[s.family] ?? 0) + 1;
 
     let out = text;
@@ -428,7 +526,7 @@ export function screen(text: string, opts: ScreenOptions = {}): ScreenResult {
 
     const report: ScreenReport = {
       mode,
-      detectorVersion: SCREEN_DETECTOR_VERSION,
+      detectorVersion: effectiveScreenVersion(),
       counts,
       total: spans.length,
       flagged: spans.length > 0,
