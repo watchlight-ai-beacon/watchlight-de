@@ -293,6 +293,27 @@ async function main() {
       sanitize("x").report.detectorVersion === DETECTOR_VERSION);
   }
 
+  // ── PHONE: E.164 and grouped international forms ──
+  {
+    // PHONE is default-on, so a format it misses is one every caller is
+    // silently exposed to. The unseparated E.164 forms were missed in every
+    // country: the North-American rule consumes at most ten digits.
+    const formats = ["+15550142889", "+442071838750", "+493012345678", "+1 555 014 2889",
+      "+1-555-014-2889", "+1-555-0142-8899", "(555) 014-2889", "555-014-2889", "555.014.2889",
+      "555 014 2889", "5550142889", "020 7183 8750", "555-014-2889 x22"];
+    for (const n of formats) {
+      ok(`PHONE detects ${n}`, (sanitize(n, { types: ["PHONE"] }).report.counts.PHONE ?? 0) === 1);
+    }
+    // …and does not swallow shapes that belong to another detector, or none.
+    for (const [text, expected] of [["2026-09-07", null], ["ORD-2026-0001", null], ["1.10.0", null],
+      ["12 34 56", null], ["4111 1111 1111 1111", "CREDIT_CARD"], ["123-45-6789", "SSN"],
+      ["192.168.1.1", "IPV4"]]) {
+      const c = sanitize(text).report.counts;
+      ok(`${text} is not a phone number`, !("PHONE" in c), JSON.stringify(c));
+      if (expected) ok(`${text} keeps ${expected}`, expected in c, JSON.stringify(c));
+    }
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);
 }
