@@ -152,10 +152,29 @@ def test_adversarial_inputs_stay_fast():
     for a in adversarial:
         sanitize(a, types=["PASSPORT", "DOB", "PERSON", "ADDRESS", "PHONE", "CREDIT_CARD"], known=["zzz"])
     assert time.monotonic() - t0 < 5.0
-    t1 = time.monotonic()
-    for a in ("a." * 100000 + "@", "a@" * 50000, "x@" + "a." * 100000):
+    # The EMAIL rule must be LINEAR in the length of a local-part run that never
+    # reaches a domain — the classic catastrophic-backtracking shape. A fixed
+    # millisecond budget measures the machine as much as the regex and fails on
+    # a slow shared runner, so assert the property itself: ten times the input
+    # takes roughly ten times as long, not a hundred or more. Best-of-three,
+    # because the small measurement is the noisy one.
+    def scan_seconds(n: int) -> float:
+        text = "a." * n + "@"
+        best = float("inf")
+        for _ in range(3):
+            t = time.monotonic()
+            sanitize(text)
+            best = min(best, time.monotonic() - t)
+        return best
+
+    small, large = scan_seconds(20_000), scan_seconds(200_000)
+    assert large < 5.0, f"a 200k-char local-part run took {large:.2f}s — not linear"
+    # Linear is ~10x for 10x the input. Quadratic would be ~100x and catastrophic
+    # backtracking would not finish; 25x leaves room for timer noise and a cold
+    # cache without admitting either.
+    assert large < small * 25, f"scan time grew {large / small:.0f}x for 10x the input"
+    for a in ("a@" * 50000, "x@" + "a." * 100000):
         sanitize(a)
-    assert time.monotonic() - t1 < 0.1  # EMAIL local-part run without a domain is linear
     assert counts(".alice@acme.com x-bob@acme.com plus+tag@acme.co.uk")["EMAIL"] == 3
 
 
