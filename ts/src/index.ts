@@ -1110,6 +1110,80 @@ export class Watchlight {
     return this;
   }
 
+  /**
+   * REPLACE the policy set with this one. The counterpart to {@link load},
+   * which only ever adds.
+   *
+   * ```ts
+   * govern.reload("watchlight.policy.json");
+   * govern.reload({ policies: [{ name: "read", code: "permit(...);" }] });
+   * ```
+   *
+   * Everything the governor held is gone afterwards — policies from earlier
+   * `load` calls, and every inline {@link allow}. That is the point: with only
+   * `load` and `allow`, a live reload could add a permit but never remove one,
+   * so it could only ever WIDEN authority. An operator console that can edit a
+   * policy set has to be able to take one away.
+   *
+   * ATOMIC, AND FAIL-CLOSED ON THE WAY IN. The new set is parsed, checked and
+   * queued into a fresh backend before anything is swapped, so a set that does
+   * not check leaves the governor exactly as it was and throws. There is no
+   * window in which the governor holds half of either set.
+   *
+   * A missing file or an empty set throws rather than replacing the policies
+   * with nothing. Cedar default-denies, so an accidental empty reload would be
+   * safe but total — every governed call in the process refused — and that is a
+   * failure to refuse loudly, not to absorb.
+   *
+   * Governors made by {@link as} share the state and so share the reload. The
+   * {@link load} memo is cleared, so a file loaded before can be loaded again
+   * without `force`.
+   */
+  reload(source: string | { policies: { name?: string; code: string }[]; sourceId?: string }): this {
+    if (this._shared.backend.kind !== "in-process") {
+      // On a networked backend the plane owns the policy set; addPolicy is a
+      // no-op there, so a "reload" would look like it worked and change nothing.
+      throw new Error(
+        "reload replaces the local policy set, which a networked backend does not hold"
+      );
+    }
+    let entries: { name?: string; code: string }[];
+    let key: string | undefined;
+    let where: string;
+    if (typeof source === "string") {
+      if (!fs.existsSync(source)) throw new Error(`reload: no such policy file: ${source}`);
+      const data = JSON.parse(fs.readFileSync(source, "utf8"));
+      entries = Array.isArray(data) ? data : (data.policies ?? []);
+      key = resolveSource(source);
+      where = source;
+    } else {
+      entries = source.policies ?? [];
+      key = source.sourceId;
+      where = "the policies given";
+    }
+    if (!entries.length) {
+      throw new Error(
+        `reload: ${where} defines no policies. Replacing the set with nothing would deny ` +
+          `every governed call in this process; load a set, or construct a governor with ` +
+          `none deliberately.`
+      );
+    }
+    // Check every policy BEFORE building anything, so a refused annotation
+    // leaves the governor untouched — the same contract `load` gives.
+    entries.forEach((e, offset) =>
+      checkPolicyAnnotations(e.code, e.name ?? `policy-${offset}`, { warn: false })
+    );
+    const backend = selectBackend(this._shared.backendOptions);
+    entries.forEach((e, offset) =>
+      backend.addPolicy({ name: e.name ?? `policy-${offset}`, code: e.code })
+    );
+    this._shared.backend = backend;
+    this._shared.policyCount = entries.length;
+    this._shared.sources = new Set<string>();
+    if (key !== undefined) this._shared.sources.add(key);
+    return this;
+  }
+
   /** The subject of a call that named none: a TYPED reference to this agent,
    *  `Agent::"<name>"` — when no human is on whose behalf the call runs, the
    *  agent is the subject, and typing it says so on sight and in a policy.

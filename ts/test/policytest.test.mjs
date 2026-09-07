@@ -161,6 +161,61 @@ async function main() {
     ok("CLI runs an actor-scoped suite", r5.status === 0, `- status ${r5.status} ${r5.stdout}${r5.stderr}`);
   }
 
+  // ── reload: replacing the set, not adding to it ──
+  {
+    const WIDE = [
+      { name: "read", code: 'permit(principal, action == Action::"read", resource);' },
+      { name: "write", code: 'permit(principal, action == Action::"write", resource);' },
+    ];
+    const NARROW = [WIDE[0]];
+    const wideFile = join(suiteDir, "wide.policy.json");
+    const narrowFile = join(suiteDir, "narrow.policy.json");
+    const badFile = join(suiteDir, "bad.policy.json");
+    fs.writeFileSync(wideFile, JSON.stringify(WIDE));
+    fs.writeFileSync(narrowFile, JSON.stringify(NARROW));
+    fs.writeFileSync(badFile, JSON.stringify([
+      { name: "x", code: '@enforcement_effect("nope")\npermit(principal, action, resource);' },
+    ]));
+
+    const gr = new Watchlight({ agent: "svc", auditFile: false, auditSink: () => {} });
+    const dec = async (a) =>
+      (await gr.authorize({ action: a, principal: 'User::"u"', resource: 'Resource::"r"' })).decision;
+
+    gr.load(wideFile);
+    ok("load widens as before", (await dec("write")) === "Allow");
+    // The point of reload: load and allow can add a permit but never remove
+    // one, so a live reload built on them could only ever WIDEN authority.
+    gr.reload(narrowFile);
+    ok("reload NARROWS authority", (await dec("write")) === "Deny" && (await dec("read")) === "Allow");
+    ok("policyCount reflects the new set", gr.policyCount === 1);
+
+    gr.allow('permit(principal, action == Action::"delete", resource);');
+    ok("an inline allow applies", (await dec("delete")) === "Allow");
+    gr.reload({ policies: NARROW });
+    ok("reload drops inline policies too", (await dec("delete")) === "Deny");
+
+    // Atomic: a set that does not check leaves the governor exactly as it was.
+    let threwBad = false;
+    try { gr.reload(badFile); } catch { threwBad = true; }
+    ok("a refused annotation throws", threwBad);
+    ok("...and the previous set is intact", (await dec("read")) === "Allow" && gr.policyCount === 1);
+
+    for (const [label, fn] of [
+      ["a missing file", () => gr.reload(join(suiteDir, "absent.json"))],
+      ["an empty set", () => gr.reload({ policies: [] })],
+    ]) {
+      let threw = false;
+      try { fn(); } catch { threw = true; }
+      ok(`${label} throws rather than emptying the set`, threw);
+    }
+    ok("still intact after every refusal", (await dec("read")) === "Allow" && gr.policyCount === 1);
+
+    const view = gr.as("worker");
+    gr.reload({ policies: [{ name: "d", code: 'permit(principal, action == Action::"delete", resource);' }] });
+    ok("a renamed view shares the reload",
+      (await view.authorize({ action: "read", principal: 'User::"u"' })).decision === "Deny");
+  }
+
   console.log(`\npolicytest: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 }

@@ -481,15 +481,44 @@ govern.load("watchlight.policy.json", { force: true });
 console.log(govern.policyCount);    // 6 — force adds another copy; nothing is ever removed
 ```
 
-- **Policies are only ever added.** There is no unload.
+- **`load` and `allow` only ever add.** To take a policy away, use `reload`
+  below.
 - **`load` is idempotent per source.** Two paths to one file are one source.
   Give two files a shared `source_id` / `sourceId` to make them one too.
 - **A file that does not exist is not remembered**, so it loads the first time
   it appears.
 - **Editing a loaded file and calling `load` again changes nothing.** No error,
-  no warning. A policy change takes effect on a **restart**, not on a re-`load`.
-  `force` loads the file again, but nothing is ever removed, so you then hold
-  both copies. Construct a fresh governor when the old set has to be gone.
+  no warning. `force` loads the file again, but `load` never removes anything,
+  so you then hold both copies — `reload` is what applies an edit.
+
+### Replacing the set, not adding to it
+
+Because `load` and `allow` only add, a live reload built on them could add a
+permit but never remove one — it could only ever widen authority. `reload`
+replaces:
+
+```python
+govern.reload("watchlight.policy.json")      # from a file
+govern.reload(policies=edited_bundle)        # or a set you hold in memory
+```
+
+```ts
+govern.reload("watchlight.policy.json");
+govern.reload({ policies: editedBundle });
+```
+
+Everything the governor held goes, inline `allow` policies included. The new set
+is checked and compiled into a fresh engine before anything is swapped, so a set
+that does not compile leaves the governor exactly as it was and raises. There is
+no window holding half of either set.
+
+A missing file or an empty set raises rather than replacing the policies with
+nothing. Cedar default-denies, so an accidental empty reload would be safe but
+total — every governed call in the process refused — and that is worth refusing
+loudly.
+
+A decision already in flight finishes against the set it started with. Governors
+made by `as_()` / `as()` share the state, so they share the reload.
 
 ## Enforcement effects are checked at load
 
