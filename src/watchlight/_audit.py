@@ -27,8 +27,12 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import atexit
 import pathlib
+import queue
 import sys
+import threading
+import time
 from typing import Any, Callable, Dict, List, Literal, Optional, TypedDict, Union
 
 __all__ = [
@@ -262,10 +266,34 @@ def _error_kind(exc: BaseException) -> str:
     return name if builtin and isinstance(name, str) and len(name) <= 64 and name.isidentifier() else "Error"
 
 
+#: Records held for the background sink worker before the oldest are dropped.
+#: A bounded queue is the point: an audit destination that stops responding must
+#: not become unbounded memory growth in the application it is auditing.
+DEFAULT_SINK_QUEUE_MAX = 10_000
+#: Records per call to a batching sink.
+DEFAULT_SINK_BATCH = 100
+#: Seconds a partial batch waits before it is handed over anyway.
+DEFAULT_SINK_INTERVAL = 2.0
+
+
+async def _await(awaitable: Any) -> None:
+    """Await one awaitable — the body of the `asyncio.run` a batching worker
+    uses when the sink returns a coroutine."""
+    await awaitable
+
+
 class AuditTrail:
     """The audit trail shared by a governor and every scope derived from it."""
 
-    def __init__(self, path: str | pathlib.Path | None, sink: Optional[AuditSink] = None) -> None:
+    def __init__(
+        self,
+        path: str | pathlib.Path | None,
+        sink: Optional[AuditSink] = None,
+        *,
+        sink_batch: Optional[int] = None,
+        sink_interval: Optional[float] = None,
+        sink_queue_max: int = DEFAULT_SINK_QUEUE_MAX,
+    ) -> None:
         #: The local file every record is appended to, or ``None`` when the file
         #: is disabled (``audit_file=False``) and the sink is the sole destination.
         self.path = pathlib.Path(path) if path is not None else None
@@ -277,6 +305,30 @@ class AuditTrail:
         # Strong references to in-flight sink tasks: asyncio holds tasks weakly,
         # and a GC'd task would drop the record silently mid-await.
         self._tasks: set[asyncio.Future[Any]] = set()
+        # ── batching (off unless sink_batch or sink_interval is given) ──
+        # A durable destination — a database, an object store, a log service —
+        # is too slow to call on the request path. With batching configured the
+        # record is queued and a background worker hands the sink a LIST.
+        self._batching = sink is not None and (sink_batch is not None or sink_interval is not None)
+        self._batch_max = max(1, sink_batch if sink_batch is not None else DEFAULT_SINK_BATCH)
+        self._batch_interval = (
+            sink_interval if sink_interval is not None else DEFAULT_SINK_INTERVAL
+        )
+        if self._batching and self._batch_interval <= 0:
+            raise ValueError("audit_sink_interval must be greater than zero")
+        self._queue: "queue.Queue[dict[str, Any]]" = queue.Queue(maxsize=max(1, sink_queue_max))
+        self._dropped = 0
+        self._warned_dropped = False
+        self._worker: Optional[threading.Thread] = None
+        self._stopping = threading.Event()
+        if self._batching:
+            self._start_worker()
+
+    @property
+    def dropped(self) -> int:
+        """Records the batching queue has dropped. Non-zero means the trail has
+        holes, and where they are is not recoverable — watch it."""
+        return self._dropped
 
     @property
     def has_sink(self) -> bool:
@@ -309,12 +361,101 @@ class AuditTrail:
         #    cannot mutate the caller's record.
         if self._sink is None:
             return
+        if self._batching:
+            self._enqueue(json.loads(line))
+            return
         try:
             result = self._sink(json.loads(line))
             if inspect.isawaitable(result):
                 self._schedule(result)
         except Exception as exc:  # noqa: BLE001 — a sink must never break a decision
             self._warn_once(exc)
+
+    # ── batching worker ─────────────────────────────────────────────
+
+    def _start_worker(self) -> None:
+        self._worker = threading.Thread(
+            target=self._drain_forever, name="watchlight-audit-sink", daemon=True
+        )
+        self._worker.start()
+        # A daemon thread is killed at interpreter exit wherever it happens to
+        # be, so the last partial batch would be lost. Flushing here is what
+        # makes "records queued" mean "records delivered" for a process that
+        # ends normally.
+        atexit.register(self.flush)
+
+    def _enqueue(self, record: dict[str, Any]) -> None:
+        """Queue a record for the worker. Never raises, never blocks the caller."""
+        try:
+            self._queue.put_nowait(record)
+        except queue.Full:
+            # Drop the OLDEST: under sustained pressure the newest records are
+            # the ones an operator is looking at. Dropping silently would be an
+            # audit gap, so it is counted and reported once.
+            try:
+                self._queue.get_nowait()
+                self._queue.task_done()
+            except queue.Empty:
+                pass
+            self._dropped += 1
+            self._warn_dropped_once()
+            try:
+                self._queue.put_nowait(record)
+            except queue.Full:
+                pass
+
+    def _drain_forever(self) -> None:
+        while not self._stopping.is_set():
+            batch = self._collect(timeout=self._batch_interval)
+            if batch:
+                self._deliver(batch)
+
+    def _collect(self, timeout: float) -> list[dict[str, Any]]:
+        """Up to ``_batch_max`` records, waiting at most ``timeout`` for the first."""
+        batch: list[dict[str, Any]] = []
+        try:
+            batch.append(self._queue.get(timeout=timeout))
+        except queue.Empty:
+            return batch
+        while len(batch) < self._batch_max:
+            try:
+                batch.append(self._queue.get_nowait())
+            except queue.Empty:
+                break
+        return batch
+
+    def _deliver(self, batch: list[dict[str, Any]]) -> None:
+        """Hand a batch to the sink. A sink that raises must never take the
+        worker down with it, or the trail stops for the life of the process."""
+        try:
+            result = self._sink(batch)  # type: ignore[misc]
+            if inspect.isawaitable(result):
+                # Off the request path already, and on a thread with no event
+                # loop: run it to completion here rather than dropping it.
+                asyncio.run(_await(result))
+        except Exception as exc:  # noqa: BLE001 — a sink must never break the trail
+            self._warn_once(exc)
+        finally:
+            for _ in batch:
+                self._queue.task_done()
+
+    def flush(self, timeout: float = 5.0) -> None:
+        """Deliver everything queued, and wait for it. Called at interpreter
+        exit, and worth calling yourself before a deliberate shutdown.
+
+        The drain happens HERE, in the caller, rather than inside the worker's
+        own shutdown path: a worker that has been told to stop cannot reliably
+        finish one more round of work, and a final flush written into its exit
+        handler is the kind that looks correct and never runs.
+        """
+        if not self._batching:
+            return
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            batch = self._collect(timeout=0.0)
+            if not batch:
+                break
+            self._deliver(batch)
 
     # ── internals ───────────────────────────────────────────────────
 
@@ -363,8 +504,29 @@ class AuditTrail:
         if kind in self._warned_kinds:
             return
         self._warned_kinds.add(kind)
+        tail = (
+            " — the local audit file is still written"
+            if self.path is not None
+            else " — the local audit file is disabled, so these records are lost"
+        )
         print(
             f"watchlight: audit sink failed ({kind}); further sink failures "
-            "are suppressed — the local audit file is still written",
+            f"are suppressed{tail}",
+            file=sys.stderr,
+        )
+
+    def _warn_dropped_once(self) -> None:
+        """Report a full queue once. The count is ours, not the sink's, so
+        unlike a sink failure it is safe to print — and it must be printed: a
+        dropped record is a hole in the audit trail, and a hole nobody is told
+        about is the worst kind."""
+        if self._warned_dropped:
+            return
+        self._warned_dropped = True
+        print(
+            f"watchlight: the audit sink queue is full — records are being dropped, oldest "
+            f"first, because the sink is slower than the rate records are produced. Raise "
+            f"audit_sink_batch, or make the sink faster. Further drops are not reported; "
+            f"AuditTrail.dropped counts them.",
             file=sys.stderr,
         )

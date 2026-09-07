@@ -218,6 +218,14 @@ export type WritableAuditRecord<T extends AuditRecord> = { -readonly [K in keyof
  */
 export type AuditSink = (record: AuditRecord) => void | Promise<void>;
 
+/**
+ * A sink under batching: it receives an ARRAY of records from a timer rather
+ * than one record on the request path. Configuring `auditSinkBatch` or
+ * `auditSinkInterval` selects this shape — the two are not interchangeable, and
+ * a single-record sink handed an array would quietly write one malformed row.
+ */
+export type BatchAuditSink = (batch: readonly AuditRecord[]) => void | Promise<void>;
+
 const ERROR_KIND = /^[A-Za-z_$][\w$]{0,63}$/;
 // `err.name` is sink-controlled text (a subclass or `Object.assign` can make it
 // anything, including an identifier-shaped string carrying record content), so
@@ -243,19 +251,57 @@ function deepFreeze<T>(value: T): T {
 }
 
 /** The audit trail shared by a governor and every scope derived from it. */
+/** Records held for the batching sink before the oldest are dropped. Bounded on
+ *  purpose: an audit destination that stops responding must not become unbounded
+ *  memory growth in the application it is auditing. */
+export const DEFAULT_SINK_QUEUE_MAX = 10_000;
+/** Records per call to a batching sink. */
+export const DEFAULT_SINK_BATCH = 100;
+/** Milliseconds a partial batch waits before it is handed over anyway. */
+export const DEFAULT_SINK_INTERVAL = 2_000;
+
 export class AuditTrail {
   /** The local file every record is appended to, or `null` when the file is
    *  disabled (`auditFile: false`) and the sink is the sole destination. */
   readonly path: string | null;
-  private readonly _sink?: AuditSink;
+  private readonly _sink?: AuditSink | BatchAuditSink;
   /** Sanitized error kinds already reported — one warning per kind, so a
    *  "no running loop"-style condition never silences a later real failure. */
   private readonly _warnedKinds = new Set<string>();
   private _warnedNoDestination = false;
+  // ── batching (off unless sinkBatch or sinkInterval is given) ──
+  // A durable destination — a database, an object store, a log service — is too
+  // slow to call on the request path. With batching configured the record is
+  // queued and a timer hands the sink an ARRAY after the decision has returned.
+  private readonly _batching: boolean;
+  private readonly _batchMax: number;
+  private readonly _batchInterval: number;
+  private readonly _queueMax: number;
+  private _queue: AuditRecord[] = [];
+  private _timer: ReturnType<typeof setTimeout> | null = null;
+  private _dropped = 0;
+  private _warnedDropped = false;
 
-  constructor(auditPath: string | null, sink?: AuditSink) {
+  constructor(
+    auditPath: string | null,
+    sink?: AuditSink | BatchAuditSink,
+    opts: { sinkBatch?: number; sinkInterval?: number; sinkQueueMax?: number } = {}
+  ) {
     this.path = auditPath;
     this._sink = sink;
+    this._batching = !!sink && (opts.sinkBatch !== undefined || opts.sinkInterval !== undefined);
+    this._batchMax = Math.max(1, opts.sinkBatch ?? DEFAULT_SINK_BATCH);
+    this._batchInterval = opts.sinkInterval ?? DEFAULT_SINK_INTERVAL;
+    if (this._batching && !(this._batchInterval > 0)) {
+      throw new Error("auditSinkInterval must be greater than zero");
+    }
+    this._queueMax = Math.max(1, opts.sinkQueueMax ?? DEFAULT_SINK_QUEUE_MAX);
+  }
+
+  /** Records the batching queue has dropped. Non-zero means the trail has
+   *  holes, and where they are is not recoverable — watch it. */
+  get dropped(): number {
+    return this._dropped;
   }
 
   /** True when an application-supplied sink is attached to this trail. */
@@ -291,9 +337,13 @@ export class AuditTrail {
     //    the exact serialized line, so it sees precisely the file's fields and
     //    cannot mutate the caller's record.
     if (!this._sink) return;
+    if (this._batching) {
+      this._enqueue(deepFreeze(JSON.parse(line) as Record<string, unknown>) as AuditRecord);
+      return;
+    }
     try {
       const copy = deepFreeze(JSON.parse(line) as Record<string, unknown>) as AuditRecord;
-      const ret = this._sink(copy);
+      const ret = (this._sink as AuditSink)(copy);
       if (ret && typeof (ret as Promise<void>).then === "function") {
         (ret as Promise<void>).then(undefined, (err) => this._warnOnce(err));
       }
@@ -311,6 +361,69 @@ export class AuditTrail {
     console.warn(
       "watchlight: the audit file is disabled and no auditSink is configured — " +
         "audit records are discarded. Configure `auditSink`, or leave `auditFile` on."
+    );
+  }
+
+  // ── batching worker ──
+
+  private _enqueue(record: AuditRecord): void {
+    if (this._queue.length >= this._queueMax) {
+      // Drop the OLDEST: under sustained pressure the newest records are the
+      // ones an operator is looking at.
+      this._queue.shift();
+      this._dropped += 1;
+      this._warnDroppedOnce();
+    }
+    this._queue.push(record);
+    if (this._queue.length >= this._batchMax) {
+      this._deliverNow();
+      return;
+    }
+    if (this._timer === null) {
+      this._timer = setTimeout(() => this._deliverNow(), this._batchInterval);
+      // Never hold the process open for a partial batch.
+      (this._timer as unknown as { unref?: () => void }).unref?.();
+    }
+  }
+
+  private _deliverNow(): void {
+    if (this._timer !== null) {
+      clearTimeout(this._timer);
+      this._timer = null;
+    }
+    while (this._queue.length) {
+      const batch = this._queue.splice(0, this._batchMax);
+      try {
+        const ret = (this._sink as unknown as BatchAuditSink)(batch);
+        if (ret && typeof (ret as Promise<void>).then === "function") {
+          (ret as Promise<void>).then(undefined, (err) => this._warnOnce(err));
+        }
+      } catch (err) {
+        // A sink that throws must never take the trail down with it, or the
+        // trail stops for the life of the process.
+        this._warnOnce(err);
+      }
+    }
+  }
+
+  /** Deliver everything queued, now. Worth calling before a deliberate
+   *  shutdown: a partial batch is otherwise waiting on its timer, and the timer
+   *  is unref'd so it will not hold the process open to fire. */
+  flush(): void {
+    if (!this._batching) return;
+    this._deliverNow();
+  }
+
+  private _warnDroppedOnce(): void {
+    // The count is ours, not the sink's, so unlike a sink failure it is safe to
+    // print — and it must be printed: a dropped record is a hole in the audit
+    // trail, and a hole nobody is told about is the worst kind.
+    if (this._warnedDropped) return;
+    this._warnedDropped = true;
+    console.error(
+      "watchlight: the audit sink queue is full — records are being dropped, oldest first, " +
+        "because the sink is slower than the rate records are produced. Raise auditSinkBatch, " +
+        "or make the sink faster. Further drops are not reported; AuditTrail.dropped counts them."
     );
   }
 
