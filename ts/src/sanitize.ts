@@ -38,6 +38,11 @@ export type PiiType =
   | "PERSON"
   | "ADDRESS";
 
+/** A built-in {@link PiiType}, or a label registered with
+ *  {@link registerDetector}. The `string & {}` keeps editor autocomplete for the
+ *  built-ins while still accepting a custom label. */
+export type DetectorLabel = PiiType | (string & {});
+
 /** How a detected value is replaced. */
 export type RedactMode = "tag" | "mask" | "hash";
 
@@ -72,7 +77,7 @@ export interface SanitizeOptions {
   /** Restrict to these PII types. Default: every structured type (all types
    *  except the heuristics `PERSON` / `ADDRESS`, which must be listed here to
    *  run). `KNOWN` is enabled by supplying `known`, independent of this list. */
-  types?: PiiType[];
+  types?: DetectorLabel[];
   /** Intent label for the `sanitization` audit record. Default `"read"`.
    *  Used by `Watchlight.sanitize`; the pure `sanitize()` ignores it. */
   intent?: string;
@@ -107,7 +112,7 @@ export interface SanitizeReport {
   mode: RedactMode;
   detectorVersion: string;
   /** Count of redactions per type. Value-free by construction — never the values. */
-  counts: Partial<Record<PiiType, number>>;
+  counts: Partial<Record<DetectorLabel, number>>;
   /** Total redactions. */
   total: number;
   /** The `decisionId` supplied by the caller, if any (validated, never interpreted). */
@@ -144,7 +149,7 @@ const luhnOk = (digits: string): boolean => {
 };
 
 interface Detector {
-  type: PiiType;
+  type: DetectorLabel;
   re: RegExp;
   /** Optional validator on the redacted value; false drops it. */
   valid?: (m: string) => boolean;
@@ -320,7 +325,7 @@ const DETECTORS: Detector[] = [
 interface Span {
   start: number;
   end: number;
-  type: PiiType;
+  type: DetectorLabel;
   value: string;
 }
 
@@ -383,12 +388,13 @@ function detectKnown(text: string, known: string[]): Span[] {
   return merged;
 }
 
-function detect(text: string, types: PiiType[], known: string[]): Span[] {
+function detect(text: string, types: DetectorLabel[], known: string[]): Span[] {
   const enabled = new Set(types);
   // KNOWN first: an application-supplied value is the most authoritative label
   // when it ties with a structured detector on the same span.
   const spans: Span[] = known.length ? detectKnown(text, known) : [];
-  for (const det of DETECTORS) {
+  // Built-ins first, so a custom rule can never take a span from one.
+  for (const det of [...DETECTORS, ...CUSTOM_DETECTORS]) {
     if (!enabled.has(det.type)) continue;
     det.re.lastIndex = 0;
     let m: RegExpExecArray | null;
@@ -428,7 +434,7 @@ function replacement(
   span: Span,
   mode: RedactMode,
   counters: Map<string, string>,
-  perType: Map<PiiType, number>
+  perType: Map<DetectorLabel, number>
 ): string {
   if (mode === "mask") return `[${span.type}]`;
   // KNOWN values were matched case-insensitively, so hash and tag keys are too.
@@ -473,8 +479,230 @@ export function validateOpaqueId(
 const sanitizeError = (message: string): Error => new SanitizeError(message);
 /** The structured (default-on) detector types, in priority order. */
 export const DEFAULT_PII_TYPES: readonly PiiType[] = Array.from(
-  new Set(DETECTORS.filter((d) => d.defaultOn).map((d) => d.type))
+  new Set(DETECTORS.filter((d) => d.defaultOn).map((d) => d.type as PiiType))
 );
+
+// ── registering a detector for your own vocabulary ──
+//
+// Held apart from DETECTORS so a custom rule can never shadow a built-in:
+// registerDetector refuses a label already in use, and the scan runs the
+// built-ins first.
+const CUSTOM_DETECTORS: Detector[] = [];
+const LABEL_RE = /^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*$/;
+const RESERVED_LABELS = new Set(["KNOWN"]);
+
+// A catastrophic pattern cannot be timed by starting a clock, calling exec and
+// checking the clock afterwards: it never returns, so the check never runs and
+// the guard hangs the process it was meant to protect. So the probe measures
+// GROWTH on inputs short enough that even an exponential pattern finishes —
+// four more characters costs an exponential 16x and a linear one nothing.
+const REDOS_PROBE_PAIRS: ReadonlyArray<[number, number]> = [
+  [14, 18],
+  [22, 26],
+  [30, 34],
+];
+// Linear grows ~1.2x over that step, quadratic ~1.4x, cubic ~1.7x. Exponentials
+// are far above: `(a+)+$` is 16x and `(a|aa)+$` — golden-ratio base — is 6.7x.
+const REDOS_GROWTH_LIMIT = 3.0;
+const REDOS_NOISE_FLOOR_MS = 2;
+const REDOS_ABSOLUTE_MS = 250;
+const REDOS_PROBE_SHAPES = ["a", "0", "A-", " ", "aA0-_.", "\u00e9"];
+const REDOS_PROBE_TAILS = ["~", ""];
+
+/** True when `body` applies `+`, `*` or `{n,}` outside a character class and
+ *  outside an escape. */
+function hasUnboundedQuantifier(body: string): boolean {
+  let inClass = false;
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (c === "\\") {
+      i++;
+      continue;
+    }
+    if (inClass) {
+      if (c === "]") inClass = false;
+      continue;
+    }
+    if (c === "[") inClass = true;
+    else if (c === "+" || c === "*") return true;
+    else if (c === "{") {
+      const close = body.indexOf("}", i);
+      if (close !== -1 && body.slice(i + 1, close).endsWith(",")) return true;
+    }
+  }
+  return false;
+}
+
+/** The quantified group whose body is itself unboundedly quantified —
+ *  `(a+)+`, `(\d+)*`, `([a-z]*){2,}` — or null. The dominant catastrophic
+ *  family, and detectable without executing anything. */
+function findNestedQuantifier(pattern: string): string | null {
+  const starts: number[] = [];
+  let inClass = false;
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i];
+    if (c === "\\") {
+      i++;
+      continue;
+    }
+    if (inClass) {
+      if (c === "]") inClass = false;
+      continue;
+    }
+    if (c === "[") inClass = true;
+    else if (c === "(") starts.push(i);
+    else if (c === ")" && starts.length) {
+      const openAt = starts.pop() as number;
+      let quantified = false;
+      const next = pattern[i + 1];
+      if (next === "+" || next === "*") quantified = true;
+      else if (next === "{") {
+        const close = pattern.indexOf("}", i + 1);
+        if (close !== -1 && pattern.slice(i + 2, close).endsWith(",")) quantified = true;
+      }
+      if (quantified && hasUnboundedQuantifier(pattern.slice(openAt + 1, i))) {
+        return pattern.slice(openAt, i + 2);
+      }
+    }
+  }
+  return null;
+}
+
+/** Refuse a pattern that backtracks catastrophically, at registration. A floor,
+ *  not a proof: one that passes can still be slow on an input these shapes do
+ *  not model; one that fails is definitely unsafe. */
+function probeForBacktracking(re: RegExp, label: string): void {
+  const nested = findNestedQuantifier(re.source);
+  if (nested !== null) {
+    throw new SanitizeError(
+      `detector "${label}": ${nested} nests one unbounded quantifier inside another, which ` +
+        `backtracks catastrophically on input that nearly matches. Use a single quantifier, ` +
+        `or make the inner one bounded.`
+    );
+  }
+  const probe = new RegExp(re.source, re.flags.replace("g", ""));
+  const elapsed = (text: string): number => {
+    let best = Infinity;
+    for (let i = 0; i < 3; i++) {
+      const t = performance.now();
+      probe.test(text);
+      best = Math.min(best, performance.now() - t);
+    }
+    return best;
+  };
+  for (const shape of REDOS_PROBE_SHAPES) {
+    for (const tail of REDOS_PROBE_TAILS) {
+      for (const [nSmall, nLarge] of REDOS_PROBE_PAIRS) {
+        const small = elapsed(shape.repeat(Math.max(1, Math.floor(nSmall / shape.length))) + tail);
+        const large = elapsed(shape.repeat(Math.max(2, Math.floor(nLarge / shape.length))) + tail);
+        if (large > REDOS_ABSOLUTE_MS) {
+          throw new SanitizeError(
+            `detector "${label}": the pattern took ${large.toFixed(0)}ms on a short input. ` +
+              `A detector runs over every document, so it has to be linear.`
+          );
+        }
+        if (large > REDOS_NOISE_FLOOR_MS) {
+          if (large > small * REDOS_GROWTH_LIMIT) {
+            throw new SanitizeError(
+              `detector "${label}": the pattern backtracks catastrophically — its cost grew ` +
+                `${(large / small).toFixed(0)}x for ${nLarge - nSmall} more characters, where a ` +
+                `linear pattern barely moves. Anchor the repetition, or replace a nested ` +
+                `quantifier such as (a+)+ with a single one.`
+            );
+          }
+          break; // readable and well-behaved at this length
+        }
+        // Too fast to measure: try a longer input rather than passing on a non-reading.
+      }
+    }
+  }
+}
+
+/**
+ * Register a detector for an identifier this package does not know.
+ *
+ * `label` is the tag the redaction carries (`<ALIEN_NUMBER_1>`) and the key it
+ * is counted under in the report. `pattern` is matched against the whole text;
+ * `validate` is an optional check on each matched value, the way the built-in
+ * card rule applies a Luhn check — return `false` to reject a match.
+ *
+ * ```ts
+ * registerDetector("ALIEN_NUMBER", /\bA[- ]?\d{8,9}\b/);
+ * ```
+ *
+ * Registered detectors are **on by default**, like the built-in structured
+ * rules, and selectable by label through `types`. Register at start-up: the
+ * registry is module-wide, and a detector added while a scan runs does not
+ * apply to it.
+ *
+ * Refused: a label already in use (a built-in, `KNOWN`, or one registered with a
+ * different pattern — silently replacing the `SSN` rule with a weaker one is
+ * exactly the change nobody would notice), a pattern that backtracks
+ * catastrophically, and a label that is not `UPPER_SNAKE_CASE`. Registering the
+ * same label with an identical pattern again is a no-op.
+ *
+ * The value-free contract is unchanged and not yours to widen: the report
+ * carries counts by label, never values. `validate` is the one place a value is
+ * visible — it must not log, store, or transmit what it is shown.
+ */
+export function registerDetector(
+  label: string,
+  pattern: RegExp,
+  opts: { validate?: (value: string) => boolean } = {}
+): void {
+  if (typeof label !== "string" || !LABEL_RE.test(label)) {
+    throw new SanitizeError(
+      "detector label must be UPPER_SNAKE_CASE (letters, digits, underscores)"
+    );
+  }
+  if (RESERVED_LABELS.has(label) || DETECTORS.some((d) => d.type === label)) {
+    throw new SanitizeError(`detector "${label}": that label is built in and cannot be replaced`);
+  }
+  if (!(pattern instanceof RegExp)) {
+    throw new SanitizeError(`detector "${label}": pattern must be a RegExp`);
+  }
+  if (opts.validate !== undefined && typeof opts.validate !== "function") {
+    throw new SanitizeError(`detector "${label}": validate must be a function`);
+  }
+  const existing = CUSTOM_DETECTORS.find((d) => d.type === label);
+  if (existing) {
+    if (existing.re.source === pattern.source) return; // an import that ran twice
+    throw new SanitizeError(`detector "${label}" is already registered with a different pattern`);
+  }
+  probeForBacktracking(pattern, label);
+  const flags = pattern.flags.includes("g") ? pattern.flags : pattern.flags + "g";
+  CUSTOM_DETECTORS.push({
+    type: label,
+    re: new RegExp(pattern.source, flags),
+    valid: opts.validate,
+    defaultOn: true,
+  });
+}
+
+/** The labels registered with {@link registerDetector}, in registration order.
+ *  The patterns are not returned: a detector for an internal identifier format
+ *  is not something to hand back out. */
+export function registeredDetectors(): readonly string[] {
+  return CUSTOM_DETECTORS.map((d) => d.type);
+}
+
+/** Empty the registry. **For tests only** — an application that could
+ *  unregister a detector mid-run could quietly stop redacting an identifier,
+ *  and nothing in the audit trail would distinguish that from a document with
+ *  none in it. */
+export function _clearCustomDetectors(): void {
+  CUSTOM_DETECTORS.length = 0;
+}
+
+/** `DETECTOR_VERSION` when only the built-ins are in force; otherwise it carries
+ *  a short digest of the registered set, so an audit record says what was
+ *  actually screening. A hash, not the patterns: the record stays value-free. */
+export function effectiveDetectorVersion(): string {
+  if (CUSTOM_DETECTORS.length === 0) return DETECTOR_VERSION;
+  const material = CUSTOM_DETECTORS.map((d) => `${d.type}\u0000${d.re.source}`).join("\n");
+  const digest = createHash("sha256").update(material, "utf8").digest("hex").slice(0, 8);
+  return `${DETECTOR_VERSION}+custom.${digest}`;
+}
 
 /**
  * Redact PII from `text`. Pure and deterministic. Fail-closed: throws
@@ -483,7 +711,10 @@ export const DEFAULT_PII_TYPES: readonly PiiType[] = Array.from(
  */
 export function sanitize(text: string, opts: SanitizeOptions = {}): SanitizeResult {
   const mode: RedactMode = opts.mode ?? "tag";
-  const types = opts.types ?? (DEFAULT_PII_TYPES as PiiType[]);
+  // A registered detector is on by default the way a built-in structured rule
+  // is — registering it IS the opt-in — and is selectable by label like any other.
+  const types =
+    opts.types ?? [...(DEFAULT_PII_TYPES as DetectorLabel[]), ...registeredDetectors()];
   if (typeof text !== "string") {
     throw new SanitizeError("input must be a string (extract document text first)");
   }
@@ -501,8 +732,8 @@ export function sanitize(text: string, opts: SanitizeOptions = {}): SanitizeResu
   try {
     const spans = detect(text, types, known);
     const counters = new Map<string, string>();
-    const perTypeTag = new Map<PiiType, number>();
-    const counts: Partial<Record<PiiType, number>> = {};
+    const perTypeTag = new Map<DetectorLabel, number>();
+    const counts: Partial<Record<DetectorLabel, number>> = {};
 
     // Rebuild the string, replacing spans left→right.
     let out = "";
@@ -515,7 +746,7 @@ export function sanitize(text: string, opts: SanitizeOptions = {}): SanitizeResu
     }
     out += text.slice(cursor);
 
-    const report: SanitizeReport = { mode, detectorVersion: DETECTOR_VERSION, counts, total: spans.length };
+    const report: SanitizeReport = { mode, detectorVersion: effectiveDetectorVersion(), counts, total: spans.length };
     if (decisionId !== undefined) report.decisionId = decisionId;
     if (principal !== undefined) report.principal = principal;
     return { text: out, report };

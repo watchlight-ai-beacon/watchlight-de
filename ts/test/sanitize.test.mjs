@@ -9,7 +9,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 
 const require = createRequire(import.meta.url);
-const { sanitize, SanitizeError, Watchlight, DECISION_ID_MAX_LENGTH, DETECTOR_VERSION, DEFAULT_PII_TYPES, HEURISTIC_PII_TYPES } = require("../dist/index.js");
+const { sanitize, SanitizeError, Watchlight, DECISION_ID_MAX_LENGTH, DETECTOR_VERSION, DEFAULT_PII_TYPES, HEURISTIC_PII_TYPES, registerDetector, registeredDetectors, _clearCustomDetectors } = require("../dist/index.js");
 const here = dirname(fileURLToPath(import.meta.url));
 
 let pass = 0, fail = 0;
@@ -240,6 +240,58 @@ async function main() {
   const raw2 = fs.readFileSync(join(auditDir2, "audit.jsonl"), "utf8");
   ok("govern.sanitize audit: KNOWN + DOB counted, de-rules-2 recorded", raw2.includes('"KNOWN":1') && raw2.includes('"DOB":1') && raw2.includes('"detector":"de-rules-2"'));
   ok("govern.sanitize audit is value-free (no known values, no dates)", !raw2.includes("Lovelace") && !raw2.includes("1985"));
+
+  // ── registerDetector ──
+  {
+    _clearCustomDetectors();
+    registerDetector("ALIEN_NUMBER", /\bA[- ]?\d{8,9}\b/);
+    const rd = sanitize("Applicant A-12345678 filed the form.");
+    ok("registered detector redacts and counts",
+      rd.text === "Applicant <ALIEN_NUMBER_1> filed the form." && rd.report.counts.ALIEN_NUMBER === 1);
+    ok("its value never reaches the report", !JSON.stringify(rd.report).includes("12345678"));
+    ok("the detector version names the registered set",
+      rd.report.detectorVersion.startsWith(`${DETECTOR_VERSION}+custom.`), rd.report.detectorVersion);
+    ok("on by default, and selectable by label",
+      sanitize("A-12345678", { types: ["ALIEN_NUMBER"] }).text === "<ALIEN_NUMBER_1>");
+    ok("excluded when the caller names another set",
+      sanitize("A-12345678", { types: ["SSN"] }).text === "A-12345678");
+
+    // A catastrophic pattern must be REFUSED, not run: it would hang every call
+    // that scans a document.
+    for (const bad of [/(a+)+$/, /(a|aa)+$/, /(a|a?)+$/, /([a-z]+)*$/, /(x+x+)+y$/, /(\s*\w+)+$/]) {
+      let threw = false;
+      try { registerDetector("EVIL", bad); } catch { threw = true; }
+      ok(`catastrophic ${bad} refused`, threw);
+    }
+    // …and the guard is worthless if it refuses what people actually write.
+    for (const [i, good] of [/\bCASE-\d{4}-\d{5}\b/, /\b\d{9}\b/, /\b[A-Z]{1,2}\d{6,8}\b/,
+                             /(?:VISA|PASSPORT)[ -]?[A-Z0-9]{6,9}/].entries()) {
+      let accepted = true;
+      try { registerDetector(`REAL_${i}`, good); } catch { accepted = false; }
+      ok(`real pattern ${good} accepted`, accepted);
+    }
+    for (const label of ["SSN", "EMAIL", "KNOWN"]) {
+      let threw = false;
+      try { registerDetector(label, /\d{3}/); } catch { threw = true; }
+      ok(`built-in label ${label} cannot be replaced`, threw);
+    }
+    for (const label of ["lower", "With Space", "TRAILING_", "9LEADING"]) {
+      let threw = false;
+      try { registerDetector(label, /\d{3}/); } catch { threw = true; }
+      ok(`label ${JSON.stringify(label)} refused`, threw);
+    }
+
+    _clearCustomDetectors();
+    registerDetector("CASE_NO", /\bCASE-\d{4}\b/);
+    registerDetector("CASE_NO", /\bCASE-\d{4}\b/);   // an import that ran twice
+    ok("identical re-registration is a no-op", registeredDetectors().length === 1);
+    let conflict = false;
+    try { registerDetector("CASE_NO", /\bCASE-\d{5}\b/); } catch { conflict = true; }
+    ok("a different pattern under the same label throws", conflict);
+    _clearCustomDetectors();
+    ok("cleared: the version is the built-in one again",
+      sanitize("x").report.detectorVersion === DETECTOR_VERSION);
+  }
 
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);

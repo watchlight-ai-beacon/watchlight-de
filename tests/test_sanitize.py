@@ -7,6 +7,7 @@ import time
 
 import pytest
 
+import watchlight
 from watchlight import (
     DEFAULT_PII_TYPES,
     DETECTOR_VERSION,
@@ -202,3 +203,107 @@ def test_governed_known_never_reaches_audit(tmp_path):
     raw = (tmp_path / "audit.jsonl").read_text()
     assert '"KNOWN": 1' in raw and '"DOB": 1' in raw and '"detector": "de-rules-2"' in raw
     assert "Lovelace" not in raw and "1985" not in raw
+
+
+# ── register_detector ───────────────────────────────────────────────
+
+@pytest.fixture(autouse=True)
+def _no_registered_detectors():
+    """The registry is process-wide, so every case starts and ends empty."""
+    watchlight._clear_custom_detectors()
+    yield
+    watchlight._clear_custom_detectors()
+
+
+def test_a_registered_detector_redacts_and_counts():
+    watchlight.register_detector("ALIEN_NUMBER", r"\bA[- ]?\d{8,9}\b")
+    out = sanitize("Applicant A-12345678 filed the form.")
+    assert out["text"] == "Applicant <ALIEN_NUMBER_1> filed the form."
+    assert out["report"]["counts"] == {"ALIEN_NUMBER": 1}
+    assert "12345678" not in json.dumps(out["report"])
+
+
+def test_a_registered_detector_is_on_by_default_and_selectable():
+    watchlight.register_detector("CASE_NO", r"\bCASE-\d{4}-\d{5}\b")
+    assert sanitize("ref CASE-2026-00123")["text"] == "ref <CASE_NO_1>"
+    # selectable by label
+    assert sanitize("ref CASE-2026-00123", types=["CASE_NO"])["text"] == "ref <CASE_NO_1>"
+    # and excluded when the caller names a different set
+    assert sanitize("ref CASE-2026-00123", types=["SSN"])["text"] == "ref CASE-2026-00123"
+
+
+def test_a_validator_can_reject_a_match():
+    watchlight.register_detector(
+        "EVEN_ID", r"\bID\d{4}\b", validate=lambda v: int(v[2:]) % 2 == 0
+    )
+    assert sanitize("ID1234 and ID1235")["text"] == "<EVEN_ID_1> and ID1235"
+
+
+def test_the_detector_version_names_the_registered_set():
+    plain = sanitize("nothing here")["report"]["detector_version"]
+    assert plain == watchlight.DETECTOR_VERSION
+    watchlight.register_detector("CASE_NO", r"\bCASE-\d{4}\b")
+    with_custom = sanitize("nothing here")["report"]["detector_version"]
+    assert with_custom.startswith(watchlight.DETECTOR_VERSION + "+custom.")
+    # the digest tracks the set, and never leaks the pattern itself
+    assert "CASE" not in with_custom.split("+custom.")[1]
+    watchlight.register_detector("OTHER", r"\bX\d{4}\b")
+    assert sanitize("x")["report"]["detector_version"] != with_custom
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [r"(a+)+$", r"(a|aa)+$", r"(a|a?)+$", r"([a-z]+)*$", r"(x+x+)+y$", r"(\s*\w+)+$"],
+)
+def test_a_catastrophic_pattern_is_refused_rather_than_run(pattern):
+    # It must REFUSE, not hang: a detector runs over every document, so the
+    # cost of finding out belongs at registration.
+    with pytest.raises(SanitizeError):
+        watchlight.register_detector("EVIL", pattern)
+    assert watchlight.registered_detectors() == ()
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [r"\bA[- ]?\d{8,9}\b", r"\bCASE-\d{4}-\d{5}\b", r"\b\d{9}\b", r"\b[A-Z]{1,2}\d{6,8}\b",
+     r"\b[A-Z]{2}\d{2}[A-Z0-9]{4,20}\b", r"(?:VISA|PASSPORT)[ -]?[A-Z0-9]{6,9}",
+     r"\b\d{3}-\d{3}-\d{4}\b", r"[\w.+-]+@[\w-]+\.[a-z]{2,}"],
+)
+def test_a_real_detector_pattern_is_accepted(pattern):
+    # The guard is worthless if it refuses the patterns people actually write.
+    watchlight.register_detector("CUSTOM", pattern)
+    assert watchlight.registered_detectors() == ("CUSTOM",)
+
+
+def test_a_builtin_label_cannot_be_replaced():
+    for label in ("SSN", "EMAIL", "KNOWN"):
+        with pytest.raises(SanitizeError):
+            watchlight.register_detector(label, r"\d{3}")
+    # …and the built-in still works
+    assert sanitize("SSN 123-45-6789")["text"] == "SSN <SSN_1>"
+
+
+@pytest.mark.parametrize("label", ["lower", "With Space", "TRAILING_", "9LEADING", ""])
+def test_a_label_must_be_upper_snake_case(label):
+    with pytest.raises(SanitizeError):
+        watchlight.register_detector(label, r"\d{3}")
+
+
+def test_an_invalid_pattern_is_refused():
+    with pytest.raises(SanitizeError):
+        watchlight.register_detector("BAD", r"([a-z")
+
+
+def test_re_registering_is_a_no_op_but_a_conflict_raises():
+    watchlight.register_detector("CASE_NO", r"\bCASE-\d{4}\b")
+    watchlight.register_detector("CASE_NO", r"\bCASE-\d{4}\b")  # an import that ran twice
+    assert watchlight.registered_detectors() == ("CASE_NO",)
+    with pytest.raises(SanitizeError):
+        watchlight.register_detector("CASE_NO", r"\bCASE-\d{5}\b")
+
+
+def test_a_builtin_span_wins_over_a_custom_one():
+    # Built-ins are scanned first, so a custom rule cannot take a span from one.
+    watchlight.register_detector("NINE_DIGITS", r"\b[\d-]{11}\b")
+    out = sanitize("SSN 123-45-6789")
+    assert out["report"]["counts"] == {"SSN": 1}

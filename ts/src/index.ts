@@ -114,7 +114,17 @@ export type {
   GovernToolOptions,
   GovernToolsOptions,
 } from "./langchain";
-export { sanitize, SanitizeError, DETECTOR_VERSION, DECISION_ID_MAX_LENGTH, DEFAULT_PII_TYPES, HEURISTIC_PII_TYPES } from "./sanitize";
+export {
+  sanitize,
+  SanitizeError,
+  DETECTOR_VERSION,
+  DECISION_ID_MAX_LENGTH,
+  DEFAULT_PII_TYPES,
+  HEURISTIC_PII_TYPES,
+  registerDetector,
+  registeredDetectors,
+  _clearCustomDetectors,
+} from "./sanitize";
 export type {
   PiiType,
   RedactMode,
