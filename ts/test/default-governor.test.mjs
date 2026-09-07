@@ -46,7 +46,11 @@ function run(body, cwd, env = {}) {
   const source = `import { govern, Watchlight, configureDefault, canConfigureDefault } from ${JSON.stringify(SDK)};\n${body}`;
   const file = path.join(cwd, `case-${Math.random().toString(36).slice(2)}.mjs`);
   fs.writeFileSync(file, source, "utf8");
-  const environ = { ...process.env, ...env };
+  // FORCE_COLOR=0 because these cases match on the child's stdout, and Node 25
+  // colorizes an inspected boolean even through a pipe — `here: true` arrives as
+  // `here: \u001b[33mtrue\u001b[39m` and every regex here misses. CI pins an
+  // older Node, so this failed only on a current one.
+  const environ = { ...process.env, ...env, FORCE_COLOR: "0" };
   // Never let the developer's own environment decide a test's answer.
   for (const name of [AUDIT_DIR_ENV, AUDIT_FILE_ENV]) {
     if (!(name in env)) delete environ[name];

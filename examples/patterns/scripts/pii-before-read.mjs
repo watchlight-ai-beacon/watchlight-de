@@ -11,7 +11,8 @@ import * as os from "node:os";
 import { join } from "node:path";
 import { loadSdk, checks } from "./_sdk.mjs";
 
-const { Watchlight, SanitizeError } = loadSdk();
+const sdk = loadSdk();
+const { Watchlight, SanitizeError } = sdk;
 const t = checks("pii-before-read (sanitize)");
 
 // Illustrative values only. The SSN and card number are the standard test
@@ -62,4 +63,33 @@ try {
 } finally {
   fs.rmSync(auditDir, { recursive: true, force: true });
 }
+
+// ── a detector you register for your own vocabulary ──
+const { registerDetector, registeredDetectors, _clearCustomDetectors, DETECTOR_VERSION, sanitize } = sdk;
+_clearCustomDetectors();
+try {
+  registerDetector("ALIEN_NUMBER", /\bA[- ]?\d{8,9}\b/);
+  const out = sanitize("Applicant A-12345678 filed the form.");
+  t.ok("a registered detector redacts under its own label",
+    out.text === "Applicant <ALIEN_NUMBER_1> filed the form.", out.text);
+  t.ok("and counts under it, value-free",
+    out.report.counts.ALIEN_NUMBER === 1 && !JSON.stringify(out.report).includes("12345678"));
+  t.ok("detector_version names the registered set",
+    out.report.detectorVersion.startsWith(`${DETECTOR_VERSION}+custom.`), out.report.detectorVersion);
+
+  // The guard the docs promise: refused at registration, not discovered on a request.
+  let refusedEvil = false;
+  try { registerDetector("EVIL", /(a+)+$/); } catch { refusedEvil = true; }
+  t.ok("a catastrophic pattern is refused at registration", refusedEvil);
+
+  let refusedBuiltin = false;
+  try { registerDetector("SSN", /\d{3}/); } catch { refusedBuiltin = true; }
+  t.ok("a built-in label cannot be replaced", refusedBuiltin);
+  t.ok("SSN still redacts after the attempt", sanitize("123-45-6789").text === "<SSN_1>");
+  t.ok("only the intended detector is registered",
+    registeredDetectors().join(",") === "ALIEN_NUMBER", registeredDetectors().join(","));
+} finally {
+  _clearCustomDetectors();
+}
+
 t.done();

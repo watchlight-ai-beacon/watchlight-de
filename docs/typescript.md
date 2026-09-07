@@ -124,6 +124,19 @@ phone, SSN, card, IBAN, IPv4, API key, labelled passport and date of birth —
 plus a `known` dictionary you supply and opt-in `PERSON` / `ADDRESS` heuristics.
 `screen` flags or redacts prompt-injection shapes before text reaches the model.
 
+`registerDetector` adds an identifier the built-ins do not know — an alien
+registration number, an internal case reference — under a label of your own:
+
+```ts
+registerDetector("ALIEN_NUMBER", /\bA[- ]?\d{8,9}\b/);   // at start-up
+```
+
+It is on by default and tags like any other (`<ALIEN_NUMBER_1>`). A pattern that
+backtracks catastrophically is refused there and then, because one `(a+)+` in a
+detector hangs every call that scans a document. A built-in label cannot be
+replaced. Once anything is registered, `detectorVersion` carries a digest of the
+set, so an audit record says what was screening.
+
 A `known` value matches as a whole word, case-insensitively — `"Smith"` covers
 `Smith's` but not `Smithfield`. It cannot tell a name from the same word used
 ordinarily, so a single-token name that is also a common word (`Will`, `May`,

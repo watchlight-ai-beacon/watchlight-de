@@ -39,6 +39,8 @@ import os
 import pathlib
 import re
 import sys
+import threading
+import time
 from typing import Any, Awaitable, Callable, Optional, Sequence, TypeVar, Union
 
 import watchlight_engine as _engine
@@ -162,6 +164,8 @@ __all__ = [
     "DECISION_ID_MAX_LENGTH",
     "DETECTOR_VERSION",
     "DEFAULT_PII_TYPES",
+    "register_detector",
+    "registered_detectors",
     "HEURISTIC_PII_TYPES",
     "screen",
     "SCREEN_FAMILIES",
@@ -1123,6 +1127,284 @@ _DETECTORS: list[tuple] = [
 #: The structured (default-on) detector types, in priority order.
 DEFAULT_PII_TYPES: tuple[str, ...] = tuple(dict.fromkeys(d[0] for d in _DETECTORS if d[4]))
 
+#: Detectors an application registered for its own vocabulary, in registration
+#: order. Held apart from the built-ins so a custom rule can never shadow one:
+#: :func:`register_detector` refuses a label already in use, and the scan runs
+#: the built-ins first.
+_CUSTOM_DETECTORS: list[tuple] = []
+_DETECTOR_LOCK = threading.Lock()
+
+_LABEL_RE = re.compile(r"^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*$")
+#: Reserved: the dictionary label, which is not a pattern detector.
+_RESERVED_LABELS = frozenset({"KNOWN"})
+
+#: The registration-time backtracking probe.
+#:
+#: A catastrophic pattern cannot be timed by starting a clock, calling
+#: ``search`` and checking the clock afterwards: it never returns, so the check
+#: never runs and the guard hangs the process it was meant to protect. Python
+#: offers no way to interrupt a regex in progress.
+#:
+#: So the probe measures GROWTH on inputs short enough that even an exponential
+#: pattern finishes. Doubling the exponent means 2**4 = 16x the work for four
+#: more characters, while a linear pattern barely moves. Measured on this
+#: machine at n=12 -> n=16: ``(a+)+$`` 0.2ms -> 3.2ms, ``(a|a?)+$`` 1.6ms ->
+#: 26.0ms, both 16x; a real detector stayed at 0.0ms.
+#: Probed as (short, longer) pairs. An exponential pattern that is still CHEAP
+#: at 18 characters — ``(a|aa)+$`` costs 0.3ms there — hides under the noise
+#: floor, so when the longer measurement is too small to read the probe escalates
+#: to the next pair. Each step is four more characters, another 16x for an
+#: exponential pattern and nothing for a linear one, so escalation is safe to run
+#: precisely because the pattern was fast at the previous length.
+_REDOS_PROBE_PAIRS = ((14, 18), (22, 26), (30, 34))
+#: Growth that separates exponential from polynomial over a four-character step.
+#: Linear grows ~1.2x, quadratic ~1.4x, cubic ~1.7x. Exponentials are far above:
+#: ``(a+)+$`` is 16x, and ``(a|aa)+$`` — whose base is the golden ratio rather
+#: than 2 — is 6.7x, which an earlier limit of 8x let through.
+_REDOS_GROWTH_LIMIT = 3.0
+#: Below this the measurement is timer noise, not a signal.
+_REDOS_NOISE_FLOOR_SECONDS = 0.002
+#: A pattern this slow on an 18-character input is refused whatever its growth.
+_REDOS_ABSOLUTE_SECONDS = 0.25
+
+#: Character shapes a pattern is probed against, each repeated to length and
+#: given a tail that most detectors will NOT match — the failing tail is what
+#: forces a backtracking pattern to explore every split.
+_REDOS_PROBE_SHAPES = ("a", "0", "A-", " ", "aA0-_.", "\u00e9")
+_REDOS_PROBE_TAILS = ("~", "")
+
+
+def _find_nested_quantifier(pattern: str) -> Optional[str]:
+    """The group in ``pattern`` that is quantified and whose body is itself
+    unboundedly quantified — ``(a+)+``, ``(\\d+)*``, ``([a-z]*){2,}`` — or
+    ``None``.
+
+    This is the dominant catastrophic family and the one worth naming exactly,
+    because the fix is mechanical. Detecting it needs no execution, so it runs
+    before the timing probe and cannot itself hang.
+    """
+    depth_starts: list[int] = []
+    i, n = 0, len(pattern)
+    in_class = False
+    while i < n:
+        c = pattern[i]
+        if c == "\\":
+            i += 2
+            continue
+        if in_class:
+            if c == "]":
+                in_class = False
+            i += 1
+            continue
+        if c == "[":
+            in_class = True
+        elif c == "(":
+            depth_starts.append(i)
+        elif c == ")" and depth_starts:
+            open_at = depth_starts.pop()
+            quantified = False
+            if i + 1 < n:
+                nxt = pattern[i + 1]
+                if nxt in "+*":
+                    quantified = True
+                elif nxt == "{":
+                    close = pattern.find("}", i + 1)
+                    if close != -1 and pattern[i + 2 : close].endswith(","):
+                        quantified = True  # {n,} is unbounded
+            if quantified and _has_unbounded_quantifier(pattern[open_at + 1 : i]):
+                return pattern[open_at : i + 2]
+        i += 1
+    return None
+
+
+def _has_unbounded_quantifier(body: str) -> bool:
+    """``True`` when ``body`` applies ``+``, ``*`` or ``{n,}`` outside a
+    character class and outside an escape."""
+    i, n = 0, len(body)
+    in_class = False
+    while i < n:
+        c = body[i]
+        if c == "\\":
+            i += 2
+            continue
+        if in_class:
+            if c == "]":
+                in_class = False
+            i += 1
+            continue
+        if c == "[":
+            in_class = True
+        elif c in "+*":
+            return True
+        elif c == "{":
+            close = body.find("}", i)
+            if close != -1 and body[i + 1 : close].endswith(","):
+                return True
+        i += 1
+    return False
+
+
+def _probe_for_backtracking(pattern: "re.Pattern[str]", label: str) -> None:
+    """Refuse a pattern that backtracks catastrophically, at registration.
+
+    One ``(a+)+`` in a detector hangs every call that scans a document, so the
+    cost of finding out belongs here — once, at start-up — and never on the
+    request path.
+
+    Two nets. The structural one names the nested quantifier and executes
+    nothing. The timing one measures growth between a short input and a
+    slightly longer one, which is what makes it safe: an exponential pattern is
+    caught by how sharply it grows over four extra characters rather than by an
+    absolute budget it would never return from.
+
+    This is a floor, not a proof. A pattern that passes can still be slow on an
+    input these shapes do not model; one that fails is definitely unsafe.
+    """
+    nested = _find_nested_quantifier(pattern.pattern)
+    if nested is not None:
+        raise SanitizeError(
+            f"detector {label!r}: {nested} nests one unbounded quantifier inside another, "
+            f"which backtracks catastrophically on input that nearly matches. Use a single "
+            f"quantifier, or make the inner one bounded."
+        )
+
+    def elapsed(text: str) -> float:
+        best = float("inf")
+        for _ in range(3):
+            start = time.perf_counter()
+            try:
+                pattern.search(text)
+            except Exception as exc:  # noqa: BLE001 — a raising pattern is unusable
+                raise SanitizeError(
+                    f"detector {label!r}: the pattern raised while being probed"
+                ) from exc
+            best = min(best, time.perf_counter() - start)
+        return best
+
+    for shape in _REDOS_PROBE_SHAPES:
+        for tail in _REDOS_PROBE_TAILS:
+            for n_small, n_large in _REDOS_PROBE_PAIRS:
+                reps_small = max(1, n_small // len(shape))
+                reps_large = max(2, n_large // len(shape))
+                small = elapsed(shape * reps_small + tail)
+                large = elapsed(shape * reps_large + tail)
+                if large > _REDOS_ABSOLUTE_SECONDS:
+                    raise SanitizeError(
+                        f"detector {label!r}: the pattern took {large * 1000:.0f}ms on a "
+                        f"{len(shape) * reps_large}-character input. A detector runs over every "
+                        f"document, so it has to be linear."
+                    )
+                if large > _REDOS_NOISE_FLOOR_SECONDS:
+                    if large > small * _REDOS_GROWTH_LIMIT:
+                        raise SanitizeError(
+                            f"detector {label!r}: the pattern backtracks catastrophically — its "
+                            f"cost grew {large / small:.0f}x for {n_large - n_small} more "
+                            f"characters, where a linear pattern barely moves. Anchor the "
+                            f"repetition, or replace a nested quantifier such as (a+)+ with a "
+                            f"single one."
+                        )
+                    break  # readable and well-behaved at this length; no need to go longer
+                # Too fast to measure: the signal is below timer noise, so try a
+                # longer input rather than passing the pattern on a non-reading.
+
+
+def register_detector(
+    label: str,
+    pattern: str,
+    *,
+    validate: Optional[Callable[[str], bool]] = None,
+) -> None:
+    r"""Register a detector for an identifier this package does not know.
+
+    ``label`` is the tag the redaction carries (``<ALIEN_NUMBER_1>``) and the key
+    it is counted under in the report. ``pattern`` is matched against the whole
+    text; ``validate`` is an optional check on each matched value, the way the
+    built-in card rule applies a Luhn check — return ``False`` to reject a match.
+
+    >>> register_detector("ALIEN_NUMBER", r"\bA[- ]?\d{8,9}\b")
+
+    Registered detectors are **on by default**, like the built-in structured
+    rules, and selectable by label through ``types=``. Register at start-up,
+    before the first governed call: the registry is process-wide and guarded by
+    a lock, but a detector added while a scan is running does not apply to it.
+
+    What is refused, and why:
+
+    * **A label already in use** — a built-in, ``KNOWN``, or one you already
+      registered with a different pattern. Silently replacing the ``SSN`` rule
+      with a weaker one is exactly the change nobody would notice.
+    * **A pattern that backtracks catastrophically** — probed here rather than
+      discovered on a request. See :func:`_probe_for_backtracking`.
+    * **A label that is not ``UPPER_SNAKE_CASE``** — it appears in redacted text
+      and in audit records, so it is held to one shape.
+
+    Registering the same label with the identical pattern again is a no-op, so
+    an import that runs twice does not raise.
+
+    The value-free contract is unchanged and not yours to widen: the report
+    carries counts by label, never values. ``validate`` is the one place a value
+    is visible — it must not log, store, or transmit what it is shown.
+    """
+    if not isinstance(label, str) or not _LABEL_RE.match(label):
+        raise SanitizeError(
+            "detector label must be UPPER_SNAKE_CASE (letters, digits, underscores)"
+        )
+    if label in _RESERVED_LABELS or any(d[0] == label for d in _DETECTORS):
+        raise SanitizeError(f"detector {label!r}: that label is built in and cannot be replaced")
+    if not isinstance(pattern, str) or not pattern:
+        raise SanitizeError(f"detector {label!r}: pattern must be a non-empty string")
+    if validate is not None and not callable(validate):
+        raise SanitizeError(f"detector {label!r}: validate must be callable")
+    try:
+        compiled = re.compile(pattern)
+    except re.error as exc:
+        raise SanitizeError(f"detector {label!r}: the pattern is not a valid regex: {exc}") from None
+    with _DETECTOR_LOCK:
+        for existing in _CUSTOM_DETECTORS:
+            if existing[0] == label:
+                if existing[1].pattern == pattern:
+                    return  # identical re-registration: an import that ran twice
+                raise SanitizeError(
+                    f"detector {label!r} is already registered with a different pattern"
+                )
+        _probe_for_backtracking(compiled, label)
+        _CUSTOM_DETECTORS.append((label, compiled, validate, False, True))
+
+
+def registered_detectors() -> tuple[str, ...]:
+    """The labels registered through :func:`register_detector`, in registration
+    order. The patterns themselves are not returned: a detector for an internal
+    identifier format is not something to hand back out."""
+    with _DETECTOR_LOCK:
+        return tuple(d[0] for d in _CUSTOM_DETECTORS)
+
+
+def _clear_custom_detectors() -> None:
+    """Empty the registry. **For tests only** — deliberately private and absent
+    from ``__all__``: an application that could unregister a detector mid-run
+    could quietly stop redacting an identifier, and nothing in the audit trail
+    would distinguish that from a document with none in it."""
+    with _DETECTOR_LOCK:
+        _CUSTOM_DETECTORS.clear()
+
+
+def _effective_detector_version() -> str:
+    """``DETECTOR_VERSION`` when only the built-ins are in force; otherwise it
+    carries a short digest of the registered set.
+
+    An audit record has to say what was screening at the time, and
+    ``de-rules-2`` alone would name the built-ins while a custom set was also
+    running. The digest covers each label and its pattern, so adding a detector
+    or changing one moves the version. It is a hash, not the patterns: the
+    record stays value-free and reveals nothing about an internal format.
+    """
+    with _DETECTOR_LOCK:
+        if not _CUSTOM_DETECTORS:
+            return DETECTOR_VERSION
+        material = "\n".join(f"{d[0]}\x00{d[1].pattern}" for d in _CUSTOM_DETECTORS)
+    digest = hashlib.sha256(material.encode("utf-8")).hexdigest()[:8]
+    return f"{DETECTOR_VERSION}+custom.{digest}"
+
 
 _END = object()
 
@@ -1214,12 +1496,22 @@ def sanitize(
     if not all(isinstance(v, str) for v in known_values):
         # Value-free by design: the message never echoes the offending entry.
         raise SanitizeError("known must be a sequence of strings")
-    enabled = set(types) if types is not None else set(DEFAULT_PII_TYPES)
+    # A registered detector is on by default the way a built-in structured rule
+    # is — registering it IS the opt-in — and is selectable by label through
+    # `types` like any other.
+    enabled = (
+        set(types)
+        if types is not None
+        else set(DEFAULT_PII_TYPES) | set(registered_detectors())
+    )
     try:
         # KNOWN first: an application-supplied value is the most authoritative
         # label when it ties with a structured detector on the same span.
         spans: list[tuple[int, int, str, str]] = _detect_known(text, known_values) if known_values else []
-        for det in _DETECTORS:
+        # Built-ins first, so a custom rule can never take a span from one.
+        with _DETECTOR_LOCK:
+            custom = list(_CUSTOM_DETECTORS)
+        for det in (*_DETECTORS, *custom):
             typ, pat, valid, group, _default = det[:5]
             trim = det[5] if len(det) > 5 else None
             if typ not in enabled:
@@ -1274,7 +1566,7 @@ def sanitize(
             counts[typ] = counts.get(typ, 0) + 1
         out.append(text[cursor:])
         report: dict[str, Any] = {
-            "mode": mode, "detector_version": DETECTOR_VERSION, "counts": counts, "total": len(kept),
+            "mode": mode, "detector_version": _effective_detector_version(), "counts": counts, "total": len(kept),
         }
         if decision_id is not None:
             report["decision_id"] = decision_id

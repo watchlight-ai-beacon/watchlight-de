@@ -73,6 +73,55 @@ const readDoc = govern.tool(
 );
 ```
 
+## Register a detector for your own vocabulary
+
+The built-ins cover identifiers everyone has. An alien registration number, a
+driver's licence, an internal case number — those are yours, and a workload that
+cannot add them runs a second redaction engine beside this one.
+
+```python
+from watchlight import register_detector
+
+register_detector("ALIEN_NUMBER", r"\bA[- ]?\d{8,9}\b")
+register_detector("CASE_NO", r"\bCASE-\d{4}-\d{5}\b")
+```
+
+```ts
+import { registerDetector } from "@watchlight/sdk";
+
+registerDetector("ALIEN_NUMBER", /\bA[- ]?\d{8,9}\b/);
+```
+
+Registered detectors are on by default, tag like any other
+(`<ALIEN_NUMBER_1>`), and are selectable through `types`. Register at start-up:
+the registry is process-wide, and one added mid-scan does not apply to it.
+
+Pass `validate` for a check the pattern cannot express — the built-in card rule
+uses it for the Luhn check:
+
+```python
+register_detector("EVEN_ID", r"\bID\d{4}\b", validate=lambda v: int(v[2:]) % 2 == 0)
+```
+
+**A pattern that backtracks catastrophically is refused at registration.** One
+`(a+)+` in a detector hangs every call that scans a document, so the cost of
+finding out is paid once, at start-up:
+
+```python
+register_detector("EVIL", r"(a+)+$")
+# SanitizeError: detector 'EVIL': (a+)+ nests one unbounded quantifier inside
+# another, which backtracks catastrophically on input that nearly matches.
+```
+
+Also refused: a label that is already built in — replacing `SSN` with a weaker
+rule is exactly the change nobody would notice — and a label that is not
+`UPPER_SNAKE_CASE`.
+
+Once anything is registered, `detector_version` carries a digest of the set
+(`de-rules-2+custom.1aaea373`), so an audit record says what was screening at
+the time. It is a hash of the labels and patterns, never the patterns
+themselves, so the record stays value-free.
+
 ## Verdicts
 
 Proved by [`suites/pii-before-read.suite.json`](./suites/pii-before-read.suite.json).
@@ -96,7 +145,8 @@ Proved by [`suites/pii-before-read.suite.json`](./suites/pii-before-read.suite.j
 - `PERSON` and `ADDRESS` are heuristics and off by default. Turn them on with
   `types: [...DEFAULT_PII_TYPES, "PERSON", "ADDRESS"]`.
 - `detectorVersion` / `detector_version` (`de-rules-2`) names the detector set
-  that produced a report.
+  that produced a report, and carries a `+custom.<digest>` suffix once you have
+  registered any of your own.
 
 ## Verified by
 
