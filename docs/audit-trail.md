@@ -55,11 +55,11 @@ change — a test run, a container, a CI job:
 | Variable | Effect |
 |---|---|
 | `WATCHLIGHT_AUDIT_DIR` | directory `audit.jsonl` is written into (default `.watchlight`) |
-| `WATCHLIGHT_AUDIT_FILE` | `0` / `false` / `no` / `off` writes no local file at all |
-
-Both apply to the default governor and to one you construct, for any option you
-did not pass yourself.
+| `WATCHLIGHT_AUDIT_FILE` | `0` / `false` / `no` / `off` writes no local file at all — which also turns quota counting off, unless a `counter_source` is configured |
 | `WATCHLIGHT_AGENT` | the agent name, when the `agent` option does not give one |
+
+All three apply to the default governor and to one you construct, for any option
+you did not pass yourself.
 
 ```bash
 WATCHLIGHT_AUDIT_FILE=0 pytest    # this run adds nothing to the app's audit.jsonl
@@ -90,7 +90,24 @@ govern = Watchlight(
 )
 ```
 
-Your source is handed the resolved query and must return a non-negative integer.
+Your source is handed the resolved query and must return a non-negative integer:
+
+```python
+{
+    "principal": 'User::"u1"',
+    "outcome":   "allowed",                       # or "denied" / "all"
+    "window":    {"start": "2026-09-06T23:37:11.525Z",
+                  "end":   "2026-09-07T00:37:11.525Z",
+                  "seconds": 3600},
+    "intent":    "read",                          # omitted entirely when not filtered on
+}
+```
+
+`intent` and `resource` are **absent** rather than `None` when you did not filter
+on them, so read them with `query.get("intent")`. Both lanes pass the same keys
+and the same JSON, so one counting service can serve a Python and a Node caller
+without recognising two shapes.
+
 **It must count decision rows only.** The trail also carries `sanitization`,
 `screening`, `egress` and `attenuation` records, so a query filtered on principal
 and window alone over-counts and the quota denies early. It never falls back to
