@@ -1067,7 +1067,12 @@ _DETECTORS: list[tuple] = [
      None, False, True),
     ("API_KEY", re.compile(r"\b(?:sk-[A-Za-z0-9]{16,}|ghp_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16})\b"),
      None, False, True),
-    ("SSN", re.compile(r"\b(?!000|666|9\d\d)\d{3}-(?!00)\d{2}-(?!0000)\d{4}\b"), None, False, True),
+    # Redaction, not validation: the excluded area/group ranges (000, 666, 9xx,
+    # group 00, serial 0000) are not ISSUABLE SSNs, but a mistyped one on a form
+    # is still somebody's disclosure, and the caller asked us to remove it, not
+    # to check it. Matching the shape over-redacts at worst; excluding the
+    # ranges leaks.
+    ("SSN", re.compile(r"\b\d{3}-\d{2}-\d{4}\b"), None, False, True),
     ("CREDIT_CARD", re.compile(r"\b(?:\d[ -]?){13,19}\b"),
      lambda m: 13 <= len(re.sub(r"[ -]", "", m)) <= 19 and _luhn_ok(re.sub(r"[ -]", "", m)), False, True),
     ("IBAN", re.compile(r"\b[A-Z]{2}\d{2}(?:[ ]?[A-Za-z0-9]{4}){2,7}(?:[ ]?[A-Za-z0-9]{1,3})?\b"), None, False, True),
@@ -1144,15 +1149,18 @@ def _trie_regex(values: Sequence[str]) -> str:
 
 
 def _detect_known(text: str, known: Sequence[str]) -> list[tuple[int, int, str, str]]:
-    """Every occurrence of every known value, case-insensitive; overlapping
-    occurrences merge into one span. One escaped trie alternation compiled once
+    """Every occurrence of every known value, case-insensitive and matched as a
+    whole word; overlapping occurrences merge into one span. One escaped trie alternation compiled once
     per call; at each position the longest value wins and the scan resumes one
     character later, so every occurrence of every value is covered. Values are
     never logged or raised."""
     values = list(dict.fromkeys(v for v in known if v.strip()))
     if not values:
         return []
-    pat = re.compile(_trie_regex(values), re.IGNORECASE)
+    # Bounded so a value that is also an ordinary word does not rewrite prose:
+    # `known=["Will"]` must not blank every "will". `\w` boundaries rather than
+    # `\b` so a value whose own edge is punctuation still matches.
+    pat = re.compile(r"(?<!\w)(?:" + _trie_regex(values) + r")(?!\w)", re.IGNORECASE)
     raw: list[tuple[int, int]] = []
     pos = 0
     while (m := pat.search(text, pos)) is not None:

@@ -64,6 +64,17 @@ def test_dob_labelled_only():
     assert counts("the project was born in 2019").get("DOB", 0) == 0
 
 
+def test_ssn_is_redacted_not_validated():
+    # The excluded ranges are not issuable SSNs, but a mistyped one on a form is
+    # still a disclosure. Redaction removes the shape; it does not check it.
+    for text in ("987-65-4321", "666-12-3456", "000-11-2222", "123-00-4567", "123-45-0000"):
+        out = sanitize(f"SSN {text}")
+        assert out["text"] == "SSN <SSN_1>", f"{text} was not redacted"
+        assert out["report"]["counts"]["SSN"] == 1
+    # and a value is never echoed into the report
+    assert "987" not in json.dumps(sanitize("SSN 987-65-4321")["report"])
+
+
 def test_known_dictionary():
     r = sanitize(
         "Ada Lovelace lives at 12 Oak Lane; contact ada lovelace or ADA LOVELACE.",
@@ -77,7 +88,14 @@ def test_known_dictionary():
     # overlapping / nested spans merge — no fragment survives
     ov = sanitize("Ann Lee Smith and ANN LEE", known=["Ann Lee", "Lee Smith"])
     assert not re.search(r"smith|lee|ann", ov["text"], re.I) and ov["report"]["counts"]["KNOWN"] == 2
-    assert sanitize("aaaa", known=["aa"])["text"] == "<KNOWN_1>"
+    # A known value matches as a WHOLE WORD: "aa" is not an occurrence inside
+    # "aaaa", and a name is not an occurrence inside a longer name.
+    assert sanitize("aaaa", known=["aa"])["text"] == "aaaa"
+    assert sanitize("aa aaaa", known=["aa"])["text"] == "<KNOWN_1> aaaa"
+    assert sanitize("Smithfield Road", known=["Smith"])["text"] == "Smithfield Road"
+    # …and punctuation at either edge is still a boundary, so a possessive,
+    # a comma or a value whose own edge is punctuation all still match.
+    assert sanitize("Smith's file", known=["Smith"])["text"] == "<KNOWN_1>'s file"
     # a span extending past a structured span is clipped, not dropped
     clip = sanitize("a@b.com Ltd", known=["com Ltd"])
     assert clip["text"] == "<EMAIL_1><KNOWN_1>" and clip["report"]["counts"]["EMAIL"] == 1

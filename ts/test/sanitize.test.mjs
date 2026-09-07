@@ -146,9 +146,18 @@ async function main() {
   ok("KNOWN: every occurrence redacted, case-insensitive", kn.report.counts.KNOWN === 4 && !/ada lovelace|oak lane/i.test(kn.text));
   ok("KNOWN: same value (any case) → same tag", (kn.text.match(/<KNOWN_1>/g) || []).length === 3 && kn.text.includes("<KNOWN_2>"));
   ok("KNOWN: report carries counts only, never the values", !JSON.stringify(kn.report).includes("Lovelace") && !JSON.stringify(kn.report).includes("Oak"));
+  // SSN is redacted, not validated: the non-issuable ranges are disclosures too.
+  for (const t of ["987-65-4321", "666-12-3456", "000-11-2222", "123-00-4567", "123-45-0000"]) {
+    ok(`SSN: ${t} redacted`, sanitize(`SSN ${t}`).text === "SSN <SSN_1>");
+  }
   const ov = sanitize("Ann Lee Smith and ANN LEE", { known: ["Ann Lee", "Lee Smith"] });
   ok("KNOWN: overlapping values merge — no fragment survives", !/smith|lee|ann/i.test(ov.text) && ov.report.counts.KNOWN === 2);
-  ok("KNOWN: nested self-overlap merges (aa in aaaa)", sanitize("aaaa", { known: ["aa"] }).text === "<KNOWN_1>");
+  // A known value matches as a WHOLE WORD: not inside a longer word, and not
+  // inside a longer name. Punctuation at either edge is still a boundary.
+  ok("KNOWN: not an occurrence inside a longer word", sanitize("aaaa", { known: ["aa"] }).text === "aaaa");
+  ok("KNOWN: still matched when standalone", sanitize("aa aaaa", { known: ["aa"] }).text === "<KNOWN_1> aaaa");
+  ok("KNOWN: not an occurrence inside a longer name", sanitize("Smithfield Road", { known: ["Smith"] }).text === "Smithfield Road");
+  ok("KNOWN: a possessive still matches", sanitize("Smith's file", { known: ["Smith"] }).text === "<KNOWN_1>'s file");
   const clip = sanitize("a@b.com Ltd", { known: ["com Ltd"] });
   ok("KNOWN: span past a structured span is clipped, not dropped", clip.text === "<EMAIL_1><KNOWN_1>" && clip.report.counts.EMAIL === 1);
   // union: a structured span that STARTS inside a KNOWN span keeps its tail
