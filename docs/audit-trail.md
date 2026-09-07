@@ -32,6 +32,38 @@ Set `audit_file=False` and the sink becomes the sole destination: no
 `.watchlight` directory, no file. Then `watchlight dev` has nothing to tail, and
 `govern.counters(...)` raises rather than counting zero.
 
+### Keep the sink off the request path
+
+The sink is called inside the decision, before your tool body returns. Anything
+durable — a database, an object store, a log service — is too slow to sit there.
+Configure batching and a background worker hands your sink a **list** instead:
+
+```python
+Watchlight(
+    agent="my-agent",
+    audit_sink=insert_many,          # receives a list, not a record
+    audit_sink_batch=100,            # …of up to this many
+    audit_sink_interval=2.0,         # …or sooner, every 2s
+)
+```
+
+```ts
+new Watchlight({ auditSink: insertMany, auditSinkBatch: 100, auditSinkInterval: 2000 });
+```
+
+Setting either option turns batching on and changes what your sink receives, so
+a sink written for one record has to be adapted. In exchange the decision no
+longer waits for it: 50 decisions against a 50ms sink cost 3ms rather than 2.5
+seconds.
+
+The queue is **bounded**. A destination that stops responding must not become
+unbounded memory growth in the application it is auditing, so the oldest records
+are dropped, the drop is reported once, and `trail.dropped` counts them. Non-zero
+means the trail has holes and where they are is not recoverable — watch it.
+
+Queued records are flushed when the process exits normally. Call `flush()`
+before a deliberate shutdown if you want to wait for them.
+
 Reference sinks — Postgres, OTLP, a webhook — are in
 [`examples/patterns/audit-sink.md`](../examples/patterns/audit-sink.md). The
 field table for each record kind is in

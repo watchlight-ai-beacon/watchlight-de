@@ -291,6 +291,45 @@ async function main() {
       file.every((r) => r.event !== "attenuation" || (r.intent === "attenuate" && r.principal === undefined && r.actor_chain === undefined)));
   }
 
+  // ── batching: the sink off the request path ──
+  {
+    // A durable destination is too slow to call inside a decision.
+    const seen = [];
+    const trail = new AuditTrail(null, (batch) => { seen.push(batch.length); }, { sinkBatch: 5, sinkInterval: 50 });
+    for (let i = 0; i < 20; i++) trail.write({ i });
+    trail.flush();
+    ok("a batching sink receives arrays", seen.length > 0 && seen.every((n) => n > 0), JSON.stringify(seen));
+    ok("every record is delivered", seen.reduce((a, b) => a + b, 0) === 20, JSON.stringify(seen));
+
+    const got = [];
+    const t2 = new AuditTrail(null, (batch) => got.push(batch), { sinkBatch: 3, sinkInterval: 50 });
+    for (let i = 0; i < 3; i++) t2.write({ i });
+    t2.flush();
+    ok("the sink is handed an Array", Array.isArray(got[0]) && got[0].length === 3);
+
+    // A sink that throws must never take the trail down with it.
+    let calls = 0;
+    const t3 = new AuditTrail(null, () => { calls += 1; if (calls === 1) throw new Error("down"); }, { sinkBatch: 2, sinkInterval: 20 });
+    for (let i = 0; i < 6; i++) t3.write({ i });
+    t3.flush();
+    ok("a throwing batch sink does not stop the trail", calls >= 2, `calls=${calls}`);
+
+    // Bounded: an unresponsive destination must not become unbounded memory.
+    const t4 = new AuditTrail(null, () => {}, { sinkBatch: 1000, sinkInterval: 60_000, sinkQueueMax: 5 });
+    for (let i = 0; i < 200; i++) t4.write({ i });
+    ok("a full queue drops oldest and counts it", t4.dropped > 0, `dropped=${t4.dropped}`);
+
+    // Off unless asked for: every existing caller gets one record, inline.
+    const single = [];
+    const t5 = new AuditTrail(null, (record) => single.push(record));
+    t5.write({ i: 1 });
+    ok("batching is off unless configured", single.length === 1 && !Array.isArray(single[0]));
+
+    let threw = false;
+    try { new AuditTrail(null, () => {}, { sinkInterval: 0 }); } catch { threw = true; }
+    ok("an interval of zero is refused", threw);
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);
 }

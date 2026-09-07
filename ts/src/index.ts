@@ -23,6 +23,7 @@ import {
   AuditTrail,
   type AuditRecord,
   type AuditSink,
+  type BatchAuditSink,
   type DecisionRecord,
   type EgressRecord,
   type SanitizationRecord,
@@ -81,6 +82,7 @@ export type {
   SanitizationRecord,
   ScreeningRecord,
   UnknownAuditRecord,
+  BatchAuditSink,
 } from "./audit";
 export { ApprovalError, APPROVAL_KEY_LABEL, APPROVAL_PAYLOAD_VERSION, APPROVAL_MIN_SECRET_BYTES, DEFAULT_APPROVAL_STORE_TIMEOUT_MS, APPROVAL_PRUNE_INTERVAL_MS, APPROVAL_PRUNE_GRACE_MS } from "./approval";
 export type { ApprovalStore, ApprovalErrorCode } from "./approval";
@@ -338,7 +340,17 @@ export interface WatchlightOptions {
    *  `audit.jsonl` line carries; the local file stays on. Fire-and-forget: a
    *  returned promise is not awaited, and a throw or rejection is reported once
    *  and never blocks or changes a decision. */
-  auditSink?: AuditSink;
+  auditSink?: AuditSink | BatchAuditSink;
+  /** Hand the sink ARRAYS of up to this many records from a timer instead of one
+   *  record on the request path. A durable destination is too slow to call
+   *  inside a decision. Setting this or `auditSinkInterval` turns batching on,
+   *  and the sink then receives an array rather than a single record. */
+  auditSinkBatch?: number;
+  /** Milliseconds a partial batch waits before it is handed over anyway
+   *  (default 2000). The queue is bounded: under sustained pressure the oldest
+   *  records are dropped and the count is reported, rather than growing without
+   *  limit inside the application being audited. */
+  auditSinkInterval?: number;
   /** Graduate to the networked control plane: authorize against this APDP URL
    *  instead of the in-process engine. Defaults to `WATCHLIGHT_APDP_URL`. When
    *  unset, governance runs fully in-process (Developer Edition). */
@@ -652,7 +664,7 @@ interface GovernorState {
   strictPrincipal: boolean;
   /** The audit options in force, so {@link Watchlight._configure} can apply one
    *  of them without dropping the others. */
-  auditOptions: { dir?: string; file?: boolean; sink?: AuditSink };
+  auditOptions: { dir?: string; file?: boolean; sink?: AuditSink | BatchAuditSink; batch?: number; interval?: number };
   /** The backend options in force, for the same reason — and so a repeat
    *  {@link configureDefault} can tell "the same backend" from a different one. */
   backendOptions: { apdpUrl?: string; token?: string; tenantId?: string };
@@ -732,7 +744,8 @@ function rebuildAuditTrail(state: GovernorState): void {
   const audit = state.auditOptions;
   state.trail = new AuditTrail(
     audit.file === false ? null : path.join(auditDirOf(audit.dir), "audit.jsonl"),
-    audit.sink
+    audit.sink,
+    { sinkBatch: audit.batch, sinkInterval: audit.interval }
   );
 }
 
@@ -828,7 +841,8 @@ function newState(opts: WatchlightOptions): GovernorState {
   return {
     trail: new AuditTrail(
       auditFile === false ? null : path.join(auditDir ?? ".watchlight", "audit.jsonl"),
-      opts.auditSink
+      opts.auditSink,
+      { sinkBatch: opts.auditSinkBatch, sinkInterval: opts.auditSinkInterval }
     ),
     backend: selectBackend({
       apdpUrl: opts.apdpUrl,
@@ -846,7 +860,13 @@ function newState(opts: WatchlightOptions): GovernorState {
     announced: false,
     sources: new Set<string>(),
     strictPrincipal: opts.strictPrincipal !== false,
-    auditOptions: { dir: auditDir, file: auditFile, sink: opts.auditSink },
+    auditOptions: {
+      dir: auditDir,
+      file: auditFile,
+      sink: opts.auditSink,
+      batch: opts.auditSinkBatch,
+      interval: opts.auditSinkInterval,
+    },
     backendOptions: { apdpUrl: opts.apdpUrl, token: opts.token, tenantId: opts.tenantId },
     auditEnvApplied: false,
     isDefault: false,

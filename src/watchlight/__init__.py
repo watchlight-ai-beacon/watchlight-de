@@ -535,7 +535,12 @@ def _rebuild_audit_trail(state: "_GovernorState") -> None:
     audit = state.audit_options
     keep_file = audit.get("file", True) is not False
     state.audit_path = (_audit_dir_of(audit.get("dir")) / "audit.jsonl") if keep_file else None
-    state.trail = AuditTrail(state.audit_path, audit.get("sink"))
+    state.trail = AuditTrail(
+        state.audit_path,
+        audit.get("sink"),
+        sink_batch=audit.get("batch"),
+        sink_interval=audit.get("interval"),
+    )
 
 
 def _same_callable(a: Any, b: Any) -> bool:
@@ -1875,6 +1880,8 @@ class Watchlight:
         approval_store: Optional[ApprovalStore] = None,
         counter_source: Optional[CounterSource] = None,
         audit_file: bool = _UNSET,
+        audit_sink_batch: Optional[int] = None,
+        audit_sink_interval: Optional[float] = None,
         strict_principal: bool = True,
     ) -> None:
         """:param agent: stable agent identity for the audit trail and the
@@ -1952,6 +1959,16 @@ class Watchlight:
             (:class:`CounterSourceError`); it never falls back to the local file.
             An async source is read with :meth:`counters_async`. Shared with
             every governor made by :meth:`as_`.
+        :param audit_sink_batch: hand the sink LISTS of up to this many records
+            from a background worker instead of one record on the request path.
+            A durable destination is too slow to call inside a decision.
+        :param audit_sink_interval: seconds a partial batch waits before it is
+            handed over anyway (default 2.0). Setting either option turns
+            batching on, and your sink then receives a ``list`` rather than a
+            single record. The queue is bounded: under sustained pressure the
+            oldest records are dropped and the count is reported, rather than
+            growing without limit inside the application being audited. Queued
+            records are flushed at interpreter exit.
         :param audit_file: write the local ``audit.jsonl`` at all (default
             ``True``). ``False`` makes ``audit_sink`` the SOLE destination: no
             ``.watchlight`` directory and no file are created, and
@@ -2013,7 +2030,14 @@ class Watchlight:
             audit_file = True if env_file is None else env_file
         state.audit_options = {"dir": audit_dir, "file": audit_file, "sink": audit_sink}
         state.audit_path = (pathlib.Path(audit_dir) / "audit.jsonl") if audit_file else None
-        state.trail = AuditTrail(state.audit_path, audit_sink)
+        state.audit_options["batch"] = audit_sink_batch
+        state.audit_options["interval"] = audit_sink_interval
+        state.trail = AuditTrail(
+            state.audit_path,
+            audit_sink,
+            sink_batch=audit_sink_batch,
+            sink_interval=audit_sink_interval,
+        )
         state.strict_principal = bool(strict_principal)
         state.signing_secrets = _resolve_signing_secrets(signing_secret, token_secret)
         state.approval_options = {"secret": approval_secret, "store": approval_store}

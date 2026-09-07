@@ -17,6 +17,7 @@ import pytest
 pytest.importorskip("watchlight_engine")
 
 from watchlight import AttenuationDenied, DE_MAX_DEPTH, DevEditionCeiling, Watchlight
+from watchlight._audit import AuditTrail
 
 RESEARCH = 'permit(principal, action == Action::"research", resource);'
 WIRE = '@enforcement_effect("require_approval")\npermit(principal, action == Action::"wire", resource);'
@@ -285,3 +286,80 @@ def test_egress_and_sanitize_decision_id_flow_through_the_sink(tmp_path):
     assert "DOC 42" not in json.dumps(egress) and "secret" not in json.dumps(egress)
     san = next(r for r in seen if r.get("event") == "sanitization")
     assert isinstance(d["decision_id"], str) and san["decision_id"] == d["decision_id"]
+
+
+# ── batching: the sink off the request path ─────────────────────────
+
+
+def test_batching_takes_the_sink_off_the_request_path():
+    # A durable destination is too slow to call inside a decision. Inline, 20
+    # calls to a 20ms sink would be ~400ms; batched they cost the queue put.
+    seen = []
+
+    def slow(batch):
+        seen.append(len(batch))
+        time.sleep(0.02)
+
+    trail = AuditTrail(None, slow, sink_batch=5, sink_interval=0.05)
+    start = time.monotonic()
+    for i in range(20):
+        trail.write({"i": i})
+    elapsed = time.monotonic() - start
+    assert elapsed < 0.10, f"writes blocked for {elapsed*1000:.0f}ms — the sink is on the path"
+    trail.flush()
+    assert sum(seen) == 20
+
+
+def test_a_batching_sink_receives_a_list():
+    got = []
+    trail = AuditTrail(None, lambda batch: got.append(batch), sink_batch=3, sink_interval=0.05)
+    for i in range(3):
+        trail.write({"i": i})
+    trail.flush()
+    assert got and isinstance(got[0], list)
+    assert [r["i"] for r in got[0]] == [0, 1, 2]
+
+
+def test_a_raising_batch_sink_does_not_stop_the_trail(capsys):
+    seen = []
+
+    def flaky(batch):
+        seen.append(len(batch))
+        if len(seen) == 1:
+            raise RuntimeError("destination down")
+
+    trail = AuditTrail(None, flaky, sink_batch=2, sink_interval=0.02)
+    for i in range(6):
+        trail.write({"i": i})
+    trail.flush()
+    time.sleep(0.1)
+    trail.flush()
+    assert len(seen) >= 2, "the worker stopped after the first failure"
+
+
+def test_a_full_queue_drops_oldest_and_says_so(capsys):
+    # Bounded on purpose: a destination that stops responding must not become
+    # unbounded memory growth in the application it is auditing.
+    def stuck(batch):
+        time.sleep(1.0)
+
+    trail = AuditTrail(None, stuck, sink_batch=1, sink_interval=0.01, sink_queue_max=5)
+    for i in range(200):
+        trail.write({"i": i})
+    assert trail.dropped > 0
+    err = capsys.readouterr().err
+    assert "queue is full" in err, err
+
+
+def test_batching_is_off_unless_asked_for():
+    got = []
+    trail = AuditTrail(None, lambda record: got.append(record))
+    trail.write({"i": 1})
+    # No batching configured: the sink is called inline with ONE record, which
+    # is the behaviour every existing caller relies on.
+    assert got == [{"i": 1}]
+
+
+def test_an_interval_of_zero_is_refused():
+    with pytest.raises(ValueError):
+        AuditTrail(None, lambda batch: None, sink_interval=0)
