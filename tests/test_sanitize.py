@@ -307,3 +307,51 @@ def test_a_builtin_span_wins_over_a_custom_one():
     watchlight.register_detector("NINE_DIGITS", r"\b[\d-]{11}\b")
     out = sanitize("SSN 123-45-6789")
     assert out["report"]["counts"] == {"SSN": 1}
+
+
+# ── PHONE: E.164 and grouped international forms ────────────────────
+
+E164_AND_GROUPED = [
+    "+15550142889",       # E.164 US — the format systems normalise to
+    "+442071838750",      # E.164 UK
+    "+493012345678",      # E.164 DE
+    "+1 555 014 2889",
+    "+1-555-014-2889",
+    "+1-555-0142-8899",
+    "(555) 014-2889",
+    "555-014-2889",
+    "555.014.2889",
+    "555 014 2889",
+    "5550142889",
+    "020 7183 8750",      # UK national grouping
+    "555-014-2889 x22",
+]
+
+
+@pytest.mark.parametrize("number", E164_AND_GROUPED)
+def test_phone_detects_every_common_format(number):
+    # PHONE is default-on, so a format it misses is one every caller is
+    # silently exposed to. The unseparated E.164 forms were missed in every
+    # country: the North-American rule consumes at most ten digits.
+    assert sanitize(number, types=["PHONE"])["report"]["counts"].get("PHONE") == 1, number
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("2026-09-07", None),                       # an ISO date is not a phone number
+        ("2026-09-07 to 2026-09-30", None),
+        ("ORD-2026-0001", None),
+        ("1.10.0", None),
+        ("1,234.56", None),
+        ("12 34 56", None),
+        ("4111 1111 1111 1111", "CREDIT_CARD"),     # still the card rule
+        ("123-45-6789", "SSN"),                     # still the SSN rule
+        ("192.168.1.1", "IPV4"),                    # still the IPv4 rule
+    ],
+)
+def test_phone_does_not_swallow_other_shapes(text, expected):
+    counts = sanitize(text)["report"]["counts"]
+    assert "PHONE" not in counts, f"{text} became a phone number: {counts}"
+    if expected:
+        assert expected in counts, f"{text} lost its own detector: {counts}"

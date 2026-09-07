@@ -5,6 +5,19 @@ different verdict. Only some announce themselves; the rest surface as a denial
 that looks exactly like a policy of yours doing its job. Read every entry
 between the version you are on and the one you are moving to.
 
+## Unreleased
+
+**`PHONE` now detects unseparated E.164 and grouped international numbers.**
+`+15550142889`, `+442071838750`, `+493012345678`, `+1-555-0142-8899` and
+`020 7183 8750` were all missed: the North-American rule consumes at most ten
+digits without separators, so the same number was caught with separators and
+missed without, in every country.
+
+`PHONE` is default-on, so expect **more** redactions — the safe direction, and
+the reason this is a fix rather than an option. Nothing that belongs to another
+detector moved: a card is still `CREDIT_CARD`, an SSN still `SSN`, an IPv4 still
+`IPV4`, and a date is still not a phone number.
+
 ## 0.10.0
 
 **`on_result_timeout_ms` now works on a synchronous tool body** (Python). It

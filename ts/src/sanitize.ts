@@ -280,11 +280,36 @@ const DETECTORS: Detector[] = [
     valid: plausibleDate,
     defaultOn: true,
   },
+  // PHONE (a): the North-American shapes — optional country code, optional
+  // parenthesised area code, 3+4. Tops out at ten digits when unseparated,
+  // which is why (b) exists.
   {
     type: "PHONE",
     re: /(?<!\d)(?:\+?\d{1,3}[ .-]?)?(?:\(\d{2,4}\)[ .-]?)?\d{3}[ .-]?\d{4}(?!\d)/g,
     // Require at least 10 digits total to avoid matching short number runs.
     valid: (m) => (m.replace(/\D/g, "").length >= 10),
+    defaultOn: true,
+  },
+  // PHONE (b): E.164 with no separators — `+` then 8 to 15 digits. This is the
+  // format systems NORMALISE to, so it is what arrives from a contact import, a
+  // CRM export or a `tel:` link, and (a) missed it in every country. The leading
+  // `+` is what makes a bare long digit run unambiguous enough to match.
+  {
+    type: "PHONE",
+    re: /(?<![\d+])\+\d{8,15}(?!\d)/g,
+    defaultOn: true,
+  },
+  // PHONE (c): international and national GROUPED forms — `+44 20 7183 8750`,
+  // `020 7183 8750`, `+1-555-0142-8899`. Two or more separated groups and a
+  // 10-15 digit total, which excludes a date (8 digits or fewer) and a card
+  // (16), both of which have detectors of their own.
+  {
+    type: "PHONE",
+    re: /(?<![\d+])\+?\d{2,4}(?:[ .-]\d{2,5}){2,4}(?!\d)/g,
+    valid: (m) => {
+      const n = m.replace(/\D/g, "").length;
+      return n >= 10 && n <= 15;
+    },
     defaultOn: true,
   },
   // ── opt-in heuristics (default OFF; list in `types` to enable) ──

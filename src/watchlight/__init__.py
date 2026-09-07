@@ -1110,8 +1110,23 @@ _DETECTORS: list[tuple] = [
     # Bare dates are not detected — a statement date is not a birth date.
     ("DOB", re.compile(rf"\b{_DOB_LABEL}[ \t]{{0,4}}[:#=-]?[ \t]{{0,4}}({_DATE_SHAPE})(?!\d)", re.IGNORECASE),
      _plausible_date, True, True),
+    # PHONE (a): the North-American shapes — optional country code, optional
+    # parenthesised area code, 3+4. Tops out at ten digits when unseparated,
+    # which is why (b) exists.
     ("PHONE", re.compile(r"(?<!\d)(?:\+?\d{1,3}[ .-]?)?(?:\(\d{2,4}\)[ .-]?)?\d{3}[ .-]?\d{4}(?!\d)"),
      lambda m: len(re.sub(r"\D", "", m)) >= 10, False, True),
+    # PHONE (b): E.164 with no separators — `+` then 8 to 15 digits. This is the
+    # format systems NORMALISE to, so it is what arrives from a contact import,
+    # a CRM export or a `tel:` link, and (a) missed it in every country: it can
+    # consume at most ten digits without separators. The leading `+` is what
+    # makes a bare long digit run unambiguous enough to match.
+    ("PHONE", re.compile(r"(?<![\d+])\+\d{8,15}(?!\d)"), None, False, True),
+    # PHONE (c): international and national GROUPED forms — `+44 20 7183 8750`,
+    # `020 7183 8750`, `+1-555-0142-8899`. Two or more separated groups and a
+    # 10-15 digit total, which excludes a date (8 digits or fewer) and a card
+    # (16), both of which have detectors of their own.
+    ("PHONE", re.compile(r"(?<![\d+])\+?\d{2,4}(?:[ .-]\d{2,5}){2,4}(?!\d)"),
+     lambda m: 10 <= len(re.sub(r"\D", "", m)) <= 15, False, True),
     # ── opt-in heuristics (default OFF; list in ``types`` to enable) ──
     # ADDRESS: "<number> <Capitalized words> <street suffix>[, unit][, City, ST 12345]"
     # and "P.O. Box <n>". Misses unnumbered / lower-case / non-Latin addresses.
