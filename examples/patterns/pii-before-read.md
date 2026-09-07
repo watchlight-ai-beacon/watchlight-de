@@ -74,6 +74,26 @@ govern.sanitize(text, types=[*DEFAULT_PII_TYPES, "PERSON", "ADDRESS"], known=[us
 Use both. `known` for the subjects you hold, the heuristics for the third
 parties you do not.
 
+The optional `PERSON` heuristic can also match a Title Case organization name.
+If the application already knows a value is not a person, exclude that exact
+candidate on the call. The exclusion is case-insensitive, affects only
+`PERSON`, and is not written to the report or audit trail.
+
+```ts
+const safe = govern.sanitize(text, {
+  types: ["PERSON", "EMAIL"],
+  personExclusions: ["Bethany Christian Services"],
+}).text;
+```
+
+```python
+safe = govern.sanitize(
+    text,
+    types=["PERSON", "EMAIL"],
+    person_exclusions=["Bethany Christian Services"],
+)["text"]
+```
+
 ## Make the sanitizing path the only way in
 
 ```cedar

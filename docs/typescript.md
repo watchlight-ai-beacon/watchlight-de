@@ -145,6 +145,11 @@ subjects and structurally cannot cover anyone else — the friend named in a
 request, the school, the doctor. `PERSON` and `ADDRESS` are what cover those,
 and they are off by default because they are heuristics. Use both.
 
+Because `PERSON` is a Title Case heuristic, pass exact values already known not
+to be people in `personExclusions`. Matching is case-insensitive and suppresses
+only a complete `PERSON` candidate; email, SSN, and other enabled detectors
+still run. Exclusion values do not appear in the report or audit trail.
+
 A `known` value matches as a whole word, case-insensitively — `"Smith"` covers
 `Smith's` but not `Smithfield`. It cannot tell a name from the same word used
 ordinarily, so a single-token name that is also a common word (`Will`, `May`,
