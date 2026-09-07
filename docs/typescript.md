@@ -77,9 +77,10 @@ it and the payload is withheld exactly as a throw withholds it —
 The deadline cannot be switched off; a hook that needs longer takes a larger
 number.
 
-Python enforces it on an **async** tool body only. It cannot interrupt a
-synchronous hook, so `on_result_timeout_ms` on a synchronous body raises
-`TypeError` rather than being ignored.
+In Python, asking for `on_result_timeout_ms` on a **synchronous** tool body runs
+the hook on a worker thread so the calling thread can hold the clock — the hook
+must then be thread-safe. A synchronous body with no deadline is unbounded, as
+it always was.
 
 ## Read the obligations on an Allow
 

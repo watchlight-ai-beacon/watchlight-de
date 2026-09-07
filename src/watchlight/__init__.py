@@ -689,22 +689,27 @@ class NeedsApproval(PermissionError):
 #: :class:`EgressTimeout` and the ``egress`` record says ``withheld: True``. The
 #: payload is never released late.
 #:
-#: The deadline needs a moment in which to fire, so it is enforced on an
-#: **async** tool body, where the hook is awaited. Python cannot interrupt
-#: running code, so a hook that blocks the event loop — a synchronous hook, a
-#: blocking network call — cannot be preempted by it: bound such a hook
-#: yourself. Passing ``on_result_timeout_ms`` on a *synchronous* tool body is
-#: refused fail-closed rather than silently ignored (see
-#: :data:`SYNC_TIMEOUT_MESSAGE`).
+#: The deadline needs a moment in which to fire. On an **async** tool body the
+#: hook is awaited and the deadline races it. On a **synchronous** body, asking
+#: for ``on_result_timeout_ms`` moves the hook to a worker thread so the calling
+#: thread can hold the clock — the shape most likely to carry a slow hook was
+#: otherwise the one that could not bound it.
+#:
+#: Python cannot interrupt running code either way, so what the deadline bounds
+#: is the decision to RELEASE, not the hook: on a timeout the payload is
+#: withheld and the hook runs on to nothing. A synchronous body with no
+#: ``on_result_timeout_ms`` is unbounded, as before — the default is not applied
+#: there, because starting to withhold from every existing slow-but-fine hook is
+#: not a change anyone opted into.
 DEFAULT_ON_RESULT_TIMEOUT_MS = 8000
 
 #: Fixed, value-free message of :class:`EgressTimeout`.
 EGRESS_TIMEOUT_MESSAGE = "egress hook deadline exceeded"
 
-#: What ``on_result_timeout_ms`` on a synchronous tool body is told. A
-#: synchronous hook runs on the caller's own thread with nothing left to run the
-#: clock, and Python cannot interrupt it; accepting the argument and enforcing
-#: nothing would be a deadline in name only.
+#: Formerly raised when ``on_result_timeout_ms`` was passed with a synchronous
+#: tool body. That combination is now honoured — the hook runs on a worker
+#: thread — so nothing raises this. Retained so an existing import does not
+#: break; it will go in a future major version.
 SYNC_TIMEOUT_MESSAGE = (
     "`on_result_timeout_ms` needs an async tool body: a synchronous `on_result` "
     "runs on the calling thread and cannot be interrupted. Declare the tool "
@@ -2538,13 +2543,15 @@ class Watchlight:
         ``0``, a negative and ``inf`` are refused with ``ValueError``; a hook
         that genuinely needs longer takes a larger number.
 
-        The deadline needs a moment in which to fire, so it applies to an
-        **async** tool body, where the hook is awaited. On a synchronous body,
-        ``on_result_timeout_ms`` is refused fail-closed with ``TypeError``
-        (:data:`SYNC_TIMEOUT_MESSAGE`) rather than accepted and ignored: a
-        synchronous hook runs on the calling thread and Python cannot interrupt
-        it. For the same reason a hook that BLOCKS the event loop is not
-        preempted by the deadline on an async body either — bound such a hook
+        On an **async** body the hook is awaited and the deadline races it. On a
+        **synchronous** body, asking for ``on_result_timeout_ms`` runs the hook
+        on a worker thread so the calling thread can hold the clock; the hook
+        must then be thread-safe, and one that never returns leaks its (daemon)
+        thread. A synchronous body with no ``on_result_timeout_ms`` is
+        unbounded, as before.
+
+        Python cannot interrupt running code either way, so a hook that BLOCKS
+        the event loop is not preempted by the deadline on an async body — bound such a hook
         yourself.
         """
 
@@ -2558,8 +2565,11 @@ class Watchlight:
             # Validated at decoration: a misconfigured deadline says so at
             # import, not on the first payload it fails to bound.
             timeout_ms = _resolve_timeout_ms(on_result_timeout_ms)
-            if on_result_timeout_ms is not None and not body_is_async:
-                raise TypeError(SYNC_TIMEOUT_MESSAGE)
+            # A synchronous body only gets a deadline when one is ASKED for.
+            # Applying the default here would start withholding payloads from
+            # every existing slow-but-fine hook, which is a behaviour change
+            # nobody opted into.
+            bound_sync = on_result_timeout_ms is not None
 
             def decide_and_run(ctx: Any, prin: str, res: str, args: tuple, kwargs: dict) -> Any:
                 def run(d: dict) -> Any:
@@ -2572,9 +2582,11 @@ class Watchlight:
                         info["obligations"] = d["obligations"]  # only when the Allow carries any
                     if inspect.isawaitable(out):
                         return gov._apply_on_result_async(out, on_result, info, timeout_ms)
-                    # A synchronous body's hook runs inline on this thread with
-                    # nothing left to run the clock; the deadline is refused for
-                    # that combination at decoration rather than pretended here.
+                    if bound_sync:
+                        # The hook goes to a worker thread so this one can hold
+                        # the clock. Python cannot interrupt it, so the deadline
+                        # bounds the decision to RELEASE, not the hook.
+                        return gov._apply_on_result_bounded(out, on_result, info, timeout_ms)[0]
                     return gov._apply_on_result(out, on_result, info)[0]
 
                 d = gov.authorize(action=intent, principal=prin, resource=res, context=ctx)
@@ -3023,6 +3035,75 @@ class Watchlight:
             )
         return self._audit_path
 
+    def _apply_on_result_bounded(
+        self,
+        result: Any,
+        on_result: Callable[[Any, dict], Any],
+        info: dict,
+        timeout_ms: float,
+    ) -> tuple[Any, bool]:
+        """:meth:`_apply_on_result` with a deadline, for a SYNCHRONOUS tool body.
+
+        The hook runs on a worker thread and this call waits for it. Python
+        cannot interrupt running code, so the deadline bounds *the decision to
+        release*, not the hook: on a timeout the payload is withheld, the
+        ``egress`` record says so, and :class:`EgressTimeout` is raised — which
+        is the guarantee ``withheld`` makes. The hook itself keeps running until
+        it returns, and its late result is discarded.
+
+        Two consequences the caller owns, and neither can be hidden:
+
+        * **The hook must be thread-safe.** It no longer runs on the caller's
+          thread.
+        * **A hook that never returns leaks its thread.** One per timed-out
+          call, daemon so it cannot hold the process open. Bounding the pool
+          instead would make a stuck hook block later calls, which is worse than
+          leaking a thread that is already going nowhere.
+
+        Internal — not part of the public API."""
+        box: dict[str, Any] = {}
+        done = threading.Event()
+
+        def runner() -> None:
+            try:
+                box["value"] = on_result(result, info)
+            except BaseException as exc:  # noqa: BLE001 — re-raised on this thread
+                box["error"] = exc
+            finally:
+                done.set()
+
+        threading.Thread(
+            target=runner, name="watchlight-egress-hook", daemon=True
+        ).start()
+        if not done.wait(timeout_ms / 1000.0):
+            # Exactly one egress record per call: the late thread writes none.
+            self._audit_egress(info, replaced=False, withheld=True)
+            raise EgressTimeout()
+        if "error" in box:
+            self._audit_egress(info, replaced=False, withheld=True)
+            raise box["error"]
+        return self._finish_on_result(result, box.get("value"), info)
+
+    def _finish_on_result(self, result: Any, replacement: Any, info: dict) -> tuple[Any, bool]:
+        """The tail both synchronous paths share: an awaitable replacement is
+        refused fail-closed, ``None`` passes the payload through, anything else
+        replaces it, and the ``egress`` record is written either way."""
+        if inspect.isawaitable(replacement):
+            # An async hook on a synchronous body: there is no loop to await it
+            # on, and handing back the coroutine object as the "payload" would
+            # release nothing and audit a replacement that never happened.
+            close = getattr(replacement, "close", None)
+            if callable(close):
+                close()
+            self._audit_egress(info, replaced=False, withheld=True)
+            raise TypeError(
+                "on_result returned an awaitable for a synchronous tool body; "
+                "an async hook requires an async tool body"
+            )
+        replaced = replacement is not None
+        self._audit_egress(info, replaced=replaced)
+        return (replacement if replaced else result), replaced
+
     def _apply_on_result(self, result: Any, on_result: Callable[[Any, dict], Any], info: dict) -> tuple[Any, bool]:
         """Run an egress hook over a governed tool's result and audit the outcome
         (shared by every governed wrapper so they behave identically). ``None``
@@ -3036,22 +3117,7 @@ class Watchlight:
         except BaseException:
             self._audit_egress(info, replaced=False, withheld=True)
             raise
-        if inspect.isawaitable(replacement):
-            # An async hook on a synchronous body: there is no loop to await it
-            # on, and handing back the coroutine object as the "payload" would
-            # release nothing and audit a replacement that never happened.
-            # Fail closed: withhold, and say so with a fixed, payload-free message.
-            close = getattr(replacement, "close", None)
-            if callable(close):
-                close()
-            self._audit_egress(info, replaced=False, withheld=True)
-            raise TypeError(
-                "on_result returned an awaitable for a synchronous tool body; "
-                "an async hook requires an async tool body"
-            )
-        replaced = replacement is not None
-        self._audit_egress(info, replaced=replaced)
-        return (replacement if replaced else result), replaced
+        return self._finish_on_result(result, replacement, info)
 
     async def _apply_on_result_async(
         self,

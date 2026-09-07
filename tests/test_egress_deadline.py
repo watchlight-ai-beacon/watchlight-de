@@ -11,6 +11,7 @@ asserted as a value, never waited on. Runs the real watchlight_engine.
 """
 import asyncio
 import json
+import time
 
 import pytest
 
@@ -23,6 +24,14 @@ from watchlight import (
 )
 
 READ = 'permit(principal, action == Action::"read", resource);'
+
+
+def _records(tmp_path):
+    """Every audit record written by a governor from :func:`_gov`."""
+    path = tmp_path / "audit.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
 def _gov(tmp_path):
@@ -232,19 +241,81 @@ def test_a_deliberately_long_deadline_is_allowed(tmp_path):
     assert asyncio.run(slow_but_wanted()) == "PAYLOAD"
 
 
-def test_a_deadline_on_a_synchronous_body_is_refused_not_ignored(tmp_path):
-    """A synchronous hook runs on the calling thread and Python cannot interrupt
-    it. Accepting the argument and enforcing nothing would be a deadline in name
-    only, so the combination is refused where it is written."""
+def test_a_deadline_on_a_synchronous_body_withholds_the_payload(tmp_path):
+    """Asking for a deadline on a synchronous body moves the hook to a worker
+    thread so the calling thread can hold the clock. Python still cannot
+    interrupt the hook, so what is bounded is the decision to RELEASE: the
+    payload is withheld and the hook runs on to nothing.
+
+    This combination used to raise, which left the shape most likely to carry a
+    slow hook — a synchronous framework tool — as the one that could not bound
+    it."""
     g = _gov(tmp_path)
 
-    with pytest.raises(TypeError) as exc:
+    @g.tool("read", on_result=lambda result, info: time.sleep(2), on_result_timeout_ms=100)
+    def sync_body():
+        return "SECRET"
 
-        @g.tool("read", on_result=lambda result, info: None, on_result_timeout_ms=30)
-        def sync_body():
-            return "SECRET"
+    started = time.monotonic()
+    with pytest.raises(EgressTimeout):
+        sync_body()
+    assert time.monotonic() - started < 1.0, "the deadline did not fire"
 
-    assert str(exc.value) == SYNC_TIMEOUT_MESSAGE
+    records = _records(tmp_path)
+    egress = [r for r in records if r.get("event") == "egress"]
+    assert len(egress) == 1, "exactly one egress record per call"
+    assert egress[0]["withheld"] is True and egress[0]["replaced"] is False
+    assert "SECRET" not in json.dumps(records)
+
+
+def test_a_late_synchronous_hook_cannot_release_the_payload(tmp_path):
+    """The abandoned hook keeps running — Python cannot kill it — so its late
+    return value must be discarded rather than released."""
+    g = _gov(tmp_path)
+    finished = []
+
+    def slow(result, info):
+        time.sleep(0.4)
+        finished.append(result)
+        return "LATE"
+
+    @g.tool("read", on_result=slow, on_result_timeout_ms=80)
+    def sync_body():
+        return "SECRET"
+
+    with pytest.raises(EgressTimeout):
+        sync_body()
+    time.sleep(0.6)  # let the abandoned hook finish
+    assert finished, "the hook did keep running"
+    records = _records(tmp_path)
+    assert len([r for r in records if r.get("event") == "egress"]) == 1
+    assert "LATE" not in json.dumps(records) and "SECRET" not in json.dumps(records)
+
+
+def test_a_bounded_synchronous_hook_inside_its_deadline_still_replaces(tmp_path):
+    g = _gov(tmp_path)
+
+    @g.tool("read", on_result=lambda result, info: "REDACTED", on_result_timeout_ms=2_000)
+    def sync_body():
+        return "SECRET"
+
+    assert sync_body() == "REDACTED"
+
+
+def test_a_raising_bounded_synchronous_hook_still_fails_closed(tmp_path):
+    g = _gov(tmp_path)
+
+    def boom(result, info):
+        raise RuntimeError("hook failed")
+
+    @g.tool("read", on_result=boom, on_result_timeout_ms=2_000)
+    def sync_body():
+        return "SECRET"
+
+    with pytest.raises(RuntimeError):
+        sync_body()
+    egress = [r for r in _records(tmp_path) if r.get("event") == "egress"]
+    assert egress and egress[-1]["withheld"] is True
 
 
 def test_a_synchronous_body_without_a_deadline_still_works_as_before(tmp_path):
