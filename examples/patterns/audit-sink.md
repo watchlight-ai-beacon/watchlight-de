@@ -210,8 +210,20 @@ an approval is single-use across replicas rather than once per replica. Its
 
 ## Worth knowing
 
-- **Keep the sink body cheap.** It runs on the decision path, once per record,
-  even though its result is never awaited. Hand the record off and return.
+- **Keep the sink body cheap, or batch it.** It runs on the decision path, once
+  per record, even though its result is never awaited — so hand the record off
+  and return. When the destination cannot be cheap, `audit_sink_batch` /
+  `auditSinkBatch` moves it off that path instead:
+
+  ```python
+  Watchlight(agent="svc", audit_sink=insert_many,
+             audit_sink_batch=100, audit_sink_interval=2.0)
+  ```
+
+  The sink then receives a **list** rather than a record, and the decision no
+  longer waits for it. The queue is bounded: under sustained pressure the oldest
+  records are dropped, reported once, and counted on `trail.dropped`. See
+  [the audit trail](../../docs/audit-trail.md).
 - **Do not add fields, and do not decode them into values.** The record is
   value-free by contract; enriching it with arguments, message text or user data
   re-creates the exposure the trail exists to avoid.
