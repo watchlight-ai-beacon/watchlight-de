@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
+import re
 import sys
 
 from watchlight import AttenuationDenied, Denied, NeedsApproval, Watchlight
@@ -150,6 +151,11 @@ def kind_of(record: dict) -> str:
     return record.get("event") or "decision"
 
 
+#: Opaque identifiers (decision ids, approval nonces) are random hex, so a
+#: short probe can match one by chance. Removed before the value-free scan.
+_UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
+
+
 def verify(records: list[dict]) -> list[str]:
     problems: list[str] = []
     by_kind: dict[str, list[dict]] = {}
@@ -189,7 +195,13 @@ def verify(records: list[dict]) -> list[str]:
         problems.append("attenuation: expected exactly one refused attenuation")
 
     # Value-free: nothing from a fixture body may appear anywhere in the trail.
-    blob = json.dumps(records)
+    #
+    # Opaque identifiers are removed before the scan. They are random hex and
+    # `4111` is four hex characters, so about one run in seventy produced a
+    # decision_id such as 499bd72c-6891-4111-85dd-3e8a2de2ade1 and this failed on
+    # a card number that was never there. Stripping the ids keeps the probe short
+    # enough to catch a partly-redacted value, without the collision.
+    blob = _UUID_RE.sub("<id>", json.dumps(records))
     for leak in ("4111", "123-45-6789", "Jordan", "double charge", "Ignore all previous", "system prompt is"):
         if leak in blob:
             problems.append(f"trail carries fixture content ({leak[:12]}...)")
