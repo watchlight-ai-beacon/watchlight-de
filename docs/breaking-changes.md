@@ -5,7 +5,7 @@ different verdict. Only some announce themselves; the rest surface as a denial
 that looks exactly like a policy of yours doing its job. Read every entry
 between the version you are on and the one you are moving to.
 
-## Unreleased
+## 0.10.0
 
 **`on_result_timeout_ms` now works on a synchronous tool body** (Python). It
 used to raise `TypeError`, which left the shape most likely to carry a slow
