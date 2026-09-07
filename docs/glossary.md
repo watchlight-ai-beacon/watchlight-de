@@ -42,6 +42,7 @@ verifier — it authorizes the identity your application asserts.
 | **Decision id** | The decision id is the correlation id on a verdict and on every record it produced. Join your own logs and traces to it. | |
 | **Delegation** | Delegation is spawning a sub-agent under a narrowed scope, which appends it to the actor chain. The subject does not change. | |
 | **Deny reason** | The deny reason is what a refused caller is told: a uniform *not authorized*. The specific reason stays in the trail. | |
+| **Detector** | A detector is one rule that finds one kind of identifier in text — email, SSN, card. `sanitize` runs the built-in set, plus any you register for your own vocabulary. | [extending Watchlight](extending.md) |
 | **Egress** | An egress record is written when a result leaves a governed call, and it says whether the result was withheld or rewritten. | [data egress](../examples/patterns/data-egress.md) |
 | **Enforcement effect** | An enforcement effect is what a matched policy does beyond allow or deny, declared as `@enforcement_effect("<verb>")`. The Developer Edition acts on `require_approval`, and an unrecognised verb fails at load. | [enforcement effects](enforcement-effects.md) |
 | **Fail closed** | Failing closed means that no matching policy denies, and that an evaluation which cannot be reached denies too. | |
@@ -57,5 +58,6 @@ verifier — it authorizes the identity your application asserts.
 | **Sanitization** | Sanitization removes personal data from text before it goes further, and records that it happened. | [PII before read](../examples/patterns/pii-before-read.md) |
 | **Scope** | A scope is the authority `delegate` may hand a sub-agent: which tools, resources and intents, and for how long. A **scope token** is its signed carrier between processes, and it does not carry the actor chain. | [sub-agent confinement](../examples/patterns/subagent-confinement.md) |
 | **Screening** | Screening decides whether incoming text is safe to act on, and withholds it when it is not. | [screen before model](../examples/patterns/screen-before-model.md) |
+| **Screening family** | A screening family is a named category of injection phrasing that `screen` counts — `INSTRUCTION_OVERRIDE`, `ROLE_SWITCH`, and five more. One label covers many phrasings of the same trick, and you can register families of your own. | [extending Watchlight](extending.md) |
 | **Signing secret** | The signing secret is what makes a scope token or an approval token verifiable in another of your processes. It is never logged, written, or echoed in an error. | [the signing secret](signing-secret.md) |
 | **Verdict** | A verdict is the answer to one call: `Allow`, `Deny`, or `NeedsApproval`. | |

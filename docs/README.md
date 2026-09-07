@@ -17,6 +17,7 @@ pick up from there.
 | [Testing your policies](testing-policies.md) | You want to prove a policy behaves before it gates anything real, and fail a CI run when it does not. |
 | [The signing secret](signing-secret.md) | You need a scope or an approval to cross a process boundary, or you are rotating the secret. |
 | [Breaking changes](breaking-changes.md) | You are bumping the version and need to know what flips a verdict. |
+| [Extending Watchlight](extending.md) | You are plugging your own code in — a detector, a screening rule, an audit sink, a counter source. |
 | [Glossary](glossary.md) | A word is doing more work than you expected and you want it pinned down. |
 
 Runnable programs are in [`examples/`](../examples/README.md). The full
