@@ -292,7 +292,16 @@ const RULES: Rule[] = [
     `${B}(?:ignore|disregard|forget|override|bypass|discard) (?:all|any|everything) (?:of )?(?:your |the |my )?` +
       `(?:instructions|prompts|rules|directions|directives|guidelines|constraints|programming|training|you were told|you have been told|above|before)${E}`
   ),
-  rule("INSTRUCTION_OVERRIDE", `${B}disregard the above${E}`),
+  // Shape, not phrase: the verb plus a SELF-REFERENTIAL reference to what came
+  // before, with no noun required — "Forget the above." Deliberately NOT
+  // "previous" / "prior" / "earlier" alone: those take an ordinary object far
+  // too often ("ignore the previous email"), and the rule above already catches
+  // them when a context noun follows.
+  rule(
+    "INSTRUCTION_OVERRIDE",
+    `${B}(?:ignore|disregard|forget|override|bypass|discard) (?:all |any |everything |the )?` +
+      `(?:above|foregoing|preceding)(?: (?:context|messages?|text|content))?${E}`
+  ),
   rule("INSTRUCTION_OVERRIDE", `${B}(?:your |the )?new (?:instructions?|directives?|rules) ?:`),
   rule(
     "INSTRUCTION_OVERRIDE",
@@ -372,12 +381,36 @@ const RULES: Rule[] = [
   rule("JAILBREAK_MARKER", `${B}you (?:are|have been|are now) (?:jailbroken|unrestricted|unfiltered|uncensored)${E}`),
 
   // ── AUTHORITY_IMPERSONATION ──────────────────────────────────────
+  // (i) The CHANNEL-PREFIX form: text wearing the costume of a privileged turn.
+  // It asserts nothing — that is the point — so the prose rules below, which
+  // model a first-person CLAIM of authority, are silent on it. This is the
+  // dominant shape in stored-content injection.
+  //
+  // Normalization has already collapsed newlines into single spaces, so a line
+  // anchor is not available here; the token and its punctuation are the signal.
+  rule(
+    "AUTHORITY_IMPERSONATION",
+    `${B}(?:system|admin|administrator|developer|operator|root|assistant|tool_result|tool|function_result)\\s?:`
+  ),
+  rule("AUTHORITY_IMPERSONATION", `[\\[<]/?\\s?(?:system|admin|administrator|developer|assistant|tool_result|instructions?)\\s?[\\]>]`),
+  rule("AUTHORITY_IMPERSONATION", `<\\|[a-z_]{0,16}\\|>\\s?(?:system|assistant|developer)?`),
+  // A header standing in for a system turn — "### System", "## System Prompt".
+  // NOT "### System Requirements": the negative lookahead keeps ordinary
+  // documentation quiet, and documentation is what this runs over.
+  rule("AUTHORITY_IMPERSONATION", `${B}#{1,6} (?:system|assistant|developer|admin)(?: prompt| message| instructions?)?(?! [a-z])${E}`),
+  rule("AUTHORITY_IMPERSONATION", `${B}(?:begin|start|end) (?:of )?(?:the )?system (?:prompt|message|instructions?)${E}`),
+  rule("AUTHORITY_IMPERSONATION", `${B}note (?:to|for) (?:the )?(?:assistant|ai|model|agent|system)${E}`),
+  rule("AUTHORITY_IMPERSONATION", `${B}this (?:message|instruction|request) is from (?:openai|anthropic|google|the vendor|the provider|the platform)${E}`),
   // "as your administrator, ...", "this is your developer speaking",
   // "you have been granted admin privileges", "system override".
   rule(
     "AUTHORITY_IMPERSONATION",
-    `${B}(?:as|i am|i'm|this is|speaking as|on behalf of|message from|note from|instructions? from|directive from|order from) your ` +
-      `(?:(?:system|new|lead|senior|chief|head) )?(?:administrator|admin|sysadmin|operator|developer|developers|creator|creators|owner|maintainer|programmer|engineer|supervisor|trainer|security team|safety team)${E}`
+    `${B}(?:as|i am|i'm|this is|speaking as|on behalf of|message from|note from|instructions? from|directive from|order from) ` +
+      // "your <role>" is a claim on its own. "the <role>" is ordinary prose
+      // ("as the administrator of the forum, I set up the accounts") unless a
+      // privileged qualifier follows.
+      `(?:your (?:(?:system|new|lead|senior|chief|head) )?|the (?:system|root|platform|security) )` +
+      `(?:administrator|admin|sysadmin|operator|developer|developers|creator|creators|owner|maintainer|programmer|engineer|supervisor|trainer|security team|safety team)${E}`
   ),
   rule(
     "AUTHORITY_IMPERSONATION",

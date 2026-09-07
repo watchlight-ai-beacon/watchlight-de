@@ -10,6 +10,17 @@ between the version you are on and the one you are moving to.
 
 ## Unreleased
 
+**`AUTHORITY_IMPERSONATION` now flags the channel-prefix form**, and
+`INSTRUCTION_OVERRIDE` matches an imperative shape rather than a phrase list.
+`SYSTEM:`, `[SYSTEM]`, `<system>`, `<|im_start|>system`, `### System` and
+`BEGIN SYSTEM PROMPT` were all silent; so was *"Forget the above."*
+
+Expect **more** `screening` hits. Text that legitimately contains a system-turn
+marker — a support transcript, developer documentation — now flags too. Narrow
+`families` if you screen that kind of content. Ordinary prose is unaffected and
+asserted so in the suite.
+
+
 **`PHONE` now detects unseparated E.164 and grouped international numbers.**
 `+15550142889`, `+442071838750`, `+493012345678`, `+1-555-0142-8899` and
 `020 7183 8750` were all missed: the North-American rule consumes at most ten
