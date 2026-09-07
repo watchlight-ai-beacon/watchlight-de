@@ -7,6 +7,26 @@ between the version you are on and the one you are moving to.
 
 ## Unreleased
 
+**`on_result_timeout_ms` now works on a synchronous tool body** (Python). It
+used to raise `TypeError`, which left the shape most likely to carry a slow
+egress hook — a synchronous framework tool — as the one that could not bound it.
+The hook now runs on a worker thread so the calling thread can hold the clock.
+
+Two things this asks of the hook, because Python cannot interrupt running code:
+
+- **It must be thread-safe.** It no longer runs on the caller's thread.
+- **A hook that never returns leaks its (daemon) thread.** What the deadline
+  bounds is the decision to *release*: on a timeout the payload is withheld, the
+  `egress` record says so, and the hook runs on to nothing.
+
+A synchronous body with **no** `on_result_timeout_ms` is unbounded exactly as
+before — the default is not applied there, so no existing hook starts
+withholding.
+
+`SYNC_TIMEOUT_MESSAGE` is no longer raised. It stays exported so an existing
+import keeps working.
+
+
 **`sanitize` now redacts every SSN-shaped value.** The detector previously
 skipped the area and group ranges that cannot be issued — `000`, `666`, `9xx`,
 group `00`, serial `0000` — which is right for validating an SSN and wrong for
