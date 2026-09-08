@@ -1814,7 +1814,20 @@ _SCREEN_RULES: list[tuple[str, re.Pattern]] = [
         ("INSTRUCTION_OVERRIDE",
          f"{_B}(?:ignore|disregard|forget|override|bypass|discard) (?:all|any|everything) (?:of )?(?:your |the |my )?"
          f"(?:instructions|prompts|rules|directions|directives|guidelines|constraints|programming|training|you were told|you have been told|above|before){_E}"),
-        ("INSTRUCTION_OVERRIDE", f"{_B}disregard the above{_E}"),
+        # Shape, not phrase: the verb plus a reference to prior context, with no
+        # noun required. "Forget the above." carries the same imperative as
+        # "Disregard all prior instructions" and was missed for want of a noun.
+        # Shape, not phrase: the verb plus a SELF-REFERENTIAL reference to what
+        # came before, with no noun required — "Forget the above." carries the
+        # same imperative as "Disregard all prior instructions".
+        #
+        # Deliberately NOT "previous" / "prior" / "earlier" on their own: those
+        # take an ordinary object far too often ("ignore the previous email"),
+        # and the rule above already catches them when a context noun follows.
+        ("INSTRUCTION_OVERRIDE",
+         f"{_B}(?:ignore|disregard|forget|override|bypass|discard) "
+         "(?:all |any |everything |the )?"
+         f"(?:above|foregoing|preceding)(?: (?:context|messages?|text|content))?{_E}"),
         ("INSTRUCTION_OVERRIDE", f"{_B}(?:your |the )?new (?:instructions?|directives?|rules) ?:"),
         ("INSTRUCTION_OVERRIDE",
          f"{_B}(?:instead|rather than that|from now on),? (?:you must|you will|you should|you have to|always) (?:only )?(?:do|say|respond|reply|answer|output|write|follow){_E}"),
@@ -1859,9 +1872,43 @@ _SCREEN_RULES: list[tuple[str, re.Pattern]] = [
          f"{_B}you (?:have no|no longer have) (?:any |all |your |the )?(?:restrictions|filters|guardrails|censorship|content polic(?:y|ies)|safety (?:guidelines|rules|filters|measures|training)|ethical (?:guidelines|constraints|considerations)){_E}"),
         ("JAILBREAK_MARKER", f"{_B}you (?:are|have been|are now) (?:jailbroken|unrestricted|unfiltered|uncensored){_E}"),
         # ── AUTHORITY_IMPERSONATION ──
+        # (i) The CHANNEL-PREFIX form: text wearing the costume of a privileged
+        # turn. It asserts nothing — that is the point — so the prose rules
+        # below, which model a first-person CLAIM of authority, are silent on it.
+        # This is the dominant shape in stored-content injection.
+        #
+        # Normalization has already collapsed newlines into single spaces, so a
+        # line anchor is not available here; the token and its punctuation are
+        # the whole signal.
         ("AUTHORITY_IMPERSONATION",
-         f"{_B}(?:as|i am|i'm|this is|speaking as|on behalf of|message from|note from|instructions? from|directive from|order from) your "
-         f"(?:(?:system|new|lead|senior|chief|head) )?(?:administrator|admin|sysadmin|operator|developer|developers|creator|creators|owner|maintainer|programmer|engineer|supervisor|trainer|security team|safety team){_E}"),
+         f"{_B}(?:system|admin|administrator|developer|operator|root|assistant|tool_result|tool|function_result)"
+         r"\s?:"),
+        ("AUTHORITY_IMPERSONATION",
+         r"[\[<]/?\s?(?:system|admin|administrator|developer|assistant|tool_result|instructions?)\s?[\]>]"),
+        # Chat-template markers: <|im_start|>system, <|system|>, and friends.
+        ("AUTHORITY_IMPERSONATION", r"<\|[a-z_]{0,16}\|>\s?(?:system|assistant|developer)?"),
+        # Markdown / plaintext section headers standing in for a system turn.
+        # A header standing in for a system turn — "### System", "## System
+        # Prompt". NOT "### System Requirements": the negative lookahead is what
+        # keeps ordinary documentation quiet, and documentation is exactly the
+        # kind of text this runs over.
+        ("AUTHORITY_IMPERSONATION",
+         f"{_B}#{{1,6}} (?:system|assistant|developer|admin)(?: prompt| message| instructions?)?"
+         r"(?! [a-z])" + _E),
+        ("AUTHORITY_IMPERSONATION",
+         f"{_B}(?:begin|start|end) (?:of )?(?:the )?system (?:prompt|message|instructions?){_E}"),
+        ("AUTHORITY_IMPERSONATION",
+         f"{_B}note (?:to|for) (?:the )?(?:assistant|ai|model|agent|system){_E}"),
+        ("AUTHORITY_IMPERSONATION",
+         f"{_B}this (?:message|instruction|request) is from (?:openai|anthropic|google|the vendor|the provider|the platform){_E}"),
+        ("AUTHORITY_IMPERSONATION",
+         f"{_B}(?:as|i am|i'm|this is|speaking as|on behalf of|message from|note from|instructions? from|directive from|order from) "
+         # "your <role>" is a claim on its own. "the <role>" is ordinary prose
+         # ("as the administrator of the forum, I set up the accounts") unless a
+         # privileged qualifier follows.
+         r"(?:your (?:(?:system|new|lead|senior|chief|head) )?|the (?:system|root|platform|security) )"
+         f"(?:administrator|admin|sysadmin|operator|developer|developers|creator|creators|owner|maintainer|programmer|engineer|supervisor|trainer|security team|safety team)"
+         r"(?: of (?:this|the) (?:app|application|system|service|assistant|product))?" + _E),
         ("AUTHORITY_IMPERSONATION",
          f"{_B}(?:you (?:are|have been|are now) (?:granted|given|authorized with|authorised with)|i (?:hereby )?(?:grant|give) you|granting you) "
          f"(?:full|elevated|root|admin|administrator|administrative|operator|developer|unrestricted|special|complete) (?:access|privileges|permissions|clearance|authority|rights){_E}"),
