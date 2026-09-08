@@ -157,13 +157,15 @@ function verify(records) {
   if ((byKind.attenuation ?? []).filter((r) => r.decision === "Deny").length !== 1) problems.push("attenuation: expected exactly one refused attenuation");
 
   // Value-free: nothing from a fixture body may appear anywhere in the trail.
-  // Opaque identifiers are stripped first — they are random hex and `4111` is
-  // four hex characters, so about one run in seventy produced a decision_id such
-  // as 499bd72c-6891-4111-85dd-3e8a2de2ade1 and this failed on a card number
-  // that was never there.
-  const blob = JSON.stringify(records).replace(
-    /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi,
-    "<id>"
+  //
+  // Identifier FIELDS are dropped first. Identifiers are random hex, so a short
+  // probe matches one by chance: a decision_id produced
+  // 499bd72c-6891-4111-85dd-3e8a2de2ade1 and this reported a card number that
+  // was never there. Stripping UUID-SHAPED strings fixed that case and missed
+  // the next one — node_id and parent_id are bare 8-character hex. So the rule
+  // is the field name, not the shape.
+  const blob = JSON.stringify(
+    records.map((r) => Object.fromEntries(Object.entries(r).filter(([k]) => !k.endsWith("_id"))))
   );
   for (const leak of ["4111", "123-45-6789", "Jordan", "double charge", "Ignore all previous", "system prompt is"]) {
     if (blob.includes(leak)) problems.push(`trail carries fixture content (${leak.slice(0, 12)}...)`);
