@@ -210,13 +210,37 @@ identical in both.
 → **[The platform](https://www.watchlight.ai/platform)** ·
 [email sales@watchlight.ai](mailto:sales@watchlight.ai?subject=Watchlight%20Enterprise)
 
-## Watchlight Cloud — coming soon
+## Govern locally. Manage centrally.
 
-Using the Developer Edition with a team? Watchlight Cloud is a lightweight
-control centre for centrally managing your Watchlight deployments, policies,
-environments and governance activity.
+<div align="center">
 
-→ **[Join the early-access list](mailto:sales@watchlight.ai?subject=Watchlight%20Cloud%20early%20access)**
+### [**Watchlight Cloud**](https://www.watchlight.cloud/) — early access
+
+**One control centre for every Developer Edition deployment you run.**
+
+</div>
+
+You already have the decision. Cloud gives you everything around it — central
+policy, decision history that outlives the container, an inventory of every
+agent, environments, and a team that can see all of it.
+
+|  |  |
+|---|---|
+| **Central policy** | Author, lint and version Cedar bundles, then distribute them to every environment. |
+| **Decision history** | Every `Allow`, `Deny` and `NeedsApproval`, retained past the life of the process that made it. |
+| **Agent inventory** | What is running, under which identity, in which environment. |
+| **Team access** | Invite the people who need to see the trail, without handing out a server. |
+
+**The authorization decision stays in your process** — same engine, same
+latency, and your agents keep deciding if Cloud is unreachable. It attaches to
+the options you already have: `audit_sink`, `counter_source`, `approval_store`.
+Nothing to rewrite, and no upgrade needed.
+
+<div align="center">
+
+### → **[Request early access](https://www.watchlight.cloud/)** ←
+
+</div>
 
 ## Open source, and the license
 
