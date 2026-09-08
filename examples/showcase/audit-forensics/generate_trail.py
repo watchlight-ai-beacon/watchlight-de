@@ -151,9 +151,19 @@ def kind_of(record: dict) -> str:
     return record.get("event") or "decision"
 
 
-#: Opaque identifiers (decision ids, approval nonces) are random hex, so a
-#: short probe can match one by chance. Removed before the value-free scan.
-_UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
+def _without_ids(record: dict) -> dict:
+    """``record`` with every opaque identifier dropped.
+
+    Identifiers are random hex, so a short probe matches one by chance: a
+    `decision_id` produced `499bd72c-6891-4111-85dd-3e8a2de2ade1` and this scan
+    reported a card number that was never there. Stripping UUID-SHAPED strings
+    fixed that case and missed the next one — `node_id` and `parent_id` are bare
+    8-character hex, about one run in two thousand.
+
+    So the rule is the field name, not the shape: an identifier is excluded
+    because of what it IS, which also covers whatever id field is added next.
+    """
+    return {k: v for k, v in record.items() if not k.endswith("_id")}
 
 
 def verify(records: list[dict]) -> list[str]:
@@ -196,12 +206,10 @@ def verify(records: list[dict]) -> list[str]:
 
     # Value-free: nothing from a fixture body may appear anywhere in the trail.
     #
-    # Opaque identifiers are removed before the scan. They are random hex and
-    # `4111` is four hex characters, so about one run in seventy produced a
-    # decision_id such as 499bd72c-6891-4111-85dd-3e8a2de2ade1 and this failed on
-    # a card number that was never there. Stripping the ids keeps the probe short
-    # enough to catch a partly-redacted value, without the collision.
-    blob = _UUID_RE.sub("<id>", json.dumps(records))
+    # Identifier FIELDS are removed before the scan — see `_without_ids`. The
+    # probe stays short enough to catch a partly-redacted value; a real card is
+    # not in an id field, so it still fails the scan.
+    blob = json.dumps([_without_ids(r) for r in records])
     for leak in ("4111", "123-45-6789", "Jordan", "double charge", "Ignore all previous", "system prompt is"):
         if leak in blob:
             problems.append(f"trail carries fixture content ({leak[:12]}...)")
