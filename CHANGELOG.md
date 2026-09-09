@@ -11,6 +11,30 @@ upgrade is worth your afternoon.
 
 Each entry links to its release, which carries the reasoning and the measurements.
 
+## 0.11.0 — 2026-09-08
+
+Detector and screening coverage, from a partner harness run against a real
+workload. Three of these change what a call returns.
+
+**Added**
+
+- `PERSISTENCE` and `CONDITIONAL_TRIGGER` screening families — an instruction
+  meant to outlive its turn, and one that lies dormant until a matching question
+  arrives. `SCREEN_FAMILIES` is now nine.
+
+**Changed**
+
+- `PHONE` detects unseparated E.164 (`+15550142889`) and grouped international
+  numbers. The same number was caught with separators and missed without, in
+  every country.
+- `AUTHORITY_IMPERSONATION` flags the channel-prefix form — `SYSTEM:`,
+  `[SYSTEM]`, `<system>`, `<|im_start|>system`, `### System`. It modelled a
+  claim of authority and not text wearing the costume of a privileged turn.
+- `INSTRUCTION_OVERRIDE` matches an imperative shape rather than a phrase list,
+  so "Forget the above" flags as "Disregard all prior instructions" did.
+
+Engine unchanged at `0.2`. [Release](https://github.com/watchlight-ai-beacon/watchlight-de/releases/tag/v0.11.0)
+
 ## 0.10.0 — 2026-09-07
 
 Five capabilities that did not exist, and four changes to what a call returns.
