@@ -53,6 +53,27 @@ result = govern.sanitize(
 # result["report"]["counts"] → {"KNOWN": 3, "DOB": 1}
 ```
 
+### `known` covers your subjects. `PERSON` covers everyone else.
+
+`known` is exact, so it is the precise half of this — but it can only ever hold
+values your application already has. That is a boundary worth seeing before you
+rely on it: **the people in a document who are not your users are the ones
+`known` structurally cannot reach.** A friend named in a trip request, a child's
+school, a doctor in a case note — none of them ever used your product, so none
+of them are in your database, and they have the least say in the matter.
+
+Those are what the `PERSON` and `ADDRESS` heuristics are for. They are off by
+default because they are heuristics — lower precision, and they redact
+organisation names as people — so turning them on is a judgement about which
+error you would rather make:
+
+```python
+govern.sanitize(text, types=[*DEFAULT_PII_TYPES, "PERSON", "ADDRESS"], known=[user.full_name])
+```
+
+Use both. `known` for the subjects you hold, the heuristics for the third
+parties you do not.
+
 ## Make the sanitizing path the only way in
 
 ```cedar
@@ -143,7 +164,9 @@ Proved by [`suites/pii-before-read.suite.json`](./suites/pii-before-read.suite.j
 - `known` matching is simple case-insensitive. Unicode case folding differs
   between the TypeScript and Python lanes.
 - `PERSON` and `ADDRESS` are heuristics and off by default. Turn them on with
-  `types: [...DEFAULT_PII_TYPES, "PERSON", "ADDRESS"]`.
+  `types: [...DEFAULT_PII_TYPES, "PERSON", "ADDRESS"]` — and see
+  [`known` covers your subjects](#known-covers-your-subjects-person-covers-everyone-else)
+  for which of the two you actually need.
 - `detectorVersion` / `detector_version` (`de-rules-2`) names the detector set
   that produced a report, and carries a `+custom.<digest>` suffix once you have
   registered any of your own.

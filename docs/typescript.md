@@ -140,6 +140,11 @@ detector hangs every call that scans a document. A built-in label cannot be
 replaced. Once anything is registered, `detectorVersion` carries a digest of the
 set, so an audit record says what was screening.
 
+`known` holds values your application already has, so it covers **your**
+subjects and structurally cannot cover anyone else — the friend named in a
+request, the school, the doctor. `PERSON` and `ADDRESS` are what cover those,
+and they are off by default because they are heuristics. Use both.
+
 A `known` value matches as a whole word, case-insensitively — `"Smith"` covers
 `Smith's` but not `Smithfield`. It cannot tell a name from the same word used
 ordinarily, so a single-token name that is also a common word (`Will`, `May`,
