@@ -8,7 +8,7 @@ different verdict. Only some announce themselves; the rest surface as a denial
 that looks exactly like a policy of yours doing its job. Read every entry
 between the version you are on and the one you are moving to.
 
-## Unreleased
+## 0.11.0
 
 **Two new screening families: `PERSISTENCE` and `CONDITIONAL_TRIGGER`.**
 `SCREEN_FAMILIES` grows from seven to nine, and both are on by default, so
