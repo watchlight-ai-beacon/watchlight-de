@@ -167,7 +167,13 @@ function verify(records) {
   const blob = JSON.stringify(
     records.map((r) => Object.fromEntries(Object.entries(r).filter(([k]) => !k.endsWith("_id"))))
   );
-  for (const leak of ["4111", "123-45-6789", "Jordan", "double charge", "Ignore all previous", "system prompt is"]) {
+  // Each probe must be SPECIFIC enough that it cannot collide with a random
+  // value. `4111` alone could not: it matched a decision_id, then a node_id,
+  // then the fractional seconds of a timestamp — three fixes, each excluding
+  // one more random FIELD, when the fault was always the probe. `4111 1111`
+  // contains a space, so no identifier or timestamp can produce it.
+  for (const leak of ["4111 1111", "4111111111111111", "123-45-6789", "Jordan",
+                      "double charge", "Ignore all previous", "system prompt is"]) {
     if (blob.includes(leak)) problems.push(`trail carries fixture content (${leak.slice(0, 12)}...)`);
   }
   return problems;
