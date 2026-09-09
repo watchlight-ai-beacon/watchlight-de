@@ -34,7 +34,9 @@ export type ScreenFamily =
   | "JAILBREAK_MARKER"
   | "AUTHORITY_IMPERSONATION"
   | "HTML_INJECTION"
-  | "PROMPT_LEAK";
+  | "PROMPT_LEAK"
+  | "PERSISTENCE"
+  | "CONDITIONAL_TRIGGER";
 
 /** A built-in {@link ScreenFamily}, or one registered with
  *  {@link registerScreenFamily}. */
@@ -55,6 +57,8 @@ export const SCREEN_FAMILIES: readonly ScreenFamily[] = [
   "AUTHORITY_IMPERSONATION",
   "HTML_INJECTION",
   "PROMPT_LEAK",
+  "PERSISTENCE",
+  "CONDITIONAL_TRIGGER",
 ];
 
 /** Raised when screening cannot complete — fail-closed: the caller must NOT
@@ -308,6 +312,37 @@ const RULES: Rule[] = [
     `${B}(?:instead|rather than that|from now on),? (?:you must|you will|you should|you have to|always) (?:only )?(?:do|say|respond|reply|answer|output|write|follow)${E}`
   ),
 
+  // ── PERSISTENCE ──
+  // An instruction meant to outlive the turn it arrived in. Ordinary text says
+  // "from now on" constantly, so the marker alone is not the signal: the rule
+  // needs a persistence marker AND an instruction aimed at the model.
+  rule("PERSISTENCE",
+    `${B}(?:from now on|going forward|from here on(?:wards)?|for (?:all|every|any) future` +
+    `|in (?:all|every) future|for the rest of (?:this|the) (?:conversation|session|thread))` +
+    `[ ,:]{0,3}${FILL}` +
+    `(?:always|never|make sure (?:to|you)|be sure to|remember to|you (?:must|will|should|are to)|` +
+    `ensure (?:you|that you))${E}`),
+  rule("PERSISTENCE",
+    `${B}(?:always|never)[ ,]{0,2}${FILL}` +
+    `(?:respond|reply|answer|say|tell|recommend|suggest|output|write|behave|act|treat)[a-z]{0,3} ${FILL}` +
+    `(?:from now on|going forward|in (?:all|every) future|for (?:all|every) future)${E}`),
+  rule("PERSISTENCE",
+    `${B}remember (?:this|that|the following)[ ,:]{0,3}` +
+    `(?:for (?:all|every|future)|going forward|from now on|permanently|in every)${E}`),
+  // ── CONDITIONAL_TRIGGER ──
+  // A dormant instruction: inert until a matching question arrives, which makes
+  // it the hardest shape for a human reviewer to spot in stored content. The
+  // condition alone is ordinary English — the instruction after it is not.
+  rule("CONDITIONAL_TRIGGER",
+    `${B}(?:if|when|whenever|should|any ?time)[ ,]{0,2}` +
+    `(?:the user|they|someone|anyone|a user|the human|the customer|somebody)[ ,]{0,2}${FILL}` +
+    `(?:asks?|mentions?|requests?|says?|inquires?|enquires?|brings? up|wants?|needs?)` +
+    `[^.!?]{0,60}?[ ,]${FILL}` +
+    `(?:reply|respond|answer|say|tell|claim|state|output|recommend|suggest|insist|assure|` +
+    `pretend|deny|confirm)${E}`),
+  rule("CONDITIONAL_TRIGGER",
+    `${B}if (?:anyone|anybody|someone|somebody|they|the user) asks?[ ,]{0,2}` +
+    `${FILL}(?:say|tell|reply|respond|answer|claim|deny|insist|pretend)${E}`),
   // ── ROLE_SWITCH ──────────────────────────────────────────────────
   // "you are now a hacker AI", "act as an unrestricted assistant",
   // "pretend you are a human".

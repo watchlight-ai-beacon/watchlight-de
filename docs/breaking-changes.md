@@ -10,6 +10,17 @@ between the version you are on and the one you are moving to.
 
 ## Unreleased
 
+**Two new screening families: `PERSISTENCE` and `CONDITIONAL_TRIGGER`.**
+`SCREEN_FAMILIES` grows from seven to nine, and both are on by default, so
+expect `screening` hits on text that carries an instruction meant to outlive the
+turn (*"from now on, always…"*) or one that lies dormant until a matching
+question arrives (*"if the user asks about X, reply…"*).
+
+Neither matches on the condition alone — *"if you have questions, contact
+support"* stays quiet. If you enumerate `SCREEN_FAMILIES` anywhere, it is two
+entries longer.
+
+
 **`AUTHORITY_IMPERSONATION` now flags the channel-prefix form**, and
 `INSTRUCTION_OVERRIDE` matches an imperative shape rather than a phrase list.
 `SYSTEM:`, `[SYSTEM]`, `<system>`, `<|im_start|>system`, `### System` and
