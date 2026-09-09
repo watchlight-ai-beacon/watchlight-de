@@ -206,11 +206,18 @@ def verify(records: list[dict]) -> list[str]:
 
     # Value-free: nothing from a fixture body may appear anywhere in the trail.
     #
-    # Identifier FIELDS are removed before the scan — see `_without_ids`. The
-    # probe stays short enough to catch a partly-redacted value; a real card is
-    # not in an id field, so it still fails the scan.
+    # Identifier fields are still dropped — an opaque id cannot carry content,
+    # so scanning one can only ever produce a false alarm — but the probes
+    # below are what actually make this reliable.
     blob = json.dumps([_without_ids(r) for r in records])
-    for leak in ("4111", "123-45-6789", "Jordan", "double charge", "Ignore all previous", "system prompt is"):
+    # Each probe must be SPECIFIC enough that it cannot collide with a random
+    # value. `4111` alone could not: it matched a decision_id, then a node_id,
+    # then the fractional seconds of a timestamp — three fixes, each of which
+    # excluded one more random FIELD, when the fault was always the probe.
+    # `4111 1111` contains a space, so no identifier or timestamp can produce
+    # it, and the digits-only form covers anything that strips separators.
+    for leak in ("4111 1111", "4111111111111111", "123-45-6789", "Jordan",
+                 "double charge", "Ignore all previous", "system prompt is"):
         if leak in blob:
             problems.append(f"trail carries fixture content ({leak[:12]}...)")
     return problems
