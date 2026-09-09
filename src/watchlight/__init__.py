@@ -1798,6 +1798,36 @@ _PROMPT_NOUN = (
     "secret instructions|developer instructions|pre-?prompt|meta-?prompt)"
 )
 _PROMPT_ADJ = "(?:(?:full|entire|complete|exact|whole|original|hidden|secret|internal|verbatim) )?"
+# A SELF-REFERENTIAL object: the model's own instructions, configuration or
+# prior context. The verb is deliberately not part of this.
+#
+# Asking for the prompt back and asking for a summary of it are the same attack,
+# and the rules above keyed on the verb — so "repeat your system prompt" was
+# caught and "summarise your instructions" was not. Both sides of a realistic
+# corpus use the same verbs ("summarise our trip", "list the rules for carry-on
+# baggage"), so the verb cannot be the discriminator. The object can.
+#
+# The second-person possessive is load-bearing on the generic nouns: `the rules`
+# is a carry-on policy, `your rules` is the system prompt. `the system prompt`
+# is the one phrase specific enough to allow with a bare article.
+_SELF_REF_OBJECT = (
+    "(?:"
+    "your (?:(?:system|initial|original|hidden|secret|developer|internal|first|prior|preceding) )?"
+    "(?:prompts?|instructions?|configuration|guidelines|directives|rules|constraints|"
+    "programming|training|system message)"
+    "|the system prompt"
+    "|(?:what|everything|anything|all)[^.?!]{0,14}you (?:were|have been|was) (?:told|given|instructed)"
+    # The interrogative form, bounded: "what were you told TO DO" is the model's
+    # instructions; "what were you told AT CHECK-IN" is a person being asked.
+    # Without the lookahead the second flags too, and a travel itinerary is full
+    # of them.
+    "|(?:were|have) you (?:been )?(?:told|given|instructed)(?=\\s*(?:to\\b|in your\\b|[.?!,]|$))"
+    "|you (?:were|have been) (?:told|given|instructed) to"
+    "|(?:rules|instructions?|guidelines|directives) (?:that )?you (?:were|have been) (?:given|told)"
+    "|(?:the text|everything|anything) above"
+    "|written above"
+    ")"
+)
 # Output-side nouns: a prompt noun, or a generic noun qualified as system/hidden.
 _LEAK_NOUN = (
     f"(?:{_PROMPT_NOUN}|(?:system|hidden|secret|initial|original|developer|internal|underlying) "
@@ -1886,6 +1916,16 @@ _SCREEN_RULES: list[tuple[str, re.Pattern]] = [
         ("ROLE_SWITCH",
          f"{_B}(?:enter|switch to|activate|enable) (?:the )?{_FILL}(?:persona|character|roleplay|role-play) (?:mode|now){_E}"),
         # ── PROMPT_EXFILTRATION ──
+        # The PARAPHRASE form: any request whose object is the model's own
+        # instructions. Verb-agnostic on purpose — see `_SELF_REF_OBJECT`.
+        ("PROMPT_EXFILTRATION",
+         f"{_B}(?:summari[sz]e|describe|explain|paraphrase|outline|list|recap|restate|characteri[sz]e|"
+         f"tell me about|what(?:'s| is| are| were)|in your own words)[^.?!]{{0,40}}?{_SELF_REF_OBJECT}"),
+        # …and the interrogative inversion, which is the natural way to ask and
+        # carries no leading verb at all: "What were you told to do?"
+        ("PROMPT_EXFILTRATION",
+         f"{_B}(?:what|which|how)[^.?!]{{0,24}}?(?:were|have) you (?:been )?(?:told|given|instructed)"
+         r"(?=\s*(?:to\b|in your\b|[.?!,]|$))"),
         ("PROMPT_EXFILTRATION",
          f"{_B}(?:reveal|show|print|display|output|repeat|recite|disclose|leak|dump|expose|share|tell|give|send|write|spell|paste|echo|return|summarize|summarise|translate|encode|quote) "
          "(?:me |us |back |out |it )?(?:all |all of |the full |the entire |the complete |the exact |the whole )?"
