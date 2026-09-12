@@ -256,9 +256,9 @@ value-free in a file you can grep.
 
 The **decision engine** ships as a compiled wheel — `watchlight-engine` and the
 `watchlight-mcp` runtime — under the Watchlight Developer Edition license. Both
-are **free to use, including in production and commercially, for up to 25
-governed agents per organization**. A commercial license is needed only above
-that, or to re-offer the engine itself as a hosted authorization service.
+are **free to use, including in production and commercially**. A commercial
+license is needed only to re-offer the engine itself as a hosted authorization
+service.
 
 Want the engine source, an air-gapped build, or to govern a fleet in production?
 [email sales@watchlight.ai](mailto:sales@watchlight.ai?subject=Watchlight%20Enterprise).
