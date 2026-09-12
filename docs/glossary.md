@@ -41,6 +41,7 @@ verifier — it authorizes the identity your application asserts.
 | **Counter** | A counter is a count of past decisions for a subject and a window, and it is what a quota is built from. A **counter source** answers the same query from your durable store instead of the local file. | [quotas](../examples/patterns/quotas.md) |
 | **Decision id** | The decision id is the correlation id on a verdict and on every record it produced. Join your own logs and traces to it. | |
 | **Delegation** | Delegation is spawning a sub-agent under a narrowed scope, which appends it to the actor chain. The subject does not change. | |
+| **Delegation depth** | Delegation depth is how many attenuation hops a sub-agent sits below its root, which is depth 0. `max_delegation_depth` on the governor caps it — default 8 — and a hop past it is a deny with reason code `DELEGATION_DEPTH_EXCEEDED`. | [sub-agent confinement](../examples/patterns/subagent-confinement.md) |
 | **Deny reason** | The deny reason is what a refused caller is told: a uniform *not authorized*. The specific reason stays in the trail. | |
 | **Detector** | A detector is one rule that finds one kind of identifier in text — email, SSN, card. `sanitize` runs the built-in set, plus any you register for your own vocabulary. | [extending Watchlight](extending.md) |
 | **Egress** | An egress record is written when a result leaves a governed call, and it says whether the result was withheld or rewritten. | [data egress](../examples/patterns/data-egress.md) |
