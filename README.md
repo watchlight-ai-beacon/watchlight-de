@@ -181,7 +181,7 @@ changes is what happens around the decision.
 | Capability | Developer Edition | Enterprise |
 |---|---|---|
 | Allow / require approval / deny, on real Cedar | ✅ in-process engine, policies from a local file | ✅ a running, scaled decision service |
-| Strict-subset sub-agent attenuation, bounded by a delegation-depth limit | ✅ engine-side; `max_delegation_depth` per governor (default 8) | ✅ server-side; depth limit per tenant (default 8) and per agent |
+| Strict-subset sub-agent attenuation, bounded by a delegation-depth limit | ✅ engine-side; the limit is configurable — `max_delegation_depth` per governor (default 8) | ✅ server-side; the limit is configurable per tenant (default 8) and per agent |
 | Human-in-the-loop approvals | ✅ single-use tokens | ✅ across the fleet, with an operator queue |
 | Content screening | ✅ rule-based and in-process: `govern.sanitize`, `govern.screen` | ✅ the same class of check as a managed service — centrally authored policies, applied to traffic your code never touches |
 | Framework plugins | ✅ LangGraph, Pydantic AI, Claude Agent SDK, DeepAgents, LangChain.js, MCP | ✅ those plus Claude Code, Google ADK, AWS Bedrock, Microsoft Agent Framework, OpenClaw |
@@ -204,7 +204,8 @@ changes is what happens around the decision.
 Everything the Developer Edition leaves out needs **state outside your process**
 — a fleet to revoke across, a plane to quarantine into, a key to sign lineage
 with. What it keeps is every guarantee that fits in one process: fail-closed
-semantics, engine-side attenuation, explicit scopes, and value-free audit are
+semantics, strict-subset attenuation bounded by a configurable delegation-depth
+limit, explicit scopes, and value-free audit are
 identical in both.
 
 → **[The platform](https://www.watchlight.ai/platform)** ·
