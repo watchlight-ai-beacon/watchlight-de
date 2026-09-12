@@ -165,6 +165,10 @@ const child = root.attenuate({ tools: ["read"] });   // strictly a subset
 const token = child.toToken();                       // carry it to a worker
 ```
 
+The tree is bounded by `maxDelegationDepth` on the governor (default 8); a hop
+past it throws `DelegationDepthExceeded`, a deny with code
+`DELEGATION_DEPTH_EXCEEDED`.
+
 `govern.scopeFromToken()` rebuilds it on the far side, and the receiving engine
 re-proves the subset. Setting `WATCHLIGHT_APDP_URL` graduates the same code to
 the control plane.
