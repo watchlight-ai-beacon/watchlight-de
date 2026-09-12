@@ -106,6 +106,11 @@ export interface SanitizeOptions {
    *  or nested occurrences merge into one span. Counted under `KNOWN`. The
    *  values never appear in the output, the report, or the audit trail. */
   known?: string[];
+  /** Exact values the optional `PERSON` heuristic must leave untouched.
+   *  Matching is case-insensitive and covers only a complete `PERSON`
+   *  candidate; other enabled detectors still run over the same text. Values
+   *  never appear in the report or audit trail. */
+  personExclusions?: string[];
 }
 
 export interface SanitizeReport {
@@ -413,8 +418,9 @@ function detectKnown(text: string, known: string[]): Span[] {
   return merged;
 }
 
-function detect(text: string, types: DetectorLabel[], known: string[]): Span[] {
+function detect(text: string, types: DetectorLabel[], known: string[], personExclusions: string[]): Span[] {
   const enabled = new Set(types);
+  const excludedPeople = new Set(personExclusions.filter((v) => v.trim().length > 0).map((v) => v.toLowerCase()));
   // KNOWN first: an application-supplied value is the most authoritative label
   // when it ties with a structured detector on the same span.
   const spans: Span[] = known.length ? detectKnown(text, known) : [];
@@ -428,6 +434,7 @@ function detect(text: string, types: DetectorLabel[], known: string[]): Span[] {
       let value: string | null = det.group ? m[1] : m[0];
       if (det.trim) value = det.trim(value);
       if (value === null) continue;
+      if (det.type === "PERSON" && excludedPeople.has(value.toLowerCase())) continue;
       // Group / trimmed spans are the LAST component of the match, so the
       // offset from the match end is exact.
       const start = m.index + m[0].length - value.length;
@@ -754,8 +761,12 @@ export function sanitize(text: string, opts: SanitizeOptions = {}): SanitizeResu
     // Value-free by design: the message never echoes the offending entry.
     throw new SanitizeError("known must be an array of strings");
   }
+  const personExclusions = opts.personExclusions ?? [];
+  if (!Array.isArray(personExclusions) || personExclusions.some((v) => typeof v !== "string")) {
+    throw new SanitizeError("personExclusions must be an array of strings");
+  }
   try {
-    const spans = detect(text, types, known);
+    const spans = detect(text, types, known, personExclusions);
     const counters = new Map<string, string>();
     const perTypeTag = new Map<DetectorLabel, number>();
     const counts: Partial<Record<DetectorLabel, number>> = {};

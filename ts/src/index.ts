@@ -1703,7 +1703,7 @@ export class Watchlight {
       const { agent, ...rest } = opts;
       return this.as(agent).sanitize(content, rest);
     }
-    const { intent = "read", resource = "document", mode, types, decisionId, known } = opts;
+    const { intent = "read", resource = "document", mode, types, decisionId, known, personExclusions } = opts;
     // The subject the redaction was performed FOR. A call that names none has
     // this agent as its subject — recorded as the TYPED `Agent::"<name>"`, the
     // same reference the decision line carries, never a bare name.
@@ -1714,7 +1714,7 @@ export class Watchlight {
     // inside sanitizeText before they are echoed onto the report and written to
     // the audit line; `known` values are redacted in-process and never reach the
     // report or the audit line.
-    const result = sanitizeText(content, { mode, types, decisionId, principal, known });
+    const result = sanitizeText(content, { mode, types, decisionId, principal, known, personExclusions });
     this._auditSanitize(intent, resource, result);
     return result;
   }

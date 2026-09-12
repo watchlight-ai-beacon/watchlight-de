@@ -1517,6 +1517,7 @@ def sanitize(
     decision_id: Optional[str] = None,
     principal: Optional[str] = None,
     known: Optional[Sequence[str]] = None,
+    person_exclusions: Optional[Sequence[str]] = None,
 ) -> dict:
     """Redact PII from ``text``. Deterministic, fail-closed. Returns
     ``{"text": ..., "report": {mode, detector_version, counts, total}}`` where the
@@ -1529,6 +1530,10 @@ def sanitize(
     ``KNOWN``; the values never appear in the output, report, or audit trail.
     Dictionary matching is simple (ASCII-style) case-insensitive; Unicode case
     folding differs between the Python and TypeScript lanes.
+    ``person_exclusions`` lists exact, case-insensitive values that the optional
+    ``PERSON`` heuristic must leave untouched. It applies only to a complete
+    ``PERSON`` candidate; other enabled detectors still run over the same text.
+    Exclusion values never appear in the report or audit trail.
     ``decision_id`` — the correlation id of the :meth:`Watchlight.authorize`
     decision that governed this read — is validated (1-128 code points, no control or line-separator
     characters) and echoed onto ``report["decision_id"]``."""
@@ -1547,6 +1552,15 @@ def sanitize(
     if not all(isinstance(v, str) for v in known_values):
         # Value-free by design: the message never echoes the offending entry.
         raise SanitizeError("known must be a sequence of strings")
+    if person_exclusions is not None and isinstance(person_exclusions, (str, bytes)):
+        raise SanitizeError("person_exclusions must be a sequence of strings")
+    try:
+        person_exclusion_values = list(person_exclusions) if person_exclusions is not None else []
+    except TypeError:
+        raise SanitizeError("person_exclusions must be a sequence of strings") from None
+    if not all(isinstance(v, str) for v in person_exclusion_values):
+        raise SanitizeError("person_exclusions must be a sequence of strings")
+    excluded_people = {v.lower() for v in person_exclusion_values if v.strip()}
     # A registered detector is on by default the way a built-in structured rule
     # is — registering it IS the opt-in — and is selectable by label through
     # `types` like any other.
@@ -1572,6 +1586,8 @@ def sanitize(
                 if trim is not None:
                     val = trim(val)
                 if val is None:
+                    continue
+                if typ == "PERSON" and val.lower() in excluded_people:
                     continue
                 # group / trimmed spans are the LAST component of the match
                 start = m.end() - len(val)
@@ -3137,6 +3153,7 @@ class Watchlight:
         decision_id: Optional[str] = None,
         principal: Optional[str] = None,
         known: Optional[Sequence[str]] = None,
+        person_exclusions: Optional[Sequence[str]] = None,
         agent: Optional[str] = None,
     ) -> dict:
         """Strip PII from text before an agent reads it (governed data
@@ -3163,6 +3180,7 @@ class Watchlight:
                 decision_id=decision_id,
                 principal=principal,
                 known=known,
+                person_exclusions=person_exclusions,
             )
         # The subject the redaction was performed FOR. A call that names none has
         # this agent as its subject — recorded as the TYPED Agent::"<name>", the
@@ -3179,6 +3197,7 @@ class Watchlight:
             # SanitizeError here exactly as it does on the module function.
             principal=self._principal(principal, error=SanitizeError),
             known=known,
+            person_exclusions=person_exclusions,
         )
         self._audit_sanitize(intent, resource, result)
         return result
