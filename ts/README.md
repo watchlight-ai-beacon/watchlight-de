@@ -222,5 +222,4 @@ which is live, and networked mode is fail-closed.
 Apache-2.0. The compiled engine it depends on
 ([`@watchlight/engine`](https://www.npmjs.com/package/@watchlight/engine)) is
 under the Watchlight Developer Edition License — free for development, testing
-and production, including commercially, up to 25 governed agents per
-organization.
+and production, including commercially.
