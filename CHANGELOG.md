@@ -11,7 +11,10 @@ upgrade is worth your afternoon.
 
 Each entry links to its release, which carries the reasoning and the measurements.
 
-## Unreleased
+## 0.12.0 — 2026-09-12
+
+Delegation depth becomes a governance control, and the engine licence no longer
+limits governed agents. One of these changes what a call returns.
 
 **Changed**
 
@@ -23,10 +26,18 @@ Each entry links to its release, which carries the reasoning and the measurement
   Strict-subset attenuation still applies at every hop.
 - Scope tokens carry up to 64 levels, held to the receiving governor's limit.
   `MAX_ACTOR_CHAIN` is 65.
+- `PROMPT_EXFILTRATION` flags the paraphrase form — requests to summarise or
+  explain the model's own instructions, not only to repeat them.
+- The engine licence no longer limits governed agents: `watchlight-engine` and
+  `watchlight-mcp` are free to use, including in production and commercially. A
+  commercial license is needed only to re-offer the engine itself as a hosted
+  authorization service.
 
 **Removed**
 
 - `DevEditionCeiling` and `DE_MAX_DEPTH`, and the depth-5 cap they enforced.
+
+Engine `0.2.1` (licence only). [Release](https://github.com/watchlight-ai-beacon/watchlight-de/releases/tag/v0.12.0)
 
 ## 0.11.0 — 2026-09-08
 
