@@ -14,17 +14,18 @@ import textwrap
 
 import pytest
 
+from watchlight.scope_token import MAX_CHAIN_LENGTH
+
 pytest.importorskip("watchlight_engine")
 
 from watchlight import (  # noqa: E402
     ACTOR_CHAIN_CONTEXT_KEY,
     ACTOR_CONTEXT_KEY,
-    DE_MAX_DEPTH,
     MAX_ACTOR_CHAIN,
     REQUEST_INVALID_MESSAGE,
     AttenuationDenied,
     AuthorizeRequestError,
-    DevEditionCeiling,
+    DelegationDepthExceeded,
     RESERVED_CONTEXT_MESSAGE,
     UNCONFIGURED_AGENT,
     Denied,
@@ -369,7 +370,7 @@ def test_delegation_records_the_ordered_chain_and_the_leaf(tmp_path):
         'when { context.actor_chain.contains("flight-booker") };'
     )
     assert ACTOR_CHAIN_CONTEXT_KEY == "actor_chain"
-    assert MAX_ACTOR_CHAIN == DE_MAX_DEPTH + 1
+    assert MAX_ACTOR_CHAIN == MAX_CHAIN_LENGTH + 1
     alice = principals.user("alice")
 
     root = g.scope(tools=["search", "book"], time_budget_seconds=600)
@@ -446,13 +447,13 @@ def test_a_chain_that_is_not_a_sequence_is_the_reserved_key_error(tmp_path):
     assert ok["allowed"] is True
 
 
-def test_the_chain_is_bounded_by_the_attenuation_ceiling(tmp_path):
+def test_the_chain_is_bounded_by_max_delegation_depth(tmp_path):
     g = Watchlight(agent="flight-booker", audit_dir=str(tmp_path))
     deep = g.delegate(g.scope(tools=["search"]), "level-1")
-    for i in range(2, DE_MAX_DEPTH + 1):
+    for i in range(2, g.max_delegation_depth + 1):
         deep = g.delegate(deep, f"level-{i}")
-    assert len(deep.actor_chain) == MAX_ACTOR_CHAIN
-    with pytest.raises(DevEditionCeiling):
+    assert len(deep.actor_chain) == g.max_delegation_depth + 1
+    with pytest.raises(DelegationDepthExceeded):
         g.delegate(deep, "too-deep")
 
 

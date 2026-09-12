@@ -86,8 +86,10 @@ MAX_TOKEN_LENGTH = 16_384
 MAX_IAT_SKEW_SECONDS = 60
 #: Minimum token-secret length (bytes).
 MIN_SECRET_BYTES = 16
-#: Maximum chain length a token may carry (mirrors the DE depth ceiling).
-MAX_CHAIN_LENGTH = 5
+#: Maximum chain length a token may carry — a structural bound on the replay a
+#: token can ask for, and the largest ``max_delegation_depth`` a governor accepts.
+#: The receiving governor's own ``max_delegation_depth`` still applies on top.
+MAX_CHAIN_LENGTH = 64
 
 _HMAC_BYTES = 32
 _MAX_SAFE_INT = 2**53 - 1

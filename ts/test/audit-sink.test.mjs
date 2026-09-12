@@ -14,7 +14,7 @@ import * as os from "node:os";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
-const { Watchlight, Scope, InProcessBackend, AttenuationDenied, DevEditionCeiling, DE_MAX_DEPTH } = require("../dist/index.js");
+const { Watchlight, Scope, InProcessBackend, AttenuationDenied, DelegationDepthExceeded } = require("../dist/index.js");
 const { AuditTrail } = require("../dist/audit.js");
 
 let pass = 0, fail = 0;
@@ -52,8 +52,8 @@ async function exercise(g) {
   const child = root.attenuate({ tools: ["read"] });
   try { root.attenuate({ tools: ["read", "delete"] }); } catch (e) { if (!(e instanceof AttenuationDenied)) throw e; }
   let s = child;
-  for (let d = child.depth; d < DE_MAX_DEPTH; d++) s = s.attenuate({ tools: ["read"] });
-  try { s.attenuate({ tools: ["read"] }); } catch (e) { if (!(e instanceof DevEditionCeiling)) throw e; }
+  for (let d = child.depth; d < g.maxDelegationDepth; d++) s = s.attenuate({ tools: ["read"] });
+  try { s.attenuate({ tools: ["read"] }); } catch (e) { if (!(e instanceof DelegationDepthExceeded)) throw e; }
   return [allow.decision, deny.decision, held.decision, approved.decision, approved.approved];
 }
 
@@ -172,7 +172,7 @@ async function main() {
   {
     const dir = fs.mkdtempSync(join(os.tmpdir(), "wl-sink-"));
     const engine = await new InProcessBackend().engine();
-    const root = new Scope({ engine, auditPath: join(dir, "audit.jsonl"), agent: "legacy", allowedTools: ["read"], allowedResources: [], allowedIntents: [], maxDepth: DE_MAX_DEPTH, timeBudgetSeconds: 60, depth: 0 });
+    const root = new Scope({ engine, auditPath: join(dir, "audit.jsonl"), agent: "legacy", allowedTools: ["read"], allowedResources: [], allowedIntents: [], maxDepth: 8, timeBudgetSeconds: 60, depth: 0 });
     root.emitRoot();
     root.attenuate({ tools: ["read"] });
     ok("legacy auditPath Scope still writes the file", lines(dir).filter((r) => r.event === "attenuation").length === 2);

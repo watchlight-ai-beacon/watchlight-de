@@ -32,9 +32,10 @@ summarizer = root.attenuate(tools=["read_file"])     # subset of the parent
 
 - A child can drop tools, resources and intents and shrink budgets, never add.
   Widening raises `AttenuationDenied`.
-- The tree goes **five levels deep** (`DE_MAX_DEPTH`). Deeper raises
-  `DevEditionCeiling` — a product boundary, not a policy denial. Orchestrator →
-  task → tool is depth 2 or 3.
+- The tree is bounded by **`max_delegation_depth`** — a governance control
+  (default 8), set on the governor and lowerable per root scope. A hop past it
+  raises `DelegationDepthExceeded` (reason code `DELEGATION_DEPTH_EXCEEDED`), a
+  deny recorded like any other. Orchestrator → task → tool is depth 2 or 3.
 - **A scope is checked when you delegate, never when a call is authorized.**
   Confining a sub-agent means narrowing the scope *and* writing the policy.
 - The check is in-process and cooperative.
@@ -124,5 +125,5 @@ a valid signature.
 
 [`scripts/subagent-confinement.mjs`](./scripts/subagent-confinement.mjs) — this
 is a capability check, not a policy verdict, so there is no suite. It asserts
-every rule above against the real engine, including the depth ceiling and the
+every rule above against the real engine, including the depth limit and the
 token round-trip.

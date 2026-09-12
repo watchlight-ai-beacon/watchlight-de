@@ -97,8 +97,9 @@ def _summary(events: list[dict[str, Any]]) -> dict[str, Any]:
 def _attenuation(audit_path: pathlib.Path, limit: int = 2000) -> list[dict[str, Any]]:
     """Extract sub-agent attenuation nodes for the tree view (newest-wins per
     node). Each node carries its id, parent, depth, and granted tools, so the
-    console can reconstruct the exact tree — including the depth-5 ceiling, which
-    arrives as a denied node whose reason points to Enterprise."""
+    console can reconstruct the exact tree — including a hop refused by
+    ``max_delegation_depth``, which arrives as a denied node carrying reason code
+    ``DELEGATION_DEPTH_EXCEEDED``."""
     nodes: dict[str, dict[str, Any]] = {}
     for line in _tail_lines(audit_path)[-limit:]:
         line = line.strip()
@@ -122,9 +123,8 @@ def _attenuation(audit_path: pathlib.Path, limit: int = 2000) -> list[dict[str, 
             "tools": raw.get("tools", []),
             "allowed": decision.lower() in ("allow", "permit"),
             "reason": reason,
-            # The ceiling is the one denial whose reason points to Enterprise.
-            "ceiling": (not decision.lower() in ("allow", "permit"))
-            and "watchlight.ai" in reason,
+            # A hop refused by max_delegation_depth, not a strict-subset refusal.
+            "depth_limit": raw.get("reason_code") == "DELEGATION_DEPTH_EXCEEDED",
         }
     return list(nodes.values())
 
@@ -404,7 +404,7 @@ _PAGE = """<!doctype html>
   .attn-row { font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace; padding:2px 0; border-left:2px solid transparent; }
   .attn-row.allow   { border-left-color:var(--green); }
   .attn-row.deny    { border-left-color:var(--red); }
-  .attn-row.ceiling { border-left-color:var(--amber); background:rgba(251,191,36,.06); }
+  .attn-row.depthlimit { border-left-color:var(--amber); background:rgba(251,191,36,.06); }
   .attn-depth { color:var(--muted); }
   .attn-tools { color:var(--text); }
   .attn-reason { color:var(--amber); font-size:12px; padding:2px 0 10px; max-width:78ch; }
@@ -429,7 +429,7 @@ _PAGE = """<!doctype html>
   </div>
 
   <div id="attn-section" style="display:none">
-    <h2>Attenuation tree <span class="sub" style="font-weight:400">— authority narrowing per sub-agent (Developer-Edition ceiling: depth 5)</span></h2>
+    <h2>Attenuation tree <span class="sub" style="font-weight:400">— authority narrowing per sub-agent, bounded by max_delegation_depth</span></h2>
     <div id="attn"></div>
   </div>
 
@@ -496,16 +496,16 @@ function renderAttn(nodes){
   nodes.forEach(n => { const nd = byId[n.id]; (n.parent && byId[n.parent] ? byId[n.parent].children : roots).push(nd); });
   let out = '';
   function walk(node){
-    const cls = node.ceiling ? 'ceiling' : (node.allowed ? 'allow' : 'deny');
+    const cls = node.depth_limit ? 'depthlimit' : (node.allowed ? 'allow' : 'deny');
     const tools = (node.tools && node.tools.length) ? node.tools.join(', ') : '∅';
     const pad = 12 + (node.depth || 0) * 22;
     out += `<div class="attn-row ${cls}" style="padding-left:${pad}px">`
          + `<span class="attn-depth">depth ${node.depth}</span> · `
          + `<span class="attn-tools">[${esc(tools)}]</span>`
-         + (node.ceiling ? ` <span class="pill deny">CEILING → Enterprise</span>`
+         + (node.depth_limit ? ` <span class="pill deny">DEPTH LIMIT</span>`
                          : (node.allowed ? '' : ` <span class="pill deny">DENY</span>`))
          + `</div>`;
-    if (node.ceiling && node.reason) out += `<div class="attn-reason" style="padding-left:${pad}px">${esc(node.reason)}</div>`;
+    if (node.depth_limit && node.reason) out += `<div class="attn-reason" style="padding-left:${pad}px">${esc(node.reason)}</div>`;
     node.children.sort((a,b) => (a.depth||0) - (b.depth||0)).forEach(walk);
   }
   roots.sort((a,b) => (a.depth||0) - (b.depth||0)).forEach(walk);

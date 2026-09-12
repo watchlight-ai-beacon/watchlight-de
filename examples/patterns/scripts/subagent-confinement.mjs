@@ -5,7 +5,8 @@
 // a child scope narrower than its parent is granted (and holds exactly the
 // clamped subset); a wider one is refused with AttenuationDenied; what a parent
 // never held, or already dropped, cannot be re-acquired further down the tree;
-// the depth ceiling is a product boundary (DevEditionCeiling), not a denial; the
+// a hop past max_delegation_depth is a deny (DelegationDepthExceeded) with its own
+// reason code; the
 // audit trail records every grant and refusal with tool NAMES only; and a scope
 // token minted in one process is rebuilt in another with the same grants, while
 // a tampered or expired token is refused (ScopeTokenError) and the rebuilt scope
@@ -16,7 +17,7 @@ import * as os from "node:os";
 import { join } from "node:path";
 import { loadSdk, checks } from "./_sdk.mjs";
 
-const { Watchlight, AttenuationDenied, DevEditionCeiling, ScopeTokenError, DE_MAX_DEPTH } = loadSdk();
+const { Watchlight, AttenuationDenied, DelegationDepthExceeded, ScopeTokenError } = loadSdk();
 const t = checks("subagent-confinement (attenuation)");
 
 const denied = (fn) => {
@@ -53,24 +54,29 @@ try {
     denied(() => summarizer.attenuate({ tools: ["web_search"] })) instanceof AttenuationDenied);
   t.ok("a grandchild may still narrow further", summarizer.attenuate({ tools: [] }).allowedTools.length === 0);
 
-  // Depth ceiling: a product boundary, distinct from a denial.
+  // Depth limit: max_delegation_depth is a governance control; a hop past it is a
+  // deny with its own reason code.
   let leaf = root;
-  for (let d = 1; d <= DE_MAX_DEPTH; d++) leaf = leaf.attenuate({ tools: ["read_file"] });
-  const ceiling = denied(() => leaf.attenuate({ tools: ["read_file"] }));
-  t.ok(`depth ${DE_MAX_DEPTH + 1} raises DevEditionCeiling, not AttenuationDenied`,
-    ceiling instanceof DevEditionCeiling && !(ceiling instanceof AttenuationDenied));
+  for (let d = 1; d <= root.maxDelegationDepth; d++) leaf = leaf.attenuate({ tools: ["read_file"] });
+  const tooDeep = denied(() => leaf.attenuate({ tools: ["read_file"] }));
+  t.ok(`depth ${root.maxDelegationDepth + 1} raises DelegationDepthExceeded — a deny with code DELEGATION_DEPTH_EXCEEDED`,
+    tooDeep instanceof DelegationDepthExceeded && tooDeep instanceof AttenuationDenied &&
+      tooDeep.code === "DELEGATION_DEPTH_EXCEEDED");
 
   // Audit: every grant and refusal is recorded, value-free.
   const records = fs.readFileSync(join(auditDir, "audit.jsonl"), "utf8").trim().split("\n").map(JSON.parse)
     .filter((r) => r.event === "attenuation");
   const denies = records.filter((r) => r.decision === "Deny");
-  const ceilingDenies = denies.filter((r) => r.reason === ceiling.message);
-  t.ok("every AttenuationDenied is an attenuation Deny record (4 refusals above)",
-    denies.length - ceilingDenies.length === 4, `got ${denies.length - ceilingDenies.length}`);
-  t.ok("the DevEditionCeiling is recorded once, as its own Deny record", ceilingDenies.length === 1, `got ${ceilingDenies.length}`);
+  const depthDenies = denies.filter((r) => r.reason_code === "DELEGATION_DEPTH_EXCEEDED");
+  t.ok("every strict-subset refusal is an attenuation Deny record (4 refusals above)",
+    denies.length - depthDenies.length === 4, `got ${denies.length - depthDenies.length}`);
+  t.ok("the depth refusal is recorded once, with the observed depth and the limit",
+    depthDenies.length === 1 && depthDenies[0].depth === root.maxDelegationDepth + 1 &&
+      depthDenies[0].max_delegation_depth === root.maxDelegationDepth,
+    JSON.stringify(depthDenies));
   t.ok("records carry tool names and depth only — no arguments, no prompt text",
     records.every((r) => Array.isArray(r.tools) && typeof r.depth === "number" &&
-      Object.keys(r).every((k) => ["ts", "agent", "intent", "event", "node_id", "parent_id", "resource", "decision", "depth", "tools", "reason"].includes(k))));
+      Object.keys(r).every((k) => ["ts", "agent", "intent", "event", "node_id", "parent_id", "resource", "decision", "depth", "tools", "reason", "reason_code", "max_delegation_depth"].includes(k))));
 
   // Crossing a process boundary: a scope token carries the chain, the receiving
   // engine re-proves it. Illustrative secret — a real one comes from a secret store.

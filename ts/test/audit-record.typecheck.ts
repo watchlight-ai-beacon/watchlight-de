@@ -145,6 +145,7 @@ const egressFields: Record<keyof EgressRecord, true> = {
 const attenuationFields: Record<keyof AttenuationRecord, true> = {
   ts: true, agent: true, intent: true, event: true, node_id: true, resource: true,
   decision: true, depth: true, tools: true, parent_id: true, reason: true,
+  reason_code: true, max_delegation_depth: true,
 };
 
 // The default governor takes a typed sink too.

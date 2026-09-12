@@ -122,7 +122,7 @@ async function main() {
   const base = { agent: "test-agent", root: { tools: ["read"], resources: [], intents: [], max_depth: 5, time_budget_seconds: 600 }, chain: [], depth: 0 };
   await rejects("future iat is rejected", () => g.scopeFromToken(signScopeToken({ ...base, iat: now() + 3600, exp: now() + 3900 }, Buffer.from(SECRET))), "future_iat");
   await rejects("lifetime beyond the scope's budget is rejected", () => g.scopeFromToken(signScopeToken({ ...base, iat: now(), exp: now() + 601 }, Buffer.from(SECRET))), "lifetime");
-  await rejects("root max_depth above the ceiling is rejected", () => g.scopeFromToken(signScopeToken({ ...base, root: { ...base.root, max_depth: 9 }, iat: now(), exp: now() + 60 }, Buffer.from(SECRET))), "malformed");
+  await rejects("root max_depth above the structural bound is rejected", () => g.scopeFromToken(signScopeToken({ ...base, root: { ...base.root, max_depth: 65 }, iat: now(), exp: now() + 60 }, Buffer.from(SECRET))), "malformed");
   await rejects("depth/chain mismatch is rejected", () => g.scopeFromToken(signScopeToken({ ...base, depth: 1, iat: now(), exp: now() + 60 }, Buffer.from(SECRET))), "malformed");
   // A validly signed payload with an extra field: sign the raw string by hand.
   {

@@ -70,7 +70,7 @@ FIELDS = {
     ),
     "attenuation": (
         {"ts", "agent", "intent", "event", "node_id", "resource", "decision", "depth", "tools"},
-        {"parent_id", "reason"},
+        {"parent_id", "reason", "reason_code", "max_delegation_depth"},
     ),
 }
 

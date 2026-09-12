@@ -3,14 +3,16 @@
 // A Scope is a capability set that can spawn strictly-narrower child scopes. Any
 // dimension a child requests that the parent does not hold is denied by the real
 // engine strict-subset validator (@watchlight/engine), and every attenuation is
-// written to the value-free audit trail. The Developer Edition governs the tree
-// up to DE_MAX_DEPTH; Enterprise removes the cap and enforces it server-side.
+// written to the value-free audit trail. Every tree is bounded by its
+// maxDelegationDepth — a governance control (default 8); a hop past it is a deny
+// with reason code DELEGATION_DEPTH_EXCEEDED.
 
 import * as crypto from "node:crypto";
 import type { Engine, GrantedScope, RequestedScope } from "@watchlight/engine";
 import * as path from "node:path";
 import { AuditTrail, type AttenuationRecord, type WritableAuditRecord } from "./audit";
 import {
+  MAX_CHAIN_LENGTH,
   ScopeTokenError,
   nowSeconds,
   signingSecret,
@@ -20,26 +22,12 @@ import {
   type ScopeTokenClaims,
 } from "./scope-token";
 
-/** Developer-Edition sub-agent tree depth ceiling. */
-export const DE_MAX_DEPTH = 5;
+/** Default `maxDelegationDepth`: how many attenuation hops a sub-agent tree may go
+ *  below its root (depth 0). A governance control, not an edition limit. */
+export const DEFAULT_MAX_DELEGATION_DEPTH = 8;
 
-const CEILING_NOTICE = (cap: number, depth: number) =>
-  `Developer Edition governs sub-agent trees up to depth ${cap}; ` +
-  `requested depth ${depth}. Enterprise removes this cap and enforces it server-side.`;
-
-/** Raised at the Developer-Edition depth ceiling. NOT a policy denial — a
- *  product boundary. Every attenuation up to the cap was a real, engine-validated
- *  strict subset. */
-export class DevEditionCeiling extends Error {
-  readonly depth: number;
-  readonly cap: number;
-  constructor(depth: number) {
-    super(CEILING_NOTICE(DE_MAX_DEPTH, depth));
-    this.name = "DevEditionCeiling";
-    this.depth = depth;
-    this.cap = DE_MAX_DEPTH;
-  }
-}
+/** Reason code on a refused attenuation that would exceed `maxDelegationDepth`. */
+export const DELEGATION_DEPTH_EXCEEDED = "DELEGATION_DEPTH_EXCEEDED" as const;
 
 /** Raised when a requested child scope is not a strict subset of its parent. */
 export class AttenuationDenied extends Error {
@@ -50,6 +38,23 @@ export class AttenuationDenied extends Error {
     this.name = "AttenuationDenied";
     this.violations = violations;
     this.reason = reason;
+  }
+}
+
+/** Thrown when an attenuation would take a sub-agent tree deeper than its
+ *  `maxDelegationDepth`. A deny like any other refused attenuation — the child is
+ *  never created — with a distinct {@link code} so it can be told apart from a
+ *  scope that is not a strict subset. `depth` is the depth the refused child
+ *  would have had; `limit` is the limit it exceeded. */
+export class DelegationDepthExceeded extends AttenuationDenied {
+  readonly code: typeof DELEGATION_DEPTH_EXCEEDED = DELEGATION_DEPTH_EXCEEDED;
+  readonly depth: number;
+  readonly limit: number;
+  constructor(depth: number, limit: number) {
+    super(["MaxDepth"], `delegation depth ${depth} exceeds max_delegation_depth ${limit}`);
+    this.name = "DelegationDepthExceeded";
+    this.depth = depth;
+    this.limit = limit;
   }
 }
 
@@ -99,6 +104,10 @@ interface ScopeInit {
   /** The ordered actor chain, root first, that a call made through this scope
    *  carries. Defaults to `[agent]` for a root. */
   actorChain?: readonly string[];
+  /** The deepest any scope in this tree may be (the root is depth 0). Set on the
+   *  root from the governor's `maxDelegationDepth`; children inherit it.
+   *  Defaults to `depth + maxDepth`. */
+  maxDelegationDepth?: number;
 }
 
 /** Options for {@link Scope.toToken}. */
@@ -126,8 +135,11 @@ export class Scope {
    *  by a flight-booker. The last entry is the acting (leaf) agent. A root
    *  scope's chain is just the governor's agent; each {@link attenuate} that
    *  names an `agent` appends one entry, so the chain is at most
-   *  `DE_MAX_DEPTH + 1` long. */
+   *  `maxDelegationDepth + 1` long. */
   readonly actorChain: readonly string[];
+  /** The deepest any scope in this tree may be (the root is depth 0) — the
+   *  governor's `maxDelegationDepth`, or lower when the root scope set one. */
+  readonly maxDelegationDepth: number;
   /** Epoch seconds this scope came into force. */
   readonly issuedAt: number;
   private _expiresAt: number;
@@ -147,6 +159,8 @@ export class Scope {
     this.maxDepth = init.maxDepth;
     this.timeBudgetSeconds = init.timeBudgetSeconds;
     this.depth = init.depth;
+    // Never past the structural bound, however the scope was constructed.
+    this.maxDelegationDepth = Math.min(init.maxDelegationDepth ?? init.depth + init.maxDepth, MAX_CHAIN_LENGTH);
     this.nodeId = nodeId();
     this.parentId = init.parentId;
     this.actorChain = Object.freeze([...(init.actorChain ?? [init.agent])]);
@@ -235,27 +249,18 @@ export class Scope {
   /**
    * Derive a sub-agent scope — a strict subset of this one. Any dimension you
    * omit inherits the parent's (and the engine clamps it regardless). Throws
-   * {@link AttenuationDenied} if the request exceeds the parent, and
-   * {@link DevEditionCeiling} at the Developer-Edition depth ceiling.
+   * {@link AttenuationDenied} if the request exceeds the parent — or
+   * {@link DelegationDepthExceeded}, a subclass, when the child would be deeper
+   * than {@link maxDelegationDepth}.
    */
   attenuate(opts: AttenuateOptions = {}): Scope {
     this.assertActive(); // a spent scope grants nothing further (fail-closed)
     const childDepth = this.depth + 1;
     const requestedTools = opts.tools !== undefined ? norm(opts.tools) : this.allowedTools;
 
-    // Developer-Edition ceiling — a product boundary, checked before the engine.
-    if (childDepth > DE_MAX_DEPTH) {
-      this._record({
-        nodeId: nodeId(),
-        parentId: this.nodeId,
-        tools: requestedTools,
-        resource: `sub-agent depth ${childDepth}`,
-        decision: "Deny",
-        depth: childDepth,
-        reason: CEILING_NOTICE(DE_MAX_DEPTH, childDepth),
-      });
-      throw new DevEditionCeiling(childDepth);
-    }
+    // maxDelegationDepth — a governance control, checked before the engine. A hop
+    // past it is a deny: the child is never created.
+    if (childDepth > this.maxDelegationDepth) this._denyDepth(requestedTools, childDepth);
 
     const parent: GrantedScope = {
       allowed_tools: this.allowedTools,
@@ -279,6 +284,8 @@ export class Scope {
     const resp = this._engine.attenuateScope(parent, request);
     if (resp.decision !== "Allow") {
       const violations = "violations" in resp ? resp.violations : [];
+      // The engine's own depth budget is spent — the same deny.
+      if (violations.includes("MaxDepth") && this.maxDepth <= 0) this._denyDepth(requestedTools, childDepth);
       const reason =
         ("reason" in resp && resp.reason) || "requested scope is not a strict subset of the parent";
       this._record({
@@ -308,6 +315,7 @@ export class Scope {
       maxDepth: granted.max_depth ?? request.max_depth,
       timeBudgetSeconds: granted.time_budget_seconds ?? request.time_budget_seconds,
       depth: granted.depth ?? childDepth,
+      maxDelegationDepth: this.maxDelegationDepth,
       parentId: this.nodeId,
       parent: this,
       signingSecrets: this._signingSecrets,
@@ -324,6 +332,24 @@ export class Scope {
       depth: child.depth,
     });
     return child;
+  }
+
+  /** Refuse a hop past {@link maxDelegationDepth}: record the deny — the observed
+   *  depth and the limit — then throw. The child is never created. */
+  private _denyDepth(requestedTools: readonly string[], childDepth: number): never {
+    const err = new DelegationDepthExceeded(childDepth, this.maxDelegationDepth);
+    this._record({
+      nodeId: nodeId(),
+      parentId: this.nodeId,
+      tools: requestedTools,
+      resource: `sub-agent depth ${childDepth}`,
+      decision: "Deny",
+      depth: childDepth,
+      reason: err.reason,
+      reasonCode: DELEGATION_DEPTH_EXCEEDED,
+      maxDelegationDepth: this.maxDelegationDepth,
+    });
+    throw err;
   }
 
   /** Record this scope as the root of an attenuation tree (parent-less). */
@@ -346,6 +372,8 @@ export class Scope {
     decision: AttenuationRecord["decision"];
     depth: number;
     reason?: string;
+    reasonCode?: typeof DELEGATION_DEPTH_EXCEEDED;
+    maxDelegationDepth?: number;
   }): void {
     // Value-free by construction — a scope's dimensions are capability NAMES,
     // never argument values. Shape matches Python's audit tree records.
@@ -362,6 +390,8 @@ export class Scope {
     };
     if (r.parentId) record.parent_id = r.parentId;
     if (r.reason) record.reason = r.reason;
+    if (r.reasonCode) record.reason_code = r.reasonCode;
+    if (r.maxDelegationDepth !== undefined) record.max_delegation_depth = r.maxDelegationDepth;
     // One funnel: the governor's file + optional sink (see ./audit.ts).
     this._audit.write(record);
   }

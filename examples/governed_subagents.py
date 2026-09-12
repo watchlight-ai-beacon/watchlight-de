@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Sub-agent scope attenuation — every child gets a STRICT SUBSET of its parent.
 
-A sub-agent can only ever *narrow* authority, never widen it — and the Developer
-Edition governs the tree up to depth 5. The strict-subset validation is the real
-Watchlight engine; the depth ceiling is where DE hands off to Enterprise.
+A sub-agent can only ever *narrow* authority, never widen it — and the tree is
+bounded by ``max_delegation_depth``, a governance control (default 8; this demo
+sets 5 to keep the output short). The strict-subset validation is the real
+Watchlight engine, at every hop up to the limit.
 
     pip install watchlight
     python examples/governed_subagents.py
@@ -21,21 +22,26 @@ Expected output:
         → depth 4
         → depth 5
 
-    ── Developer-Edition ceiling ──
-    Developer Edition governs sub-agent trees up to depth 5; this chain reached the
-    ceiling at depth 6. ... Talk to us: sales@watchlight.ai · https://www.watchlight.ai
+    ── max_delegation_depth ──
+    DELEGATION_DEPTH_EXCEEDED: delegation depth 6 exceeds max_delegation_depth 5
 
     watch the tree live:  watchlight dev --audit .watchlight/audit.jsonl
 """
 import os
 
-from watchlight import AttenuationDenied, DevEditionCeiling, Watchlight
+from watchlight import AttenuationDenied, DelegationDepthExceeded, Watchlight
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def main() -> None:
-    gov = Watchlight(agent="orchestrator", audit_dir=os.path.join(HERE, ".watchlight"))
+    gov = Watchlight(
+        agent="orchestrator",
+        audit_dir=os.path.join(HERE, ".watchlight"),
+        # A governance control, like a privilege-escalation depth limit in IAM.
+        # The default is 8; 5 keeps this demo's output short.
+        max_delegation_depth=5,
+    )
 
     root = gov.scope(
         tools=["read_file", "web_search", "send_email", "delete"],
@@ -57,16 +63,16 @@ def main() -> None:
     except AttenuationDenied as denied:
         print("  ✗ widen denied :", denied.violations, "—", str(denied).split(": ", 1)[-1])
 
-    # Developer Edition governs the tree up to depth 5; going deeper raises
-    # DevEditionCeiling (the attenuations so far were all real).
+    # The tree is bounded by max_delegation_depth; a hop past it is a deny
+    # (DelegationDepthExceeded), recorded like any other refused attenuation.
     scope = reader
     try:
         while True:
             scope = scope.attenuate(tools=["read_file"])
             print(f"    → depth {scope.depth}")
-    except DevEditionCeiling as ceiling:
-        print("\n── Developer-Edition ceiling ──")
-        print(ceiling)
+    except DelegationDepthExceeded as exceeded:
+        print("\n── max_delegation_depth ──")
+        print(f"{exceeded.code}: {exceeded.reason}")
 
     audit = os.path.join(HERE, ".watchlight", "audit.jsonl")
     print(f"\nwatch the tree live:  watchlight dev --audit {audit}")

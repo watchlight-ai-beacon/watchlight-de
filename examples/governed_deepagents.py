@@ -3,8 +3,8 @@
 
 A deep agent delegates to sub-agents. Watchlight makes every sub-agent's authority
 a **strict subset** of the parent's — validated by the real engine — so a sub-agent
-can only ever *narrow* what it may do, never widen it. The Developer Edition
-governs the tree up to depth 5. Config-only: no deepagents source is touched.
+can only ever *narrow* what it may do, never widen it. The tree is bounded by
+``max_delegation_depth`` (default 8). Config-only: no deepagents source is touched.
 
     pip install "watchlight[deepagents]"
     python examples/governed_deepagents.py
@@ -24,10 +24,10 @@ Expected output (no API key):
     nesting deeper — each level attenuates from the one above:
         → depth 1: ['read_file']
         ...
-        → depth 5: ['read_file']
+        → depth 8: ['read_file']
 
-    ── Developer-Edition ceiling ──
-    Developer Edition governs sub-agent trees up to depth 5; ... sales@watchlight.ai
+    ── max_delegation_depth ──
+    DELEGATION_DEPTH_EXCEEDED: delegation depth 9 exceeds max_delegation_depth 8
 
     set a model key (e.g. ANTHROPIC_API_KEY) to invoke the deep agent for real.
     wiring is one line:
@@ -37,7 +37,7 @@ Expected output (no API key):
 """
 import os
 
-from watchlight import AttenuationDenied, DevEditionCeiling, Watchlight
+from watchlight import AttenuationDenied, DelegationDepthExceeded, Watchlight
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -109,16 +109,16 @@ def main() -> None:
             }
         )
 
-    # ── 2. A deep agent nests sub-agents; the DE governs the tree to depth 5 ──
+    # ── 2. A deep agent nests sub-agents, bounded by max_delegation_depth ──
     print("\nnesting deeper — each level attenuates from the one above:")
     scope = root
     try:
         while True:
             scope = scope.attenuate(tools=["read_file"])
             print(f"    → depth {scope.depth}: {scope.allowed_tools}")
-    except DevEditionCeiling as ceiling:
-        print("\n── Developer-Edition ceiling ──")
-        print(ceiling)
+    except DelegationDepthExceeded as exceeded:
+        print("\n── max_delegation_depth ──")
+        print(f"{exceeded.code}: {exceeded.reason}")
 
     # ── 3. Build the real deep agent with the governed sub-agents ──────
     print()

@@ -181,7 +181,7 @@ changes is what happens around the decision.
 | Capability | Developer Edition | Enterprise |
 |---|---|---|
 | Allow / require approval / deny, on real Cedar | ✅ in-process engine, policies from a local file | ✅ a running, scaled decision service |
-| Strict-subset sub-agent attenuation | ✅ engine-side, to a depth of 5 | ✅ server-side, depth configurable per agent above a tenant default |
+| Strict-subset sub-agent attenuation, bounded by a delegation-depth limit | ✅ engine-side; `max_delegation_depth` per governor (default 8) | ✅ server-side; depth limit per tenant (default 8) and per agent |
 | Human-in-the-loop approvals | ✅ single-use tokens | ✅ across the fleet, with an operator queue |
 | Content screening | ✅ rule-based and in-process: `govern.sanitize`, `govern.screen` | ✅ the same class of check as a managed service — centrally authored policies, applied to traffic your code never touches |
 | Framework plugins | ✅ LangGraph, Pydantic AI, Claude Agent SDK, DeepAgents, LangChain.js, MCP | ✅ those plus Claude Code, Google ADK, AWS Bedrock, Microsoft Agent Framework, OpenClaw |

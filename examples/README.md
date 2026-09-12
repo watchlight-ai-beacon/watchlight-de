@@ -23,7 +23,7 @@ Unsure what a word means? → **[Glossary](../docs/glossary.md)**.
 | [`agent.py`](agent.py) | **The DENY line** — the smallest governed agent: one allowed tool, one denied. | `watchlight` |
 | [`governed_research_agent.py`](governed_research_agent.py) | **Realistic multi-tool agent** — 5 tools, only `research` + `read` permitted; email / transfer / delete are **blocked before they run**. | `watchlight` |
 | [`context_governance.py`](context_governance.py) | **Fine-grained context gating** — the *same* tool call is allowed or denied by runtime `context`; missing context fails closed. | `watchlight[langgraph]` |
-| [`governed_subagents.py`](governed_subagents.py) | **Sub-agent scope attenuation** — every child gets a *strict subset* of its parent's authority (widening is refused by the real engine); the DE governs the tree up to depth 5, then points to Enterprise. | `watchlight` |
+| [`governed_subagents.py`](governed_subagents.py) | **Sub-agent scope attenuation** — every child gets a *strict subset* of its parent's authority (widening is refused by the real engine); a hop past `max_delegation_depth` (a governance control, default 8) is a deny. | `watchlight` |
 
 ## Showcase — end-to-end setups, proven
 
@@ -89,7 +89,7 @@ to production is one environment variable (`WATCHLIGHT_APDP_URL`), never a rewri
 | [`governed_langgraph_agent.py`](governed_langgraph_agent.py) | LangGraph | `watchlight[langgraph]` |
 | [`governed_pydantic_ai_agent.py`](governed_pydantic_ai_agent.py) | Pydantic AI | `watchlight[pydantic-ai]` |
 | [`governed_claude_agent.py`](governed_claude_agent.py) | Claude Agent SDK | `watchlight[claude-agent]` |
-| [`governed_deepagents.py`](governed_deepagents.py) | deepagents — **sub-agent scope attenuation**: each sub-agent gets a strict-subset of the parent's tools, to the depth-5 ceiling (runs without an API key) | `watchlight[deepagents]` |
+| [`governed_deepagents.py`](governed_deepagents.py) | deepagents — **sub-agent scope attenuation**: each sub-agent gets a strict-subset of the parent's tools, bounded by `max_delegation_depth` (runs without an API key) | `watchlight[deepagents]` |
 
 ## Govern an MCP server
 

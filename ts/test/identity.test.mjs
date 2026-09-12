@@ -9,8 +9,8 @@ import * as os from "node:os";
 const require = createRequire(import.meta.url);
 const {
   Watchlight, govern, configureDefault, principals, entityRef, escapeCedarString,
-  policyEntityRef, ACTOR_CHAIN_CONTEXT_KEY, MAX_ACTOR_CHAIN, DE_MAX_DEPTH,
-  AttenuationDenied, DevEditionCeiling, AuthorizeRequestError, REQUEST_INVALID_MESSAGE,
+  policyEntityRef, ACTOR_CHAIN_CONTEXT_KEY, MAX_ACTOR_CHAIN,
+  AttenuationDenied, DelegationDepthExceeded, AuthorizeRequestError, REQUEST_INVALID_MESSAGE,
   ReservedContextError, RESERVED_CONTEXT_MESSAGE, ACTOR_CONTEXT_KEY, Denied,
   UNCONFIGURED_AGENT, SanitizeError, ScreenError,
 } = require("../dist/index.js");
@@ -366,7 +366,8 @@ async function main() {
       "chain"
     );
     ok("reserved chain key is 'actor_chain'", ACTOR_CHAIN_CONTEXT_KEY === "actor_chain");
-    ok("the chain is bounded by the depth ceiling", MAX_ACTOR_CHAIN === DE_MAX_DEPTH + 1);
+    ok("MAX_ACTOR_CHAIN is the root plus the largest maxDelegationDepth",
+      MAX_ACTOR_CHAIN === require("../dist/scope-token.js").MAX_CHAIN_LENGTH + 1);
 
     const alice = principals.user("alice");
     const root = await g.scope({ tools: ["search", "book"], timeBudgetSeconds: 600 });
@@ -438,14 +439,14 @@ async function main() {
     });
     ok("an identical chain is accepted", echoed.allowed === true);
 
-    // Depth: one level per delegation, bounded by the attenuation ceiling.
+    // Depth: one level per delegation, bounded by max_delegation_depth.
     let deep = picker;
-    for (let i = 2; i <= DE_MAX_DEPTH; i++) deep = g.delegate(deep, `level-${i}`);
-    ok("the chain reaches MAX_ACTOR_CHAIN at the ceiling",
-      deep.actorChain.length === MAX_ACTOR_CHAIN, JSON.stringify(deep.actorChain));
-    let ceiling = null;
-    try { g.delegate(deep, "too-deep"); } catch (e) { ceiling = e; }
-    ok("one level past the ceiling throws DevEditionCeiling", ceiling instanceof DevEditionCeiling);
+    for (let i = 2; i <= g.maxDelegationDepth; i++) deep = g.delegate(deep, `level-${i}`);
+    ok("the chain reaches maxDelegationDepth + 1 at the limit",
+      deep.actorChain.length === g.maxDelegationDepth + 1, JSON.stringify(deep.actorChain));
+    let tooDeep = null;
+    try { g.delegate(deep, "too-deep"); } catch (e) { tooDeep = e; }
+    ok("one level past the limit throws DelegationDepthExceeded", tooDeep instanceof DelegationDepthExceeded);
 
     // Delegation is still attenuation: a sub-agent cannot widen.
     let widened = null;
