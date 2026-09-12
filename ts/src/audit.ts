@@ -154,8 +154,13 @@ export type AttenuationRecord = AuditRecordBase & {
   readonly tools: readonly string[];
   /** Absent on the root. */
   readonly parent_id?: string;
-  /** Present on a `Deny`: the violated dimension, or the depth-ceiling notice. */
+  /** Present on a `Deny`: the violated dimension(s), or the depth limit. */
   readonly reason?: string;
+  /** Present on a `Deny` from `maxDelegationDepth`: `DELEGATION_DEPTH_EXCEEDED`.
+   *  `depth` is the refused child's depth. */
+  readonly reason_code?: "DELEGATION_DEPTH_EXCEEDED";
+  /** Present with `reason_code`: the limit the refused hop exceeded. */
+  readonly max_delegation_depth?: number;
 };
 
 /**

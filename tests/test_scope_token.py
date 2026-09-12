@@ -217,7 +217,7 @@ def test_non_string_token_is_malformed(tmp_path):
     [
         ({"iat": _now() + 3600, "exp": _now() + 3900}, "future_iat"),
         ({"iat": _now(), "exp": _now() + 601}, "lifetime"),
-        ({"root": {"tools": ["read"], "resources": [], "intents": [], "max_depth": 9, "time_budget_seconds": 600}}, "malformed"),
+        ({"root": {"tools": ["read"], "resources": [], "intents": [], "max_depth": 65, "time_budget_seconds": 600}}, "malformed"),
         ({"depth": 1}, "malformed"),
     ],
 )

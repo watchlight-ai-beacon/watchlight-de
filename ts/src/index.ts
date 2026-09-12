@@ -18,7 +18,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomBytes, createHmac, timingSafeEqual } from "node:crypto";
-import { Scope, DE_MAX_DEPTH, type AttenuateOptions } from "./attenuation";
+import { Scope, DEFAULT_MAX_DELEGATION_DEPTH, type AttenuateOptions } from "./attenuation";
+import { MAX_CHAIN_LENGTH as DEPTH_BOUND } from "./scope-token";
 import {
   AuditTrail,
   type AuditRecord,
@@ -71,7 +72,13 @@ import {
   type PolicyTestResult,
 } from "./policytest";
 
-export { Scope, DE_MAX_DEPTH, AttenuationDenied, DevEditionCeiling } from "./attenuation";
+export {
+  Scope,
+  DEFAULT_MAX_DELEGATION_DEPTH,
+  DELEGATION_DEPTH_EXCEEDED,
+  AttenuationDenied,
+  DelegationDepthExceeded,
+} from "./attenuation";
 export type {
   AuditRecord,
   AuditRecordBase,
@@ -396,6 +403,14 @@ export interface WatchlightOptions {
    *  later version. See the 0.8.0 entry in the breaking-changes log:
    *  https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/docs/breaking-changes.md */
   strictPrincipal?: boolean;
+  /** How many attenuation hops a sub-agent tree may go below its root (depth 0)
+   *  — a governance control, like a privilege-escalation depth limit in
+   *  traditional IAM. Defaults to {@link DEFAULT_MAX_DELEGATION_DEPTH} (8); `0`
+   *  allows no sub-agents. A hop past it is a deny
+   *  ({@link DelegationDepthExceeded}, reason code `DELEGATION_DEPTH_EXCEEDED`),
+   *  written to the audit trail with the observed depth and the limit.
+   *  {@link Watchlight.scope} can lower it per tree. */
+  maxDelegationDepth?: number;
   /** Shared secret (>= 16 bytes) that approval tokens are signed under, so a
    *  token minted in one process verifies in another and survives a redeploy
    *  inside its TTL. Defaults to `WATCHLIGHT_APPROVAL_SECRET`, then to
@@ -475,8 +490,22 @@ export const ACTOR_CONTEXT_KEY = "actor";
 export const ACTOR_CHAIN_CONTEXT_KEY = "actor_chain";
 
 /** The longest an actor chain can be: the root agent plus one entry per
- *  attenuation level, bounded by the Developer-Edition depth ceiling. */
-export const MAX_ACTOR_CHAIN = DE_MAX_DEPTH + 1;
+ *  attenuation level. A governor's chains are bounded by its
+ *  `maxDelegationDepth` + 1; this is that bound for the largest value the setting
+ *  accepts. */
+export const MAX_ACTOR_CHAIN = DEPTH_BOUND + 1;
+
+/** `maxDelegationDepth` is a whole number from 0 (no sub-agents) to
+ *  {@link MAX_CHAIN_LENGTH}. */
+function checkMaxDelegationDepth(value: unknown): number {
+  if (typeof value !== "number" || !Number.isInteger(value)) {
+    throw new TypeError("maxDelegationDepth must be an integer");
+  }
+  if (value < 0 || value > DEPTH_BOUND) {
+    throw new RangeError(`maxDelegationDepth must be between 0 and ${DEPTH_BOUND}, got ${value}`);
+  }
+  return value;
+}
 
 /** Fixed, value-free message of {@link AuthorizeRequestError}. */
 export const REQUEST_INVALID_MESSAGE =
@@ -671,6 +700,9 @@ interface GovernorState {
    *  idempotence. */
   sources: Set<string>;
   strictPrincipal: boolean;
+  /** The sub-agent depth limit — shared, so every name of one governor
+   *  attenuates under the same governance control. */
+  maxDelegationDepth: number;
   /** The audit options in force, so {@link Watchlight._configure} can apply one
    *  of them without dropping the others. */
   auditOptions: { dir?: string; file?: boolean; sink?: AuditSink | BatchAuditSink; batch?: number; interval?: number };
@@ -869,6 +901,10 @@ function newState(opts: WatchlightOptions): GovernorState {
     announced: false,
     sources: new Set<string>(),
     strictPrincipal: opts.strictPrincipal !== false,
+    maxDelegationDepth:
+      opts.maxDelegationDepth === undefined
+        ? DEFAULT_MAX_DELEGATION_DEPTH
+        : checkMaxDelegationDepth(opts.maxDelegationDepth),
     auditOptions: {
       dir: auditDir,
       file: auditFile,
@@ -906,6 +942,8 @@ export interface ScopeOptions {
   tools?: readonly string[];
   resources?: readonly string[];
   intents?: readonly string[];
+  /** Lowers this tree's depth limit below the governor's `maxDelegationDepth`;
+   *  it never raises it. */
   maxDepth?: number;
   timeBudgetSeconds?: number;
 }
@@ -1029,8 +1067,8 @@ export class Watchlight {
    * The engine, the compiled policies, the audit trail and the sink are shared
    * with this governor, exactly as for {@link as}. Throws
    * {@link AttenuationDenied} if `opts` widens the scope and
-   * {@link DevEditionCeiling} past the depth ceiling — which also bounds the
-   * chain at {@link MAX_ACTOR_CHAIN} entries.
+   * {@link DelegationDepthExceeded} past `maxDelegationDepth` — which also
+   * bounds the chain at `maxDelegationDepth + 1` entries.
    */
   delegate(from: Scope | Watchlight, agent: string, opts: AttenuateOptions = {}): Watchlight {
     assertAgentName(agent, "delegate(from, agent)");
@@ -1234,9 +1272,24 @@ export class Watchlight {
 
   /** Create a root capability scope for this agent, from which sub-agent scopes
    *  are attenuated (strict-subset). Async because the engine initializes
-   *  lazily; `attenuate()` on the returned scope is synchronous. The Developer
-   *  Edition governs the tree up to depth {@link DE_MAX_DEPTH}. */
+   *  lazily; `attenuate()` on the returned scope is synchronous. The tree is
+   *  bounded by {@link maxDelegationDepth} (default 8); `maxDepth` lowers it for
+   *  this tree only. A hop past the limit throws {@link DelegationDepthExceeded}. */
+  /** The sub-agent depth limit in force for this governor — shared with every
+   *  name made by {@link as} or {@link delegate}. */
+  get maxDelegationDepth(): number {
+    return this._shared.maxDelegationDepth;
+  }
+
   async scope(opts: ScopeOptions = {}): Promise<Scope> {
+    const limit = this._shared.maxDelegationDepth;
+    if (opts.maxDepth !== undefined) {
+      if (typeof opts.maxDepth !== "number" || !Number.isInteger(opts.maxDepth)) {
+        throw new TypeError("maxDepth must be an integer");
+      }
+      if (opts.maxDepth < 0) throw new RangeError("maxDepth must not be negative");
+    }
+    const budget = opts.maxDepth === undefined ? limit : Math.min(opts.maxDepth, limit);
     const eng = this._backend.engine();
     if (!eng) {
       throw new Error(
@@ -1252,7 +1305,8 @@ export class Watchlight {
       allowedTools: norm(opts.tools),
       allowedResources: norm(opts.resources),
       allowedIntents: norm(opts.intents),
-      maxDepth: Math.min(opts.maxDepth ?? DE_MAX_DEPTH, DE_MAX_DEPTH),
+      maxDepth: budget,
+      maxDelegationDepth: budget,
       timeBudgetSeconds: opts.timeBudgetSeconds ?? 3600,
       depth: 0,
       signingSecrets: this._signingSecrets,
@@ -1279,11 +1333,14 @@ export class Watchlight {
     // a cutover. Which one verified is never reported.
     const secrets = requireSecrets(this._signingSecrets);
     const claims = verifyScopeTokenAny(token, secrets, { agent: this.agent });
+    // The receiving governor's own maxDelegationDepth still applies: a token
+    // cannot carry a deeper tree than this governor permits.
+    const rootBudget = Math.min(claims.root.max_depth, this._shared.maxDelegationDepth);
     const root = await this.scope({
       tools: claims.root.tools,
       resources: claims.root.resources,
       intents: claims.root.intents,
-      maxDepth: claims.root.max_depth,
+      maxDepth: rootBudget,
       timeBudgetSeconds: claims.root.time_budget_seconds,
     });
     let scope = root;
@@ -1303,7 +1360,7 @@ export class Watchlight {
       !sameSet(scope.allowedResources, claimed.resources) ||
       !sameSet(scope.allowedIntents, claimed.intents) ||
       scope.timeBudgetSeconds !== claimed.time_budget_seconds ||
-      (claims.chain.length === 0 && scope.maxDepth !== claims.root.max_depth)
+      (claims.chain.length === 0 && scope.maxDepth !== rootBudget)
     ) {
       throw new ScopeTokenError("mismatch", "engine grant does not match the token's claim");
     }
@@ -2017,6 +2074,9 @@ export class Watchlight {
     }
     if (opts.counterSource !== undefined) shared.counterSource = opts.counterSource;
     if (opts.strictPrincipal !== undefined) shared.strictPrincipal = opts.strictPrincipal !== false;
+    if (opts.maxDelegationDepth !== undefined) {
+      shared.maxDelegationDepth = checkMaxDelegationDepth(opts.maxDelegationDepth);
+    }
     if (opts.apdpUrl !== undefined || opts.token !== undefined || opts.tenantId !== undefined) {
       // A different backend is a different policy holder: the policies added to
       // the old one do not move with it.
@@ -2120,6 +2180,9 @@ export class Watchlight {
       (opts.strictPrincipal !== false) !== shared.strictPrincipal
     ) {
       return `strictPrincipal would change from ${shared.strictPrincipal} to ${opts.strictPrincipal !== false}`;
+    }
+    if (opts.maxDelegationDepth !== undefined && opts.maxDelegationDepth !== shared.maxDelegationDepth) {
+      return `maxDelegationDepth would change from ${shared.maxDelegationDepth} to ${opts.maxDelegationDepth}`;
     }
     for (const key of ["apdpUrl", "tenantId"] as const) {
       if (opts[key] !== undefined && opts[key] !== shared.backendOptions[key]) {

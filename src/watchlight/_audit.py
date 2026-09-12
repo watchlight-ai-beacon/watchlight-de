@@ -214,8 +214,13 @@ class AttenuationRecord(_AttenuationRequired, total=False):
 
     #: Absent on the root.
     parent_id: str
-    #: Present on a ``Deny``: the violated dimension, or the depth-ceiling notice.
+    #: Present on a ``Deny``: the violated dimension(s), or the depth limit.
     reason: str
+    #: Present on a ``Deny`` from ``max_delegation_depth``:
+    #: ``DELEGATION_DEPTH_EXCEEDED``. ``depth`` is the refused child's depth.
+    reason_code: Literal["DELEGATION_DEPTH_EXCEEDED"]
+    #: Present with ``reason_code``: the limit the refused hop exceeded.
+    max_delegation_depth: int
 
 
 #: One value-free audit record, as delivered to an :data:`AuditSink` — the same

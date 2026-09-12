@@ -90,11 +90,11 @@ Three separate inputs; do not collapse them.
 
 ## Scope attenuation — confine sub-agents (verified, 0.8.0)
 
-- `scope = govern.scope(tools=[...], resources=[...], intents=[...], max_depth=5, time_budget_seconds=3600)` — the root capability scope.
+- `scope = govern.scope(tools=[...], resources=[...], intents=[...], time_budget_seconds=3600, max_depth=None)` — the root capability scope; `max_depth` lowers the governor's `max_delegation_depth` for this tree, never raises it.
 - `child = scope.attenuate(tools=[...], intents=[...], resources=[...], time_budget_seconds=...)` — derive a **strict-subset** child. Omitting a dimension inherits the parent's. Every `attenuate` runs the real engine strict-subset validation and is audited (streams into `watchlight dev`).
 - Raises `AttenuationDenied(violations, reason)` if the child requests authority the parent lacks — `violations` names the overreaching dimension(s) (`AllowedTools`, `AllowedIntents`, `MaxDepth`, `TimeBudget`).
-- Raises `DevEditionCeiling(depth)` when a chain would exceed `DE_MAX_DEPTH` (5). This is a product boundary, **not** a policy denial — every level up to it was a real engine-validated subset.
-- Import surface: `from watchlight import Scope, AttenuationDenied, DevEditionCeiling, ScopeTokenError, DE_MAX_DEPTH`.
+- Raises `DelegationDepthExceeded(depth, limit)` — a subclass of `AttenuationDenied` with `.code == "DELEGATION_DEPTH_EXCEEDED"` — when a hop would exceed `max_delegation_depth`: a governance control on the governor (`Watchlight(max_delegation_depth=8)`, TS `new Watchlight({ maxDelegationDepth: 8 })`; default 8, range 0–64, root = depth 0). The deny is written to the audit trail with `reason_code`, `depth` and `max_delegation_depth`.
+- Import surface: `from watchlight import Scope, AttenuationDenied, DelegationDepthExceeded, ScopeTokenError, DEFAULT_MAX_DELEGATION_DEPTH, DELEGATION_DEPTH_EXCEEDED`.
 - Cross-process: `token = scope.to_token(ttl_seconds=None)` → `"wls1.<base64url canonical claims>.<base64url HMAC-SHA256>"`; `scope = govern.scope_from_token(token)` in the worker. Requires `Watchlight(signing_secret=...)` (>= 16 bytes) or `WATCHLIGHT_SIGNING_SECRET` — no default; without it both calls raise `ScopeTokenError("no_secret")`. Verification checks the HMAC (constant-time), agent binding, `iat`/`exp` and a lifetime ≤ the scope's time budget, then **replays the whole chain through the engine's strict-subset validator** — a widened chain raises `AttenuationDenied` even when the signature is valid. Token claims: `agent, root{tools,resources,intents,max_depth,time_budget_seconds}, chain[{tools,resources,intents,time_budget_seconds}], depth, iat, exp` — nothing else. A shared secret = integrity within one trust domain, not attestation: the root is rebuilt from the token, so a holder of the secret can mint any scope at all, root included — the token adds no authority beyond what the holder could grant itself with `scope()`. A rebuilt scope past `exp` refuses `attenuate()`/`to_token()` (`ScopeTokenError("expired")`); `scope.assert_active()` / `scope.expired` for long-held scopes.
 
 ## Watch decisions live
@@ -157,7 +157,7 @@ Three separate inputs; do not collapse them.
 - [Glossary](https://docs.watchlight.ai/de/glossary): every term the DE documentation uses, with the easy-to-confuse pairs contrasted.
 - [The signing secret](https://docs.watchlight.ai/de/signing-secret): which processes need the same value, what happens when it is missing, and how to rotate it in two deploys.
 - [Governed agents (in-process)](https://docs.watchlight.ai/de/governed-agents): govern an agent lifecycle with `InProcessClient` (from `watchlight-agent-sdk` / `watchlight_core`).
-- [Sub-agent scope attenuation](https://docs.watchlight.ai/de/scope-attenuation): strict-subset confinement, the depth-5 ceiling, and the deepagents example.
+- [Sub-agent scope attenuation](https://docs.watchlight.ai/de/scope-attenuation): strict-subset confinement, `max_delegation_depth`, and the deepagents example.
 - [Govern an MCP server](https://docs.watchlight.ai/de/mcp-server): `serve` (HTTP) and `serve_stdio` (stdio) transports.
 - [Enforcement effects](https://docs.watchlight.ai/de/enforcement-effects): what a policy can do beyond allow/deny.
 - [Field reference](https://docs.watchlight.ai/de/reference): the request/response shape and what is enforced vs advisory.

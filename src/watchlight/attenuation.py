@@ -6,14 +6,16 @@ by the Watchlight engine (``watchlight_engine.attenuate_scope``): a child that
 asks for a tool, intent, or resource the parent does not hold is denied, and a
 valid request comes back **clamped** to what the parent actually has.
 
-The Developer Edition governs these trees up to **depth 5** (:data:`DE_MAX_DEPTH`).
-Server-side enforcement, signed lineage, and fleet-wide revocation are provided
-by the Enterprise plane.
+Every tree is bounded by ``max_delegation_depth`` — a governance control, like a
+privilege-escalation depth limit in traditional IAM. It defaults to
+:data:`DEFAULT_MAX_DELEGATION_DEPTH` (8), is set on the governor, and can be
+lowered per root scope. A hop past it is a deny with reason code
+:data:`DELEGATION_DEPTH_EXCEEDED`, recorded like any other refused attenuation.
 
     root = govern.scope(tools=["read", "write", "search"], intents=["research"])
     analyst = root.attenuate(tools=["read", "search"])   # depth 1  (strict subset)
     reader  = analyst.attenuate(tools=["read"])           # depth 2
-    # ... a sixth level raises DevEditionCeiling (the Developer-Edition ceiling).
+    # ... a level past max_delegation_depth raises DelegationDepthExceeded.
 """
 
 from __future__ import annotations
@@ -22,43 +24,25 @@ import datetime
 import json
 import pathlib
 import uuid
-from typing import Any, Optional, Sequence
+from typing import Any, NoReturn, Optional, Sequence
 
 from ._audit import AuditTrail
-from .scope_token import ScopeTokenError, now_seconds, sign_scope_token, signing_secret
+from .scope_token import MAX_CHAIN_LENGTH, ScopeTokenError, now_seconds, sign_scope_token, signing_secret
 
-__all__ = ["Scope", "DevEditionCeiling", "AttenuationDenied", "DE_MAX_DEPTH"]
+__all__ = [
+    "Scope",
+    "AttenuationDenied",
+    "DelegationDepthExceeded",
+    "DEFAULT_MAX_DELEGATION_DEPTH",
+    "DELEGATION_DEPTH_EXCEEDED",
+]
 
-#: The Developer-Edition ceiling: sub-agent trees attenuate up to this depth. The
-#: engine still runs the real strict-subset math at every level — this is the
-#: product boundary where DE hands off to Enterprise (which removes the cap and
-#: adds server-side enforcement, signed lineage, and fleet-wide revocation).
-DE_MAX_DEPTH = 5
+#: Default ``max_delegation_depth``: how many attenuation hops a sub-agent tree may
+#: go below its root (depth 0). A governance control, not an edition limit.
+DEFAULT_MAX_DELEGATION_DEPTH = 8
 
-#: Human-readable message raised when a sub-agent tree reaches the DE depth
-#: ceiling — explains the product boundary and where the cap is lifted.
-_CEILING_NOTICE = (
-    "Developer Edition governs sub-agent trees up to depth {cap}; this chain "
-    "reached the ceiling at depth {depth}. In production, agents spawn deeper "
-    "trees across a fleet — enforced server-side (the agent cannot route around "
-    "it), signed into tamper-evident lineage, and revocable fleet-wide. "
-    "Talk to us: sales@watchlight.ai · https://www.watchlight.ai"
-)
-
-
-class DevEditionCeiling(RuntimeError):
-    """Raised when a sub-agent tree would exceed the Developer-Edition depth
-    ceiling (:data:`DE_MAX_DEPTH`).
-
-    This is **not** a policy denial — it is a product boundary. Every attenuation
-    up to the ceiling was a real, engine-validated strict subset; Enterprise
-    removes the cap and enforces it server-side.
-    """
-
-    def __init__(self, depth: int) -> None:
-        self.depth = depth
-        self.cap = DE_MAX_DEPTH
-        super().__init__(_CEILING_NOTICE.format(cap=DE_MAX_DEPTH, depth=depth))
+#: Reason code on a refused attenuation that would exceed ``max_delegation_depth``.
+DELEGATION_DEPTH_EXCEEDED = "DELEGATION_DEPTH_EXCEEDED"
 
 
 class AttenuationDenied(PermissionError):
@@ -74,6 +58,21 @@ class AttenuationDenied(PermissionError):
         self.reason = reason
         dims = ", ".join(violations) or "scope"
         super().__init__(f"attenuation denied ({dims}): {reason}")
+
+
+class DelegationDepthExceeded(AttenuationDenied):
+    """Raised when an attenuation would take a sub-agent tree deeper than its
+    ``max_delegation_depth``. A deny like any other refused attenuation — the
+    child is never created — with a distinct :attr:`code` so it can be told apart
+    from a scope that is not a strict subset. ``depth`` is the depth the refused
+    child would have had; ``limit`` is the limit it exceeded."""
+
+    code = DELEGATION_DEPTH_EXCEEDED
+
+    def __init__(self, depth: int, limit: int) -> None:
+        self.depth = depth
+        self.limit = limit
+        super().__init__(["MaxDepth"], f"delegation depth {depth} exceeds max_delegation_depth {limit}")
 
 
 #: Fixed message for a spent scope (never carries scope or token details).
@@ -100,8 +99,8 @@ class Scope:
     Create the root with :meth:`watchlight.Watchlight.scope`; call
     :meth:`attenuate` to derive a sub-agent scope. Every ``attenuate`` runs the
     real engine strict-subset validation and is written to the audit trail, so it
-    streams into ``watchlight dev``. The Developer Edition allows this up to depth
-    :data:`DE_MAX_DEPTH`.
+    streams into ``watchlight dev``. The tree is bounded by
+    :attr:`max_delegation_depth`.
     """
 
     def __init__(
@@ -122,6 +121,7 @@ class Scope:
         signing_secrets: Optional[list[bytes]] = None,
         issued_at: Optional[int] = None,
         actor_chain: Sequence[str] | None = None,
+        max_delegation_depth: int | None = None,
     ) -> None:
         """``parent`` is the scope this one was attenuated from (``None`` for a
         root) — it lets :meth:`to_token` serialise the full chain for engine
@@ -142,6 +142,14 @@ class Scope:
         self.max_depth = int(max_depth)
         self.time_budget_seconds = int(time_budget_seconds)
         self.depth = int(depth)
+        #: The deepest any scope in this tree may be (the root is depth 0). Set
+        #: on the root from the governor's ``max_delegation_depth`` and inherited
+        #: by every child.
+        # Never past the structural bound, however the scope was constructed.
+        self.max_delegation_depth = min(
+            int(max_delegation_depth) if max_delegation_depth is not None else self.depth + self.max_depth,
+            MAX_CHAIN_LENGTH,
+        )
         #: A short id for this scope and its parent's — so `watchlight dev` can
         #: reconstruct the exact attenuation tree (siblings at the same depth stay
         #: distinct). ``parent_id`` is None for a root scope.
@@ -152,7 +160,7 @@ class Scope:
         #: seat-picker spawned by a flight-booker. The last entry is the acting
         #: (leaf) agent. A root scope's chain is just the governor's agent; each
         #: :meth:`attenuate` that names an ``agent`` appends one entry, so the
-        #: chain is at most ``DE_MAX_DEPTH + 1`` long.
+        #: chain is at most ``max_delegation_depth + 1`` long.
         self.actor_chain: tuple[str, ...] = tuple(actor_chain if actor_chain is not None else [agent])
         self._parent = parent
         self._signing_secrets = signing_secrets
@@ -249,8 +257,8 @@ class Scope:
 
         Any dimension you omit inherits the parent's (and the engine clamps it
         regardless). Raises :class:`AttenuationDenied` if the request exceeds the
-        parent, and :class:`DevEditionCeiling` at the Developer-Edition depth
-        ceiling.
+        parent — or :class:`DelegationDepthExceeded`, a subclass, when the child
+        would be deeper than :attr:`max_delegation_depth`.
 
         ``agent`` names the sub-agent this scope is spawned FOR, appending it to
         the child's :attr:`actor_chain` — what a delegated governor
@@ -262,19 +270,10 @@ class Scope:
         child_depth = self.depth + 1
         requested_tools = _norm(tools) if tools is not None else self.allowed_tools
 
-        # The Developer-Edition ceiling — a product boundary, checked before the
-        # engine. Everything up to here was a real, validated strict subset.
-        if child_depth > DE_MAX_DEPTH:
-            self._record(
-                node_id=uuid.uuid4().hex[:8],
-                parent_id=self.node_id,
-                tools=requested_tools,
-                resource=f"sub-agent depth {child_depth}",
-                decision="Deny",
-                depth=child_depth,
-                reason=DevEditionCeiling(child_depth).args[0],
-            )
-            raise DevEditionCeiling(child_depth)
+        # max_delegation_depth — a governance control, checked before the engine.
+        # A hop past it is a deny: the child is never created.
+        if child_depth > self.max_delegation_depth:
+            self._deny_depth(requested_tools, child_depth)
 
         parent = self._as_dict()
         request = {
@@ -292,6 +291,9 @@ class Scope:
         )
         if resp.get("decision") != "Allow":
             violations = resp.get("violations") or []
+            if "MaxDepth" in violations and self.max_depth <= 0:
+                # The engine's own depth budget is spent — the same deny.
+                self._deny_depth(requested_tools, child_depth)
             reason = resp.get("reason") or "requested scope is not a strict subset of the parent"
             self._record(
                 node_id=uuid.uuid4().hex[:8],
@@ -316,6 +318,7 @@ class Scope:
             max_depth=granted.get("max_depth", request["max_depth"]),
             time_budget_seconds=granted.get("time_budget_seconds", request["time_budget_seconds"]),
             depth=granted.get("depth", child_depth),
+            max_delegation_depth=self.max_delegation_depth,
             parent_id=self.node_id,
             audit=self._audit,
             parent=self,
@@ -334,6 +337,23 @@ class Scope:
             depth=child.depth,
         )
         return child
+
+    def _deny_depth(self, requested_tools: Sequence[str], child_depth: int) -> NoReturn:
+        """Refuse a hop past :attr:`max_delegation_depth`: record the deny — the
+        observed depth and the limit — then raise. The child is never created."""
+        err = DelegationDepthExceeded(child_depth, self.max_delegation_depth)
+        self._record(
+            node_id=uuid.uuid4().hex[:8],
+            parent_id=self.node_id,
+            tools=requested_tools,
+            resource=f"sub-agent depth {child_depth}",
+            decision="Deny",
+            depth=child_depth,
+            reason=err.reason,
+            reason_code=DELEGATION_DEPTH_EXCEEDED,
+            max_delegation_depth=self.max_delegation_depth,
+        )
+        raise err
 
     # ── internals ───────────────────────────────────────────────────
 
@@ -369,6 +389,8 @@ class Scope:
         decision: str,
         depth: int,
         reason: str = "",
+        reason_code: str = "",
+        max_delegation_depth: int | None = None,
     ) -> None:
         # Value-free by construction — a scope's dimensions are capability NAMES,
         # never argument values. Shape stays compatible with `watchlight dev`'s
@@ -389,6 +411,10 @@ class Scope:
             record["parent_id"] = parent_id
         if reason:
             record["reason"] = reason
+        if reason_code:
+            record["reason_code"] = reason_code
+        if max_delegation_depth is not None:
+            record["max_delegation_depth"] = max_delegation_depth
         # One funnel: the governor's file + optional sink (see watchlight._audit).
         self._audit.write(record)
 

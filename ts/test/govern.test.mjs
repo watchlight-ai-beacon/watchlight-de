@@ -1,5 +1,5 @@
 // @watchlight/sdk end-to-end test — govern.tool ALLOW/DENY, value-free audit,
-// and sub-agent scope attenuation (subset / escalation / DE ceiling). Runs the
+// and sub-agent scope attenuation (subset / escalation / max_delegation_depth). Runs the
 // real @watchlight/engine core. No test framework — plain Node asserts.
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
@@ -8,7 +8,10 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 
 const require = createRequire(import.meta.url);
-const { Watchlight, Denied, AttenuationDenied, DevEditionCeiling } = require("../dist/index.js");
+const {
+  Watchlight, Denied, AttenuationDenied, DelegationDepthExceeded,
+  DEFAULT_MAX_DELEGATION_DEPTH, DELEGATION_DEPTH_EXCEEDED,
+} = require("../dist/index.js");
 
 let pass = 0,
   fail = 0;
@@ -54,12 +57,59 @@ async function main() {
   try { root.attenuate({ tools: ["read", "write"] }); } catch (e) { esc = e; }
   ok("tool escalation throws AttenuationDenied", esc instanceof AttenuationDenied, String(esc));
 
-  // Depth ceiling: attenuate DE_MAX_DEPTH (5) levels, the 6th must throw.
-  let s = await g.scope({ tools: ["a"] });
-  let ceiling = null;
-  try { for (let i = 0; i < 7; i++) s = s.attenuate({ tools: ["a"] }); }
-  catch (e) { ceiling = e; }
-  ok("DE depth ceiling enforced", ceiling instanceof DevEditionCeiling, String(ceiling));
+  // ── max_delegation_depth: a governance control (default 8), not an edition cap ──
+  ok("default maxDelegationDepth is 8", DEFAULT_MAX_DELEGATION_DEPTH === 8 && g.maxDelegationDepth === 8);
+  // Eight hops — past the old depth-5 cap — each a strict subset of its parent.
+  let s = await g.scope({ tools: ["a", "b", "c"], intents: ["research", "summarize"] });
+  const wanted = [["a", "b"], ["a", "b"], ["a"], ["a"], ["a"], ["a"], ["a"], ["a"]];
+  let subsetOk = true;
+  for (let i = 0; i < wanted.length; i++) {
+    const parentTools = new Set(s.allowedTools);
+    s = s.attenuate({ tools: wanted[i], intents: ["research"] });
+    subsetOk &&=
+      s.depth === i + 1 &&
+      s.allowedTools.length === wanted[i].length &&
+      s.allowedTools.every((t) => parentTools.has(t) && wanted[i].includes(t)) &&
+      s.allowedIntents.join() === "research";
+  }
+  ok("an 8-hop chain within the limit is permitted, attenuated at every hop", subsetOk && s.depth === 8);
+  let depthErr = null;
+  try { s.attenuate({ tools: ["a"] }); } catch (e) { depthErr = e; }
+  ok("a hop past the default limit throws DelegationDepthExceeded", depthErr instanceof DelegationDepthExceeded, String(depthErr));
+  ok("...which is an AttenuationDenied (a deny)", depthErr instanceof AttenuationDenied);
+  ok("...with the distinct reason code",
+    depthErr && depthErr.code === DELEGATION_DEPTH_EXCEEDED && DELEGATION_DEPTH_EXCEEDED === "DELEGATION_DEPTH_EXCEEDED");
+  ok("...carrying the observed depth and the limit", depthErr && depthErr.depth === 9 && depthErr.limit === 8);
+  let widenErr = null;
+  try { s.attenuate({ tools: ["a", "b"] }); } catch (e) { widenErr = e; }
+  ok("strict subset still applies at depth 8", widenErr instanceof AttenuationDenied);
+
+  // A custom lower limit denies sooner, and the deny is audited with depth + limit.
+  const lowDir = fs.mkdtempSync(join(os.tmpdir(), "wl-sdk-depth-"));
+  const low = new Watchlight({ agent: "depth-agent", auditDir: lowDir, maxDelegationDepth: 3 });
+  let l = await low.scope({ tools: ["a"] });
+  for (let i = 0; i < 3; i++) l = l.attenuate({ tools: ["a"] });
+  let lowErr = null;
+  try { l.attenuate({ tools: ["a"] }); } catch (e) { lowErr = e; }
+  ok("a custom lower limit denies sooner",
+    lowErr instanceof DelegationDepthExceeded && lowErr.depth === 4 && lowErr.limit === 3, String(lowErr));
+  const lowRecs = fs.readFileSync(join(lowDir, "audit.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+  const last = lowRecs[lowRecs.length - 1];
+  ok("the depth deny is recorded with reason_code, depth and limit",
+    last.event === "attenuation" && last.decision === "Deny" && last.reason_code === "DELEGATION_DEPTH_EXCEEDED" &&
+      last.depth === 4 && last.max_delegation_depth === 3 && last.parent_id === l.nodeId,
+    JSON.stringify(last));
+  const lowered = await low.scope({ tools: ["a"], maxDepth: 1 });
+  const raisedAttempt = await low.scope({ tools: ["a"], maxDepth: 50 });
+  ok("scope() lowers the limit but never raises it",
+    lowered.maxDelegationDepth === 1 && raisedAttempt.maxDelegationDepth === 3);
+  let badErr = null;
+  try { new Watchlight({ agent: "bad", auditDir: lowDir, maxDelegationDepth: 65 }); } catch (e) { badErr = e; }
+  ok("an out-of-range limit is rejected", badErr instanceof RangeError, String(badErr));
+  const zero = new Watchlight({ agent: "zero", auditDir: lowDir, maxDelegationDepth: 0 });
+  let zeroErr = null;
+  try { (await zero.scope({ tools: ["a"] })).attenuate({ tools: ["a"] }); } catch (e) { zeroErr = e; }
+  ok("0 allows no sub-agents", zeroErr instanceof DelegationDepthExceeded && zeroErr.depth === 1 && zeroErr.limit === 0);
 
   // ── attenuation records present + value-free ──
   const attRecs = fs.readFileSync(join(auditDir, "audit.jsonl"), "utf8").trim().split("\n").map(JSON.parse).filter((r) => r.event === "attenuation");

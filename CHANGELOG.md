@@ -11,6 +11,23 @@ upgrade is worth your afternoon.
 
 Each entry links to its release, which carries the reasoning and the measurements.
 
+## Unreleased
+
+**Changed**
+
+- Sub-agent delegation depth is a governance control, not an edition limit.
+  `max_delegation_depth` (Python) / `maxDelegationDepth` (TypeScript) on the
+  governor sets it, default 8; `scope(max_depth=…)` lowers it for one tree. A hop
+  past it is a deny — `DelegationDepthExceeded`, reason code
+  `DELEGATION_DEPTH_EXCEEDED` — recorded with the observed depth and the limit.
+  Strict-subset attenuation still applies at every hop.
+- Scope tokens carry up to 64 levels, held to the receiving governor's limit.
+  `MAX_ACTOR_CHAIN` is 65.
+
+**Removed**
+
+- `DevEditionCeiling` and `DE_MAX_DEPTH`, and the depth-5 cap they enforced.
+
 ## 0.11.0 — 2026-09-08
 
 Detector and screening coverage, from a partner harness run against a real

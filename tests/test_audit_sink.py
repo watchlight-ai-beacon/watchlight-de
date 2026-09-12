@@ -16,7 +16,7 @@ import pytest
 
 pytest.importorskip("watchlight_engine")
 
-from watchlight import AttenuationDenied, DE_MAX_DEPTH, DevEditionCeiling, Watchlight
+from watchlight import AttenuationDenied, DelegationDepthExceeded, Watchlight
 from watchlight._audit import AuditTrail
 
 RESEARCH = 'permit(principal, action == Action::"research", resource);'
@@ -60,9 +60,9 @@ def _exercise(g):
     with pytest.raises(AttenuationDenied):
         root.attenuate(tools=["read", "delete"])
     s = child
-    for _ in range(child.depth, DE_MAX_DEPTH):
+    for _ in range(child.depth, g.max_delegation_depth):
         s = s.attenuate(tools=["read"])
-    with pytest.raises(DevEditionCeiling):
+    with pytest.raises(DelegationDepthExceeded):
         s.attenuate(tools=["read"])
     return [allow["decision"], deny["decision"], held["decision"], approved["decision"], approved["approved"]]
 

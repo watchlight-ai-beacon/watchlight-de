@@ -60,8 +60,10 @@ export const MAX_TOKEN_LENGTH = 16_384;
 export const MAX_IAT_SKEW_SECONDS = 60;
 /** Minimum token-secret length (bytes). */
 export const MIN_SECRET_BYTES = 16;
-/** Maximum chain length a token may carry (mirrors the DE depth ceiling). */
-export const MAX_CHAIN_LENGTH = 5;
+/** Maximum chain length a token may carry — a structural bound on the replay a
+ *  token can ask for, and the largest `maxDelegationDepth` a governor accepts.
+ *  The receiving governor's own `maxDelegationDepth` still applies on top. */
+export const MAX_CHAIN_LENGTH = 64;
 
 const HMAC_BYTES = 32;
 const B64URL = /^[A-Za-z0-9_-]+$/;

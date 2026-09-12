@@ -258,8 +258,8 @@ Worth knowing:
   starts a fresh chain from the receiving governor's agent. Call `delegate`
   there if the receiving side must record the delegation.
 * A delegate cannot widen what its parent held (`AttenuationDenied`), and the
-  chain is at most **`MAX_ACTOR_CHAIN` = 6** entries. Past that, `delegate`
-  raises `DevEditionCeiling`.
+  chain is at most **`max_delegation_depth` + 1** entries — 9 by default. Past
+  that, `delegate` raises `DelegationDepthExceeded`.
 * A delegate cannot be renamed, because renaming it would drop the chain. Spawn
   a further sub-agent with `delegate` instead.
 * `picker.delegated_scope` / `picker.delegatedScope` is the narrowed scope it
