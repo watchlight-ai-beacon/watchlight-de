@@ -162,6 +162,56 @@ def test_person_and_address_opt_in():
     assert sanitize("123 Main Street", types=["PERSON", "ADDRESS"])["text"] == "<ADDRESS_1>"
 
 
+def test_person_exclusions_are_exact_and_scoped_to_person(tmp_path):
+    text = (
+        "Placing agency: Bethany Christian Services; contact Ada Lovelace at "
+        "ada@example.com, SSN 123-45-6789"
+    )
+    default = sanitize(text, types=["PERSON", "EMAIL", "SSN"])
+    assert "Bethany Christian Services" not in default["text"]
+
+    excluded = sanitize(
+        text,
+        types=["PERSON", "EMAIL", "SSN"],
+        person_exclusions=["bethany christian services"],
+    )
+    assert "Bethany Christian Services" in excluded["text"]
+    assert "Ada Lovelace" not in excluded["text"]
+    assert "ada@example.com" not in excluded["text"]
+    assert "123-45-6789" not in excluded["text"]
+    assert excluded["report"]["counts"] == {"PERSON": 1, "EMAIL": 1, "SSN": 1}
+    assert "Bethany" not in json.dumps(excluded["report"])
+
+    # Exclusions name a complete PERSON candidate; partial strings do not make
+    # a larger candidate survive.
+    partial = sanitize(
+        "Bethany Christian Services", types=["PERSON"], person_exclusions=["Bethany Christian"]
+    )
+    assert partial["text"] == "<PERSON_1>"
+
+    g = Watchlight(agent="doc-agent", audit_dir=tmp_path)
+    governed = g.sanitize(
+        text,
+        types=["PERSON", "EMAIL", "SSN"],
+        person_exclusions=["Bethany Christian Services"],
+        agent="reviewer",
+    )
+    assert "Bethany Christian Services" in governed["text"]
+    raw = (tmp_path / "audit.jsonl").read_text()
+    assert '"agent": "reviewer"' in raw
+    assert "Bethany" not in raw and "Christian" not in raw and "Services" not in raw
+
+
+def test_person_exclusions_reject_invalid_shapes_without_echoing_values():
+    for bad in ("Bethany Christian Services", b"Bethany Christian Services", 42):
+        with pytest.raises(SanitizeError) as ei:
+            sanitize("Bethany Christian Services", types=["PERSON"], person_exclusions=bad)
+        assert str(ei.value).endswith("person_exclusions must be a sequence of strings")
+    with pytest.raises(SanitizeError) as ei:
+        sanitize("Bethany Christian Services", types=["PERSON"], person_exclusions=["ok", 42])
+    assert "42" not in str(ei.value)
+
+
 def test_adversarial_inputs_stay_fast():
     adversarial = [
         "passport" + " " * 50000 + "x", "DOB:" + " " * 50000, "Aa " * 20000,

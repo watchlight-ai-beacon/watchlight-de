@@ -4,7 +4,10 @@
 // and the report echoes `decisionId`. Not part of the package build.
 import { govern, sanitize, Watchlight, type SanitizeOptions, type SanitizeResult } from "../dist/index";
 
-const opts: SanitizeOptions = { resource: "statement.pdf", intent: "read", decisionId: "dec-123" };
+const opts: SanitizeOptions = {
+  resource: "statement.pdf", intent: "read", decisionId: "dec-123",
+  personExclusions: ["Bethany Christian Services"],
+};
 const governed: SanitizeResult = govern.sanitize("text", opts);
 const pure: SanitizeResult = sanitize("text", { resource: "statement.pdf", intent: "read", decisionId: "dec-123" });
 const echoed: string | undefined = governed.report.decisionId ?? pure.report.decisionId;

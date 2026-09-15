@@ -25,6 +25,11 @@ without recording a grant. One change affects code that reads the trail.
 - An attenuation record for a named sub-agent (`attenuate(agent=…)`,
   `delegate()`) carries that sub-agent's `actor_chain`, and its `resource` reads
   `scope for <name>` — on grants and refusals alike.
+- `sanitize(person_exclusions=…)` / `sanitize({ personExclusions })`: exact,
+  case-insensitive values the optional `PERSON` heuristic leaves untouched, for
+  the Title Case organization names it would otherwise redact. It suppresses
+  only a complete `PERSON` candidate; every other enabled detector still runs,
+  and the values never reach the report or the audit trail.
 
 **Changed**
 - Decision records carry `"event": "decision"`. See

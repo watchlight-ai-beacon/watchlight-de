@@ -160,6 +160,11 @@ labelled passport and date of birth — plus a `known` dictionary you supply.
 Both are deterministic rules, not classifiers, and both record counts only,
 never values.
 
+When the optional `PERSON` heuristic is enabled, `personExclusions` can name
+exact values already known not to be people. It matches a complete candidate
+case-insensitively, affects only `PERSON`, and is never recorded in the report
+or audit trail.
+
 → [The TypeScript lane](https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/docs/typescript.md#strip-pii-and-screen-what-comes-back)
 
 ### Narrow a sub-agent's authority

@@ -192,6 +192,23 @@ async function main() {
   const irish = sanitize("Dr. Sam O'Neil met Kim McDonald-Lee and Jean-Luc D'Angelo", { types: ["PERSON"] });
   ok("PERSON: apostrophe / camel-case / hyphenated names", irish.text === "Dr. <PERSON_1> met <PERSON_2> and <PERSON_3>", irish.text);
   ok("PERSON: negative — lower-case words are not names", (sanitize("alice met bob at the cafe", { types: ["PERSON"] }).report.counts.PERSON ?? 0) === 0);
+  const orgText = "Placing agency: Bethany Christian Services; contact Ada Lovelace at ada@example.com, SSN 123-45-6789";
+  ok("PERSON exclusions: default PERSON behavior is unchanged", !sanitize(orgText, { types: ["PERSON", "EMAIL", "SSN"] }).text.includes("Bethany Christian Services"));
+  const excludedPerson = sanitize(orgText, {
+    types: ["PERSON", "EMAIL", "SSN"], personExclusions: ["bethany christian services"],
+  });
+  ok("PERSON exclusions: exact caller-supplied value survives", excludedPerson.text.includes("Bethany Christian Services"), excludedPerson.text);
+  ok("PERSON exclusions: other person and structured detectors still redact", !excludedPerson.text.includes("Ada Lovelace") && !excludedPerson.text.includes("ada@example.com") && !excludedPerson.text.includes("123-45-6789"), excludedPerson.text);
+  ok("PERSON exclusions: report stays value-free", JSON.stringify(excludedPerson.report.counts) === JSON.stringify({ PERSON: 1, EMAIL: 1, SSN: 1 }) && !JSON.stringify(excludedPerson.report).includes("Bethany"));
+  ok("PERSON exclusions: partial value does not exempt a larger candidate", sanitize("Bethany Christian Services", { types: ["PERSON"], personExclusions: ["Bethany Christian"] }).text === "<PERSON_1>");
+  let badPersonExclusions = false;
+  try { sanitize("x", { personExclusions: 42 }); } catch (e) { badPersonExclusions = e instanceof SanitizeError && !String(e.message).includes("42"); }
+  ok("PERSON exclusions: invalid shape is fail-closed and value-free", badPersonExclusions);
+  const exclusionAuditDir = fs.mkdtempSync(join(os.tmpdir(), "wl-san-person-exclusions-"));
+  const exclusionGovernor = new Watchlight({ agent: "doc-agent", auditDir: exclusionAuditDir });
+  const governedExclusion = exclusionGovernor.sanitize(orgText, { agent: "reviewer", types: ["PERSON", "EMAIL", "SSN"], personExclusions: ["Bethany Christian Services"] });
+  const exclusionAudit = fs.readFileSync(join(exclusionAuditDir, "audit.jsonl"), "utf8");
+  ok("govern.sanitize propagates PERSON exclusions without auditing values", governedExclusion.text.includes("Bethany Christian Services") && exclusionAudit.includes('"agent":"reviewer"') && !exclusionAudit.includes("Bethany") && !exclusionAudit.includes("Christian") && !exclusionAudit.includes("Services"));
   const where = "Ship to 123 Main Street, Apt 4B, Springfield, IL 62704 or P.O. Box 987. Meet at 10 Downing St.";
   ok("ADDRESS: off by default", !("ADDRESS" in sanitize(where).report.counts));
   const addr = sanitize(where, { types: ["ADDRESS"] });
