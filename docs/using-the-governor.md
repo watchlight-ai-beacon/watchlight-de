@@ -507,10 +507,20 @@ govern.reload("watchlight.policy.json");
 govern.reload({ policies: editedBundle });
 ```
 
-Everything the governor held goes, inline `allow` policies included. The new set
-is checked and compiled into a fresh engine before anything is swapped, so a set
-that does not compile leaves the governor exactly as it was and raises. There is
-no window holding half of either set.
+Everything the governor held goes, inline `allow` policies included. In Python
+the new set is checked and compiled into a fresh engine before anything is
+swapped, so a set that does not compile leaves the governor exactly as it was
+and raises `PolicyCompileError`. There is no window holding half of either set.
+
+In TypeScript the engine compiles asynchronously, so `reload` cannot throw for a
+Cedar error. It swaps, and the error surfaces at `ready()` or the next decision
+as `PolicyCompileError`. From then on every decision throws it until another
+reload succeeds. The governor never decides on a set with a policy missing.
+Await `ready()` to see the error at once:
+
+```ts
+await govern.reload("watchlight.policy.json").ready();
+```
 
 A missing file or an empty set raises rather than replacing the policies with
 nothing. Cedar default-denies, so an accidental empty reload would be safe but

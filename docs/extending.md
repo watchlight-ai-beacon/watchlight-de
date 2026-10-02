@@ -141,9 +141,12 @@ govern.reload("watchlight.policy.json")
 govern.reload(policies=edited_bundle)
 ```
 
-It is atomic — a set that does not compile leaves the governor exactly as it was
-— and a missing file or an empty set raises rather than replacing your policies
-with nothing.
+In Python it is atomic: a set that does not compile leaves the governor exactly
+as it was and raises `PolicyCompileError`. In TypeScript the engine compiles
+asynchronously, so the error surfaces at `await govern.ready()` or the next
+decision, and every decision is refused until a reload succeeds. Either way a
+missing file or an empty set raises rather than replacing your policies with
+nothing.
 
 ## Next
 

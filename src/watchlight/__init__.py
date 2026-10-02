@@ -163,6 +163,7 @@ __all__ = [
     "SYNC_TIMEOUT_MESSAGE",
     "AuthorizeError",
     "PolicyError",
+    "PolicyCompileError",
     "ENFORCEMENT_EFFECTS",
     "ENFORCEMENT_EFFECT_ANNOTATION",
     "OBLIGATIONS_INVALID_MESSAGE",
@@ -342,6 +343,61 @@ class AuthorizeRequestError(RuntimeError):
 
     def __init__(self) -> None:
         super().__init__(REQUEST_INVALID_MESSAGE)
+
+
+class PolicyCompileError(RuntimeError):
+    """Raised at policy load when the engine refuses to compile a policy — a
+    Cedar syntax or validation error. Carries the ``policy`` name and, when it
+    came from a file, the ``source`` path.
+
+    Nothing from the refused call is added: :meth:`Watchlight.allow` adds
+    nothing, :meth:`Watchlight.load` adds nothing from that file, and
+    :meth:`Watchlight.reload` keeps the set it had. It subclasses
+    ``RuntimeError``, which is what the engine raised before, so existing
+    handlers still catch it."""
+
+    def __init__(self, policy: str, source: Optional[str], cause: BaseException) -> None:
+        where = f" from {source}" if source else ""
+        super().__init__(
+            f'policy "{policy}"{where} does not compile ({_compile_detail(cause)})'
+        )
+        self.policy = policy
+        self.source = source
+
+
+#: How much of the engine's error text a :class:`PolicyCompileError` carries.
+#: The engine's detail can quote the offending source, such as a string
+#: literal, so it is cut short; the kind of error before it is kept.
+_COMPILE_DETAIL_LIMIT = 40
+
+
+def _compile_detail(cause: BaseException) -> str:
+    """The engine's error as ``kind: detail``, the detail cut to
+    :data:`_COMPILE_DETAIL_LIMIT` characters. Drops the engine's
+    ``add_policy failed:`` prefix and a repeated kind. Same as the TS lane."""
+
+    def cut(s: str) -> str:
+        if len(s) <= _COMPILE_DETAIL_LIMIT:
+            return s
+        return s[: _COMPILE_DETAIL_LIMIT - 1] + "…"
+
+    text = str(cause).strip()
+    text = re.sub(r"^add_policy failed:\s*", "", text)
+    kind, sep, detail = text.partition(": ")
+    if not sep:
+        return cut(text)
+    if detail.startswith(kind + ": "):
+        detail = detail[len(kind) + 2 :]
+    return f"{cut(kind)}: {cut(detail)}"
+
+
+def _compile_into(engine: Any, name: str, code: str, source: Optional[str]) -> None:
+    """Add one policy to ``engine``, raising :class:`PolicyCompileError` when
+    the engine refuses it."""
+    try:
+        engine.add_policy(json.dumps({"name": name, "code": code}))
+    except RuntimeError as exc:
+        raise PolicyCompileError(name, source, exc) from exc
 
 
 #: Fixed, value-free message of :class:`ReservedContextError`.
@@ -2556,10 +2612,13 @@ class Watchlight:
         into a plain allow. An annotation NAME that is a near miss for
         ``@enforcement_effect`` warns on stderr; any other annotation is your
         own and passes without comment. Every policy entry point goes through
-        here, :meth:`load` and the CLI included."""
+        here, :meth:`load` and the CLI included.
+
+        A policy the engine cannot compile raises :class:`PolicyCompileError`
+        and is not added."""
         policy_name = name or f"policy-{self._policy_count}"
         check_policy_annotations(cedar_code, policy_name)
-        self._engine.add_policy(json.dumps({"name": policy_name, "code": cedar_code}))
+        _compile_into(self._engine, policy_name, cedar_code, None)
         self._policy_count += 1
         return self
 
@@ -2594,7 +2653,12 @@ class Watchlight:
         carrying an ``@enforcement_effect`` the engine does not implement raises
         :class:`PolicyError` and NOTHING from that file is added — the governor
         is left exactly as it was, and the source is not remembered. See
-        :meth:`allow`."""
+        :meth:`allow`.
+
+        COMPILED BEFORE IT LOADS: the whole file is compiled into a scratch
+        engine first, so a policy with a Cedar error raises
+        :class:`PolicyCompileError` naming it and the file, and again NOTHING
+        from that file is added."""
         p = pathlib.Path(path)
         key = source_id if source_id is not None else str(p.resolve())
         if key in self._shared.sources and not force:
@@ -2611,8 +2675,20 @@ class Watchlight:
                 entry.get("name") or f"policy-{self._policy_count + offset}",
                 warn=False,
             )
-        for entry in entries:
-            self.allow(entry["code"], entry.get("name"))
+        # Compile the whole file into a scratch engine first: the live engine
+        # cannot drop a policy, so one that fails part-way through would leave
+        # the policies before it loaded and the ones after it missing — a
+        # dropped forbid is a widened decision. Only a file that compiled in
+        # full reaches the live engine.
+        scratch = _engine.PolicyEngine()
+        named = [
+            (entry.get("name") or f"policy-{self._policy_count + offset}", entry["code"])
+            for offset, entry in enumerate(entries)
+        ]
+        for name, code in named:
+            _compile_into(scratch, name, code, str(p))
+        for name, code in named:
+            self.allow(code, name)
         self._shared.sources.add(key)
         return self
 
@@ -2691,10 +2767,11 @@ class Watchlight:
         # allowed to become the one in force.
         engine = _engine.PolicyEngine()
         for offset, entry in enumerate(entries):
-            engine.add_policy(
-                json.dumps(
-                    {"name": entry.get("name") or f"policy-{offset}", "code": entry["code"]}
-                )
+            _compile_into(
+                engine,
+                entry.get("name") or f"policy-{offset}",
+                entry["code"],
+                None if policies is not None else str(path),
             )
 
         state = self._shared

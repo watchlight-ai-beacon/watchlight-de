@@ -31,6 +31,19 @@ without recording a grant. One change affects code that reads the trail.
   only a complete `PERSON` candidate; every other enabled detector still runs,
   and the values never reach the report or the audit trail.
 
+**Fixed**
+- Hardening: a policy that fails to compile now fails the load, or denies,
+  instead of being skipped. In TypeScript, a Cedar error in one queued policy
+  used to drop the rest of its batch, and later decisions ran without them, so
+  a skipped `forbid` no longer applied. Now every decision throws
+  `PolicyCompileError`, naming the policy and its file, until `reload()`
+  replaces the set; `await govern.ready()` compiles the queued policies and
+  surfaces the error at start-up. In Python, `load()` compiles the whole file
+  into a scratch engine first, so a Cedar error raises `PolicyCompileError` and
+  adds nothing from the file, where it used to leave the policies before it
+  loaded. `watchlight policy test` exits 2 on it in both lanes. See
+  [breaking changes](docs/breaking-changes.md).
+
 **Changed**
 - Decision records carry `"event": "decision"`. See
   [breaking changes](docs/breaking-changes.md).

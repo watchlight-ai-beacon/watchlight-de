@@ -54,7 +54,13 @@ import {
   type CountersOptions,
   type CounterSource,
 } from "./counters";
-import { AuthorizeError, selectBackend, type GovernanceBackend, type Obligations } from "./backend";
+import {
+  AuthorizeError,
+  PolicyCompileError,
+  selectBackend,
+  type GovernanceBackend,
+  type Obligations,
+} from "./backend";
 import {
   sanitize as sanitizeText,
   SanitizeError,
@@ -109,6 +115,7 @@ export {
 export { CounterSourceError } from "./counters";
 export type { Counters, CountersOptions, CounterOutcome, CounterWindow } from "./counters";
 export type { CounterQuery, CounterSource, CounterSourceKind } from "./counters";
+export { PolicyCompileError } from "./backend";
 export { governedHooks } from "./claude-agent";
 export { DEFAULT_ON_RESULT_TIMEOUT_MS, EgressTimeout } from "./egress";
 export type {
@@ -1126,12 +1133,33 @@ export class Watchlight {
    *  approval hold into a plain allow. An annotation NAME that is a near miss
    *  for `@enforcement_effect` warns on the console; any other annotation is
    *  your own and passes without comment. Every policy entry point goes through
-   *  here, {@link load} and the CLI included. */
+   *  here, {@link load} and the CLI included.
+   *
+   *  COMPILED BEFORE THE FIRST DECISION, NEVER SKIPPED. The engine compiles
+   *  asynchronously, so a Cedar syntax error surfaces at {@link ready} or the
+   *  first decision as {@link PolicyCompileError} — and from then on every
+   *  decision throws it until {@link reload} replaces the set. A policy that
+   *  does not compile is never left out of a set that goes on deciding. */
   allow(cedarCode: string, name?: string): this {
+    return this._add(cedarCode, name);
+  }
+
+  private _add(cedarCode: string, name?: string, source?: string): this {
     const policyName = name ?? `policy-${this._shared.policyCount}`;
     checkPolicyAnnotations(cedarCode, policyName);
-    this._backend.addPolicy({ name: policyName, code: cedarCode });
+    this._backend.addPolicy({ name: policyName, code: cedarCode, source });
     this._shared.policyCount += 1;
+    return this;
+  }
+
+  /** Compile every queued policy now. Resolves to this governor, or rejects
+   *  with {@link PolicyCompileError} naming the policy and the file it came
+   *  from. `await govern.load("watchlight.policy.json").ready()` surfaces a
+   *  Cedar error at start-up instead of at the first decision. On a networked
+   *  backend the control plane holds the policies, and this resolves at once. */
+  async ready(): Promise<this> {
+    const engine = this._backend.engine();
+    if (engine) await engine;
     return this;
   }
 
@@ -1174,7 +1202,7 @@ export class Watchlight {
         warn: false,
       })
     );
-    for (const e of entries) this.allow(e.code, e.name);
+    for (const e of entries) this._add(e.code, e.name, file);
     this._shared.sources.add(key);
     return this;
   }
@@ -1194,10 +1222,17 @@ export class Watchlight {
    * so it could only ever WIDEN authority. An operator console that can edit a
    * policy set has to be able to take one away.
    *
-   * ATOMIC, AND FAIL-CLOSED ON THE WAY IN. The new set is parsed, checked and
-   * queued into a fresh backend before anything is swapped, so a set that does
-   * not check leaves the governor exactly as it was and throws. There is no
-   * window in which the governor holds half of either set.
+   * FAIL-CLOSED ON THE WAY IN. The new set is parsed and its annotations are
+   * checked before anything is swapped, so a missing file, an empty set or a
+   * refused annotation leaves the governor exactly as it was and throws. Only
+   * those checks are atomic.
+   *
+   * A Cedar compile error is not: the engine compiles asynchronously, so it
+   * cannot throw here. The new set is swapped in, and the error surfaces at
+   * {@link ready} or the next decision as {@link PolicyCompileError}. From then
+   * on every decision throws it until a reload with a set that compiles: the
+   * old set is gone, and the new one never decides without the policy that
+   * failed. `await govern.reload(...).ready()` surfaces it at once.
    *
    * A missing file or an empty set throws rather than replacing the policies
    * with nothing. Cedar default-denies, so an accidental empty reload would be
@@ -1244,7 +1279,11 @@ export class Watchlight {
     );
     const backend = selectBackend(this._shared.backendOptions);
     entries.forEach((e, offset) =>
-      backend.addPolicy({ name: e.name ?? `policy-${offset}`, code: e.code })
+      backend.addPolicy({
+        name: e.name ?? `policy-${offset}`,
+        code: e.code,
+        source: typeof source === "string" ? source : undefined,
+      })
     );
     this._shared.backend = backend;
     this._shared.policyCount = entries.length;
@@ -1576,6 +1615,9 @@ export class Watchlight {
       this._audit(req.action, req.resource ?? "resource", "Deny", DENY_REASON, {
         principal: req.principal,
       });
+      // A policy set that did not compile is a configuration error, not a bad
+      // request: raised as itself, so the message says which policy to fix.
+      if (e instanceof PolicyCompileError) throw e;
       throw new AuthorizeRequestError();
     }
     const { result, principal, resource, decisionId } = decided;

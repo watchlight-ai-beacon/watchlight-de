@@ -10,6 +10,27 @@ between the version you are on and the one you are moving to.
 
 ## Unreleased
 
+**A policy that does not compile fails the load, or every decision, instead of
+being skipped.** This fails loudly, in the closed direction.
+
+- **TypeScript.** The engine compiles queued policies before the first
+  decision. A Cedar error used to surface once, as `AuthorizeRequestError`,
+  and the policies queued with the broken one were dropped, so later decisions
+  ran without them. Now every decision, `scope()` and `test()` throw
+  `PolicyCompileError` (`.policy`, `.source`) until `reload()` replaces the
+  set. A governor that loaded a broken policy and still served decisions now
+  refuses them all. Await `ready()` after loading to see the error at
+  start-up:
+
+  ```ts
+  await govern.load("watchlight.policy.json").ready();   // throws PolicyCompileError
+  ```
+
+- **Python.** `allow`, `load` and `reload` raise `PolicyCompileError` where the
+  engine raised a bare `RuntimeError`. It subclasses `RuntimeError`, so an
+  existing handler still catches it. `load` now adds nothing from a file with a
+  policy that does not compile; it used to keep the policies before it.
+
 **`governed_plugin` refuses `governance=` and `apdp_url=`** in
 `watchlight.langgraph`, `watchlight.pydantic_ai` and `watchlight.claude_agent`.
 Earlier releases forwarded both to the plugin, where they replaced the backend
