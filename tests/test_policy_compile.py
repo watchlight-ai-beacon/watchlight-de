@@ -109,3 +109,18 @@ def test_cli_exits_2_on_a_policy_that_does_not_compile(tmp_path, capsys):
                                  "tests": [{"action": "delete", "expect": "Deny"}]}))
     assert cli_main(["policy", "test", str(suite)]) == 2
     assert "no-delete" in capsys.readouterr().err
+
+
+def test_the_error_keeps_the_kind_and_cuts_the_engine_detail_short(tmp_path):
+    secret = "s3cr3t-" + "x" * 80
+    broken = f'forbid(principal, action, resource) when {{ context.k == "{secret}" ; }};'
+    p = _write(tmp_path, "p.json", [{"name": "leaky", "code": broken}])
+    with pytest.raises(PolicyCompileError) as exc:
+        _gov(tmp_path).load(p)
+    message = str(exc.value)
+    assert '"leaky"' in message and "p.json" in message
+    assert secret not in message
+    assert "add_policy failed" not in message
+    detail = message[message.index("(") + 1 : message.rindex(")")]
+    kind, _, rest = detail.partition(": ")
+    assert len(kind) <= 40 and len(rest) <= 40

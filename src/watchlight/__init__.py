@@ -358,9 +358,37 @@ class PolicyCompileError(RuntimeError):
 
     def __init__(self, policy: str, source: Optional[str], cause: BaseException) -> None:
         where = f" from {source}" if source else ""
-        super().__init__(f'policy "{policy}"{where} does not compile: {cause}')
+        super().__init__(
+            f'policy "{policy}"{where} does not compile ({_compile_detail(cause)})'
+        )
         self.policy = policy
         self.source = source
+
+
+#: How much of the engine's error text a :class:`PolicyCompileError` carries.
+#: The engine's detail can quote the offending source, such as a string
+#: literal, so it is cut short; the kind of error before it is kept.
+_COMPILE_DETAIL_LIMIT = 40
+
+
+def _compile_detail(cause: BaseException) -> str:
+    """The engine's error as ``kind: detail``, the detail cut to
+    :data:`_COMPILE_DETAIL_LIMIT` characters. Drops the engine's
+    ``add_policy failed:`` prefix and a repeated kind. Same as the TS lane."""
+
+    def cut(s: str) -> str:
+        if len(s) <= _COMPILE_DETAIL_LIMIT:
+            return s
+        return s[: _COMPILE_DETAIL_LIMIT - 1] + "…"
+
+    text = str(cause).strip()
+    text = re.sub(r"^add_policy failed:\s*", "", text)
+    kind, sep, detail = text.partition(": ")
+    if not sep:
+        return cut(text)
+    if detail.startswith(kind + ": "):
+        detail = detail[len(kind) + 2 :]
+    return f"{cut(kind)}: {cut(detail)}"
 
 
 def _compile_into(engine: Any, name: str, code: str, source: Optional[str]) -> None:

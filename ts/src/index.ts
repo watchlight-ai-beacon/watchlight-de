@@ -1222,17 +1222,17 @@ export class Watchlight {
    * so it could only ever WIDEN authority. An operator console that can edit a
    * policy set has to be able to take one away.
    *
-   * ATOMIC, AND FAIL-CLOSED ON THE WAY IN. The new set is parsed, checked and
-   * queued into a fresh backend before anything is swapped, so a set that does
-   * not check leaves the governor exactly as it was and throws. There is no
-   * window in which the governor holds half of either set.
+   * FAIL-CLOSED ON THE WAY IN. The new set is parsed and its annotations are
+   * checked before anything is swapped, so a missing file, an empty set or a
+   * refused annotation leaves the governor exactly as it was and throws. Only
+   * those checks are atomic.
    *
-   * The engine compiles asynchronously, so a Cedar error in the new set
-   * cannot throw here. It surfaces at {@link ready} or the next decision as
-   * {@link PolicyCompileError}, and every decision throws it until another
-   * reload succeeds: the old set is gone, and the new one never decides
-   * without the policy that failed. `await govern.reload(...).ready()`
-   * surfaces it at once.
+   * A Cedar compile error is not: the engine compiles asynchronously, so it
+   * cannot throw here. The new set is swapped in, and the error surfaces at
+   * {@link ready} or the next decision as {@link PolicyCompileError}. From then
+   * on every decision throws it until a reload with a set that compiles: the
+   * old set is gone, and the new one never decides without the policy that
+   * failed. `await govern.reload(...).ready()` surfaces it at once.
    *
    * A missing file or an empty set throws rather than replacing the policies
    * with nothing. Cedar default-denies, so an accidental empty reload would be

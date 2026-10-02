@@ -116,6 +116,20 @@ async function main() {
     ok("a successful reload recovers", (await outcome(g, "read")) === "Allow" && (await outcome(g, "wire")) === "Deny");
   }
 
+  // ── the error keeps the kind and cuts the engine's detail short ──
+  {
+    const secret = "s3cr3t-" + "x".repeat(80);
+    const g = gov().allow(`forbid(principal, action, resource) when { context.k == "${secret}" ; };`, "leaky");
+    const e = await rejection(g.ready());
+    const m = e ? e.message : "";
+    const detail = m.slice(m.indexOf("(") + 1, m.indexOf("). "));
+    const [kind, ...rest] = detail.split(": ");
+    ok("the message names the policy, never the full source text",
+      e instanceof PolicyCompileError && m.includes('"leaky"') && !m.includes(secret) && !m.includes("add_policy failed"), m);
+    ok("...kind and detail are each at most 40 characters",
+      kind.length <= 40 && rest.join(": ").length <= 40, detail);
+  }
+
   // ── the CLI ──
   {
     write("cli.json", [{ name: "all", code: PERMIT_ALL }, { name: "no-delete", code: BROKEN_FORBID }]);

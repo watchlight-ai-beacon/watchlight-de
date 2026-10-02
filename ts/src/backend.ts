@@ -237,14 +237,36 @@ export class PolicyCompileError extends Error {
   /** The file it was loaded from, when it came from one. */
   readonly source?: string;
   constructor(policy: string, source: string | undefined, cause: unknown) {
-    const detail = cause instanceof Error ? cause.message : String(cause);
     super(
-      `policy "${policy}"${source ? ` from ${source}` : ""} does not compile: ${detail}. ` +
-        `Every decision is refused until reload() replaces the policy set.`
+      `policy "${policy}"${source ? ` from ${source}` : ""} does not compile ` +
+        `(${compileDetail(cause)}). Every decision is refused until reload() ` +
+        `replaces the policy set.`
     );
     this.policy = policy;
     this.source = source;
   }
+}
+
+/** How much of the engine's error text a {@link PolicyCompileError} carries.
+ *  The engine's detail can quote the offending source, such as a string
+ *  literal, so it is cut short; the kind of error before it is kept. */
+const COMPILE_DETAIL_LIMIT = 40;
+
+/** The engine's error as "kind: detail", the detail cut to
+ *  {@link COMPILE_DETAIL_LIMIT} characters. Drops the engine's
+ *  `add_policy failed:` prefix and a repeated kind. The Python lane does the
+ *  same. */
+function compileDetail(cause: unknown): string {
+  let text = (cause instanceof Error ? cause.message : String(cause)).trim();
+  text = text.replace(/^add_policy failed:\s*/, "");
+  const cut = (s: string) =>
+    s.length <= COMPILE_DETAIL_LIMIT ? s : s.slice(0, COMPILE_DETAIL_LIMIT - 1) + "…";
+  const colon = text.indexOf(": ");
+  if (colon < 0) return cut(text);
+  const kind = text.slice(0, colon);
+  let detail = text.slice(colon + 2);
+  if (detail.startsWith(kind + ": ")) detail = detail.slice(kind.length + 2);
+  return `${cut(kind)}: ${cut(detail)}`;
 }
 
 /** A policy queued for the engine. `source` names the file it came from. */
