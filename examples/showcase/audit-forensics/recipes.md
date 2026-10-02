@@ -24,7 +24,7 @@ jq -r '.event // "decision"' "$TRAIL" | sort | uniq -c
 `NeedsApproval` nobody has confirmed yet.
 
 ```bash
-jq -r 'select(.event == null)
+jq -r 'select((.event // "decision") == "decision")
   | (if .decision == "Allow" then (if .approved then "approved" else "allowed" end)
      elif .decision == "NeedsApproval" then "held" else "denied" end) as $outcome
   | "\(.principal) \($outcome)"' "$TRAIL" | sort | uniq -c
@@ -36,7 +36,7 @@ Index the decisions by `decision_id`, then look each follow-up record up.
 
 ```bash
 jq -s '
-  (map(select(.event == null and .decision_id)) | INDEX(.decision_id)) as $d
+  (map(select((.event // "decision") == "decision" and .decision_id)) | INDEX(.decision_id)) as $d
   | map(select((.event == "sanitization" or .event == "egress") and .decision_id))
   | map({
       decision_id, event,
@@ -59,7 +59,7 @@ jq -s '
   group_by(.decision_id) | map(select(.[0].decision_id != null))
   | map({
       decision_id: .[0].decision_id,
-      decision: (map(select(.event == null)) | .[0] | {principal, intent, resource, decision}),
+      decision: (map(select((.event // "decision") == "decision")) | .[0] | {principal, intent, resource, decision}),
       sanitizations: map(select(.event == "sanitization")) | length,
       egress: map(select(.event == "egress")
                   | if .withheld then "withheld" elif .replaced then "replaced" else "passthrough" end)
@@ -96,13 +96,13 @@ jq -c 'select(.event == "screening" and .flagged) | {resource, intent, total, co
 ## Every approved action (a human confirmed it)
 
 ```bash
-jq -c 'select(.event == null and .approved == true) | {principal, intent, resource, decision_id}' "$TRAIL"
+jq -c 'select((.event // "decision") == "decision" and .approved == true) | {principal, intent, resource, decision_id}' "$TRAIL"
 ```
 
 ## Denials, by intent and resource
 
 ```bash
-jq -r 'select(.event == null and .decision == "Deny") | "\(.principal) \(.intent) \(.resource)"' "$TRAIL" | sort | uniq -c
+jq -r 'select((.event // "decision") == "decision" and .decision == "Deny") | "\(.principal) \(.intent) \(.resource)"' "$TRAIL" | sort | uniq -c
 ```
 
 ## Integrity: follow-up records that join nothing
@@ -112,7 +112,7 @@ decision went to another trail, or the file was truncated.
 
 ```bash
 jq -s '
-  (map(select(.event == null and .decision_id) | .decision_id)) as $ids
+  (map(select((.event // "decision") == "decision" and .decision_id) | .decision_id)) as $ids
   | map(select((.event == "sanitization" or .event == "egress") and .decision_id
                and (.decision_id as $x | $ids | index($x) | not))
         | {event, decision_id, resource})' "$TRAIL"
@@ -130,8 +130,8 @@ jq -r 'select((.event == "sanitization" or .event == "egress") and (.decision_id
 ```bash
 P='User::"alice"'
 jq -s --arg p "$P" '
-  (map(select(.event == null and .principal == $p and .decision_id) | .decision_id)) as $ids
-  | map(select((.event == null and .principal == $p)
+  (map(select((.event // "decision") == "decision" and .principal == $p and .decision_id) | .decision_id)) as $ids
+  | map(select(((.event // "decision") == "decision" and .principal == $p)
                or (.decision_id as $x | $ids | index($x))))
   | map({ts, kind: (.event // "decision"), intent, resource, decision, approved, replaced, withheld, total})' "$TRAIL"
 ```

@@ -74,18 +74,20 @@ Everything printed is an identifier, a count or a field name.
 
 ## Record kinds
 
-The trail holds five record kinds, told apart by `event`. A decision has no
-`event` field; every other kind names itself there. One allowed read and the two
-records that followed it, abridged:
+The trail holds five record kinds, told apart by `event`. Every kind names
+itself there; a decision written before 0.13.0 has no `event` field, so read a
+missing one as `decision`. One allowed read and the two records that followed
+it, abridged:
 
 ```json
-{"ts": "…", "agent": "ticket-agent", "principal": "User::\"alice\"", "intent": "read", "resource": "ticket/T-1", "decision": "Allow", "decision_id": "5b096b77-…"}
+{"ts": "…", "agent": "ticket-agent", "principal": "User::\"alice\"", "intent": "read", "event": "decision", "resource": "ticket/T-1", "decision": "Allow", "decision_id": "5b096b77-…"}
 {"ts": "…", "agent": "ticket-agent", "intent": "read", "event": "sanitization", "resource": "ticket/T-1", "total": 3, "decision_id": "5b096b77-…"}
 {"ts": "…", "agent": "ticket-agent", "principal": "User::\"alice\"", "intent": "read", "event": "egress", "resource": "ticket/T-1", "replaced": true, "decision_id": "5b096b77-…"}
 ```
 
-So `.event // "decision"` names any record's kind, and `select(.event == null)`
-picks out the decisions. `decision_id` is what joins the three.
+So `.event // "decision"` names any record's kind, and
+`select((.event // "decision") == "decision")` picks out the decisions, from
+either release. `select(.event == null)` finds none written by 0.13.0 or later. `decision_id` is what joins the three.
 
 Both SDKs also ship types for these five records. They are described in
 [the audit trail](../../../docs/audit-trail.md#send-records-to-your-own-store).
@@ -200,7 +202,8 @@ what a child dropped is `parent.tools − child.tools`.
   when you pass the read's id in.
 - **`principal` is not a join key.** `sanitization` and `screening` name a
   subject too, so filtering on principal alone over-counts decisions. Count
-  decisions by testing that `event` is absent.
+  decisions by testing `event` for `"decision"`, reading a missing `event` as
+  `"decision"` (records from before 0.13.0).
 - **An `Allow` with nothing after it** is a body that ran with no egress hook.
   If every read in your application should be minimized, that count is zero.
 - **Orphans** — follow-up records whose decision is not in this file — are

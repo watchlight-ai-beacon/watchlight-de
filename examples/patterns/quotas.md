@@ -112,7 +112,7 @@ const govern = new Watchlight({
   agent: "doc-agent",
   auditSink: (record) => db.insert("agent_audit", record),
   counterSource: (q) => db.countDecisions({
-    eventIsNull: true,       // decision rows ONLY — see the warning below
+    decisionsOnly: true,     // decision rows ONLY — see the warning below
     principal: q.principal,
     intent: q.intent,        // absent when the caller didn't filter
     resource: q.resource,    // absent when the caller didn't filter
@@ -144,7 +144,7 @@ govern = Watchlight(
     agent="doc-agent",
     audit_sink=lambda record: db.insert("agent_audit", record),
     counter_source=lambda q: db.count_decisions(
-        event_is_null=True,                   # decision rows ONLY
+        decisions_only=True,                  # decision rows ONLY
         principal=q["principal"], intent=q.get("intent"), resource=q.get("resource"),
         outcome=q["outcome"], after=q["window"]["start"], until=q["window"]["end"],
     ),
@@ -167,16 +167,22 @@ Over the `jsonb` column of the [audit-sink pattern](./audit-sink.md):
 
 ```sql
 select count(*) from agent_audit
-where record->>'event' is null            -- decisions only
+where coalesce(record->>'event', 'decision') = 'decision'  -- decisions only
   and record->>'principal' = $1
-  and record->>'decision'  = 'Allow'      -- outcome = "allowed"
-  and ts > $2 and ts <= $3;               -- start exclusive, end inclusive
+  and record->>'decision'  = 'Allow'                      -- outcome = "allowed"
+  and ts > $2 and ts <= $3;                               -- start exclusive, end inclusive
 ```
 
 **Count decision rows only.** The trail also carries `sanitization`, `screening`,
 `egress` and `attenuation` records, and some of those carry a `principal` of
 their own. A query filtered on principal and window alone counts them too, and
 the quota denies early.
+
+**Match `event = 'decision'`, not a missing `event`.** Since 0.13.0 a decision
+record carries `"event": "decision"`; one written by an earlier release has no
+`event`. `coalesce(record->>'event', 'decision')` counts both. A filter on
+`record->>'event' is null` matches no decision written by 0.13.0 or later, so
+the count stays at zero and the quota never trips.
 
 Your source is handed the validated, resolved query — the same filters the local
 scan would apply. `intent` and `resource` are omitted when the caller did not

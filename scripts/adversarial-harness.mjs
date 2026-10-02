@@ -349,7 +349,7 @@ console.log("\nK. Principal forms and the documented bare-identifier hazard");
     const r = await attempt(() => g.authorize({ action: "p", principal: raw, resource: "r" }).then((x) => x.decision));
     P("principal " + label, "INFO", r.err ? "rejected (" + r.err + ")" : "accepted by design -> " + r.ok);
   }
-  const written = recs.filter((r) => r.event === undefined).map((r) => r.principal);
+  const written = recs.filter((r) => (r.event ?? "decision") === "decision").map((r) => r.principal);
   P("no principal is rewritten as the agent",
     written.some((x) => String(x).startsWith('Agent::')) ? "GAP" : "PASS",
     "recorded: " + JSON.stringify(written));

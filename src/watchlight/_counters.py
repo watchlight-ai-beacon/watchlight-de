@@ -11,8 +11,9 @@ every decision the governor has already made — into exactly that number::
 
 What counts (identical in the TypeScript package):
 
-* only DECISION records — a line with a string ``decision`` and no ``event``
-  field. ``sanitization``, ``egress`` and ``attenuation`` records never count.
+* only DECISION records — a line with a string ``decision`` whose ``event`` is
+  ``"decision"`` or absent (written before 0.13.0). ``sanitization``,
+  ``screening``, ``egress`` and ``attenuation`` records never count.
 * ``outcome`` selects which decisions: ``"allowed"`` (default) = ``decision ==
   "Allow"``, including approved ones; ``"denied"`` = every decision that did not
   let the body run (``Deny`` and ``NeedsApproval`` holds); ``"all"`` = both. So

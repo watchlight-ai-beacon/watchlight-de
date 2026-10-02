@@ -55,8 +55,9 @@ if (!govern.hasPolicies) throw new Error("no policies loaded — every call woul
 Two details in that block matter:
 
 - **The policy path does not depend on the working directory.** A `load` that
-  misses its file raises nothing. It loads no policies, and every call is then
-  denied.
+  misses its file raises `FileNotFoundError` (TypeScript: an `Error` with
+  `code: "ENOENT"`), so a path resolved against the wrong directory stops
+  start-up instead of serving requests.
 - **It asserts that policies arrived.** The failure lands at start-up rather
   than in a request nobody can explain.
 
