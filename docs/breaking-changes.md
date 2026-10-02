@@ -10,6 +10,32 @@ between the version you are on and the one you are moving to.
 
 ## Unreleased
 
+**`watchlight.langgraph.governed_plugin` refuses `governance=` and `apdp_url=`.**
+Earlier releases forwarded both to the plugin, where they replaced the backend
+the factory had chosen, so `WATCHLIGHT_APDP_URL` and the in-process engine could
+be overridden from a call site. Passing either now raises `TypeError` naming the
+keyword, before anything is built. This fails loudly, at start-up.
+
+Select the backend with the environment instead:
+
+```python
+# was: governed_plugin("watchlight.policy.json", apdp_url="https://pdp.example")
+#   WATCHLIGHT_APDP_URL=https://pdp.example   (unset: the in-process engine)
+plugin = governed_plugin("watchlight.policy.json")
+```
+
+To build a plugin against a backend object of your own, construct the framework
+plugin directly (`WatchlightLangGraphPlugin(governance=...)`) rather than through
+`governed_plugin`.
+
+The `ImportError` that says to install the `langgraph` extra now covers only a
+missing `watchlight_langgraph` package or class. Any other error raised while
+the plugin imports, such as a missing dependency inside it, surfaces as itself,
+so it is no longer reported as a missing extra.
+
+`watchlight.pydantic_ai` and `watchlight.claude_agent` keep the old behaviour
+until they move onto the same contract; expect the same change there.
+
 **Decision records carry `"event": "decision"`.** Every other record kind already
 named itself in `event`; a decision record had none, and that absence was how a
 reader told it apart. A reader that finds decisions by testing for a missing

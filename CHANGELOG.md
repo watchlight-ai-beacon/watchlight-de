@@ -34,6 +34,16 @@ without recording a grant. One change affects code that reads the trail.
 **Changed**
 - Decision records carry `"event": "decision"`. See
   [breaking changes](docs/breaking-changes.md).
+- Hardening: `watchlight.langgraph.governed_plugin` refuses `governance=` and
+  `apdp_url=`. The backend is chosen by `WATCHLIGHT_APDP_URL` (networked) or its
+  absence (in-process), and a keyword can no longer replace that choice. The
+  "install the extra" `ImportError` now covers only a missing plugin package or
+  class; any other error raised while the plugin imports surfaces as itself.
+  `watchlight.pydantic_ai` and `watchlight.claude_agent` are unchanged for now.
+  See [breaking changes](docs/breaking-changes.md).
+- Framework integrations are built on one internal contract
+  (`watchlight.integrations`, for contributors; not a public API), starting with
+  LangGraph. `watchlight.langgraph` keeps every name it exposed.
 
 ## 0.12.0 — 2026-09-12
 
