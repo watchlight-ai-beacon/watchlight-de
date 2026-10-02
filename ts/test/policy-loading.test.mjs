@@ -212,6 +212,16 @@ async function main() {
       r.status === 2 && /watchlight: \S/.test(r.stderr) && !r.stderr.includes("undefined"), `${r.status} ${r.stderr}`);
   }
 
+  {
+    const open = write("open.json", '[{"name": "x", "code": "permit(');
+    const e = thrown(() => gov().load(open));
+    ok("an unterminated string is reported where it starts (as in Python)",
+      e && e.message.includes("line 1 column 24"), String(e));
+    const n = thrown(() => gov().load(write("longname.json", [{ name: "n".repeat(200) }])));
+    ok("a long name is cut inside its quotes",
+      n && n.message.includes(`policy "${"n".repeat(39)}…" in`), String(n));
+  }
+
   fs.rmSync(dir, { recursive: true, force: true });
   console.log(`\n${pass} passed, ${fail} failed`);
   if (fail) process.exit(1);

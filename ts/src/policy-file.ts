@@ -122,6 +122,7 @@ function jsonErrorOffset(text: string): number {
   };
   const string = (): boolean => {
     if (text[i] !== '"') return false;
+    const start = i;
     i++;
     while (i < n) {
       const c = text.charCodeAt(i);
@@ -133,9 +134,12 @@ function jsonErrorOffset(text: string): number {
           if (!/^[0-9a-fA-F]{4}$/.test(text.slice(i + 2, i + 6))) { i += 1; return false; }
           i += 6;
         } else if (e !== undefined && '"\\/bfnrt'.includes(e)) i += 2;
-        else { i += 1; return false; }
+        else if (e === undefined) { i = start; return false; }
+        else return false;
       } else i++;
     }
+    // Unterminated: the error is where the string starts, as Python reports it.
+    i = start;
     return false;
   };
   const number = (): boolean => {
@@ -271,15 +275,21 @@ function checkEntry(entry: unknown, index: number, where: string, op: string): v
 /** How much of a value from the file an error message may echo. */
 const ECHO_LIMIT = 40;
 
-/** `value` as JSON, cut to {@link ECHO_LIMIT} characters. */
+function cut(text: string): string {
+  return text.length <= ECHO_LIMIT ? text : text.slice(0, ECHO_LIMIT - 1) + "…";
+}
+
+/** `value` as JSON, cut to {@link ECHO_LIMIT} characters. A string is cut
+ *  before it is quoted, so the quotes survive: `"NNNN…"`. */
 function echo(value: unknown): string {
+  if (typeof value === "string") return JSON.stringify(cut(value));
   let text: string;
   try {
     text = JSON.stringify(value) ?? kind(value);
   } catch {
     text = kind(value);
   }
-  return text.length <= ECHO_LIMIT ? text : text.slice(0, ECHO_LIMIT - 1) + "…";
+  return cut(text);
 }
 
 function kind(value: unknown): string {

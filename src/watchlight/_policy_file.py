@@ -78,12 +78,18 @@ def read_policy_file(
         # The decoder's own message names the problem and its position, never
         # the text around it.
         raise ValueError(
-            f"{op}: {p} is not valid JSON: {exc.msg} "
+            f"{op}: {p} is not valid JSON: {_json_reason(exc.msg)} "
             f"at line {exc.lineno} column {exc.colno}"
         ) from None
     except RecursionError:
         raise ValueError(f"{op}: {p} is not a policy file: JSON nested too deeply") from None
     return policy_entries(data, str(p), op=op, allow_empty=allow_empty)
+
+
+def _json_reason(msg: str) -> str:
+    """The decoder's reason without a trailing "at" ("Unterminated string
+    starting at"), since the position follows it."""
+    return msg[: -len(" at")] if msg.endswith(" at") else msg
 
 
 def _unreadable(op: str, p: pathlib.Path, exc: OSError) -> OSError:
@@ -171,13 +177,20 @@ def _check_entry(entry: Any, index: int, where: str, op: str) -> None:
 ECHO_LIMIT = 40
 
 
+def _cut(text: str) -> str:
+    return text if len(text) <= ECHO_LIMIT else text[: ECHO_LIMIT - 1] + "…"
+
+
 def _echo(value: Any) -> str:
-    """``value`` as JSON, cut to :data:`ECHO_LIMIT` characters."""
+    """``value`` as JSON, cut to :data:`ECHO_LIMIT` characters. A string is cut
+    before it is quoted, so the quotes survive: ``"NNNN…"``."""
+    if isinstance(value, str):
+        return json.dumps(_cut(value), ensure_ascii=False)
     try:
-        text = json.dumps(value)
+        text = json.dumps(value, ensure_ascii=False)
     except (TypeError, ValueError, RecursionError):
         text = _kind(value)
-    return text if len(text) <= ECHO_LIMIT else text[: ECHO_LIMIT - 1] + "…"
+    return _cut(text)
 
 
 def _kind(value: Any) -> str:

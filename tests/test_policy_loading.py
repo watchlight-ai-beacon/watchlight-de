@@ -293,3 +293,20 @@ def test_cli_exits_2_on_a_policy_the_engine_cannot_compile(tmp_path, capsys):
     _write(tmp_path, "p.json", [{"name": "broken", "code": "permit(principal, action, resource) when { ;"}])
     assert cli_main(["policy", "test", _suite(tmp_path, policyFile="p.json")]) == 2
     assert "watchlight:" in capsys.readouterr().err
+
+
+def test_an_unterminated_string_is_reported_where_it_starts(tmp_path):
+    # Same position in both lanes: the opening quote.
+    p = _write(tmp_path, "open.json", '[{"name": "x", "code": "permit(')
+    with pytest.raises(ValueError) as exc:
+        _gov(tmp_path).load(p)
+    message = str(exc.value)
+    assert "line 1 column 24" in message and "at at" not in message
+
+
+def test_a_long_name_is_cut_inside_its_quotes(tmp_path):
+    name = "n" * 200
+    p = _write(tmp_path, "p.json", [{"name": name}])
+    with pytest.raises(ValueError) as exc:
+        _gov(tmp_path).load(p)
+    assert f'policy "{"n" * 39}…" in' in str(exc.value)
