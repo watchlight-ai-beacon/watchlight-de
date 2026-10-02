@@ -44,8 +44,9 @@ when { principal.clearance >= 3 }
 ```
 
 `principal` names the subject and nothing more. Pass the attribute:
-`context.clearance >= 3`. This holds in both editions and in both language
-lanes, so a policy written this way behaves identically everywhere it runs.
+`context.clearance >= 3`. This holds in both editions and in both the Python
+and TypeScript SDKs, so a policy written this way behaves identically everywhere
+it runs.
 
 ## Relating one attribute to another
 

@@ -18,16 +18,20 @@ happens. Run your agent in another terminal. It shows this machine only.
 govern = Watchlight(agent="my-agent", audit_sink=lambda record: my_store.insert(record))
 ```
 
-Every record is also handed to your function — decisions, sanitizations,
-screenings, egress dispositions, attenuations — with the same fields the file
-line carries. The file stays on. The sink is fire-and-forget: it can never block
-or change a decision, and a failure is reported once.
+Every record is also handed to your function, with the same fields the file
+line carries. That covers every kind of record: decisions, sanitizations,
+screenings, egress dispositions and attenuations. The file stays on as well.
+A sink can never block or change a decision: an error it raises never reaches
+your code, and the failure is reported once. (A sink still runs inside the
+decision, so it adds its own time to each call; the next section shows how to
+move it off that path.)
 
-Records are typed and discriminated by `event`: `"decision"` on a decision and
-the kind's name on every other one. A decision written by an earlier release has
-no `event`, so read a missing one as a decision. TypeScript exports the union
-`AuditRecord`; Python exports `TypedDict`s of the same names. A sink that only
-forwards records can stay untyped.
+Each record says what kind it is in its `event` field. A decision record has
+`"event": "decision"`, and every other record carries the name of its kind. A
+decision written by an earlier release has no `event` field at all, so treat a
+missing `event` as a decision. For typed code, TypeScript exports the union type
+`AuditRecord`, and Python exports `TypedDict`s with the same names. A sink that
+only forwards records can stay untyped.
 
 Set `audit_file=False` and the sink becomes the sole destination: no
 `.watchlight` directory, no file. Then `watchlight dev` has nothing to tail, and
@@ -59,8 +63,9 @@ seconds.
 
 The queue is **bounded**. A destination that stops responding must not become
 unbounded memory growth in the application it is auditing, so the oldest records
-are dropped, the drop is reported once, and `trail.dropped` counts them. Non-zero
-means the trail has holes and where they are is not recoverable — watch it.
+are dropped, the drop is reported once, and `trail.dropped` counts them. Watch
+that counter: any value above zero means records are missing from the trail, and
+there is no way to recover which ones.
 
 Queued records are flushed when the process exits normally. Call `flush()`
 before a deliberate shutdown if you want to wait for them.
@@ -78,9 +83,10 @@ from watchlight import govern, configure_default
 configure_default(agent="billing-agent", audit_sink=my_store.insert)
 ```
 
-Do this before the first governed call. After that, re-applying the same options
-is a no-op; changing one raises and names it. `can_configure_default()` asks the
-question and mutates nothing.
+Do this before the first governed call. After that call, passing the same
+options again does nothing, and passing a different value for any option raises
+an error that names the option. `can_configure_default()` tells you whether
+configuring is still possible, without changing anything.
 
 Three environment variables do the same job where the code is not yours to
 change — a test run, a container, a CI job:
@@ -108,12 +114,14 @@ c = govern.counters(principal='User::"u1"', intent="read", window="1h")
 govern.authorize(action="read", principal='User::"u1"', context={"reads_this_hour": c["count"]})
 ```
 
-`counters` folds the trail into a number a policy can compare against, from the
-record timestamps. It streams the local file, bounded at 64 MiB.
+`counters` counts the matching decisions in the trail, using each record's
+timestamp to decide whether it falls inside the window, and returns a number a
+policy can compare against. It reads the local file as a stream and scans at
+most 64 MiB of it.
 
-That file is per-container and does not survive a deploy. `counter_source` /
-`counterSource` answers the same query from the durable store your sink writes
-to, so the quota spans every replica:
+That file belongs to one container and does not survive a deploy. The
+`counter_source` option (`counterSource` in TypeScript) answers the same query
+from the durable store your sink writes to, so the quota covers every replica:
 
 ```python
 govern = Watchlight(
@@ -137,17 +145,18 @@ Your source is handed the resolved query and must return a non-negative integer:
 ```
 
 `intent` and `resource` are **absent** rather than `None` when you did not filter
-on them, so read them with `query.get("intent")`. Both lanes pass the same keys
-and the same JSON, so one counting service can serve a Python and a Node caller
-without recognising two shapes.
+on them, so read them with `query.get("intent")`. The Python and TypeScript SDKs
+pass the same keys and the same JSON, so one counting service can serve a Python
+caller and a Node caller without handling two different shapes.
 
 **It must count decision rows only.** The trail also carries `sanitization`,
 `screening`, `egress` and `attenuation` records, so a query filtered on principal
-and window alone over-counts and the quota denies early. It never falls back to
-the local file.
+and window alone over-counts and the quota denies early. When a counter source
+is configured, counting never falls back to the local file.
 
-A durable store is a network call, so read it with `counters_async(...)` /
-`countersAsync(...)` from an async context binding:
+Reading a durable store is a network call, so use `counters_async(...)` in
+Python or `countersAsync(...)` in TypeScript, and call it from an async context
+binding (an `async` function passed as `context`):
 
 ```python
 async def quota(o):
@@ -180,8 +189,8 @@ const reader = preview.previewAttenuate({ tools: ["read_document"], agent: "docu
 
 A preview is data, not a scope: it cannot authorize, delegate or mint a token.
 When a scope would be refused, `allowed` is false and `violations` and `reason`
-say why. `scope.preview_attenuate(...)` / `scope.previewAttenuate(...)` previews a
-child of a live scope the same way.
+say why. `scope.preview_attenuate(...)` in Python, or `scope.previewAttenuate(...)`
+in TypeScript, previews a child of a live scope the same way.
 
 ## Worth knowing
 

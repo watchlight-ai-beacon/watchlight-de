@@ -54,9 +54,10 @@ Two combinations change the verdict your code receives here:
 | `permit` | `require_approval` | `Allow` | `NeedsApproval` |
 | `forbid` | `observe` | `Deny` | whatever the rest of the set decides |
 
-Every other pairing leaves the verdict alone — an annotated `forbid` still
-denies, an annotated `permit` still allows. Both of the two are covered below,
-and you can assert either in a test.
+Every other pairing leaves the verdict alone: an annotated `forbid` still
+denies, and an annotated `permit` still allows. Both of the combinations in the
+table are explained in the sections below, and you can assert either one in a
+test.
 
 ## What containment does and does not do here
 
@@ -114,10 +115,12 @@ The engine maps a verb it does not implement to *no effect at all*. On a
 dropping `require_approval` leaves a plain allow, so one mistyped character turns
 an approval gate into an unconditional permit, with no error and no warning.
 
-So `govern.allow()` and `govern.load()` refuse it first. `PolicyError` is the
-same type in both lanes, and `watchlight policy test` exits 2 with the same
-message. `load` is whole-file or nothing: one refused policy loads none of the
-file, and the source is not remembered, so fix it and load again.
+To prevent that, `govern.allow()` and `govern.load()` refuse an unrecognised
+verb before the engine sees it. They raise `PolicyError`, which is the same type
+in the Python and TypeScript SDKs, and `watchlight policy test` exits with
+status 2 and prints the same message. `load` accepts a whole file or nothing: if
+one policy is refused, none of the file is loaded. The source is not remembered
+either, so fix the file and load it again.
 
 A misspelled annotation **name** only warns — an annotation the SDK does not
 read is legitimate Cedar and may well be yours.

@@ -14,10 +14,11 @@ is yours, and each of those is a named place to plug your code in.
 | Inspect or replace a result before it reaches the model | [`on_result`](#inspect-what-leaves) |
 | Replace the policy set on a running process | [`reload`](#swap-the-policy-set) |
 
-Two properties hold across all of them. **A hook never changes a verdict** — one
-that raises or misbehaves fails closed, and the decision stands. And **the
-value-free contract is not yours to widen**: the report and the trail carry
-counts and labels, never the values behind them.
+Two properties hold across all of them. First, **a hook never changes a
+verdict**. A hook that raises an exception or misbehaves fails closed, and the
+decision stands as the engine made it. Second, **a hook cannot make the SDK
+record values**. Reports and the audit trail carry only counts and labels, never
+the values behind them, and no extension point lets you widen that.
 
 ## Teach it an identifier
 
@@ -45,7 +46,7 @@ through `types`.
 
 ## Teach it an attack
 
-`screen` covers seven generic families of prompt injection and deliberately
+`screen` covers nine generic families of prompt injection and deliberately
 leaves domain vocabulary alone — that is what lets it read a document about
 substance history without rejecting it. The cost is that a shape specific to
 your domain is covered by nothing. Register it, and the hit lands in the same
@@ -70,11 +71,12 @@ register_detector("EVIL", r"(a+)+$")
 # another, which backtracks catastrophically on input that nearly matches.
 ```
 
-The check is structural first, then empirical — growth measured over a few extra
-characters, because a catastrophic pattern never returns and so cannot be timed
-by waiting for it. A built-in label cannot be replaced, and once you register
-anything, `detector_version` carries a digest of the set, so an audit record
-says what was actually in force.
+The check runs in two steps. It first inspects the structure of the pattern.
+It then measures how the matching time grows as a few extra characters are
+added to the input, because a catastrophic pattern never returns, so you cannot
+time it by waiting for it to finish. A built-in label cannot be replaced. Once
+you register anything, `detector_version` carries a digest of the registered
+set, so an audit record says which rules were actually in force.
 
 ## Send the trail somewhere durable
 
@@ -93,9 +95,10 @@ Watchlight(agent="svc", audit_sink=insert_many,
            audit_sink_batch=100, audit_sink_interval=2.0)
 ```
 
-The queue is bounded — a destination that stops responding must not become
-unbounded memory in the application it is auditing — so the oldest are dropped,
-reported once, and counted on `trail.dropped`.
+The queue is bounded, because a destination that stops responding must not
+cause unbounded memory growth in the application it is auditing. When the queue
+is full, the oldest records are dropped, the drop is reported once, and
+`trail.dropped` counts them.
 
 ## Count from your own store
 
@@ -128,8 +131,9 @@ to pass it through, or a value to replace it. Raise, and the payload is withheld
 def fetch_document(): ...
 ```
 
-The deadline bounds the decision to release: outrun it and the payload is
-withheld, whatever the hook does afterwards.
+`on_result_timeout_ms` is a deadline for the hook to decide whether the result
+may be released. If the hook does not finish in time, the payload is withheld,
+whatever the hook does afterwards.
 
 ## Swap the policy set
 

@@ -95,12 +95,14 @@ granted something — delete one and the script goes red.
 The SDK owns `context.actor` and `context.actor_chain`. Four attempts are
 refused before anything reaches the engine, so none writes a record:
 
-- `context={"actor": "memory-writer"}` on a `flight-booker` call →
-  `ReservedContextError`
-- `context={"actor_chain": [...]}` claiming a delegation that never happened →
-  `ReservedContextError`
-- `picker.as_("row-checker")` — a delegate cannot be renamed → `TypeError`
-- the same rename through the per-call `agent=` override → `TypeError`
+- Passing `context={"actor": "memory-writer"}` on a `flight-booker` call
+  raises `ReservedContextError`.
+- Passing `context={"actor_chain": [...]}` to claim a delegation that never
+  happened raises `ReservedContextError`.
+- Calling `picker.as_("row-checker")` raises `TypeError`, because a delegate
+  cannot be renamed.
+- Attempting the same rename through the per-call `agent=` override also raises
+  `TypeError`.
 
 A context *identical* to the SDK's own values is accepted. A caller can neither
 invent a delegation nor extend one.
@@ -110,9 +112,11 @@ invent a delegation nor extend one.
 - **A scope is not consulted when a call is authorized.** It limits what
   `delegate` may hand a sub-agent, and it is checked there. Confining a
   sub-agent means narrowing the scope *and* writing the policy.
-- **`actor_chain` is recorded only under a delegation.** Outside one the chain
-  is the single-element `[agent]`. Both policy forms still work. The chain is
-  bounded at six entries.
+- **`actor_chain` is recorded only under a delegation.** Outside one, the
+  chain in the policy context is the single-element `[agent]`, so policies
+  written against `context.actor` and against `context.actor_chain` both still
+  work. The chain is bounded at `max_delegation_depth` + 1 entries, which is
+  nine with the default depth of 8.
 - **Namespace your subject ids** — `sso:8f3c2b7e` from a verified token claim,
   `db:4412` from a users row. Never a username or an email: those get
   reassigned, and an old record would then point at a different person.

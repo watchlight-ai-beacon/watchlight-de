@@ -84,6 +84,9 @@ const billing = govern.as("billing-agent");
 const research = govern.as("research-agent");
 ```
 
+The table below shows what the named agents created from one governor have in
+common, and what each keeps for itself:
+
 | Shared by every name off one governor | Not shared |
 |---|---|
 | the policy set — a policy added through any name applies to all of them | the agent name, stamped on every record as `agent` |
@@ -561,14 +564,11 @@ permit(principal, action == Action::"wire", resource)
 when { context.amount > 1000 };
 ```
 
-That one is the human-in-the-loop gate. The verdict is `NeedsApproval` rather
-than `Allow`, and a person has to release it. The engine implements
-
-`attenuate`, `escalate`, `observe`, `quarantine`, `require_approval`, `revoke`,
-`sever_subtree`, `terminate`
-
-and `allow` and `load` refuse anything else, in both lanes, before the policy
-reaches the engine:
+That one is the human-in-the-loop gate: the verdict is `NeedsApproval` rather
+than `Allow`, and a person has to release it. The engine implements eight
+effects: `attenuate`, `escalate`, `observe`, `quarantine`, `require_approval`,
+`revoke`, `sever_subtree` and `terminate`. In both lanes, `allow` and `load`
+refuse any other value before the policy reaches the engine:
 
 ```python
 govern.allow('@enforcement_effect("needs_approval")\npermit(principal, action, resource);')
@@ -577,8 +577,9 @@ govern.allow('@enforcement_effect("needs_approval")\npermit(principal, action, r
 # quarantine, require_approval, revoke, sever_subtree, terminate. …
 ```
 
-The Developer Edition acts on `require_approval`; the containment verbs load
-and validate, and the verdict stays a plain `Deny`. Acting on `quarantine`,
+The Developer Edition acts on `require_approval`. The containment effects load
+and are validated, but the Developer Edition does not carry them out, and the
+verdict stays a plain `Deny`. Acting on `quarantine`,
 `revoke`, `sever_subtree` or `terminate` is the Enterprise plane, so
 [email sales@watchlight.ai](mailto:sales@watchlight.ai?subject=Watchlight%20Enterprise) if you need it.
 
@@ -589,9 +590,10 @@ Worth knowing:
 
 - **A refusal is whole-file or nothing.** One bad policy loads none of the file,
   and the source is not remembered — fix it and load again.
-- **A misspelled annotation NAME warns and still loads.** `@enforcment_effect`
-  is legitimate Cedar and may well be yours. A near miss prints a warning;
-  anything further away is silent.
+- **A misspelled annotation NAME warns and still loads.** An annotation such as
+  `@enforcment_effect` is valid Cedar, and it may be one of your own, so it
+  cannot be refused. A name close to `enforcement_effect` prints a warning; a
+  name further away is accepted silently.
 
 ## See also
 

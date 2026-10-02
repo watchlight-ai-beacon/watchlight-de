@@ -47,7 +47,8 @@ unless { context.quarantined == true };
 
 ## `forbid` wins
 
-A request is allowed **iff** some `permit` matches and no `forbid` does.
+A request is allowed **if and only if** some `permit` matches and no `forbid`
+does.
 
 ```cedar
 permit(principal == User::"admin", action, resource);

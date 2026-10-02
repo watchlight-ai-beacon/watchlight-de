@@ -23,9 +23,10 @@
 Watchlight puts a policy decision point in front of every action your agents
 take. It authorizes each tool call and records a value-free audit trail.
 
-The **Developer Edition** runs the real authorization engine **in-process**. No
-server, no database, no signup — a governed `ALLOW` / `DENY` on your laptop, in
-the same code you ship to production.
+The **Developer Edition** runs the real authorization engine **in-process**,
+inside your own program. You do not need a server, a database or an account. You
+get a governed `ALLOW` / `DENY` on your laptop, from the same code you ship to
+production.
 
 ```bash
 pip install watchlight        # Python 3.9+, prebuilt wheels
@@ -100,6 +101,9 @@ decision is already on disk in `.watchlight/audit.jsonl`.
 
 ## What you can govern
 
+The table below shows what to install, and which call to use, for each kind of
+thing you might want to govern, first for Python and then for Node.
+
 | | Python — `pip install …` | Node — `npm install …` |
 |---|---|---|
 | **A tool you wrote** | `watchlight` → `@govern.tool(intent=…)` | `@watchlight/sdk` → `govern.tool(fn, { intent })` |
@@ -119,13 +123,19 @@ watchlight dev            # → http://localhost:7000
 
 ## Who is acting, and on whose behalf
 
-A governed call answers two separate questions.
+A governed call keeps two identities apart: the runtime that is acting (the
+agent), and the person or system it is acting for (the subject). A policy can
+look at either one, or at both. In the example below, the `flight-booker` runtime
+may book on behalf of any user:
 
 ```cedar
 // this runtime may book for any user — whoever it acts for
 permit(principal is User, action == Action::"book", resource)
 when { context.actor == "flight-booker" };
 ```
+
+The table shows where each part of that answer lives in the request that a
+policy sees.
 
 | Question | Where it goes |
 |---|---|
@@ -173,8 +183,10 @@ Only *how strongly the principal is proven* changes. The policies do not.
 
 ## Developer Edition vs Enterprise
 
-Enterprise points the *same code* at a running control plane — no rewrite. What
-changes is what happens around the decision.
+Enterprise points the *same code* at a running control plane, so there is
+nothing to rewrite. What changes is what happens around the decision. The first
+table lists what the Developer Edition already does and Enterprise keeps; the
+second lists what only Enterprise does.
 
 **What the Developer Edition does, and Enterprise keeps**
 
@@ -201,12 +213,12 @@ changes is what happens around the decision.
 | Attested identity | ❌ the principal is asserted | ✅ OIDC federation and mTLS workload identity |
 | Air-gapped fleet deployment | ❌ the library itself runs offline, but there is no plane to deploy | ✅ on-premises, with local policy evaluation |
 
-Everything the Developer Edition leaves out needs **state outside your process**
-— a fleet to revoke across, a plane to quarantine into, a key to sign lineage
-with. What it keeps is every guarantee that fits in one process: fail-closed
-semantics, strict-subset attenuation bounded by a configurable delegation-depth
-limit, explicit scopes, and value-free audit are
-identical in both.
+Everything the Developer Edition leaves out needs **state outside your
+process**: a fleet to revoke across, a plane to quarantine into, or a key to sign
+lineage with. It keeps every guarantee that fits in one process, and those work
+identically in both editions: fail-closed semantics, strict-subset attenuation
+bounded by a configurable delegation-depth limit, explicit scopes, and a
+value-free audit trail.
 
 → **[The platform](https://www.watchlight.ai/platform)** ·
 [email sales@watchlight.ai](mailto:sales@watchlight.ai?subject=Watchlight%20Enterprise)

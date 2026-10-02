@@ -33,14 +33,16 @@ curl -H 'Authorization: Bearer demo-token-bob'   http://127.0.0.1:54321/accounts
 1. **Authenticate.** The bearer token is looked up in an in-memory table — a
    stand-in for a session, an IdP token or mTLS. What matters is that the user
    id is what the request authenticated *as*, never a header the client fills
-   in. Anything else is `401`, before any governed call.
-2. **Validate** the path segment against `^[a-z0-9-]{1,32}$`; it becomes part of
-   the Cedar resource string. `400` otherwise, again before governance.
-3. **Authorize** as that user. `Deny` → `403` and the uniform
-   `{"error": "not authorized"}`. The caller never learns why, nor whether the
-   account exists.
-4. **Look up** the statement, reachable only after the Allow. `404` if there is
-   no such account.
+   in. Any request that does not authenticate this way gets `401`
+   (unauthenticated) before any governed call is made.
+2. **Validate** the path segment against `^[a-z0-9-]{1,32}$`, because it
+   becomes part of the Cedar resource string. A segment that does not match
+   gets `400` (bad request), again before governance.
+3. **Authorize** as that user. A `Deny` returns `403` (forbidden) with the
+   uniform body `{"error": "not authorized"}`. The caller never learns why, nor
+   whether the account exists.
+4. **Look up** the statement. This step is reachable only after the Allow. If
+   there is no such account, the response is `404` (not found).
 
 ```python
 @govern.tool(
