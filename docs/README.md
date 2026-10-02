@@ -13,6 +13,7 @@ pick up from there.
 | [The identity model](identity-model.md) | You need a decision to say *who it was for*: the subject, the acting runtime, the delegation chain. |
 | [The TypeScript / Node lane](typescript.md) | You are governing a Node app: approvals, egress hooks, obligations, the framework adapters. |
 | [Governing an agent you already have](integrations.md) | You want to govern an agent or an MCP server without changing its code. |
+| [Using Watchlight with an MCP gateway you already run](existing-mcp-gateway.md) | Your agents reach MCP servers through a gateway, and you want each tool call decided by policy without re-routing traffic. |
 | [The audit trail](audit-trail.md) | You want to watch decisions land, ship them to your own store, or count them for a quota. |
 | [Testing your policies](testing-policies.md) | You want to prove a policy behaves before it gates anything real, and fail a CI run when it does not. |
 | [The signing secret](signing-secret.md) | You need a scope or an approval to cross a process boundary, or you are rotating the secret. |

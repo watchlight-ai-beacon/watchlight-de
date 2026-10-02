@@ -102,6 +102,10 @@ denied call never executes. The PEP implements MCP spec `2026-07-28`.
 [`examples/governed_mcp_server.py`](../examples/governed_mcp_server.py) fires an
 allowed and a denied call and proves the denied one never ran.
 
+Already routing MCP traffic through a gateway? Keep it, and put the PEP between
+the gateway and the server:
+[Using Watchlight with an MCP gateway you already run](existing-mcp-gateway.md).
+
 Other entry points:
 
 - `serve_stdio(...)` for a stdio-launched server.
@@ -127,4 +131,7 @@ watchlight dev                           # terminal 2 → http://127.0.0.1:7000
   `governTool()` for the Node frameworks.
 - [The identity model](identity-model.md) — what `principal`, the actor and the
   actor chain mean on a run handle.
+- [Using Watchlight with an MCP gateway you already run](existing-mcp-gateway.md)
+  — the PEP behind a gateway, the headers the gateway sets, and the failures
+  you will see.
 - [The MCP server guide](https://docs.watchlight.ai/de/mcp-server).
