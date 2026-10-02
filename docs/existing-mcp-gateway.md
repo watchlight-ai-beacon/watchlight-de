@@ -310,8 +310,14 @@ credentials. For example, the `path` argument from the request above appears
 nowhere in the record, and nowhere in the PEP's process log either. What the
 record does contain from the request headers is the Watchlight identity and
 context: `agent_id`, `watchlight_execution_id` and, when they are sent, the
-task id, the parent execution id, the `traceparent` and the MCP protocol
-version. For `resources/read` and `resources/subscribe`, the resource URI is
+task id and the parent execution id.
+
+The record can also carry a `traceparent` and the MCP protocol version. These
+do not come from headers. They come from the `_meta` object in the JSON-RPC
+body, and each is kept only when it has the expected shape: a W3C trace
+context for `traceparent`, and a `YYYY-MM-DD` date for the protocol version.
+Any other value is recorded as `[withheld: N bytes]`, where N is its length,
+so a caller cannot put arbitrary text into the record this way. For `resources/read` and `resources/subscribe`, the resource URI is
 recorded in the `tool` field with its path replaced by a hash.
 
 ## Optional: also govern inside the agent
