@@ -103,30 +103,50 @@ from a check that passes.
 
 A framework integration builds that framework's published Watchlight plugin
 and wires it to the in-process engine. It is a declaration, not governance
-code: the shared contract in `src/watchlight/integrations/_contract.py` picks
-the backend, refuses per-call terms, and fails closed, so an integration
-cannot skip any of it. To add one:
+code. The governance decisions it depends on (which backend the plugin talks
+to, refusing per-call terms such as `principal` at construction, denying
+everything when no policy is loaded) are made in one function,
+`_select_backend_kwargs` in `src/watchlight/inprocess.py`. An integration on
+the contract reaches it only through `build_governed_plugin` in
+`src/watchlight/integrations/_contract.py`, which also refuses a keyword that
+would replace the chosen backend. (`pydantic_ai` and `claude_agent` still call
+`_select_backend_kwargs` directly until they move onto the contract.)
+
+`watchlight.integrations` is an **internal surface for contributors, not a
+public API**: it may change in any release. Users import
+`watchlight.<framework>.governed_plugin`, which is stable.
+
+To add one:
 
 1. Create `src/watchlight/integrations/<name>.py` with an `INTEGRATION =
-   FrameworkIntegration(...)` (the plugin's module, class and extra) and a
-   documented `governed_plugin(policies=None, *, audit_path=..., **plugin_kwargs)`
-   that returns `build_governed_plugin(INTEGRATION, ...)`.
+   FrameworkIntegration(...)` (the plugin's module, a top-level `watchlight_*`
+   package; its class; its extra) and a documented
+   `governed_plugin(policies=None, *, audit_path=..., **plugin_kwargs)` that
+   returns `build_governed_plugin(INTEGRATION, ...)` and sets
+   `governed_plugin.__module__ = "watchlight.<name>"`.
    [`integrations/langgraph.py`](src/watchlight/integrations/langgraph.py) is
    the reference.
 2. Register it in `src/watchlight/integrations/__init__.py` and add the public
-   alias `src/watchlight/<name>.py` (two lines; see `langgraph.py`).
+   module `src/watchlight/<name>.py` that re-exports it (see `langgraph.py`).
 3. Add the extra to `pyproject.toml`, and to `all`.
 
-`tests/integrations/test_integration_contract.py` runs every check against
-every registered integration, so you do not write those tests yourself.
+`tests/integrations/test_integration_contract.py` runs its checks against
+every registered integration, so you do not write those tests yourself. They
+catch the mistakes we know to look for (a missing refusal, a wrong signature,
+a misleading import error), but they are not a proof: a factory written by
+hand around the contract can still be wrong, so a new integration is reviewed
+against it.
 
 ### Layering
 
 `tests/test_layering.py` holds the package to its layers: the foundation
 (audit, scopes, approvals, principals) never imports the governor; only the
 governor imports the compiled engine; an integration reaches governance only
-through the contract. A new module must be assigned a layer there. If the test
-fails, it names the import and the rule; move the code rather than the rule.
+through the contract, and only the contract imports a framework plugin. It
+reads `importlib.import_module("x")` and `__import__("x")` as imports, and
+refuses any other dynamic import outside the contract. A new module must be
+assigned a layer there. If the test fails, it names the import and the rule;
+move the code rather than the rule.
 
 ## Reporting a security issue
 
