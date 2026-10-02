@@ -11,7 +11,12 @@ guarantee enforced in one place:
   governor's internals, the audit trail, or the scope code;
 * the foundation (audit, scopes, approvals, annotations, …) never imports the
   governor, the CLI or an integration;
-* no import cycles.
+* no import cycles;
+* no dynamic import the checker cannot read: ``importlib.import_module`` and
+  ``__import__`` with a literal name count as imports, and any other dynamic
+  import (or a reference to those functions) is refused outside the
+  integration contract, whose one dynamic import is attributed to the plugin
+  packages the registry declares.
 
 Deny by default: a module that is in no layer fails here, with a message saying
 where to put it. Imports inside functions count — a lazy import is still a
@@ -22,12 +27,22 @@ from __future__ import annotations
 
 import ast
 import pathlib
-from typing import Dict, List, Optional, Set
+import re
+from typing import Dict, Iterable, List, Optional, Set, Tuple
+
+import pytest
 
 import watchlight
+from watchlight.integrations import INTEGRATIONS
 
 PACKAGE = "watchlight"
-SRC = pathlib.Path(watchlight.__file__).resolve().parent
+# The source tree this test sits next to, so a stale installed copy is never
+# what gets checked. Fall back to the installed package only when the tests run
+# outside a checkout.
+_CHECKOUT = pathlib.Path(__file__).resolve().parent.parent / "src" / PACKAGE
+SRC = _CHECKOUT if (_CHECKOUT / "__init__.py").is_file() else pathlib.Path(watchlight.__file__).resolve().parent
+
+CONTRACT = "watchlight.integrations._contract"
 
 # Module → layer. Integration modules (``watchlight.integrations.*``) are
 # assigned by prefix in :func:`layer_of`.
@@ -67,7 +82,27 @@ EXTERNAL_OWNERS: Dict[str, Set[str]] = {
     "watchlight_engine": {"watchlight"},
     "watchlight_core": {"watchlight.inprocess"},
 }
-FRAMEWORK_PACKAGES = {"watchlight_langgraph", "watchlight_pydantic_ai", "watchlight_claude_agent"}
+# Kept independent of the contract's own pattern on purpose: a weakened check
+# there does not weaken this one.
+PLUGIN_MODULE = re.compile(r"^watchlight_[a-z0-9_]+$")
+
+
+def is_framework_package(top: str) -> bool:
+    """A published framework plugin: one the registry declares, or any
+    top-level ``watchlight_*`` package other than the engine and the SDK — so a
+    new plugin is covered without editing this file."""
+    declared = {i.plugin_module.split(".")[0] for i in INTEGRATIONS.values()}
+    return top in declared or (top.startswith("watchlight_") and top not in EXTERNAL_OWNERS)
+
+
+def plugin_module_violations(modules: Iterable[Tuple[str, str]]) -> List[str]:
+    """(integration name, plugin_module) pairs that are not a framework plugin."""
+    return [
+        f"integration {name}: plugin_module {mod!r} is not a watchlight_* framework plugin"
+        for name, mod in modules
+        if not (isinstance(mod, str) and PLUGIN_MODULE.match(mod) and mod not in EXTERNAL_OWNERS)
+    ]
+
 # Integrations not yet on the contract still import their plugin directly. The
 # contract imports it lazily for the others. This set only shrinks: an entry
 # that no longer imports its plugin fails :func:`test_the_legacy_allowance_only_shrinks`.
@@ -87,11 +122,43 @@ def module_name(path: pathlib.Path, root: pathlib.Path) -> str:
     return ".".join([PACKAGE, *parts])
 
 
-def imports_of(module: str, source: str, is_package: bool, known: Set[str]) -> Set[str]:
-    """Every module ``source`` imports, top level or not."""
+_DYNAMIC_FUNCS = {"import_module", "__import__"}
+
+
+def analyse(module: str, source: str, is_package: bool, known: Set[str]) -> Tuple[Set[str], List[str]]:
+    """Every module ``source`` imports, top level or not, and every dynamic
+    import in it the checker cannot resolve to a name."""
     found: Set[str] = set()
+    dynamic: List[str] = []
     package = module if is_package else module.rpartition(".")[0]
-    for node in ast.walk(ast.parse(source)):
+    tree = ast.parse(source)
+
+    # Names bound to importlib, builtins and import_module/__import__.
+    importlib_names: Set[str] = set()
+    builtins_names: Set[str] = set()
+    import_fn_names: Set[str] = {"__import__"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                bound = alias.asname or alias.name.split(".")[0]
+                if alias.name == "importlib" or alias.name.startswith("importlib."):
+                    importlib_names.add(bound)
+                elif alias.name == "builtins":
+                    builtins_names.add(bound)
+        elif isinstance(node, ast.ImportFrom) and not node.level and node.module in ("importlib", "builtins"):
+            for alias in node.names:
+                if alias.name in _DYNAMIC_FUNCS or alias.name == "*":
+                    import_fn_names.add(alias.asname or alias.name)
+
+    def is_import_fn(expr: ast.AST) -> bool:
+        if isinstance(expr, ast.Name):
+            return expr.id in import_fn_names
+        if isinstance(expr, ast.Attribute) and expr.attr in _DYNAMIC_FUNCS:
+            return isinstance(expr.value, ast.Name) and expr.value.id in (importlib_names | builtins_names)
+        return False
+
+    called: Set[int] = set()
+    for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             found.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
@@ -104,14 +171,64 @@ def imports_of(module: str, source: str, is_package: bool, known: Set[str]) -> S
             for alias in node.names:
                 candidate = f"{base}.{alias.name}"
                 found.add(candidate if candidate in known else base)
-    return found
+        elif isinstance(node, ast.Call):
+            if is_import_fn(node.func):
+                called.add(id(node.func))
+                arg = node.args[0] if node.args else None
+                if (
+                    isinstance(arg, ast.Constant)
+                    and isinstance(arg.value, str)
+                    and arg.value
+                    and not arg.value.startswith(".")
+                ):
+                    found.add(arg.value)
+                else:
+                    dynamic.append(f"line {node.lineno}: dynamic import of a non-literal or relative name")
+            elif (
+                isinstance(node.func, ast.Name)
+                and node.func.id == "getattr"
+                and len(node.args) >= 2
+                and isinstance(node.args[1], ast.Constant)
+                and node.args[1].value in _DYNAMIC_FUNCS
+            ):
+                dynamic.append(f"line {node.lineno}: getattr(..., {node.args[1].value!r})")
+
+    # A reference that is not a direct call (``f = importlib.import_module``)
+    # hides the import from the walk above.
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Name, ast.Attribute)) and is_import_fn(node) and id(node) not in called:
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                continue
+            dynamic.append(f"line {node.lineno}: indirect reference to an import function")
+    return found, dynamic
 
 
-def check(sources: Dict[str, str], packages: Set[str]) -> List[str]:
-    """Return every rule violation in ``sources`` (module name → source)."""
+def imports_of(module: str, source: str, is_package: bool, known: Set[str]) -> Set[str]:
+    return analyse(module, source, is_package, known)[0]
+
+
+def check(
+    sources: Dict[str, str],
+    packages: Set[str],
+    plugin_modules: Optional[Iterable[Tuple[str, str]]] = None,
+) -> List[str]:
+    """Return every rule violation in ``sources`` (module name → source).
+
+    ``plugin_modules`` are the (name, plugin_module) pairs the registry
+    declares; the contract's dynamic import is attributed to them."""
+    if plugin_modules is None:
+        plugin_modules = [(i.name, i.plugin_module) for i in INTEGRATIONS.values()]
+    plugin_modules = list(plugin_modules)
     known = set(sources)
-    graph = {m: imports_of(m, src, m in packages, known) for m, src in sources.items()}
-    violations: List[str] = []
+    graph: Dict[str, Set[str]] = {}
+    violations: List[str] = plugin_module_violations(plugin_modules)
+    for m, src in sources.items():
+        deps, dynamic = analyse(m, src, m in packages, known)
+        if m == CONTRACT:
+            deps |= {mod for _, mod in plugin_modules}
+        else:
+            violations.extend(f"{m} {d}: import by name, or move it into the integration contract" for d in dynamic)
+        graph[m] = deps
 
     for module, deps in sorted(graph.items()):
         layer = layer_of(module)
@@ -129,7 +246,7 @@ def check(sources: Dict[str, str], packages: Set[str]) -> List[str]:
                     violations.append(f"{module} ({layer}) imports {dep} ({dep_layer})")
             elif top in EXTERNAL_OWNERS and module not in EXTERNAL_OWNERS[top]:
                 violations.append(f"{module} imports {top}: only {sorted(EXTERNAL_OWNERS[top])} may")
-            elif top in FRAMEWORK_PACKAGES and module not in LEGACY_FRAMEWORK_IMPORTERS:
+            elif is_framework_package(top) and module not in LEGACY_FRAMEWORK_IMPORTERS | {CONTRACT}:
                 violations.append(
                     f"{module} imports {top} directly: declare a FrameworkIntegration and "
                     f"let the contract import it"
@@ -189,11 +306,20 @@ def test_every_module_was_seen():
     assert "watchlight" in imports_of("watchlight.cli", sources["watchlight.cli"], False, known)
 
 
+def test_the_source_tree_is_what_is_checked():
+    if _CHECKOUT.is_dir():
+        assert SRC == _CHECKOUT
+
+
+def test_every_registered_plugin_module_is_a_framework_plugin():
+    assert plugin_module_violations((i.name, i.plugin_module) for i in INTEGRATIONS.values()) == []
+
+
 def test_the_legacy_allowance_only_shrinks():
     sources, packages = package_sources()
     for module in LEGACY_FRAMEWORK_IMPORTERS:
         deps = imports_of(module, sources[module], module in packages, set(sources))
-        assert {d.split(".")[0] for d in deps} & FRAMEWORK_PACKAGES, (
+        assert any(is_framework_package(d.split(".")[0]) for d in deps), (
             f"{module} no longer imports its plugin: remove it from LEGACY_FRAMEWORK_IMPORTERS"
         )
 
@@ -242,3 +368,81 @@ def test_it_catches_a_module_in_no_layer():
 def test_it_catches_a_cycle():
     found = _with("watchlight.principals", "from . import _counters\n")
     assert any(v.startswith("import cycle:") and "watchlight.principals" in v for v in found)
+
+
+# ── dynamic imports (each planted bypass must be caught) ────────────────────
+
+IN = "watchlight.integrations.langgraph"
+
+
+def test_it_catches_import_module_with_a_literal():
+    found = _with(IN, "import importlib\nimportlib.import_module('watchlight._audit')\n")
+    assert any(f"{IN} (integration) imports watchlight._audit" in v for v in found)
+
+
+def test_it_catches_an_aliased_import_module():
+    src = "from importlib import import_module as im\ndef f():\n    return im('watchlight_engine')\n"
+    found = _with("watchlight.attenuation", src)
+    assert any("watchlight.attenuation imports watchlight_engine" in v for v in found)
+
+
+def test_it_catches_an_aliased_importlib():
+    found = _with(IN, "import importlib as il\nil.import_module('watchlight')\n")
+    assert any(f"{IN} (integration) imports watchlight (governor)" in v for v in found)
+
+
+def test_it_catches_dunder_import_of_a_plugin():
+    found = _with(IN, "__import__('watchlight_langgraph')\n")
+    assert any(f"{IN} imports watchlight_langgraph directly" in v for v in found)
+
+
+def test_it_catches_builtins_dunder_import():
+    found = _with(IN, "import builtins\nbuiltins.__import__('watchlight_core')\n")
+    assert any(f"{IN} imports watchlight_core" in v for v in found)
+
+
+def test_it_catches_a_non_literal_import_outside_the_contract():
+    found = _with(IN, "import importlib\ndef f(name):\n    return importlib.import_module(name)\n")
+    assert any(f"{IN} line 3: dynamic import of a non-literal or relative name" in v for v in found)
+
+
+def test_it_catches_a_non_literal_dunder_import():
+    found = _with("watchlight._audit", "def f(n):\n    return __import__(n)\n")
+    assert any("watchlight._audit line 2: dynamic import" in v for v in found)
+
+
+def test_it_catches_a_relative_literal_import_module():
+    found = _with(IN, "import importlib\nimportlib.import_module('.._audit', __name__)\n")
+    assert any("dynamic import of a non-literal or relative name" in v for v in found)
+
+
+def test_it_catches_an_indirect_reference():
+    found = _with(IN, "import importlib\nload = importlib.import_module\nload('watchlight')\n")
+    assert any("indirect reference to an import function" in v for v in found)
+
+
+def test_it_catches_getattr_of_import_module():
+    found = _with(IN, "import importlib\ngetattr(importlib, 'import_module')('watchlight')\n")
+    assert any("getattr(..., 'import_module')" in v for v in found)
+
+
+def test_it_catches_a_new_plugin_package_it_was_never_told_about():
+    found = _with("watchlight", "import watchlight_engine\nimport watchlight_newframework\n", package=True)
+    assert any("watchlight imports watchlight_newframework directly" in v for v in found)
+
+
+def test_the_contract_itself_may_import_dynamically():
+    sources, packages = package_sources()
+    deps, dynamic = analyse(CONTRACT, sources[CONTRACT], False, set(sources))
+    assert dynamic  # it does import dynamically …
+    assert not [v for v in check(sources, packages) if CONTRACT in v]  # … and that is allowed
+
+
+@pytest.mark.parametrize(
+    "plugin_module",
+    ["watchlight_engine", "watchlight_core", "os", "watchlight_x.sub", "Watchlight_X", "watchlight_"],
+)
+def test_it_refuses_a_registered_plugin_module_that_is_not_a_plugin(plugin_module):
+    sources, packages = package_sources()
+    found = check(sources, packages, plugin_modules=[("evil", plugin_module)])
+    assert any("integration evil: plugin_module" in v for v in found)
