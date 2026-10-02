@@ -8,7 +8,7 @@ different verdict. Only some announce themselves; the rest surface as a denial
 that looks exactly like a policy of yours doing its job. Read every entry
 between the version you are on and the one you are moving to.
 
-## Unreleased
+## 0.13.1
 
 **The `mcp` extra now requires `watchlight-mcp` 0.4.4, which refuses a
 governed MCP call that carries no identity.** A governed call is one of
