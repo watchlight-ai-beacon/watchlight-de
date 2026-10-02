@@ -14,10 +14,13 @@ from it needs a deprecation release first.
 from __future__ import annotations
 
 import importlib
+import inspect
+import pickle
 
 import pytest
 
 import watchlight
+import watchlight.inprocess
 
 PUBLIC_NAMES = [
     "ACTOR_CHAIN_CONTEXT_KEY",
@@ -108,7 +111,6 @@ PUBLIC_MODULES = [
     "watchlight.claude_agent",
     "watchlight.cli",
     "watchlight.inprocess",
-    "watchlight.integrations",
     "watchlight.langgraph",
     "watchlight.policytest",
     "watchlight.principals",
@@ -116,27 +118,63 @@ PUBLIC_MODULES = [
     "watchlight.scope_token",
 ]
 
-# Public classes and functions whose ``__module__`` is the package root today.
-ROOT_DEFINED = [
-    "AuthorizeError",
-    "AuthorizeRequestError",
-    "Denied",
-    "EgressTimeout",
-    "NeedsApproval",
-    "ReservedContextError",
-    "SanitizeError",
-    "ScreenError",
-    "UnresolvedContextError",
-    "Watchlight",
-    "can_configure_default",
-    "configure_default",
-    "register_detector",
-    "register_screen_family",
-    "registered_detectors",
-    "registered_screen_families",
-    "sanitize",
-    "screen",
-]
+# The module every public class and function reports. ``__module__`` shows in
+# reprs and tracebacks and is what pickle records, so a move must not change it.
+PUBLIC_OBJECT_MODULES = {
+    "ApprovalError": "watchlight._approval",
+    "ApprovalStore": "watchlight._approval",
+    "AttenuationDenied": "watchlight.attenuation",
+    "AttenuationRecord": "watchlight._audit",
+    "AuditRecordBase": "watchlight._audit",
+    "AuditTrailUnreadable": "watchlight._counters",
+    "AuthorizeError": "watchlight",
+    "AuthorizeRequestError": "watchlight",
+    "CounterSourceError": "watchlight._counters",
+    "DecisionRecord": "watchlight._audit",
+    "DelegationDepthExceeded": "watchlight.attenuation",
+    "Denied": "watchlight",
+    "EgressRecord": "watchlight._audit",
+    "EgressTimeout": "watchlight",
+    "NeedsApproval": "watchlight",
+    "PolicyError": "watchlight._annotations",
+    "ReservedContextError": "watchlight",
+    "SanitizationRecord": "watchlight._audit",
+    "SanitizeError": "watchlight",
+    "Scope": "watchlight.attenuation",
+    "ScopePreview": "watchlight.attenuation",
+    "ScopeTokenError": "watchlight.scope_token",
+    "ScreenError": "watchlight",
+    "ScreeningRecord": "watchlight._audit",
+    "UnresolvedContextError": "watchlight",
+    "Watchlight": "watchlight",
+    "can_configure_default": "watchlight",
+    "configure_default": "watchlight",
+    "count_audit_records": "watchlight._counters",
+    "load_test_suite": "watchlight.policytest",
+    "parse_window_seconds": "watchlight._counters",
+    "register_detector": "watchlight",
+    "register_screen_family": "watchlight",
+    "registered_detectors": "watchlight",
+    "registered_screen_families": "watchlight",
+    "run_policy_tests": "watchlight.policytest",
+    "sanitize": "watchlight",
+    "screen": "watchlight",
+}
+
+# The framework entry points: every attribute each has always had (names a user
+# may have imported from it), its first docstring line, and where its factory
+# says it lives.
+FRAMEWORK_ALIASES = {
+    "watchlight.langgraph": "Govern a LangGraph agent in-process, with zero infrastructure.",
+    "watchlight.pydantic_ai": "Govern a Pydantic AI agent in-process, with zero infrastructure.",
+    "watchlight.claude_agent": "Govern a Claude Agent SDK agent in-process, with zero infrastructure.",
+}
+FRAMEWORK_ALIAS_ATTRS = {"Any", "Optional", "Policies", "_select_backend_kwargs", "annotations", "governed_plugin"}
+
+# Contributor surface: importable, but NOT a public API — it may change in any
+# release without deprecation. Pinned here only so that it is a decision, not
+# an accident, when it moves.
+CONTRIBUTOR_MODULES = ["watchlight.integrations", "watchlight.integrations._contract"]
 
 
 def test_all_is_exactly_the_snapshot():
@@ -153,14 +191,40 @@ def test_every_public_module_imports(module):
     importlib.import_module(module)
 
 
-@pytest.mark.parametrize("name", ROOT_DEFINED)
-def test_root_objects_keep_their_public_module(name):
-    assert getattr(watchlight, name).__module__ == "watchlight"
+def test_every_public_object_is_pinned():
+    objects = {
+        n for n in watchlight.__all__ if inspect.isclass(getattr(watchlight, n)) or inspect.isfunction(getattr(watchlight, n))
+    }
+    assert objects == set(PUBLIC_OBJECT_MODULES)
 
 
-@pytest.mark.parametrize("module", ["watchlight.langgraph", "watchlight.pydantic_ai", "watchlight.claude_agent"])
-def test_every_framework_entry_point_keeps_governed_plugin(module):
-    assert callable(importlib.import_module(module).governed_plugin)
+@pytest.mark.parametrize("name", sorted(PUBLIC_OBJECT_MODULES))
+def test_public_objects_keep_their_module(name):
+    assert getattr(watchlight, name).__module__ == PUBLIC_OBJECT_MODULES[name]
+
+
+@pytest.mark.parametrize("module", sorted(FRAMEWORK_ALIASES))
+def test_every_framework_entry_point_is_unchanged(module):
+    mod = importlib.import_module(module)
+    assert {n for n in vars(mod) if not n.startswith("__")} == FRAMEWORK_ALIAS_ATTRS
+    assert not hasattr(mod, "__all__")  # `from watchlight.<framework> import *` unchanged
+    assert mod.__doc__.splitlines()[0] == FRAMEWORK_ALIASES[module]
+    assert callable(mod.governed_plugin)
+    assert mod.governed_plugin.__module__ == module
+    assert mod.governed_plugin.__qualname__ == "governed_plugin"
+    assert mod.Policies is watchlight.inprocess.Policies
+    assert mod._select_backend_kwargs is watchlight.inprocess._select_backend_kwargs
+
+
+@pytest.mark.parametrize("module", sorted(FRAMEWORK_ALIASES))
+def test_a_framework_factory_pickles_by_its_public_name(module):
+    factory = importlib.import_module(module).governed_plugin
+    assert pickle.loads(pickle.dumps(factory)) is factory
+
+
+@pytest.mark.parametrize("module", CONTRIBUTOR_MODULES)
+def test_the_contributor_surface_imports(module):
+    importlib.import_module(module)
 
 
 def test_the_backend_seam_keeps_its_names():
