@@ -47,9 +47,11 @@ without recording a grant. One change affects code that reads the trail.
 **Changed**
 - Loading a policy file never loads nothing quietly. `govern.load()`,
   `govern.reload()` and `watchlight policy test` (both lanes) raise or throw,
-  naming the file, on a missing path, a directory, invalid JSON, an unrecognised
-  shape, an entry without a Cedar `code`, a policy marked `"active": false`, or
-  a file that holds no policies. A governor that loaded such a file used to hold
+  naming the file, on a missing path, a directory, a path that cannot be read
+  (reported as itself, never as missing), invalid UTF-8 or JSON, an
+  unrecognised shape, an entry without a Cedar `code`, a policy marked
+  `"active": false`, or a file that holds no policies. No message quotes the
+  file's contents; a JSON error gives the line and column. A governor that loaded such a file used to hold
   no policies and deny every call with no sign of why. An empty set loads only
   with `allow_empty=True` / `{ allowEmpty: true }`; `reload` refuses it always.
   `watchlight policy test` exits 2 on a suite that declares no policies. See

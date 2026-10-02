@@ -67,7 +67,7 @@ async function policyTest(file: string | undefined): Promise<number> {
   try {
     suite = loadTestSuite(file);
   } catch (e) {
-    console.error(`watchlight: could not read suite '${file}': ${(e as Error).message}`);
+    console.error(`watchlight: could not read suite '${file}': ${errorText(e)}`);
     return 2;
   }
   // Fresh, policy-free governor (fail-closed); load only what the suite declares.
@@ -100,7 +100,7 @@ async function policyTest(file: string | undefined): Promise<number> {
     // refused to compile, or a policy it could not honour as written —
     // reported here rather than run, since the suite would otherwise be
     // testing a different policy set from the one on the page.
-    console.error(`watchlight: ${(e as Error).message}`);
+    console.error(`watchlight: ${errorText(e)}`);
     return 2;
   }
 
@@ -113,11 +113,22 @@ async function policyTest(file: string | undefined): Promise<number> {
     report = await gov.test(suite.tests);
   } catch (e) {
     // malformed fixture (missing action/expect)
-    console.error(`watchlight: ${(e as Error).message}`);
+    console.error(`watchlight: ${errorText(e)}`);
     return 2;
   }
   printReport(file, report);
   return report.failed > 0 ? 1 : 0;
+}
+
+/** A thrown value as text: an Error's message, or the value itself — never
+ *  `undefined` for a throw that is not an Error. */
+function errorText(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  try {
+    return typeof e === "string" ? e : (JSON.stringify(e) ?? String(e));
+  } catch {
+    return String(e);
+  }
 }
 
 async function main(argv: string[]): Promise<number> {
@@ -135,6 +146,6 @@ async function main(argv: string[]): Promise<number> {
 main(process.argv.slice(2))
   .then((code) => process.exit(code))
   .catch((e) => {
-    console.error(`watchlight: ${e?.message ?? e}`);
+    console.error(`watchlight: ${errorText(e)}`);
     process.exit(1);
   });

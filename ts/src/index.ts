@@ -1244,9 +1244,10 @@ export class Watchlight {
    *
    * It reads the same file shapes as {@link load} and refuses the same
    * mistakes. A missing file or an empty set throws rather than replacing the
-   * policies with nothing; there is no `allowEmpty` here. Cedar default-denies, so an accidental empty reload would be
-   * safe but total — every governed call in the process refused — and that is a
-   * failure to refuse loudly, not to absorb.
+   * policies with nothing; there is no `allowEmpty` here. Cedar default-denies,
+   * so an accidental empty reload would be safe but total — every governed call
+   * in the process refused — and that is a failure to refuse loudly, not to
+   * absorb.
    *
    * Governors made by {@link as} share the state and so share the reload. The
    * {@link load} memo is cleared, so a file loaded before can be loaded again

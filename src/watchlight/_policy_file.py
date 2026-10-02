@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import stat
 from typing import Any, List
 
 EXPECTED_SHAPE = (
@@ -44,22 +45,54 @@ def read_policy_file(
     """Read ``path`` and return its policy entries, validated.
 
     Raises :class:`FileNotFoundError` for a missing path,
-    :class:`IsADirectoryError` for a directory, and :class:`ValueError` for
-    anything else that is not a policy file or (without ``allow_empty``) holds
-    no policies. ``op`` prefixes every message (``load``, ``reload``, …)."""
+    :class:`IsADirectoryError` for a directory, another :class:`OSError`
+    (``PermissionError``, …) for a path that cannot be read, and
+    :class:`ValueError` for anything else that is not a policy file or
+    (without ``allow_empty``) holds no policies. ``op`` prefixes every message
+    (``load``, ``reload``, …). No message quotes the file's contents."""
     p = pathlib.Path(path)
-    if not p.exists():
-        raise FileNotFoundError(f"{op}: no such policy file: {p}")
-    if p.is_dir():
+    try:
+        st = p.stat()
+    except FileNotFoundError:
+        raise FileNotFoundError(f"{op}: no such policy file: {p}") from None
+    except OSError as exc:
+        raise _unreadable(op, p, exc) from exc
+    if stat.S_ISDIR(st.st_mode):
         raise IsADirectoryError(
             f"{op}: {p} is a directory, not a policy file. Load each policy file "
             f"in it by name."
         )
     try:
-        data = json.loads(p.read_text(encoding="utf-8"))
+        raw = p.read_bytes()
+    except OSError as exc:
+        raise _unreadable(op, p, exc) from exc
+    try:
+        # utf-8-sig: a leading byte-order mark, as some editors write, is not
+        # part of the JSON.
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise ValueError(f"{op}: {p} is not valid UTF-8") from None
+    try:
+        data = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise ValueError(f"{op}: {p} is not valid JSON: {exc}") from exc
+        # The decoder's own message names the problem and its position, never
+        # the text around it.
+        raise ValueError(
+            f"{op}: {p} is not valid JSON: {exc.msg} "
+            f"at line {exc.lineno} column {exc.colno}"
+        ) from None
+    except RecursionError:
+        raise ValueError(f"{op}: {p} is not a policy file: JSON nested too deeply") from None
     return policy_entries(data, str(p), op=op, allow_empty=allow_empty)
+
+
+def _unreadable(op: str, p: pathlib.Path, exc: OSError) -> OSError:
+    """The same kind of ``OSError`` (``PermissionError`` for ``EACCES``, …),
+    with a message that names the operation and the file."""
+    reason = exc.strerror or type(exc).__name__
+    if exc.errno is None:
+        return OSError(f"{op}: cannot read policy file {p}: {reason}")
+    return OSError(exc.errno, f"{op}: cannot read policy file {p}: {reason}")
 
 
 def policy_entries(data: Any, where: str, *, op: str, allow_empty: bool = False) -> List[dict]:
@@ -120,7 +153,7 @@ def _check_entry(entry: Any, index: int, where: str, op: str) -> None:
     if name is not None and not isinstance(name, str):
         raise ValueError(f'{op}: {label}: "name" must be a string, not {_kind(name)}.')
     if name:
-        label = f'policy "{name}" in {where}'
+        label = f"policy {_echo(name)} in {where}"
     code = entry.get("code")
     if not isinstance(code, str) or not code.strip():
         raise ValueError(
@@ -128,10 +161,23 @@ def _check_entry(entry: Any, index: int, where: str, op: str) -> None:
         )
     if "active" in entry and entry["active"] is not True:
         raise ValueError(
-            f'{op}: {label} is marked "active": {json.dumps(entry["active"])}. Every '
+            f'{op}: {label} is marked "active": {_echo(entry["active"])}. Every '
             f"policy a governor loads is enforced, so an inactive policy cannot be "
             f'loaded; remove it from the file, or set "active": true.'
         )
+
+
+#: How much of a value from the file an error message may echo.
+ECHO_LIMIT = 40
+
+
+def _echo(value: Any) -> str:
+    """``value`` as JSON, cut to :data:`ECHO_LIMIT` characters."""
+    try:
+        text = json.dumps(value)
+    except (TypeError, ValueError, RecursionError):
+        text = _kind(value)
+    return text if len(text) <= ECHO_LIMIT else text[: ECHO_LIMIT - 1] + "…"
 
 
 def _kind(value: Any) -> str:

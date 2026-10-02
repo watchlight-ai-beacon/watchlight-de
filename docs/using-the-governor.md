@@ -491,10 +491,13 @@ console.log(govern.policyCount);    // 6 — force adds another copy; nothing is
   `description`) are ignored; `"active": false` is refused, because every
   policy a governor holds is enforced.
 - **`load` never loads nothing quietly.** A missing path raises
-  `FileNotFoundError` (TypeScript: an `Error` with `code: "ENOENT"`), and a
-  directory, invalid JSON, an unrecognised shape, an entry without a Cedar
+  `FileNotFoundError` (TypeScript: an `Error` with `code: "ENOENT"`). A path
+  that exists but cannot be read keeps its own error (`PermissionError`,
+  `EACCES`, `ELOOP`, …), so it is never reported as missing. A directory,
+  invalid UTF-8 or JSON, an unrecognised shape, an entry without a Cedar
   `code`, or a file that holds no policies raises `ValueError` /
-  `IsADirectoryError` (TypeScript: `Error`), naming the file. One bad entry
+  `IsADirectoryError` (TypeScript: `Error`), naming the file. A JSON error
+  gives the line and column and never quotes the file. A shape or entry error
   loads none of the file. To load an empty set on purpose, pass
   `allow_empty=True` / `{ allowEmpty: true }`.
 - **A file that fails to load is not remembered**, so it loads once you fix

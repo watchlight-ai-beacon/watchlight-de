@@ -12,6 +12,7 @@ The TypeScript twin is ``ts/test/policy-loading.test.mjs``.
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 
 import pytest
@@ -225,3 +226,70 @@ def test_cli_exits_2_on_a_suite_with_no_usable_policies(tmp_path, capsys, fields
 def test_cli_loads_a_single_object_policy_file(tmp_path, capsys):
     _write(tmp_path, "one.json", {"name": "read", "code": READ})
     assert cli_main(["policy", "test", _suite(tmp_path, policyFile="one.json")]) == 0
+
+
+# ── what the file is made of: encoding, JSON, and what a message echoes ──────
+
+
+def test_invalid_utf8_raises_naming_the_file(tmp_path):
+    p = tmp_path / "latin1.json"
+    p.write_bytes(b'[{"name": "caf\xe9", "code": "permit(principal, action, resource);"}]')
+    with pytest.raises(ValueError, match="latin1.json is not valid UTF-8"):
+        _gov(tmp_path).load(p)
+
+
+def test_a_byte_order_mark_is_not_part_of_the_json(tmp_path):
+    p = tmp_path / "bom.json"
+    p.write_bytes(b"\xef\xbb\xbf" + json.dumps([{"name": "read", "code": READ}]).encode())
+    assert _gov(tmp_path).load(p).policy_count == 1
+
+
+def test_a_json_error_names_the_position_and_never_quotes_the_file(tmp_path):
+    secret = "do-not-echo-this-value"
+    p = _write(tmp_path, "broken.json", '[{"name": "x",\n  "code": ' + secret + "}]")
+    with pytest.raises(ValueError) as exc:
+        _gov(tmp_path).load(p)
+    message = str(exc.value)
+    assert "line 2 column" in message and secret not in message
+
+
+def test_deeply_nested_json_raises_a_value_error(tmp_path):
+    p = _write(tmp_path, "deep.json", "[" * 100_000 + "]" * 100_000)
+    with pytest.raises(ValueError, match="deep.json"):
+        _gov(tmp_path).load(p)
+
+
+@pytest.mark.skipif(not hasattr(os, "geteuid") or os.geteuid() == 0, reason="root reads anything")
+def test_an_unreadable_file_is_not_reported_as_missing(tmp_path):
+    p = _write(tmp_path, "locked.json", [{"name": "read", "code": READ}])
+    p.chmod(0)
+    try:
+        with pytest.raises(PermissionError) as exc:
+            _gov(tmp_path).load(p)
+        assert "cannot read policy file" in str(exc.value)
+        assert "no such" not in str(exc.value)
+    finally:
+        p.chmod(0o600)
+
+
+def test_a_symlink_loop_is_not_reported_as_missing(tmp_path):
+    loop = tmp_path / "loop.json"
+    loop.symlink_to(loop)
+    with pytest.raises(OSError) as exc:
+        _gov(tmp_path).load(loop)
+    assert not isinstance(exc.value, FileNotFoundError)
+    assert "cannot read policy file" in str(exc.value)
+
+
+def test_an_echoed_value_is_cut_short(tmp_path):
+    long = "x" * 500
+    p = _write(tmp_path, "p.json", [{"name": "n", "code": READ, "active": long}])
+    with pytest.raises(ValueError) as exc:
+        _gov(tmp_path).load(p)
+    assert long not in str(exc.value) and "…" in str(exc.value)
+
+
+def test_cli_exits_2_on_a_policy_the_engine_cannot_compile(tmp_path, capsys):
+    _write(tmp_path, "p.json", [{"name": "broken", "code": "permit(principal, action, resource) when { ;"}])
+    assert cli_main(["policy", "test", _suite(tmp_path, policyFile="p.json")]) == 2
+    assert "watchlight:" in capsys.readouterr().err

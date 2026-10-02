@@ -40,9 +40,11 @@ function codedError(message: string, code: string): Error {
 }
 
 /** Read `file` and return its policy entries, validated. Throws for a missing
- *  path (`code: "ENOENT"`), a directory (`code: "EISDIR"`), invalid JSON, an
+ *  path (`code: "ENOENT"`), a directory (`code: "EISDIR"`), a path that cannot
+ *  be read (the system's `code`, e.g. `EACCES`), invalid UTF-8 or JSON, an
  *  unrecognised shape, a malformed entry, and — without `allowEmpty` — a file
- *  that holds no policies. `op` prefixes every message.
+ *  that holds no policies. `op` prefixes every message. No message quotes the
+ *  file's contents.
  *  @internal */
 export function readPolicyFile(
   file: string,
@@ -52,8 +54,8 @@ export function readPolicyFile(
   let stat: fs.Stats;
   try {
     stat = fs.statSync(file);
-  } catch {
-    throw codedError(`${op}: no such policy file: ${file}`, "ENOENT");
+  } catch (e) {
+    throw unreadable(op, file, e);
   }
   if (stat.isDirectory()) {
     throw codedError(
@@ -61,13 +63,129 @@ export function readPolicyFile(
       "EISDIR"
     );
   }
+  let raw: Buffer;
+  try {
+    raw = fs.readFileSync(file);
+  } catch (e) {
+    throw unreadable(op, file, e);
+  }
+  let text: string;
+  try {
+    // fatal: invalid UTF-8 is an error, never U+FFFD in a policy. A leading
+    // byte-order mark is dropped, as Python's utf-8-sig does.
+    text = new TextDecoder("utf-8", { fatal: true }).decode(raw);
+  } catch {
+    throw new Error(`${op}: ${file} is not valid UTF-8`);
+  }
   let data: unknown;
   try {
-    data = JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch (e) {
-    throw new Error(`${op}: ${file} is not valid JSON: ${(e as Error).message}`);
+    data = JSON.parse(text);
+  } catch {
+    throw new Error(`${op}: ${file} is not valid JSON${jsonErrorWhere(text)}`);
   }
   return policyEntries(data, file, opts);
+}
+
+/** A stat or read failure, classified: a missing path is ENOENT; anything else
+ *  (EACCES, ELOOP, ENOTDIR, …) keeps its own code. */
+function unreadable(op: string, file: string, e: unknown): Error {
+  const code = (e as NodeJS.ErrnoException)?.code;
+  if (code === "ENOENT") return codedError(`${op}: no such policy file: ${file}`, "ENOENT");
+  return codedError(
+    `${op}: cannot read policy file ${file}: ${code ?? "unknown error"}`,
+    code ?? "EIO"
+  );
+}
+
+/** Where a JSON.parse error is, as " at line L column C" — never the parser's
+ *  own message, which quotes the text around the error. The parser gives an
+ *  offset only for some errors, so the offset is found by {@link jsonErrorOffset}
+ *  instead. */
+function jsonErrorWhere(text: string): string {
+  const offset = Math.min(jsonErrorOffset(text), text.length);
+  const before = text.slice(0, offset).split("\n");
+  return ` at line ${before.length} column ${before[before.length - 1].length + 1}`;
+}
+
+/** The offset of the first JSON syntax error in `text` (which JSON.parse has
+ *  already refused). A scanner over the RFC 8259 grammar with an explicit
+ *  stack, so nesting depth cannot overflow it. */
+function jsonErrorOffset(text: string): number {
+  let i = 0;
+  const n = text.length;
+  const ws = () => {
+    while (i < n && " \t\n\r".includes(text[i])) i++;
+  };
+  const literal = (word: string) => {
+    if (text.startsWith(word, i)) { i += word.length; return true; }
+    return false;
+  };
+  const string = (): boolean => {
+    if (text[i] !== '"') return false;
+    i++;
+    while (i < n) {
+      const c = text.charCodeAt(i);
+      if (c === 0x22) { i++; return true; }
+      if (c < 0x20) return false;
+      if (c === 0x5c) {
+        const e = text[i + 1];
+        if (e === "u") {
+          if (!/^[0-9a-fA-F]{4}$/.test(text.slice(i + 2, i + 6))) { i += 1; return false; }
+          i += 6;
+        } else if (e !== undefined && '"\\/bfnrt'.includes(e)) i += 2;
+        else { i += 1; return false; }
+      } else i++;
+    }
+    return false;
+  };
+  const number = (): boolean => {
+    const m = /^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?/.exec(text.slice(i, i + 400));
+    if (!m || !m[0] || m[0] === "-") return false;
+    i += m[0].length;
+    return true;
+  };
+  // Each stack entry is the container being read: "[" or "{".
+  const stack: string[] = [];
+  let expectValue = true;
+  for (;;) {
+    ws();
+    if (expectValue) {
+      const c = text[i];
+      if (c === "[" || c === "{") {
+        stack.push(c);
+        i++;
+        ws();
+        if (text[i] === (c === "[" ? "]" : "}")) { stack.pop(); i++; expectValue = false; continue; }
+        if (c === "{") {
+          if (!string()) return i;
+          ws();
+          if (text[i] !== ":") return i;
+          i++;
+        }
+        continue;
+      }
+      if (!(string() || number() || literal("true") || literal("false") || literal("null"))) return i;
+      expectValue = false;
+      continue;
+    }
+    if (!stack.length) return i < n ? i : n;
+    const top = stack[stack.length - 1];
+    const c = text[i];
+    if (c === ",") {
+      i++;
+      if (top === "{") {
+        ws();
+        if (!string()) return i;
+        ws();
+        if (text[i] !== ":") return i;
+        i++;
+      }
+      expectValue = true;
+      continue;
+    }
+    if ((top === "[" && c === "]") || (top === "{" && c === "}")) { stack.pop(); i++; continue; }
+    return i;
+  }
 }
 
 /** The policy entries of parsed policy-file `data`, validated. `where` names
@@ -137,17 +255,31 @@ function checkEntry(entry: unknown, index: number, where: string, op: string): v
   if (e.name !== undefined && e.name !== null && typeof e.name !== "string") {
     throw new Error(`${op}: ${label}: "name" must be a string, not ${kind(e.name)}.`);
   }
-  if (e.name) label = `policy "${e.name}" in ${where}`;
+  if (e.name) label = `policy ${echo(e.name)} in ${where}`;
   if (typeof e.code !== "string" || !e.code.trim()) {
     throw new Error(`${op}: ${label} has no Cedar "code" (a non-empty string is required).`);
   }
   if ("active" in e && e.active !== true) {
     throw new Error(
-      `${op}: ${label} is marked "active": ${JSON.stringify(e.active)}. Every policy a ` +
+      `${op}: ${label} is marked "active": ${echo(e.active)}. Every policy a ` +
         `governor loads is enforced, so an inactive policy cannot be loaded; remove it ` +
         `from the file, or set "active": true.`
     );
   }
+}
+
+/** How much of a value from the file an error message may echo. */
+const ECHO_LIMIT = 40;
+
+/** `value` as JSON, cut to {@link ECHO_LIMIT} characters. */
+function echo(value: unknown): string {
+  let text: string;
+  try {
+    text = JSON.stringify(value) ?? kind(value);
+  } catch {
+    text = kind(value);
+  }
+  return text.length <= ECHO_LIMIT ? text : text.slice(0, ECHO_LIMIT - 1) + "…";
 }
 
 function kind(value: unknown): string {

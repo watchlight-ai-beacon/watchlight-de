@@ -165,6 +165,53 @@ async function main() {
     ok("CLI loads a single-object policy file", r.status === 0, `${r.status} ${r.stderr}`);
   }
 
+  // ── what the file is made of: encoding, JSON, and what a message echoes ──
+  {
+    const latin1 = join(dir, "latin1.json");
+    fs.writeFileSync(latin1, Buffer.concat([
+      Buffer.from('[{"name": "caf'), Buffer.from([0xe9]),
+      Buffer.from('", "code": "permit(principal, action, resource);"}]'),
+    ]));
+    const e = thrown(() => gov().load(latin1));
+    ok("invalid UTF-8 throws naming the file", e && e.message.includes("latin1.json is not valid UTF-8"), String(e));
+
+    const bom = join(dir, "bom.json");
+    fs.writeFileSync(bom, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(JSON.stringify([{ name: "read", code: READ }]))]));
+    ok("a byte-order mark is not part of the JSON", gov().load(bom).policyCount === 1);
+
+    const secret = "do-not-echo-this-value";
+    const broken = write("broken2.json", '[{"name": "x",\n  "code": ' + secret + "}]");
+    const j = thrown(() => gov().load(broken));
+    ok("a JSON error never quotes the file", j && !j.message.includes(secret) && !j.message.includes('"x"'), String(j));
+    ok("...and names the line and column where the parser gives a position",
+      j && (/line 2 column \d+/.test(j.message) || /is not valid JSON$/.test(j.message)), String(j));
+
+    const loop = join(dir, "loop.json");
+    fs.symlinkSync(loop, loop);
+    const l = thrown(() => gov().load(loop));
+    ok("a symlink loop is not reported as missing",
+      l && l.code === "ELOOP" && l.message.includes("cannot read policy file"), String(l));
+
+    if (typeof process.getuid !== "function" || process.getuid() !== 0) {
+      const locked = write("locked.json", [{ name: "read", code: READ }]);
+      fs.chmodSync(locked, 0);
+      const a = thrown(() => gov().load(locked));
+      fs.chmodSync(locked, 0o600);
+      ok("an unreadable file is EACCES, not missing and not invalid JSON",
+        a && a.code === "EACCES" && a.message.includes("cannot read policy file") && !/JSON/.test(a.message), String(a));
+    }
+
+    const long = "x".repeat(500);
+    const t = thrown(() => gov().load(write("long.json", [{ name: "n", code: READ, active: long }])));
+    ok("an echoed value is cut short", t && !t.message.includes(long) && t.message.includes("…"), String(t));
+  }
+  {
+    write("uncompilable.json", [{ name: "broken", code: "permit(principal, action, resource) when { ;" }]);
+    const r = spawnSync(process.execPath, [CLI, "policy", "test", suite({ policyFile: "uncompilable.json" })], { encoding: "utf8" });
+    ok("CLI exits 2 on a policy the engine cannot compile, with a real message",
+      r.status === 2 && /watchlight: \S/.test(r.stderr) && !r.stderr.includes("undefined"), `${r.status} ${r.stderr}`);
+  }
+
   fs.rmSync(dir, { recursive: true, force: true });
   console.log(`\n${pass} passed, ${fail} failed`);
   if (fail) process.exit(1);

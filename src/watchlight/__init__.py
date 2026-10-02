@@ -2652,9 +2652,9 @@ class Watchlight:
         loading the same source again is a no-op — priming an engine in a
         factory and loading the same file again from an initialiser cannot
         double the set. A file that raises is not remembered, so loading it
-        again once it is fixed works without ``force``. Two different paths to the same file are one
-        source; two files with the same content are two, unless you give them a
-        shared ``source_id``. The memo is shared with every governor from
+        again once it is fixed works without ``force``. Two different paths to
+        the same file are one source; two files with the same content are two,
+        unless you give them a shared ``source_id``. The memo is shared with every governor from
         :meth:`as_`.
 
         The memo is keyed on identity, not content: EDITING a file already
@@ -2674,7 +2674,15 @@ class Watchlight:
         :class:`PolicyCompileError` naming it and the file, and again NOTHING
         from that file is added."""
         p = pathlib.Path(path)
-        key = source_id if source_id is not None else str(p.resolve())
+        if source_id is not None:
+            key = source_id
+        else:
+            try:
+                key = str(p.resolve())
+            except (RuntimeError, OSError):
+                # A symlink loop (RuntimeError before Python 3.10): the read
+                # below refuses it with its own error.
+                key = str(p.absolute())
         if key in self._shared.sources and not force:
             return self
         entries = _read_policy_file(p, op="load", allow_empty=allow_empty)
