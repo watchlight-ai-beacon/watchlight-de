@@ -76,7 +76,7 @@ is always type `Action`; a policy that gives it another type is rejected.
 ## An MCP server
 
 ```bash
-pip install watchlight-mcp
+pip install 'watchlight[mcp]'   # watchlight-mcp 0.4.4 or later
 ```
 
 ```python
@@ -98,6 +98,12 @@ Point your MCP client at `http://127.0.0.1:9700/mcp` instead of the server. Ever
 governed call — `tools/call`, `resources/read`, `resources/subscribe`,
 `prompts/get` — is authorized in-process before it reaches the server, so a
 denied call never executes. The PEP implements MCP spec `2026-07-28`.
+
+The client sends `Watchlight-Agent-Id: <agent>` on every request; that becomes
+the principal, `Agent::"<agent>"`. Since `watchlight-mcp` 0.4.4 a governed call
+without it is refused with JSON-RPC error `-32002` (HTTP 400). Anyone who can
+reach the listener can assert that header, so keep the PEP on loopback or
+behind a gateway that sets it.
 
 [`examples/governed_mcp_server.py`](../examples/governed_mcp_server.py) fires an
 allowed and a denied call and proves the denied one never ran.

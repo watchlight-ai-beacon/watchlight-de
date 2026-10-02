@@ -8,6 +8,24 @@ different verdict. Only some announce themselves; the rest surface as a denial
 that looks exactly like a policy of yours doing its job. Read every entry
 between the version you are on and the one you are moving to.
 
+## Unreleased
+
+**The `mcp` extra requires `watchlight-mcp` 0.4.4, which refuses a governed
+MCP call that carries no identity.** In 0.4.3 a `tools/call`,
+`resources/read`, `resources/subscribe` or `prompts/get` without
+`Watchlight-Agent-Id` was decided as `Agent::"unattributed"`, so a policy that
+permitted any principal let it through. In 0.4.4 it is refused with JSON-RPC
+error `-32002` and HTTP 400, and never reaches the server. So is a request
+that carries `Watchlight-Principal-Id` (unless the PEP was started with
+`principal_header="Watchlight-Principal-Id"`), repeats an identity header, or
+sends an empty or malformed one. Both changes fail in the closed direction.
+
+Fix: have every client, or the gateway in front of the PEP, send
+`Watchlight-Agent-Id` on each request. `serve_stdio` now refuses to start
+without `agent_id=`. `allow_unattributed=True` restores the old behaviour for
+deliberate anonymous use; it is not recommended. See
+[using Watchlight with an MCP gateway you already run](existing-mcp-gateway.md).
+
 ## 0.13.0
 
 **Loading a policy file that holds no usable policies raises.** Earlier

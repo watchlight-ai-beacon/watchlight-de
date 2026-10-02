@@ -55,8 +55,10 @@ included, is forwarded unchanged and still gets an audit record.
 pip install 'watchlight[mcp]'
 ```
 
-That installs the PEP (`watchlight-mcp`) and the `watchlight` CLI you will use
-to watch decisions.
+That installs the PEP (`watchlight-mcp` 0.4.4 or later) and the `watchlight`
+CLI you will use to watch decisions. This page needs 0.4.4: earlier releases
+accepted a governed call with no identity, and took the principal from more
+than one header.
 
 ### 2. Write a fail-closed policy
 
@@ -64,8 +66,8 @@ Watchlight denies anything no policy permits. Permit only what this caller
 needs, and add a `forbid` for the action you never want, so that a broad
 `permit` added later cannot let it through.
 
-The PEP takes **one policy per file**, in the shape of
-[`examples/mcp.policy.json`](../examples/mcp.policy.json).
+The PEP takes **one policy object per file**, with `id`, `name` and `code`, in
+the shape of [`examples/mcp.policy.json`](../examples/mcp.policy.json).
 
 `policies/github-read.json`:
 
@@ -126,12 +128,12 @@ watchlight_mcp.serve(
 ```
 
 ```bash
-RUST_LOG=warn python pep.py
+python pep.py
 ```
 
-`serve()` blocks until Ctrl-C. `RUST_LOG=warn` keeps the PEP's process log to
-warnings and errors (see [Limitations](#limitations) for why). The decisions go
-to the audit file either way.
+`serve()` blocks until Ctrl-C. It writes structured JSON logs to stdout and one
+audit record per request to the audit file. Neither contains tool argument
+values.
 
 Two placement rules carry the security of this setup:
 
@@ -140,7 +142,8 @@ Two placement rules carry the security of this setup:
   nothing else can connect to it. A caller that can reach the server directly is
   not governed.
 - **The PEP must be reachable only from the gateway.** The PEP trusts the
-  identity header it receives (step 4). Keep it on loopback when the gateway
+  identity header it receives (step 4), so anyone who can connect to it can
+  claim to be any agent. Keep it on loopback when the gateway
   runs on the same host or in the same pod. When the gateway is elsewhere, give
   the listener TLS and restrict it at the network layer to the gateway's
   addresses:
@@ -168,9 +171,10 @@ Change three things in the gateway's route for this server:
 
 1. **Upstream.** Send the route to the PEP (`http://127.0.0.1:9700/mcp`, or the
    `https://` address from step 3) instead of the server.
-2. **Remove every `Watchlight-*` header the caller sent.** More than one of them
-   feeds the principal. If a caller's own `Watchlight-*` headers reach the PEP,
-   the caller chooses who the policy thinks it is.
+2. **Remove every `Watchlight-*` header the caller sent.** The PEP reads the
+   identity and the execution ids from these headers and trusts them as sent.
+   If a caller's own `Watchlight-*` headers reach the PEP, the caller chooses
+   who the policy thinks it is.
 3. **Set `Watchlight-Agent-Id`** from the identity the gateway has just
    authenticated. Use a stable identifier, such as a client ID or a token's
    subject claim, not a display name. Optionally set `Watchlight-Execution-Id`
@@ -178,6 +182,16 @@ Change three things in the gateway's route for this server:
    gateway's log line for the same call.
 
 The gateway's own authentication, rate limits and logging stay as they are.
+
+The PEP refuses, with JSON-RPC error `-32002` and HTTP 400, a governed call that
+arrives without `Watchlight-Agent-Id`. It also refuses one whose identity
+headers are malformed: empty, repeated, containing a comma or non-ASCII
+characters, or naming the reserved `unattributed` principal. Methods that are
+not governed, such as `initialize` and `tools/list`, need no identity. A
+`serve(..., allow_unattributed=True)` option exists for deliberate anonymous
+use: calls without identity are then decided as `Agent::"unattributed"`. Do not
+use it behind a gateway. A missing header there means the gateway is
+misconfigured, and the refusal is how you find out.
 
 To check the PEP before changing the gateway, send it the request the gateway
 will send:
@@ -200,6 +214,18 @@ That call is permitted and returns the server's result. Change the tool name to
 The caller always gets the same `not authorized` message, whether no policy
 permitted the call, a `forbid` matched, or the PEP failed. The reason is only
 in the audit record.
+
+What the PEP answers:
+
+| Outcome | JSON-RPC error | HTTP status |
+|---|---|---|
+| Permitted | none: the server's response is relayed | the server's |
+| Denied by policy, or the engine failed | `-32001` `not authorized` | 200 |
+| No identity on a governed call, or an identity header refused | `-32002` | 400 |
+| `Mcp-Method` or `Mcp-Name` disagrees with the body | `-32020` | 400 |
+| Unsupported `MCP-Protocol-Version` | `-32022` | 400 |
+| Malformed body, or a missing tool name | `-32602` | 400 |
+| The server is unreachable | `-32603` | 502 |
 
 ### 5. Watch ALLOW and DENY in the audit trail
 
@@ -225,7 +251,8 @@ Or read the file. Each governed call is one JSON line (wrapped here):
 - `policy_effect` tells an explicit refusal (`forbid`, with the `policy_id`
   that matched) from an absent grant (`default-deny`, with no `policy_id`).
 - There is no field for tool arguments, tokens or other header values. The
-  `path` in the request above appears nowhere in the record.
+  `path` in the request above appears nowhere in the record, and nowhere in the
+  PEP's process log either.
 
 ## Optional: also govern inside the agent
 
@@ -262,20 +289,17 @@ The PEP itself does not narrow scopes.
 
 ## Limitations
 
-- **The identity is asserted, not proven.** The PEP builds the principal from
-  `Watchlight-*` headers and does not authenticate the gateway. This setup is
+- **The identity is asserted, not proven.** The PEP takes the principal from
+  `Watchlight-Agent-Id` and does not authenticate the gateway. This setup is
   only as strong as the two rules in step 3 and the header rules in step 4. The
-  PEP's TLS listener does not request client certificates, so restrict who can
+  PEP's TLS listener does not request client certificates, and the PEP does not
+  refuse a plain-HTTP listener on a non-loopback address, so restrict who can
   connect to it at the network layer.
 - **One server per PEP.** Each `serve()` fronts one `upstream_url`. Run one PEP
   for each server you govern, each with its own `upstream_server` name.
 - **Listing is not filtered.** `tools/list` and other non-governed methods are
   forwarded unchanged, so an agent still sees tools it is not permitted to call.
   Calling one is denied.
-- **Process logs at the default level contain argument values.** The audit file
-  is value-free, but at the default `info` level the engine logs each request it
-  evaluates, arguments included. Run the PEP with `RUST_LOG=warn`, or keep its
-  stdout away from shared log pipelines.
 - **The audit file is local and unsigned.** It is a JSONL file on the PEP's host.
   Ship it to your own store if you need it kept.
 - **Policy changes need a restart with `serve()`.** To swap policies while
@@ -285,7 +309,7 @@ The PEP itself does not narrow scopes.
   stdio rather than calling them over HTTP, have it launch
   `watchlight_mcp.serve_stdio(...)` instead. That entry point spawns the server
   itself and takes the identity as `agent_id=` for the whole session, since there
-  are no per-request headers.
+  are no per-request headers. It refuses to start without one.
 
 ## Troubleshooting
 
@@ -293,7 +317,9 @@ Every one of these fails closed: the call does not reach the server.
 
 | You see | Cause | Fix |
 |---|---|---|
-| Every call `not authorized`; audit `principal` is `Agent::"unattributed"` | No `Watchlight-Agent-Id` reached the PEP | Set it in the gateway route (step 4) |
+| HTTP 400, error `-32002` `a governed call requires Watchlight-Agent-Id` | No identity reached the PEP | Set `Watchlight-Agent-Id` in the gateway route (step 4) |
+| HTTP 400, error `-32002` `… is not accepted by this PEP` | The request carries `Watchlight-Principal-Id`, which the PEP does not read by default | Strip every inbound `Watchlight-*` header in the gateway, then set `Watchlight-Agent-Id` |
+| HTTP 400, error `-32002` naming `Watchlight-Agent-Id` | The value is empty, repeated, contains a comma or non-ASCII characters, or is `unattributed` | Set one stable, plain identifier per request |
 | `not authorized`; audit `policy_effect` is `default-deny` | No policy permits this principal and tool | Compare the audited `principal` and `tool` with your policy. If the gateway namespaces tools (`github__get_file_contents`), the PEP sees whatever name the gateway forwards |
 | `not authorized`; audit `policy_effect` is `forbid` | A `forbid` matched | `policy_id` names it |
 | Every call `not authorized`, `policy_effect` `default-deny` | The PEP started with no `policy_files` | Pass your policy files |
@@ -303,7 +329,8 @@ Every one of these fails closed: the call does not reach the server.
 | Gateway metrics show denials as successful requests | A policy denial is HTTP 200 with a JSON-RPC error | Count JSON-RPC error code `-32001` as a refusal |
 | `OSError: cannot read policy file …` at start-up | A path in `policy_files` does not exist | Fix the path; the PEP does not start without it |
 | `RuntimeError: engine init failed: … Policy syntax error` | A policy's Cedar does not parse | Fix the policy; the PEP does not start with it |
-| `RuntimeError: … policy does not match schema` | A policy file holds a list | One policy object per file |
+| `RuntimeError: … policy does not match schema: missing field` followed by `name` | A policy object has no `name` | Add `name` |
+| `RuntimeError: … policy does not match schema: invalid type: map` | A policy file holds a list | One policy object per file |
 | `RuntimeError: upstream_url must be an http(s) URL` | The upstream is not Streamable HTTP | Use `serve_stdio` for a stdio-launched server |
 | `OSError: cannot bind …: Address already in use` | Another process holds `listen_addr` | Stop it or choose another port |
 | The gateway reports a TLS certificate error for the PEP | It does not trust the PEP's certificate | Give the gateway the issuing CA. Do not disable verification |

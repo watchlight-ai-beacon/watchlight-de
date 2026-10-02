@@ -13,6 +13,9 @@ Each entry links to its release, which carries the reasoning and the measurement
 
 ## Unreleased
 
+**Added**
+- Docs: [using Watchlight with an MCP gateway you already run](docs/existing-mcp-gateway.md).
+
 **Fixed**
 - Docs and examples: the decision filter in the
   [quota](examples/patterns/quotas.md) and
@@ -28,6 +31,14 @@ Each entry links to its release, which carries the reasoning and the measurement
 - Docs: [using the governor](docs/using-the-governor.md) said a `load` of a
   missing file raises nothing; since 0.13.0 it raises `FileNotFoundError`
   (TypeScript: an `Error` with `code: "ENOENT"`).
+
+**Changed**
+- The `mcp` and `all` extras require `watchlight-mcp` 0.4.4 or later. In
+  0.4.4 a governed MCP call without `Watchlight-Agent-Id` is refused with
+  `-32002` (HTTP 400) instead of being decided as an unattributed principal,
+  the principal comes from that one header, and the process log no longer
+  carries tool argument values. See
+  [breaking changes](docs/breaking-changes.md).
 
 ## 0.13.0 — 2026-10-02
 
