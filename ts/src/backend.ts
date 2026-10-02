@@ -220,13 +220,47 @@ export function deriveObligations(details: unknown): Obligations | undefined {
   return mergeObligations(parts);
 }
 
+/** A policy the engine refused to compile — a Cedar syntax or validation
+ *  error. Thrown by `load()` / `ready()` and by every decision after it.
+ *
+ *  The engine compiles lazily (its API is asynchronous), so a policy queued by
+ *  `allow()` / `load()` / `reload()` is compiled before the first decision.
+ *  When one does not compile, the governor does not carry on without it: a
+ *  dropped `forbid` would turn its denials into allows. Every later decision
+ *  throws this same error until `reload()` replaces the policy set. Call
+ *  `await govern.ready()` after loading to surface it at start-up. Carries the
+ *  `policy` name and, when it came from a file, the `source` path. */
+export class PolicyCompileError extends Error {
+  readonly name = "PolicyCompileError";
+  /** The name the policy was loaded under. */
+  readonly policy: string;
+  /** The file it was loaded from, when it came from one. */
+  readonly source?: string;
+  constructor(policy: string, source: string | undefined, cause: unknown) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    super(
+      `policy "${policy}"${source ? ` from ${source}` : ""} does not compile: ${detail}. ` +
+        `Every decision is refused until reload() replaces the policy set.`
+    );
+    this.policy = policy;
+    this.source = source;
+  }
+}
+
+/** A policy queued for the engine. `source` names the file it came from. */
+export interface QueuedPolicy {
+  name: string;
+  code: string;
+  source?: string;
+}
+
 export interface GovernanceBackend {
   readonly kind: "in-process" | "networked";
   /** A short human label for the dev announce line. */
   readonly label: string;
   /** Register a policy. In-process loads it; networked ignores it (policies are
    *  managed by the control plane) after warning once. */
-  addPolicy(policy: { name: string; code: string }): void;
+  addPolicy(policy: QueuedPolicy): void;
   /** Authorize a request. Fail-closed. */
   authorize(req: AuthorizeRequest): Promise<Decision>;
   /** The in-process engine (for local sub-agent attenuation), or null when
@@ -239,19 +273,40 @@ export class InProcessBackend implements GovernanceBackend {
   readonly kind = "in-process" as const;
   readonly label = "dev mode, in-process engine";
   private _enginePromise?: Promise<Engine>;
-  private _pending: { name: string; code: string }[] = [];
+  private _pending: QueuedPolicy[] = [];
+  /** Set once a queued policy fails to compile; never cleared. A backend that
+   *  holds it refuses every decision — `reload()` builds a fresh backend. */
+  private _failure?: PolicyCompileError;
+  /** Compiles run one at a time, so two concurrent first decisions cannot
+   *  both take the same queued policy, or race past a failure. */
+  private _queue: Promise<unknown> = Promise.resolve();
 
-  addPolicy(policy: { name: string; code: string }): void {
+  addPolicy(policy: QueuedPolicy): void {
     this._pending.push(policy);
   }
 
-  private async _ready(): Promise<Engine> {
+  private _ready(): Promise<Engine> {
+    const run = this._queue.then(() => this._compilePending());
+    this._queue = run.catch(() => undefined);
+    return run;
+  }
+
+  private async _compilePending(): Promise<Engine> {
+    if (this._failure) throw this._failure;
     if (!this._enginePromise) this._enginePromise = Engine.create();
     const engine = await this._enginePromise;
-    if (this._pending.length) {
-      const batch = this._pending;
-      this._pending = [];
-      for (const p of batch) await engine.addPolicy(p);
+    // A policy leaves the queue only once the engine holds it. On the first
+    // one that does not compile, the failure is recorded and sticks: the
+    // policies after it are never silently skipped into a set that decides.
+    while (this._pending.length) {
+      const p = this._pending[0];
+      try {
+        await engine.addPolicy({ name: p.name, code: p.code });
+      } catch (e) {
+        this._failure = new PolicyCompileError(p.name, p.source, e);
+        throw this._failure;
+      }
+      this._pending.shift();
     }
     return engine;
   }

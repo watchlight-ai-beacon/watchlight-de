@@ -16,7 +16,7 @@
 // scoped to policy testing.
 
 import * as path from "node:path";
-import { PolicyError, Watchlight } from "./index";
+import { PolicyCompileError, PolicyError, Watchlight } from "./index";
 import { loadTestSuite, type PolicyTestReport } from "./policytest";
 
 const USAGE = `watchlight — Watchlight Developer Edition (Node)
@@ -77,8 +77,11 @@ async function policyTest(file: string | undefined): Promise<number> {
       gov.load(path.resolve(path.dirname(file), suite.policyFile));
     }
     for (const p of suite.policies ?? []) gov.allow(p.code, p.name);
+    // Compile now, so a Cedar error is reported as itself rather than as the
+    // first fixture's failure.
+    await gov.ready();
   } catch (e) {
-    if (!(e instanceof PolicyError)) throw e;
+    if (!(e instanceof PolicyError) && !(e instanceof PolicyCompileError)) throw e;
     // A policy the engine could not honour as written — reported here rather
     // than run, since the suite would otherwise be testing a different policy
     // from the one on the page.
