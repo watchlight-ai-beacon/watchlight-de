@@ -99,6 +99,35 @@ In both cases the runner fails on an example that declares no check, because an
 example nothing runs will drift, and a check nothing runs is indistinguishable
 from a check that passes.
 
+### Adding a framework integration
+
+A framework integration builds that framework's published Watchlight plugin
+and wires it to the in-process engine. It is a declaration, not governance
+code: the shared contract in `src/watchlight/integrations/_contract.py` picks
+the backend, refuses per-call terms, and fails closed, so an integration
+cannot skip any of it. To add one:
+
+1. Create `src/watchlight/integrations/<name>.py` with an `INTEGRATION =
+   FrameworkIntegration(...)` (the plugin's module, class and extra) and a
+   documented `governed_plugin(policies=None, *, audit_path=..., **plugin_kwargs)`
+   that returns `build_governed_plugin(INTEGRATION, ...)`.
+   [`integrations/langgraph.py`](src/watchlight/integrations/langgraph.py) is
+   the reference.
+2. Register it in `src/watchlight/integrations/__init__.py` and add the public
+   alias `src/watchlight/<name>.py` (two lines; see `langgraph.py`).
+3. Add the extra to `pyproject.toml`, and to `all`.
+
+`tests/integrations/test_integration_contract.py` runs every check against
+every registered integration, so you do not write those tests yourself.
+
+### Layering
+
+`tests/test_layering.py` holds the package to its layers: the foundation
+(audit, scopes, approvals, principals) never imports the governor; only the
+governor imports the compiled engine; an integration reaches governance only
+through the contract. A new module must be assigned a layer there. If the test
+fails, it names the import and the rule; move the code rather than the rule.
+
 ## Reporting a security issue
 
 Please do **not** open a public issue for security reports — see
