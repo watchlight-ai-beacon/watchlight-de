@@ -84,3 +84,8 @@ def governed_plugin(
     return build_governed_plugin(
         INTEGRATION, policies, audit_path=audit_path, plugin_kwargs=plugin_kwargs
     )
+
+
+# The public home of this factory is ``watchlight.langgraph``, where it has
+# always lived: reprs, tracebacks and pickle name it there.
+governed_plugin.__module__ = "watchlight.langgraph"

@@ -21,6 +21,7 @@ import pytest
 
 import watchlight.inprocess as inprocess
 from watchlight.integrations import INTEGRATIONS, FrameworkIntegration
+from watchlight.integrations._contract import BACKEND_KEYS
 
 NAMES = sorted(INTEGRATIONS)
 PER_CALL_TERMS = ("principal", "context", "resource")
@@ -64,6 +65,8 @@ def test_the_public_alias_is_the_implementation(name):
     impl = importlib.import_module(f"watchlight.integrations.{name}")
     assert impl.INTEGRATION is INTEGRATIONS[name]
     assert factory(name) is impl.governed_plugin
+    # Its public home is the alias, whichever path imported it first.
+    assert impl.governed_plugin.__module__ == f"watchlight.{name}"
 
 
 def test_every_integration_module_is_registered():
@@ -123,6 +126,65 @@ def test_a_plugin_package_without_the_class_is_an_import_error(monkeypatch, name
     assert integration.install_hint in str(excinfo.value)
 
 
+@pytest.mark.parametrize("name", NAMES)
+def test_an_error_inside_the_plugin_import_is_not_disguised(monkeypatch, tmp_path, name):
+    """Only "the plugin is not installed" becomes the install hint. A plugin
+    that fails while importing raises its own error."""
+    integration = INTEGRATIONS[name]
+    pkg = tmp_path / integration.plugin_module
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("raise RuntimeError('plugin import failed')\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.delitem(sys.modules, integration.plugin_module, raising=False)
+    with pytest.raises(RuntimeError, match="plugin import failed"):
+        factory(name)(None)
+
+
+@pytest.mark.parametrize("name", NAMES)
+def test_a_missing_dependency_of_the_plugin_is_named_as_itself(monkeypatch, tmp_path, name):
+    integration = INTEGRATIONS[name]
+    pkg = tmp_path / integration.plugin_module
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("import wl_absent_dependency_for_test\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.delitem(sys.modules, integration.plugin_module, raising=False)
+    with pytest.raises(ModuleNotFoundError) as excinfo:
+        factory(name)(None)
+    assert excinfo.value.name == "wl_absent_dependency_for_test"
+    assert integration.install_hint not in str(excinfo.value)
+
+
+# ── the backend cannot be replaced from the call site ──────────────────────
+
+
+@pytest.mark.parametrize("name", NAMES)
+@pytest.mark.parametrize("key", sorted(BACKEND_KEYS))
+@pytest.mark.parametrize("apdp_url", [None, "https://apdp.example"])
+def test_a_backend_override_is_refused(stub_plugin, monkeypatch, name, key, apdp_url):
+    if apdp_url:
+        monkeypatch.setenv("WATCHLIGHT_APDP_URL", apdp_url)
+    else:
+        monkeypatch.delenv("WATCHLIGHT_APDP_URL", raising=False)
+    backends = []
+    monkeypatch.setattr(inprocess, "in_process_backend", lambda *a, **k: backends.append(1))
+    built = stub_plugin(INTEGRATIONS[name])
+    with pytest.raises(TypeError) as excinfo:
+        factory(name)(None, **{key: "https://elsewhere.example"})
+    assert f"`{key}`" in str(excinfo.value)
+    assert built == [] and backends == []
+
+
+@pytest.mark.parametrize("apdp_url", [None, "https://apdp.example"])
+def test_every_key_the_backend_selection_sets_is_protected(monkeypatch, apdp_url):
+    """If the seam starts setting another key, the contract must protect it too."""
+    if apdp_url:
+        monkeypatch.setenv("WATCHLIGHT_APDP_URL", apdp_url)
+    else:
+        monkeypatch.delenv("WATCHLIGHT_APDP_URL", raising=False)
+    monkeypatch.setattr(inprocess, "in_process_backend", lambda *a, **k: object())
+    assert set(inprocess._select_backend_kwargs(None, None, {})) <= BACKEND_KEYS
+
+
 # ── which backend the plugin is given ───────────────────────────────────────
 
 
@@ -172,6 +234,11 @@ def test_a_declaration_is_frozen():
         ("display_name", "  "),
         ("plugin_module", "watchlight langgraph"),
         ("plugin_module", "a..b"),
+        ("plugin_module", "watchlight_engine"),
+        ("plugin_module", "watchlight_core"),
+        ("plugin_module", "os"),
+        ("plugin_module", "watchlight_example.sub"),
+        ("plugin_module", "watchlight_"),
         ("plugin_class", "a.B"),
     ],
 )
