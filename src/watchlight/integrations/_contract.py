@@ -118,6 +118,10 @@ def _load_plugin_class(integration: FrameworkIntegration) -> Any:
     the install hint. Any other error raised while the plugin imports — a broken
     dependency inside it, a bug — propagates as itself, so it is not disguised
     as a missing extra."""
+    # The one dynamic import in the package. tests/test_layering.py exempts this
+    # module from its dynamic-import check and attributes this call to the
+    # registered plugin packages, so a second dynamic import added here would
+    # pass that check unseen: any such change needs a reviewer's eye.
     try:
         module = importlib.import_module(integration.plugin_module)
     except ModuleNotFoundError as exc:

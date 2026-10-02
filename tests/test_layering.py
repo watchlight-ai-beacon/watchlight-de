@@ -16,7 +16,14 @@ guarantee enforced in one place:
   ``__import__`` with a literal name count as imports, and any other dynamic
   import (or a reference to those functions) is refused outside the
   integration contract, whose one dynamic import is attributed to the plugin
-  packages the registry declares.
+  packages the registry declares;
+* no other way of loading code in the foundation or an integration: calls to
+  ``exec``/``eval``/``compile``, ``runpy``, ``importlib.util``, ``sys.modules``,
+  and ``vars()``/``__dict__`` lookups on ``importlib`` or ``builtins``.
+
+This catches the common forms of loading code by another route. It is not
+exhaustive (Python offers more ways than a static check can enumerate); code
+review catches the rest.
 
 Deny by default: a module that is in no layer fails here, with a message saying
 where to put it. Imports inside functions count — a lazy import is still a
@@ -207,6 +214,67 @@ def imports_of(module: str, source: str, is_package: bool, known: Set[str]) -> S
     return analyse(module, source, is_package, known)[0]
 
 
+_CODE_EXEC = {"exec", "eval", "compile"}
+#: Layers in which loading code by any route other than a plain import is refused.
+NO_CODE_LOADING = {"foundation", "integration"}
+
+
+def code_loading(source: str) -> List[str]:
+    """Ways of loading or running code that bypass a plain import: the common
+    forms only."""
+    tree = ast.parse(source)
+    found: List[str] = []
+    sys_names: Set[str] = set()
+    importlib_names: Set[str] = set()
+    builtins_names: Set[str] = set()
+    exec_names: Set[str] = set(_CODE_EXEC)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                bound = alias.asname or alias.name.split(".")[0]
+                if alias.name == "sys":
+                    sys_names.add(bound)
+                elif alias.name == "builtins":
+                    builtins_names.add(bound)
+                elif alias.name == "importlib":
+                    importlib_names.add(bound)
+                elif alias.name == "runpy" or alias.name.startswith("importlib.util"):
+                    found.append(f"line {node.lineno}: imports {alias.name}")
+                    if alias.name.startswith("importlib.") and not alias.asname:
+                        importlib_names.add(bound)
+        elif isinstance(node, ast.ImportFrom) and not node.level:
+            mod = node.module or ""
+            names = {a.name for a in node.names}
+            if mod == "runpy" or mod.startswith("importlib.util") or (mod == "importlib" and "util" in names):
+                found.append(f"line {node.lineno}: imports from {mod}")
+            elif mod == "sys" and ({"modules", "*"} & names):
+                found.append(f"line {node.lineno}: imports sys.modules")
+            elif mod == "builtins":
+                exec_names.update(a.asname or a.name for a in node.names if a.name in _CODE_EXEC)
+
+    def named(expr: ast.AST, names: Set[str]) -> bool:
+        return isinstance(expr, ast.Name) and expr.id in names
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            if named(node.func, exec_names) or (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr in _CODE_EXEC
+                and named(node.func.value, builtins_names)
+            ):
+                found.append(f"line {node.lineno}: runs code with {getattr(node.func, 'id', None) or node.func.attr}()")
+            elif named(node.func, {"vars"}) and node.args and named(node.args[0], importlib_names | builtins_names):
+                found.append(f"line {node.lineno}: vars() lookup on {node.args[0].id}")
+        elif isinstance(node, ast.Attribute):
+            if node.attr == "modules" and named(node.value, sys_names):
+                found.append(f"line {node.lineno}: uses sys.modules")
+            elif node.attr == "util" and named(node.value, importlib_names):
+                found.append(f"line {node.lineno}: uses importlib.util")
+            elif node.attr == "__dict__" and named(node.value, importlib_names | builtins_names):
+                found.append(f"line {node.lineno}: __dict__ lookup on {node.value.id}")
+    return found
+
+
 def check(
     sources: Dict[str, str],
     packages: Set[str],
@@ -228,6 +296,8 @@ def check(
             deps |= {mod for _, mod in plugin_modules}
         else:
             violations.extend(f"{m} {d}: import by name, or move it into the integration contract" for d in dynamic)
+        if layer_of(m) in NO_CODE_LOADING:
+            violations.extend(f"{m} {d}: not allowed in the {layer_of(m)} layer" for d in code_loading(src))
         graph[m] = deps
 
     for module, deps in sorted(graph.items()):
@@ -446,3 +516,39 @@ def test_it_refuses_a_registered_plugin_module_that_is_not_a_plugin(plugin_modul
     sources, packages = package_sources()
     found = check(sources, packages, plugin_modules=[("evil", plugin_module)])
     assert any("integration evil: plugin_module" in v for v in found)
+
+
+# ── other routes to loading code (the common forms) ─────────────────────────
+
+FOUNDATION = "watchlight._audit"
+
+
+@pytest.mark.parametrize(
+    "module, source, expected",
+    [
+        (IN, "exec('import watchlight')\n", "runs code with exec()"),
+        (IN, "eval('1')\n", "runs code with eval()"),
+        (FOUNDATION, "code = compile('x', 'f', 'exec')\n", "runs code with compile()"),
+        (FOUNDATION, "import builtins as b\nb.exec('x')\n", "runs code with exec()"),
+        (FOUNDATION, "from builtins import eval as e\ne('1')\n", "runs code with e()"),
+        (IN, "import runpy\nrunpy.run_module('watchlight')\n", "imports runpy"),
+        (IN, "from runpy import run_path\n", "imports from runpy"),
+        (IN, "import importlib.util\n", "imports importlib.util"),
+        (IN, "from importlib.util import spec_from_file_location\n", "imports from importlib.util"),
+        (IN, "from importlib import util\n", "imports from importlib"),
+        (FOUNDATION, "import importlib\nimportlib.util.find_spec('x')\n", "uses importlib.util"),
+        (IN, "import sys\nsys.modules['watchlight']\n", "uses sys.modules"),
+        (FOUNDATION, "import sys as s\ns.modules.get('watchlight_engine')\n", "uses sys.modules"),
+        (IN, "from sys import modules\n", "imports sys.modules"),
+        (IN, "import importlib\nvars(importlib)['import_module']('x')\n", "vars() lookup on importlib"),
+        (FOUNDATION, "import builtins\nbuiltins.__dict__['__import__']('x')\n", "__dict__ lookup on builtins"),
+    ],
+)
+def test_it_catches_another_route_to_loading_code(module, source, expected):
+    found = _with(module, source)
+    assert any(module in v and expected in v for v in found), found
+
+
+def test_a_pattern_compile_is_not_code_loading():
+    # ``re.compile`` is everywhere in the foundation and loads nothing.
+    assert code_loading("import re\nre.compile('x')\n") == []

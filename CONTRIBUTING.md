@@ -143,9 +143,11 @@ against it.
 (audit, scopes, approvals, principals) never imports the governor; only the
 governor imports the compiled engine; an integration reaches governance only
 through the contract, and only the contract imports a framework plugin. It
-reads `importlib.import_module("x")` and `__import__("x")` as imports, and
-refuses any other dynamic import outside the contract. A new module must be
-assigned a layer there. If the test fails, it names the import and the rule;
+reads `importlib.import_module("x")` and `__import__("x")` as imports, refuses
+any other dynamic import outside the contract, and refuses other routes to
+loading code (`exec`, `eval`, `compile`, `runpy`, `importlib.util`,
+`sys.modules`) in the foundation and in integrations. It catches the common
+forms; review catches the rest. A new module must be assigned a layer there. If the test fails, it names the import and the rule;
 move the code rather than the rule.
 
 ## Reporting a security issue
