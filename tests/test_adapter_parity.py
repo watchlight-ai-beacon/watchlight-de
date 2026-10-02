@@ -20,6 +20,7 @@ that does take them.
 
 from __future__ import annotations
 
+import importlib
 import inspect
 import json
 import sys
@@ -30,9 +31,8 @@ import pytest
 pytest.importorskip("watchlight_engine")
 
 from watchlight import Watchlight, principals  # noqa: E402
-from watchlight.claude_agent import governed_plugin as claude_agent_plugin  # noqa: E402
-from watchlight.langgraph import governed_plugin as langgraph_plugin  # noqa: E402
-from watchlight.pydantic_ai import governed_plugin as pydantic_ai_plugin  # noqa: E402
+from watchlight.integrations import INTEGRATIONS  # noqa: E402
+from watchlight.integrations._contract import BACKEND_KEYS  # noqa: E402
 
 # A tenancy rule whose verdict depends ENTIRELY on Cedar context.
 TENANCY = (
@@ -40,18 +40,20 @@ TENANCY = (
     "context has owner && context has caller && context.caller == context.owner };"
 )
 
+# Every registered integration, through its public module: one added to the
+# registry is held to this file without being listed here.
 FACTORIES = {
-    "langgraph": langgraph_plugin,
-    "claude_agent": claude_agent_plugin,
-    "pydantic_ai": pydantic_ai_plugin,
+    name: importlib.import_module(f"watchlight.{name}").governed_plugin for name in INTEGRATIONS
 }
 
-# The published plugin each factory builds, and its real constructor keywords.
-PLUGINS = {
-    "langgraph": ("watchlight_langgraph", "WatchlightLangGraphPlugin"),
-    "claude_agent": ("watchlight_claude_agent", "WatchlightClaudeAgentSDKPlugin"),
-    "pydantic_ai": ("watchlight_pydantic_ai", "WatchlightPydanticAIPlugin"),
-}
+# The published plugin each factory builds, as its declaration names it.
+PLUGINS = {name: (i.plugin_module, i.plugin_class) for name, i in INTEGRATIONS.items()}
+
+
+def test_every_shipped_framework_is_registered():
+    # The registry drives this file, so an integration dropped from it would
+    # silently drop out of every check below.
+    assert {"langgraph", "pydantic_ai", "claude_agent"} <= set(FACTORIES)
 
 
 def records(tmp_path):
@@ -137,6 +139,18 @@ def test_the_limit_is_in_the_docstring_an_integrator_reads(framework):
     # including that an untyped principal inverts Cedar's conflict rule.
     assert "bare" in doc.lower()
     assert "allow beats a forbid" in doc.lower()
+
+
+@pytest.mark.parametrize("framework", sorted(FACTORIES))
+@pytest.mark.parametrize("key", sorted(BACKEND_KEYS))
+def test_a_backend_keyword_is_refused_by_name(stub_plugins, framework, key):
+    # The plugin constructor accepts these keywords, so forwarded they would
+    # silently replace the backend WATCHLIGHT_APDP_URL selected.
+    with pytest.raises(TypeError) as excinfo:
+        FACTORIES[framework](None, **{key: "https://elsewhere.example"})
+    assert f"`{key}`" in str(excinfo.value)
+    assert "WATCHLIGHT_APDP_URL" in str(excinfo.value)
+    assert framework not in stub_plugins
 
 
 # ── what it still forwards, unchanged ───────────────────────────────────────

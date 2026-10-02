@@ -13,6 +13,7 @@ from it needs a deprecation release first.
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import inspect
 import pickle
@@ -171,6 +172,26 @@ FRAMEWORK_ALIASES = {
 }
 FRAMEWORK_ALIAS_ATTRS = {"Any", "Optional", "Policies", "_select_backend_kwargs", "annotations", "governed_plugin"}
 
+# SHA-256 of each entry point's module docstring and of its factory's docstring
+# (after ``inspect.cleandoc``, since Python 3.13 strips indentation when it
+# compiles), as the release before the move published them. ``help()`` and IDEs
+# show both. A change to either text is a deliberate edit to user-facing
+# documentation: update the digest in the same change.
+FRAMEWORK_DOC_DIGESTS = {
+    "watchlight.langgraph": (
+        "67f62afba0776228bb0c7d7add94d562e7800f601683fd1986a8f5a2d653fc74",
+        "881192ff54aaff9573530f6a135294db5732744436017d5c356f168f71afd132",
+    ),
+    "watchlight.pydantic_ai": (
+        "0869072f0cfdb02798738ac45c5eaaa37b70c7184da69d0edf2c88f098d77759",
+        "936f6b12884e06dfa871077418fc69b5196ae8a831e4028cba1d2a9ea3eba2ae",
+    ),
+    "watchlight.claude_agent": (
+        "5312e2067be83a7b4e350dfee5f4e1fce7fd08822dec8925c18206223465c3a6",
+        "194b8419b7e68db8fb338593f980c11b229b7063f41c5a5ed2332b6880dd5233",
+    ),
+}
+
 # Contributor surface: importable, but NOT a public API — it may change in any
 # release without deprecation. Pinned here only so that it is a decision, not
 # an accident, when it moves.
@@ -214,6 +235,28 @@ def test_every_framework_entry_point_is_unchanged(module):
     assert mod.governed_plugin.__qualname__ == "governed_plugin"
     assert mod.Policies is watchlight.inprocess.Policies
     assert mod._select_backend_kwargs is watchlight.inprocess._select_backend_kwargs
+
+
+def test_every_framework_entry_point_is_pinned():
+    assert set(FRAMEWORK_DOC_DIGESTS) == set(FRAMEWORK_ALIASES)
+
+
+@pytest.mark.parametrize("module", sorted(FRAMEWORK_ALIASES))
+def test_a_framework_entry_point_keeps_its_documentation(module):
+    mod = importlib.import_module(module)
+    digest = lambda text: hashlib.sha256(inspect.cleandoc(text).encode("utf-8")).hexdigest()  # noqa: E731
+    module_doc, factory_doc = FRAMEWORK_DOC_DIGESTS[module]
+    assert digest(mod.__doc__) == module_doc, f"{module} module docstring changed"
+    assert digest(mod.governed_plugin.__doc__) == factory_doc, f"{module}.governed_plugin docstring changed"
+
+
+@pytest.mark.parametrize("module", sorted(FRAMEWORK_ALIASES))
+def test_a_framework_factory_keeps_its_signature(module):
+    sig = inspect.signature(importlib.import_module(module).governed_plugin)
+    assert str(sig) == (
+        "(policies: 'Policies' = None, *, audit_path: 'Optional[str]' = '.watchlight/audit.jsonl', "
+        "**plugin_kwargs: 'Any') -> 'Any'"
+    )
 
 
 @pytest.mark.parametrize("module", sorted(FRAMEWORK_ALIASES))
