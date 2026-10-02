@@ -134,6 +134,23 @@ is_decision = record.get("event", "decision") == "decision"   # was: "event" not
 const isDecision = (r.event ?? "decision") === "decision";    // was: r.event === undefined
 ```
 
+The same applies to a query over a store your `audit_sink` / `auditSink` writes
+to, such as a `counter_source` / `counterSource` behind a quota. A quota that
+filters decisions on a missing `event` counts zero and never trips, so update
+it:
+
+```sql
+where coalesce(record->>'event', 'decision') = 'decision'   -- was: record->>'event' is null
+```
+
+```bash
+jq 'select((.event // "decision") == "decision")' audit.jsonl   # was: select(.event == null)
+```
+
+The [quota](../examples/patterns/quotas.md) and
+[audit-sink](../examples/patterns/audit-sink.md) patterns published the old
+filter before this release; copies of it need this change.
+
 `counters()` and the TypeScript `AuditRecord` types already read both.
 
 ## 0.12.0

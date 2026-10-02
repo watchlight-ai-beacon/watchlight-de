@@ -11,6 +11,24 @@ upgrade is worth your afternoon.
 
 Each entry links to its release, which carries the reasoning and the measurements.
 
+## Unreleased
+
+**Fixed**
+- Docs and examples: the decision filter in the
+  [quota](examples/patterns/quotas.md) and
+  [audit-sink](examples/patterns/audit-sink.md) patterns, and the jq recipes in
+  [audit forensics](examples/showcase/audit-forensics/recipes.md), matched
+  decisions by a missing `event` field. Since 0.13.0 a decision record carries
+  `"event": "decision"`, so a quota built from that filter counted zero
+  decisions and never tripped. The filter is now
+  `coalesce(record->>'event', 'decision') = 'decision'` (jq:
+  `(.event // "decision") == "decision"`), which counts decisions written by
+  any release and still excludes every other record kind. If you copied the
+  old filter, update it. See [breaking changes](docs/breaking-changes.md).
+- Docs: [using the governor](docs/using-the-governor.md) said a `load` of a
+  missing file raises nothing; since 0.13.0 it raises `FileNotFoundError`
+  (TypeScript: an `Error` with `code: "ENOENT"`).
+
 ## 0.13.0 — 2026-10-02
 
 Policy loading fails closed: a file that would load nothing, or a policy that

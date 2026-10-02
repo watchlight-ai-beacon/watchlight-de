@@ -38,6 +38,7 @@ import { Watchlight, type AuditRecord } from "@watchlight/sdk";
 
 const auditSink = (r: AuditRecord) => {
   switch (r.event) {
+    case "decision":
     case undefined:      return store.decision(r.principal, r.decision, r.decision_id);
     case "sanitization": return store.redaction(r.counts, r.total);
     case "screening":    return store.screening(r.counts, r.flagged);
@@ -51,8 +52,8 @@ const auditSink = (r: AuditRecord) => {
 from watchlight import AuditRecord
 
 def audit_sink(record: AuditRecord) -> None:
-    kind = record.get("event")                 # absent -> a decision
-    if kind is None:
+    kind = record.get("event", "decision")     # absent (pre-0.13.0) -> a decision
+    if kind == "decision":
         store.decision(record["principal"], record["decision"], record.get("decision_id"))
     elif kind == "sanitization":
         store.redaction(record["counts"], record["total"])
@@ -191,14 +192,17 @@ are read *on* the decision path, so both fail closed.
 store, so a quota spans replicas and survives a deploy. **Count decision rows
 only** — the table also holds `sanitization`, `screening`, `egress` and
 `attenuation` records, some carrying a `principal` of their own, so a filter on
-principal and window alone over-counts and denies early.
+principal and window alone over-counts and denies early. Match a decision as
+`coalesce(record->>'event', 'decision') = 'decision'`: since 0.13.0 a decision
+carries `"event": "decision"`, and an `is null` test on `event` counts none of
+them.
 
 ```sql
 select count(*) from agent_audit
-where record->>'event' is null          -- decisions only
+where coalesce(record->>'event', 'decision') = 'decision'  -- decisions only
   and record->>'principal' = $1
   and record->>'decision'  = 'Allow'
-  and ts > $2 and ts <= $3;             -- start exclusive, end inclusive
+  and ts > $2 and ts <= $3;                               -- start exclusive, end inclusive
 ```
 
 See [quotas](./quotas.md).

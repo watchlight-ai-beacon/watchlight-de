@@ -28,8 +28,9 @@ import type { ScreenFamily, ScreenMode } from "./screen";
 // ── the record kinds ──────────────────────────────────────────────────
 //
 // Five kinds go through this funnel, and a sink sees exactly the fields the
-// `audit.jsonl` line carries. They are DISCRIMINATED BY `event`: a decision
-// record has no `event` field at all; the other four name themselves in it.
+// `audit.jsonl` line carries. They are DISCRIMINATED BY `event`: every kind
+// names itself in it, and a decision written before 0.13.0 has no `event` at
+// all, so a missing `event` reads as a decision.
 // That is not a tidier restatement of the shape — it is the shape, and it is
 // what `countAuditRecords` already keys on to tell a decision from the rest.
 //
