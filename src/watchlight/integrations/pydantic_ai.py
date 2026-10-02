@@ -1,0 +1,87 @@
+"""Govern a Pydantic AI agent in-process, with zero infrastructure.
+
+    from watchlight.pydantic_ai import governed_plugin
+
+    plugin = governed_plugin("watchlight.policy.json")
+    async with await plugin.start_run("research-agent") as handle:
+        if not await handle.authorize_action("read", "tool/web_search"):
+            raise PermissionError("denied before it executed")
+        ...  # run the tool
+
+The returned object is a standard ``WatchlightPydanticAIPlugin`` wired to the
+in-process engine (local Cedar policies, local value-free audit). Set
+``WATCHLIGHT_APDP_URL`` to a networked policy service and the same code runs
+against a remote APDP.
+
+Requires the Pydantic AI extra: ``pip install 'watchlight[pydantic-ai]'``.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Optional
+
+from ..inprocess import Policies
+from ._contract import FrameworkIntegration, build_governed_plugin
+
+INTEGRATION = FrameworkIntegration(
+    name="pydantic_ai",
+    extra="pydantic-ai",
+    display_name="Pydantic AI",
+    plugin_module="watchlight_pydantic_ai",
+    plugin_class="WatchlightPydanticAIPlugin",
+)
+
+
+def governed_plugin(
+    policies: Policies = None,
+    *,
+    audit_path: Optional[str] = ".watchlight/audit.jsonl",
+    **plugin_kwargs: Any,
+) -> Any:
+    """Return a governed ``WatchlightPydanticAIPlugin``.
+
+    **What this path can express.** The intent (the ``action``), the resource
+    and Cedar ``context`` — each a per-call term, supplied on the run handle::
+
+        async with await plugin.start_run("research-agent") as handle:
+            ok = await handle.authorize_action(
+                "read", "tool/web_search",
+                context={"caller": user_id, "owner": record_owner},
+            )
+
+    A policy whose verdict depends on ``context.*`` is therefore satisfiable
+    through this plugin. (``tenant_id`` is the plugin's own and always wins over
+    a value passed here.)
+
+    **The acting subject: also per call, on the handle.** Pass ``principal`` to
+    name the person or tenant a call is made FOR::
+
+        await handle.authorize_action(
+            "read", "tool/read_ticket", principal=f'User::"{user_id}"',
+        )
+
+    Omitted, the subject defaults to the agent that runs — ``Agent::"<agent
+    uuid>"`` — so an existing call is unchanged. Requires
+    ``watchlight-agent-sdk`` 0.7.0 or later.
+
+    **Name the entity type.** ``principal``, ``resource`` and the action reach
+    the engine exactly as given. A typed reference such as ``User::"u-1"``
+    discriminates: a policy naming a different type with the same id does not
+    match it. A BARE name matches a policy naming that id under ``User``,
+    ``Agent``, ``Group`` or ``Role``, and when it matches more than one an
+    allow beats a forbid — the wrong thing for a decision you rely on.
+
+    :param policies: local Cedar policies — a path to a JSON policy file or an
+        in-memory list of ``{"name", "code"}`` objects. ``None`` → fail-closed.
+    :param audit_path: local JSONL lineage sink (value-free). ``None`` disables.
+    :param plugin_kwargs: forwarded to ``WatchlightPydanticAIPlugin`` (e.g.
+        ``tenant_id``, ``auto_instrument``).
+    """
+    return build_governed_plugin(
+        INTEGRATION, policies, audit_path=audit_path, plugin_kwargs=plugin_kwargs
+    )
+
+
+# The public home of this factory is ``watchlight.pydantic_ai``, where it has
+# always lived: reprs, tracebacks and pickle name it there.
+governed_plugin.__module__ = "watchlight.pydantic_ai"

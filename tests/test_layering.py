@@ -8,7 +8,9 @@ guarantee enforced in one place:
   engine boundary, so there is one place a decision is made;
 * a framework integration reaches governance only through the backend seam
   (``watchlight.inprocess``) and the integration contract — never the
-  governor's internals, the audit trail, or the scope code;
+  governor's internals, the audit trail, or the scope code. Only the contract
+  imports a framework plugin or calls the seam's backend builders, with no
+  exceptions;
 * the foundation (audit, scopes, approvals, annotations, …) never imports the
   governor, the CLI or an integration;
 * no import cycles;
@@ -109,11 +111,6 @@ def plugin_module_violations(modules: Iterable[Tuple[str, str]]) -> List[str]:
         for name, mod in modules
         if not (isinstance(mod, str) and PLUGIN_MODULE.match(mod) and mod not in EXTERNAL_OWNERS)
     ]
-
-# Integrations not yet on the contract still import their plugin directly. The
-# contract imports it lazily for the others. This set only shrinks: an entry
-# that no longer imports its plugin fails :func:`test_the_legacy_allowance_only_shrinks`.
-LEGACY_FRAMEWORK_IMPORTERS = {"watchlight.pydantic_ai", "watchlight.claude_agent"}
 
 
 def layer_of(module: str) -> Optional[str]:
@@ -275,6 +272,24 @@ def code_loading(source: str) -> List[str]:
     return found
 
 
+#: The seam functions that choose a backend. Outside the contract an
+#: integration may name them (the public aliases re-export one) but not call
+#: them: a call would build a plugin past the contract's backend-keyword refusal.
+SEAM_BUILDERS = {"_select_backend_kwargs", "in_process_backend"}
+
+
+def seam_calls(source: str) -> List[str]:
+    """Calls to a backend-choosing seam function, by name or attribute."""
+    found = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Call):
+            fn = node.func
+            name = fn.id if isinstance(fn, ast.Name) else fn.attr if isinstance(fn, ast.Attribute) else None
+            if name in SEAM_BUILDERS:
+                found.append(f"line {node.lineno}: calls {name}()")
+    return found
+
+
 def check(
     sources: Dict[str, str],
     packages: Set[str],
@@ -298,6 +313,10 @@ def check(
             violations.extend(f"{m} {d}: import by name, or move it into the integration contract" for d in dynamic)
         if layer_of(m) in NO_CODE_LOADING:
             violations.extend(f"{m} {d}: not allowed in the {layer_of(m)} layer" for d in code_loading(src))
+        if layer_of(m) == "integration" and m != CONTRACT:
+            violations.extend(
+                f"{m} {d}: build the plugin with build_governed_plugin instead" for d in seam_calls(src)
+            )
         graph[m] = deps
 
     for module, deps in sorted(graph.items()):
@@ -316,7 +335,7 @@ def check(
                     violations.append(f"{module} ({layer}) imports {dep} ({dep_layer})")
             elif top in EXTERNAL_OWNERS and module not in EXTERNAL_OWNERS[top]:
                 violations.append(f"{module} imports {top}: only {sorted(EXTERNAL_OWNERS[top])} may")
-            elif is_framework_package(top) and module not in LEGACY_FRAMEWORK_IMPORTERS | {CONTRACT}:
+            elif is_framework_package(top) and module != CONTRACT:
                 violations.append(
                     f"{module} imports {top} directly: declare a FrameworkIntegration and "
                     f"let the contract import it"
@@ -385,13 +404,24 @@ def test_every_registered_plugin_module_is_a_framework_plugin():
     assert plugin_module_violations((i.name, i.plugin_module) for i in INTEGRATIONS.values()) == []
 
 
-def test_the_legacy_allowance_only_shrinks():
+def test_only_the_contract_imports_a_framework_plugin():
+    # No exceptions: every integration, and every public alias, reaches its
+    # plugin through the contract.
     sources, packages = package_sources()
-    for module in LEGACY_FRAMEWORK_IMPORTERS:
-        deps = imports_of(module, sources[module], module in packages, set(sources))
-        assert any(is_framework_package(d.split(".")[0]) for d in deps), (
-            f"{module} no longer imports its plugin: remove it from LEGACY_FRAMEWORK_IMPORTERS"
-        )
+    known = set(sources)
+    importers = {
+        m
+        for m, src in sources.items()
+        if any(is_framework_package(d.split(".")[0]) for d in imports_of(m, src, m in packages, known))
+    }
+    assert importers <= {CONTRACT}
+
+
+@pytest.mark.parametrize("name", sorted(INTEGRATIONS))
+def test_every_registered_integration_has_a_public_alias_in_its_layer(name):
+    sources, _ = package_sources()
+    assert f"watchlight.{name}" in sources
+    assert layer_of(f"watchlight.{name}") == "integration"
 
 
 # ── the checker catches what it is for (revert-the-rule self-tests) ─────────
@@ -428,6 +458,33 @@ def test_it_catches_a_second_engine_boundary():
 def test_it_catches_an_integration_importing_its_plugin_directly():
     found = _with("watchlight.integrations.langgraph", "from watchlight_langgraph import X\n")
     assert any("imports watchlight_langgraph directly" in v for v in found)
+
+
+@pytest.mark.parametrize("alias", [f"watchlight.{n}" for n in sorted(INTEGRATIONS)])
+def test_it_catches_a_public_alias_importing_its_plugin_directly(alias):
+    plugin = INTEGRATIONS[alias.split(".")[1]].plugin_module
+    found = _with(alias, f"def f():\n    from {plugin} import X\n")
+    assert any(f"{alias} imports {plugin} directly" in v for v in found)
+
+
+@pytest.mark.parametrize("alias", [f"watchlight.{n}" for n in sorted(INTEGRATIONS)])
+def test_it_catches_a_public_alias_reaching_into_the_governor(alias):
+    found = _with(alias, "from . import govern\n")
+    assert any(f"{alias} (integration) imports watchlight (governor)" in v for v in found)
+
+
+@pytest.mark.parametrize("fn", sorted(SEAM_BUILDERS))
+@pytest.mark.parametrize("module", ["watchlight.pydantic_ai", "watchlight.integrations.claude_agent"])
+def test_it_catches_an_integration_choosing_the_backend_itself(module, fn):
+    src = f"from watchlight import inprocess\ndef f():\n    return inprocess.{fn}(None, None, {{}})\n"
+    found = _with(module, src)
+    assert any(f"{module} line 3: calls {fn}()" in v for v in found), found
+
+
+def test_the_contract_may_call_the_seam():
+    sources, packages = package_sources()
+    assert seam_calls(sources[CONTRACT])  # it does …
+    assert not [v for v in check(sources, packages) if "calls _select_backend_kwargs" in v]  # … and may
 
 
 def test_it_catches_a_module_in_no_layer():

@@ -8,11 +8,12 @@ plugin (its module and class) and the extra that installs it. The governance
 decisions an integration depends on — which backend the plugin talks to, the
 refusal of per-call terms at construction time, the fail-closed default when
 no policy is loaded — are made in one function,
-:func:`watchlight.inprocess._select_backend_kwargs`. Integrations on this
-contract reach it only through :func:`build_governed_plugin`, which also
-refuses a keyword that would replace the backend it chose. (Until every
-integration is on the contract, the older ones call ``_select_backend_kwargs``
-directly.)
+:func:`watchlight.inprocess._select_backend_kwargs`. Every framework
+integration is on this contract and reaches it only through
+:func:`build_governed_plugin`, which also refuses a keyword that would replace
+the backend it chose. No integration imports its plugin or calls
+``_select_backend_kwargs`` (or ``in_process_backend``) itself;
+``tests/test_layering.py`` refuses both.
 
 The registry-driven tests in ``tests/integrations/`` and the layering test
 catch the mistakes we know how to look for: a missing refusal, a direct plugin
