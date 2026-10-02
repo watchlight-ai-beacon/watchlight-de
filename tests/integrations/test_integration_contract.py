@@ -174,6 +174,28 @@ def test_a_backend_override_is_refused(stub_plugin, monkeypatch, name, key, apdp
     assert built == [] and backends == []
 
 
+@pytest.mark.parametrize("name", NAMES)
+@pytest.mark.parametrize("key", sorted(BACKEND_KEYS))
+@pytest.mark.parametrize("state", ["absent", "raises_on_import"])
+def test_a_backend_override_is_refused_before_the_plugin_is_imported(monkeypatch, tmp_path, name, key, state):
+    """The refusal does not depend on the extra being installed, and no plugin
+    import-time code runs before it."""
+    integration = INTEGRATIONS[name]
+    monkeypatch.delenv("WATCHLIGHT_APDP_URL", raising=False)
+    if state == "absent":
+        monkeypatch.setitem(sys.modules, integration.plugin_module, None)  # import would fail
+    else:
+        pkg = tmp_path / integration.plugin_module
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("raise RuntimeError('plugin code ran')\n")
+        monkeypatch.syspath_prepend(str(tmp_path))
+        monkeypatch.delitem(sys.modules, integration.plugin_module, raising=False)
+    with pytest.raises(TypeError) as excinfo:
+        factory(name)(None, **{key: "https://elsewhere.example"})
+    assert f"`{key}`" in str(excinfo.value)
+    assert integration.install_hint not in str(excinfo.value)
+
+
 @pytest.mark.parametrize("apdp_url", [None, "https://apdp.example"])
 def test_every_key_the_backend_selection_sets_is_protected(monkeypatch, apdp_url):
     """If the seam starts setting another key, the contract must protect it too."""
