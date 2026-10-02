@@ -34,12 +34,20 @@ Each entry links to its release, which carries the reasoning and the measurement
 
 **Changed**
 - The `mcp` and `all` extras now require `watchlight-mcp` 0.4.4 or later.
-  Version 0.4.4 changes three things. A governed MCP call that has no
-  `Watchlight-Agent-Id` header is now refused (HTTP status 400, JSON-RPC error
-  code `-32002`) instead of being decided as an unattributed principal. The
-  principal now comes from that one header only. And the PEP's process log no
-  longer contains tool argument values. See
-  [breaking changes](docs/breaking-changes.md).
+  Version 0.4.4 makes the PEP stricter in these ways:
+  - A governed MCP call that has no `Watchlight-Agent-Id` header is now
+    refused (HTTP status 400, JSON-RPC error code `-32002`) instead of being
+    decided as an unattributed principal.
+  - The principal comes from that one header only. A request that carries
+    `Watchlight-Principal-Id` is refused.
+  - A request of any method is refused when one of the `Watchlight-*` headers
+    the PEP reads is repeated or malformed.
+  - Headers that only look like Watchlight's, such as `X-Watchlight-Agent-Id`,
+    are stripped before the request is forwarded.
+  - The PEP's process log no longer contains tool argument values, and a
+    resource URI recorded in the audit `tool` field has its path hashed.
+
+  See [breaking changes](docs/breaking-changes.md).
 
 ## 0.13.0 — 2026-10-02
 

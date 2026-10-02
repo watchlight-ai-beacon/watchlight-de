@@ -20,18 +20,36 @@ reaches the server. The PEP answers with HTTP status 400 (bad request) and
 JSON-RPC error code `-32002`, the code it uses for a missing or refused
 identity.
 
-The PEP refuses a request in the same way when it carries a
-`Watchlight-Principal-Id` header (unless the PEP was started with
-`principal_header="Watchlight-Principal-Id"`), when it repeats an identity
-header, or when an identity header is empty or malformed. Both of these
-changes make the PEP stricter: calls that used to be allowed may now be
-refused, but nothing that used to be refused is now allowed.
+Version 0.4.4 also checks the six `Watchlight-*` headers the PEP reads:
+`Watchlight-Agent-Id`, `Watchlight-Principal-Id`, `Watchlight-Execution-Id`,
+`Watchlight-Parent-Execution-Id`, `Watchlight-Session-Id` and
+`Watchlight-Task-Id`. These checks apply to **every** method, not only the
+governed ones, so `initialize` and `tools/list` can now be refused too. The
+PEP refuses a request, with the same HTTP status 400 and error code `-32002`,
+in each of these cases:
+
+- Any of the six headers appears more than once.
+- Any of them is empty, is longer than 512 bytes, or contains a character
+  that is not visible ASCII (a control character or a non-ASCII character).
+  For example, a client that sends a non-ASCII `Watchlight-Session-Id` now
+  fails at `initialize`.
+- The identity header contains a comma, names the reserved principal
+  `unattributed`, or is written as a malformed `Type::"id"`.
+- The request carries `Watchlight-Principal-Id` at all. The PEP takes the
+  identity from one header only, `Watchlight-Agent-Id` by default. If you start
+  the PEP with `principal_header="Watchlight-Principal-Id"`, the roles swap and
+  a request carrying `Watchlight-Agent-Id` is refused instead.
+
+All of these changes make the PEP stricter: requests that used to be allowed
+may now be refused, but nothing that used to be refused is now allowed.
 
 To fix it, make every client, or the gateway in front of the PEP, send
-`Watchlight-Agent-Id` on each request. `serve_stdio` now refuses to start
-unless you pass `agent_id=`. If you deliberately want anonymous callers,
-`allow_unattributed=True` restores the old behaviour, but we do not recommend
-it. See
+`Watchlight-Agent-Id` on each request, send each `Watchlight-*` header at most
+once, and keep the values to plain visible ASCII. A gateway should strip every
+`Watchlight-*` header the caller sent before it sets its own. `serve_stdio`
+now refuses to start unless you pass `agent_id=` or `principal_id=`, or opt in
+with `allow_unattributed=True`. That option restores the old behaviour for
+deliberate anonymous use, but we do not recommend it. See
 [using Watchlight with an MCP gateway you already run](existing-mcp-gateway.md).
 
 ## 0.13.0

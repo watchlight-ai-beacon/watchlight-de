@@ -119,8 +119,12 @@ match on. Since `watchlight-mcp` 0.4.4, the PEP refuses a governed call that
 has no such header. It answers with HTTP status 400 (bad request) and JSON-RPC
 error code `-32002`, the code it uses for a missing or refused identity. The
 PEP does not verify the header, so anyone who can reach the listener can claim
-any identity. Keep the PEP on loopback, or put it behind a gateway that sets
-the header itself.
+any identity. Keep the PEP on loopback, or put it behind a gateway. That
+gateway must strip every `Watchlight-*` header the caller sent and then set
+`Watchlight-Agent-Id` from the identity it authenticated. Adding the header
+only when it is missing is not enough, because a caller could then choose its
+own identity. See
+[Using Watchlight with an MCP gateway you already run](existing-mcp-gateway.md).
 
 [`examples/governed_mcp_server.py`](../examples/governed_mcp_server.py) makes
 one allowed call and one denied call, and shows that the denied one never

@@ -44,9 +44,13 @@ writes an audit record for it.
   header rule, which every gateway supports.
 - **No credential changes hands.** Watchlight holds no credential and asks the
   gateway for none, and the gateway needs none from Watchlight. The PEP forwards
-  the request's own headers to the server, apart from hop-by-hop headers and
-  `Mcp-Param-*` mirror headers, which it strips. It does not write any header
-  value to its audit record.
+  the request's own headers to the server, except for three kinds that it
+  strips: hop-by-hop headers, `Mcp-Param-*` mirror headers, and headers that
+  only look like Watchlight's (such as `X-Watchlight-Agent-Id` or
+  `watchlight_agent_id`). Its audit record never contains tool argument values,
+  response bodies, tokens or credentials. It does record the Watchlight
+  identity and context headers, such as the agent id and the execution id,
+  because those say who made the call.
 - **The decision is made on what the server will run.** The PEP reads the
   JSON-RPC body after the gateway has finished with it, so the policy matches
   the tool name the server will actually execute.
@@ -146,8 +150,8 @@ python pep.py
 
 `serve()` keeps running until you press Ctrl-C. While it runs, it writes
 structured JSON logs to standard output, and it writes one audit record per
-request to the audit file. Neither the logs nor the audit records contain the
-values of tool arguments.
+request to the audit file. Neither the logs nor the audit records contain
+tool argument values, response bodies, tokens or credentials.
 
 The security of this setup depends on where the PEP and the server can be
 reached from. Two rules matter:
@@ -191,7 +195,10 @@ server. Change three things in that route:
 2. **Remove every `Watchlight-*` header the caller sent.** The PEP reads the
    identity and the execution ids from these headers and trusts them as sent.
    If a caller's own `Watchlight-*` headers reach the PEP, the caller chooses
-   who the policy thinks it is.
+   who the policy thinks it is. When you then set a header in the next step,
+   overwrite it rather than append to it. Appending leaves two copies of the
+   header, and the PEP refuses a request that carries any `Watchlight-*`
+   header more than once.
 3. **Set `Watchlight-Agent-Id`** from the identity the gateway has just
    authenticated. Use a stable identifier, such as a client ID or a token's
    subject claim, not a display name. Optionally set `Watchlight-Execution-Id`
@@ -203,11 +210,23 @@ The gateway's own authentication, rate limits and logging stay as they are.
 A governed call must say who is calling. If one arrives without a
 `Watchlight-Agent-Id` header, the PEP refuses it: it answers with HTTP status
 400 (bad request) and JSON-RPC error code `-32002`, which is the code the PEP
-uses for a missing or refused identity. The PEP also refuses a call whose
-identity header is malformed, meaning it is empty, appears more than once,
-contains a comma or non-ASCII characters, or names the reserved principal
-`unattributed`. Methods that are not governed, such as `initialize` and
-`tools/list`, do not need an identity.
+uses for a missing or refused identity. Methods that are not governed, such
+as `initialize` and `tools/list`, do not need an identity.
+
+The PEP also checks the format of every `Watchlight-*` header it reads, on
+every request, including `initialize` and `tools/list`. It refuses the request
+in the same way when any of these headers appears more than once, is empty, is
+longer than 512 bytes, or contains anything other than visible ASCII
+characters (so control characters and non-ASCII characters are both refused).
+The identity header has three more rules: it must not contain a comma, it must
+not name the reserved principal `unattributed`, and a value written as an
+entity reference must be a well-formed `Type::"id"`. The PEP also refuses any
+request that carries `Watchlight-Principal-Id`, because by default it takes
+the identity from `Watchlight-Agent-Id` only.
+
+These checks apply to `Watchlight-Execution-Id` too. If you set it from the
+gateway's request ID, as suggested above, make sure that ID is plain visible
+ASCII of at most 512 bytes, or every request will be refused.
 
 There is an option, `serve(..., allow_unattributed=True)`, for the rare case
 where you deliberately want anonymous callers. With it, a call without an
@@ -249,7 +268,7 @@ itself was valid and the refusal is a normal JSON-RPC answer.
 |---|---|---|
 | Permitted | none: the server's response is relayed | the server's |
 | Denied by policy, or the engine failed | `-32001` `not authorized` | 200 |
-| No identity on a governed call, or an identity header refused | `-32002` | 400 |
+| No identity on a governed call, or a `Watchlight-*` header refused on any request | `-32002` | 400 |
 | `Mcp-Method` or `Mcp-Name` disagrees with the body | `-32020` | 400 |
 | Unsupported `MCP-Protocol-Version` | `-32022` | 400 |
 | Malformed body, or a missing tool name | `-32602` | 400 |
@@ -277,16 +296,23 @@ The record below is wrapped to fit the page:
 ```
 
 The `decision` field is `permit` or `deny` for a governed call. It is `pass`
-for a method that is forwarded without a decision, such as `tools/list`.
+for a method that is forwarded without a decision, such as `tools/list`. A
+request of any method that the PEP refuses because of its `Watchlight-*`
+headers is recorded as `deny`, even a `tools/list`.
 
 The `policy_effect` field tells you *why* a call was denied. A value of
 `forbid` means a `forbid` policy explicitly refused the call, and `policy_id`
 names that policy. A value of `default-deny` means no policy permitted the
 call, so there is no `policy_id`.
 
-The record has no field for tool arguments, tokens or any other header values.
-For example, the `path` argument from the request above appears nowhere in the
-record, and nowhere in the PEP's process log either.
+The record contains no tool argument values, response bodies, tokens or
+credentials. For example, the `path` argument from the request above appears
+nowhere in the record, and nowhere in the PEP's process log either. What the
+record does contain from the request headers is the Watchlight identity and
+context: `agent_id`, `watchlight_execution_id` and, when they are sent, the
+task id, the parent execution id, the `traceparent` and the MCP protocol
+version. For `resources/read` and `resources/subscribe`, the resource URI is
+recorded in the `tool` field with its path replaced by a hash.
 
 ## Optional: also govern inside the agent
 
@@ -360,7 +386,9 @@ column explains what causes it, and the third tells you how to fix it.
 |---|---|---|
 | HTTP 400, error `-32002` `a governed call requires Watchlight-Agent-Id` | No identity reached the PEP | Set `Watchlight-Agent-Id` in the gateway route (step 4) |
 | HTTP 400, error `-32002` `… is not accepted by this PEP` | The request carries `Watchlight-Principal-Id`, which the PEP does not read by default | Strip every inbound `Watchlight-*` header in the gateway, then set `Watchlight-Agent-Id` |
-| HTTP 400, error `-32002` naming `Watchlight-Agent-Id` | The value is empty, repeated, contains a comma or non-ASCII characters, or is `unattributed` | Set one stable, plain identifier per request |
+| HTTP 400, error `-32002` naming `Watchlight-Agent-Id` | The value is empty, longer than 512 bytes, contains a comma, a control character or a non-ASCII character, is a malformed `Type::"id"`, or is `unattributed` | Set one stable, plain identifier per request |
+| HTTP 400, error `-32002` saying a header `appears more than once` | The gateway appended a `Watchlight-*` header instead of overwriting it, so the caller's copy is still there | Strip every inbound `Watchlight-*` header, then set yours |
+| HTTP 400, error `-32002` naming another `Watchlight-*` header, on any method | `Watchlight-Execution-Id`, `Watchlight-Session-Id` or another context header is empty, repeated, longer than 512 bytes, or not visible ASCII | Fix or drop that header. If you set the execution id from the gateway's request ID, check that ID's format |
 | `not authorized`; audit `policy_effect` is `default-deny` | No policy permits this principal and tool | Compare the audited `principal` and `tool` with your policy. If the gateway namespaces tools (`github__get_file_contents`), the PEP sees whatever name the gateway forwards |
 | `not authorized`; audit `policy_effect` is `forbid` | A `forbid` matched | `policy_id` names it |
 | Every call `not authorized`, `policy_effect` `default-deny` | The PEP started with no `policy_files` | Pass your policy files |
