@@ -11,7 +11,14 @@ upgrade is worth your afternoon.
 
 Each entry links to its release, which carries the reasoning and the measurements.
 
-## Unreleased
+## 0.13.1 — 2026-10-02
+
+The `mcp` and `all` extras now install `watchlight-mcp` 0.4.4 or later, which
+refuses a governed MCP call that carries no identity. This can turn a call that
+used to be allowed into a refusal, so read
+[breaking changes](docs/breaking-changes.md) before upgrading. The rest of this
+release fixes and adds documentation. The TypeScript package has no code
+changes; its version moves with the Python package.
 
 **Added**
 - Docs: [using Watchlight with an MCP gateway you already run](docs/existing-mcp-gateway.md).
@@ -48,6 +55,8 @@ Each entry links to its release, which carries the reasoning and the measurement
     resource URI recorded in the audit `tool` field has its path hashed.
 
   See [breaking changes](docs/breaking-changes.md).
+
+Engine unchanged at `0.2`. [Release](https://github.com/watchlight-ai-beacon/watchlight-de/releases/tag/v0.13.1)
 
 ## 0.13.0 — 2026-10-02
 
