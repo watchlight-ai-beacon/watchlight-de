@@ -320,8 +320,11 @@ permit(principal is User, action == Action::"trace", resource)
 when { context.actor_chain.contains("flight-booker") };
 ```
 
-For conditions on `context.*`, the engine supports `==`, `is`, `like` and
-`contains` on sets. No other operators are available there.
+For conditions on `context.*`, the engine supports comparisons with `==`,
+`!=`, `<`, `<=`, `>` and `>=`, which you can combine with `&&`, `||` and `!`.
+It also supports `is`, `like`, and `contains`, `containsAny` and `containsAll`
+on sets. [What the engine resolves](policies.md#what-the-engine-resolves) lists the forms that do not resolve
+and deny silently.
 
 ## Where the values come from
 

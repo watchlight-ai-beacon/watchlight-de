@@ -90,10 +90,10 @@ Here is what the library does with the value you give it:
   be used in another process, and they do not survive a restart.
 - The `approval_secret` option (`approvalSecret` in TypeScript) overrides the
   signing secret for approvals only.
-- An empty or whitespace-only value is treated as **unset**, not as a weak
-  secret, so a governor still constructs when a `.env` placeholder has not been
-  filled in. A value that is set but unusable, such as a lone comma or a space,
-  is refused.
+- An empty or whitespace-only value, even a single space, is treated as
+  **unset**, not as a weak secret, so a governor still constructs when a `.env`
+  placeholder has not been filled in. A value that is set but unusable, such as a lone
+  comma, is refused.
 - The option used to be called `token_secret` / `tokenSecret`. The old name
   still works and prints a warning once. Setting both names to different values
   is refused.

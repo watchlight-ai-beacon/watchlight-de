@@ -92,8 +92,14 @@ npx --package @watchlight/sdk watchlight policy test suite.json   # Node
   twice cannot double the policy set. It remembers files by their resolved path,
   not by their content. If you edit a file that is already loaded, pass
   `force=True` to load it again. Because loading only ever adds, the previous
-  copy stays loaded alongside the new one; use `reload` when you want the edited
-  file to replace it (see [using the governor](using-the-governor.md#replacing-the-set-not-adding-to-it)).
+  copy stays loaded alongside the new one.
+
+  To replace policies instead, use `reload`. Be careful: `reload(path)`
+  replaces the governor's **entire** policy set, not just that file. Every
+  other loaded file and every inline `allow` is dropped, so a `forbid` that
+  lived in another file can disappear without any warning. Give `reload` the
+  complete set you want to keep, either as one file that holds every policy or
+  as `policies=[...]` (see [using the governor](using-the-governor.md#replacing-the-set-not-adding-to-it)).
 - `govern.allow(code)` always adds. Passing the same code twice gives you two
   policies.
 - `govern.load(path)` raises an error that names the file when the file is
