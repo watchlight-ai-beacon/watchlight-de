@@ -99,7 +99,8 @@ npx --package @watchlight/sdk watchlight policy test suite.json   # Node
   other loaded file and every inline `allow` is dropped, so a `forbid` that
   lived in another file can disappear without any warning. Give `reload` the
   complete set you want to keep, either as one file that holds every policy or
-  as `policies=[...]` (see [using the governor](using-the-governor.md#replacing-the-set-not-adding-to-it)).
+  as an in-memory list: `govern.reload(policies=[...])` in Python, or
+  `govern.reload({ policies: [...] })` in TypeScript (see [using the governor](using-the-governor.md#replacing-the-set-not-adding-to-it)).
 - `govern.allow(code)` always adds. Passing the same code twice gives you two
   policies.
 - `govern.load(path)` raises an error that names the file when the file is

@@ -322,9 +322,11 @@ when { context.actor_chain.contains("flight-booker") };
 
 For conditions on `context.*`, the engine supports comparisons with `==`,
 `!=`, `<`, `<=`, `>` and `>=`, which you can combine with `&&`, `||` and `!`.
-It also supports `is`, `like`, and `contains`, `containsAny` and `containsAll`
-on sets. [What the engine resolves](policies.md#what-the-engine-resolves) lists the forms that do not resolve
-and deny silently.
+It also supports `like` on strings, and `contains`, `containsAny` and
+`containsAll` on sets. Separately, `is` tests the entity type of the
+principal, the action or the resource, not a `context` value.
+[What the engine resolves](policies.md#what-the-engine-resolves) lists the
+forms that do not resolve and deny silently.
 
 ## Where the values come from
 
