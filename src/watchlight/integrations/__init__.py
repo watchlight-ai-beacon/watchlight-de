@@ -19,11 +19,13 @@ from types import MappingProxyType
 from typing import Mapping
 
 from ._contract import FrameworkIntegration, build_governed_plugin
+from .claude_agent import INTEGRATION as _CLAUDE_AGENT
 from .langgraph import INTEGRATION as _LANGGRAPH
+from .pydantic_ai import INTEGRATION as _PYDANTIC_AI
 
 __all__ = ["FrameworkIntegration", "build_governed_plugin", "INTEGRATIONS"]
 
 #: Every framework integration on the contract, by public module name.
 INTEGRATIONS: Mapping[str, FrameworkIntegration] = MappingProxyType(
-    {i.name: i for i in (_LANGGRAPH,)}
+    {i.name: i for i in (_LANGGRAPH, _PYDANTIC_AI, _CLAUDE_AGENT)}
 )

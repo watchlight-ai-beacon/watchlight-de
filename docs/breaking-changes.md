@@ -10,7 +10,8 @@ between the version you are on and the one you are moving to.
 
 ## Unreleased
 
-**`watchlight.langgraph.governed_plugin` refuses `governance=` and `apdp_url=`.**
+**`governed_plugin` refuses `governance=` and `apdp_url=`** in
+`watchlight.langgraph`, `watchlight.pydantic_ai` and `watchlight.claude_agent`.
 Earlier releases forwarded both to the plugin, where they replaced the backend
 the factory had chosen, so `WATCHLIGHT_APDP_URL` and the in-process engine could
 be overridden from a call site. Passing either now raises `TypeError` naming the
@@ -25,16 +26,21 @@ plugin = governed_plugin("watchlight.policy.json")
 ```
 
 To build a plugin against a backend object of your own, construct the framework
-plugin directly (`WatchlightLangGraphPlugin(governance=...)`) rather than through
-`governed_plugin`.
+plugin directly rather than through `governed_plugin`:
 
-The `ImportError` that says to install the `langgraph` extra now covers only a
-missing `watchlight_langgraph` package or class. Any other error raised while
-the plugin imports, such as a missing dependency inside it, surfaces as itself,
-so it is no longer reported as a missing extra.
+| Module | Construct instead |
+|---|---|
+| `watchlight.langgraph` | `watchlight_langgraph.WatchlightLangGraphPlugin(governance=...)` |
+| `watchlight.pydantic_ai` | `watchlight_pydantic_ai.WatchlightPydanticAIPlugin(governance=...)` |
+| `watchlight.claude_agent` | `watchlight_claude_agent.WatchlightClaudeAgentSDKPlugin(governance=...)` |
 
-`watchlight.pydantic_ai` and `watchlight.claude_agent` keep the old behaviour
-until they move onto the same contract; expect the same change there.
+A plugin constructed this way uses the `governance=` object you pass and ignores
+`WATCHLIGHT_APDP_URL`.
+
+The `ImportError` that says to install the extra (`langgraph`, `pydantic-ai` or
+`claude-agent`) now covers only a missing plugin package or class. Any other
+error raised while the plugin imports, such as a missing dependency inside it,
+surfaces as itself, so it is no longer reported as a missing extra.
 
 **Decision records carry `"event": "decision"`.** Every other record kind already
 named itself in `event`; a decision record had none, and that absence was how a

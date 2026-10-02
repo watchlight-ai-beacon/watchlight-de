@@ -8,11 +8,13 @@ plugin (its module and class) and the extra that installs it. The governance
 decisions an integration depends on — which backend the plugin talks to, the
 refusal of per-call terms at construction time, the fail-closed default when
 no policy is loaded — are made in one function,
-:func:`watchlight.inprocess._select_backend_kwargs`. Integrations on this
-contract reach it only through :func:`build_governed_plugin`, which also
-refuses a keyword that would replace the backend it chose. (Until every
-integration is on the contract, the older ones call ``_select_backend_kwargs``
-directly.)
+:func:`watchlight.inprocess._select_backend_kwargs`. Every framework
+integration is on this contract and reaches it only through
+:func:`build_governed_plugin`, which also refuses a keyword that would replace
+the backend it chose. No integration imports its plugin or reaches
+``_select_backend_kwargs`` (or ``in_process_backend``) itself.
+``tests/test_layering.py`` catches the common forms of either; the behavioural
+tests in ``tests/integrations/`` prove the refusal; review catches the rest.
 
 The registry-driven tests in ``tests/integrations/`` and the layering test
 catch the mistakes we know how to look for: a missing refusal, a direct plugin
@@ -153,13 +155,16 @@ def build_governed_plugin(
     """Build ``integration``'s published plugin, governed.
 
     * a keyword that would replace the chosen backend (:data:`BACKEND_KEYS`) is
-      refused before anything is built;
+      refused first — before the plugin package is imported, so the refusal
+      holds whether or not the extra is installed and no plugin code runs;
+    * the plugin class is then imported lazily (a missing package or class is
+      an ``ImportError`` naming the extra);
     * ``_select_backend_kwargs`` then refuses per-call governance terms
       (``principal``, ``context``, ``resource``) by name and picks the backend:
       ``WATCHLIGHT_APDP_URL`` set → the plugin's own networked client, otherwise
       the in-process engine with a local, value-free audit trail, where
       ``policies=None`` denies every action (fail-closed).
     """
-    plugin_cls = _load_plugin_class(integration)
     _refuse_backend_overrides(plugin_kwargs)
+    plugin_cls = _load_plugin_class(integration)
     return plugin_cls(**_select_backend_kwargs(policies, audit_path, plugin_kwargs))

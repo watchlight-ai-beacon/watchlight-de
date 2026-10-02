@@ -1,6 +1,6 @@
-"""Govern a LangGraph agent in-process, with zero infrastructure.
+"""Govern a Pydantic AI agent in-process, with zero infrastructure.
 
-    from watchlight.langgraph import governed_plugin
+    from watchlight.pydantic_ai import governed_plugin
 
     plugin = governed_plugin("watchlight.policy.json")
     async with await plugin.start_run("research-agent") as handle:
@@ -8,12 +8,12 @@
             raise PermissionError("denied before it executed")
         ...  # run the tool
 
-The returned object is a standard ``WatchlightLangGraphPlugin`` wired to the
+The returned object is a standard ``WatchlightPydanticAIPlugin`` wired to the
 in-process engine (local Cedar policies, local value-free audit). Set
 ``WATCHLIGHT_APDP_URL`` to a networked policy service and the same code runs
 against a remote APDP.
 
-Requires the LangGraph extra: ``pip install 'watchlight[langgraph]'``.
+Requires the Pydantic AI extra: ``pip install 'watchlight[pydantic-ai]'``.
 """
 
 from __future__ import annotations
@@ -24,11 +24,11 @@ from ..inprocess import Policies
 from ._contract import FrameworkIntegration, build_governed_plugin
 
 INTEGRATION = FrameworkIntegration(
-    name="langgraph",
-    extra="langgraph",
-    display_name="LangGraph",
-    plugin_module="watchlight_langgraph",
-    plugin_class="WatchlightLangGraphPlugin",
+    name="pydantic_ai",
+    extra="pydantic-ai",
+    display_name="Pydantic AI",
+    plugin_module="watchlight_pydantic_ai",
+    plugin_class="WatchlightPydanticAIPlugin",
 )
 
 
@@ -38,7 +38,7 @@ def governed_plugin(
     audit_path: Optional[str] = ".watchlight/audit.jsonl",
     **plugin_kwargs: Any,
 ) -> Any:
-    """Return a governed ``WatchlightLangGraphPlugin``.
+    """Return a governed ``WatchlightPydanticAIPlugin``.
 
     **What this path can express.** The intent (the ``action``), the resource
     and Cedar ``context`` — each a per-call term, supplied on the run handle::
@@ -71,22 +71,18 @@ def governed_plugin(
     ``Agent``, ``Group`` or ``Role``, and when it matches more than one an
     allow beats a forbid — the wrong thing for a decision you rely on.
 
-    ``watchlight_langgraph.governed_tool_call(handle, tool_name, intent=...,
-    context=...)`` carries the same per-call ``context`` into a tool node, and
-    the same limit applies to it.
-
     :param policies: local Cedar policies — a path to a JSON policy file or an
         in-memory list of ``{"name", "code"}`` objects. ``None`` → fail-closed.
     :param audit_path: local JSONL lineage sink (value-free). ``None`` disables.
-    :param plugin_kwargs: forwarded to ``WatchlightLangGraphPlugin`` (e.g.
-        ``tenant_id``, ``log_decisions``).
+    :param plugin_kwargs: forwarded to ``WatchlightPydanticAIPlugin`` (e.g.
+        ``tenant_id``, ``auto_instrument``).
     """
     return build_governed_plugin(
         INTEGRATION, policies, audit_path=audit_path, plugin_kwargs=plugin_kwargs
     )
 
 
-# The public home of this factory is ``watchlight.langgraph``, where it has
+# The public home of this factory is ``watchlight.pydantic_ai``, where it has
 # always lived: its repr, pickle and ``inspect.getmodule`` name it there.
 # (A traceback shows the file the code is in, this one.)
-governed_plugin.__module__ = "watchlight.langgraph"
+governed_plugin.__module__ = "watchlight.pydantic_ai"
