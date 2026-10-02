@@ -11,10 +11,14 @@ upgrade is worth your afternoon.
 
 Each entry links to its release, which carries the reasoning and the measurements.
 
-## Unreleased
+## 0.13.0 — 2026-10-02
 
-Audit records say more about sub-agent scopes, and you can look at a scope
-without recording a grant. One change affects code that reads the trail.
+Policy loading fails closed: a file that would load nothing, or a policy that
+does not compile, now stops the load or refuses decisions instead of being
+skipped. Framework integrations no longer accept a backend from the call site,
+audit records name decisions and sub-agent scopes, and a scope can be previewed
+without recording a grant. Four of these change what a call returns; read
+[breaking changes](docs/breaking-changes.md) before upgrading.
 
 **Added**
 - `govern.preview_scope()` / `govern.previewScope()` and
@@ -74,6 +78,8 @@ without recording a grant. One change affects code that reads the trail.
   Pydantic AI and the Claude Agent SDK. `watchlight.langgraph`,
   `watchlight.pydantic_ai` and `watchlight.claude_agent` keep every name they
   exposed.
+
+Engine unchanged at `0.2`. [Release](https://github.com/watchlight-ai-beacon/watchlight-de/releases/tag/v0.13.0)
 
 ## 0.12.0 — 2026-09-12
 

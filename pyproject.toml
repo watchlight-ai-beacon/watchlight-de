@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "watchlight"
-version = "0.12.0"
+version = "0.13.0"
 description = "Watchlight Developer Edition — govern AI agents in-process, with zero infrastructure."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -70,6 +70,9 @@ watchlight = "watchlight.cli:main"
 [project.urls]
 Homepage = "https://watchlight.ai"
 Documentation = "https://docs.watchlight.ai/de"
+Repository = "https://github.com/watchlight-ai-beacon/watchlight-de"
+Issues = "https://github.com/watchlight-ai-beacon/watchlight-de/issues"
+Changelog = "https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 where = ["src"]
