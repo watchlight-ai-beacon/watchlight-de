@@ -60,8 +60,9 @@ async in WebAssembly.
 
 ## Write the policies
 
-Policies are standard [Cedar](https://www.cedarpolicy.com/) — open, formally
-specified, deterministic. Keep them in a file your app loads at start-up:
+Policies are written in standard [Cedar](https://www.cedarpolicy.com/), an
+open policy language that is formally specified and deterministic. Keep them in a
+file your app loads at start-up:
 
 ```json
 [
@@ -75,8 +76,9 @@ govern.load("watchlight.policy.json");
 if (!govern.hasPolicies) throw new Error("no policies — every call would be denied");
 ```
 
-`load` is idempotent per file, so priming an engine twice cannot double the set.
-`govern.allow(code)` loads a policy inline and is always additive.
+Loading the same file a second time has no further effect, so priming an engine
+twice cannot double the policy set. `govern.allow(code)` loads a policy inline,
+and each call always adds to the set.
 
 Test a policy before it gates anything real:
 
@@ -99,7 +101,8 @@ const book = govern.tool(bookTrip, {
 });
 ```
 
-Each term is a fixed value or a function of the call. The SDK sets
+Each of these terms can be a fixed value or a function of the call's arguments.
+The `principal` names who the call is for. The SDK sets
 `context.actor` from the agent name and refuses a caller-supplied value that
 disagrees, so a policy can trust it.
 
@@ -124,10 +127,12 @@ reaches the same verdict through an adapter as through a hand-written tool.
 const wire = govern.tool(transfer, { intent: "wire", onNeedsApproval: askOps });
 ```
 
-A permit annotated `@enforcement_effect("require_approval")` yields a third
-verdict, `NeedsApproval`, and a single-use approval token. The defaults are
-per-process: set `approvalSecret` to carry a token between processes, and an
-`approvalStore` to make single use hold across replicas.
+When a permit carries the annotation `@enforcement_effect("require_approval")`,
+the call gets a third verdict, `NeedsApproval`, instead of `Allow` or `Deny`,
+together with a single-use approval token. By default the token only works
+inside the process that issued it. Set `approvalSecret` so a token can be carried
+between processes, and set an `approvalStore` so that "single use" holds across
+replicas as well.
 
 → [The TypeScript lane](https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/docs/typescript.md#ask-a-human-first)
 
@@ -188,10 +193,12 @@ both fail closed without one.
 configureDefault({ agent: "billing-agent", auditSink: (r) => db.insert("agent_audit", r) });
 ```
 
-On an ephemeral host the local file is gone on the next deploy. A sink also
-receives every record — decisions, sanitizations, screenings, egress
-dispositions, attenuations — as a typed discriminated union. `counterSource` is
-its read side, for quota policies that count what a durable store holds.
+On an ephemeral host the local audit file is gone after the next deploy, so
+send the records somewhere that lasts. Alongside the local file, the sink
+receives every record, typed as the union `AuditRecord`, whose `event` field
+tells you which kind it is: decisions, sanitizations, screenings, egress dispositions
+and attenuations. `counterSource` is the matching read side, for quota policies
+that need to count what a durable store holds.
 
 → [The audit trail](https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/docs/audit-trail.md)
 

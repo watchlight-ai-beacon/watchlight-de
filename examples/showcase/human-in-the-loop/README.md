@@ -74,16 +74,17 @@ script prints both ids and asserts the join.
 
 The SDK's own approval token is minted and consumed inside one process. This
 example configures no signing secret, so a token from `approve.py` would not
-verify in `agent.py`. The grant is a separate, signed artifact — bound to one
-`pending_decision_id`, five-minute TTL, single use — that crosses the process
-boundary instead.
+verify in `agent.py`. The grant is what crosses the process boundary instead.
+It is a separate, signed artifact that is bound to one `pending_decision_id`,
+expires after five minutes, and can be used only once.
 
 For a real deployment:
 
-- Give both processes a [signing secret](../../../docs/signing-secret.md) and
-  the SDK token verifies across them; add an `approval_store` /
-  `approvalStore` and single use holds across replicas. Those reservations need
-  a TTL of your own — the SDK never deletes one.
+- Give both processes a [signing secret](../../../docs/signing-secret.md), and
+  the SDK token verifies across them. Add an `approval_store` (Python) or
+  `approvalStore` (TypeScript), and single use holds across replicas too. The
+  reservations in that store need a TTL of your own, because the SDK never
+  deletes one.
 - **The HMAC here is symmetric.** Whoever holds `APPROVER_SECRET` can sign a
   grant, the agent included, so the role split is procedural rather than
   cryptographic. Production shape is an asymmetric signature: the approver holds

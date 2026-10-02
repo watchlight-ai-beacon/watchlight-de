@@ -69,9 +69,10 @@ Three fail-closed choices worth copying:
 
 - A flagged document is **withheld, not redacted**. The pipeline puts a fixed
   opaque line in its slot.
-- An Allow carrying **no `redact` obligation withholds** the document. A missing
-  obligation is no permission, not no limit, so a permit that forgot the
-  annotation cannot release personal data in full.
+- An Allow carrying **no `redact` obligation withholds** the document. The
+  hook treats a missing obligation as "no permission to release", not as "no
+  limit", so a permit that forgot the annotation cannot release personal data
+  in full.
 - An obligation field the hook has **no detector for withholds** the document,
   rather than dropping the constraint silently.
 

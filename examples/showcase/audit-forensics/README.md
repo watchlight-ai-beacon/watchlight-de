@@ -148,8 +148,10 @@ callers get a uniform one, and the trail carries the verdict.
 | `decision_id` | string, optional | present for `govern.tool`; a framework adapter without a `tool_use_id` has none |
 | `withheld` | `true`, optional | the hook threw or outran its deadline; the payload never left. `replaced` is `false` |
 
-Three dispositions: `withheld` → **withheld**; else `replaced: true` →
-**replaced**; else **passthrough**. A denied call has no `egress` record.
+An `egress` record describes one of three dispositions. If `withheld` is
+present, the payload was **withheld**. Otherwise, `replaced: true` means the
+payload was **replaced**, and anything else is a **passthrough**. A denied call
+has no `egress` record.
 
 `withheld` says the payload never left. It does not say why: a hook that threw
 and a hook that outran its 8-second deadline look identical here. The caller
@@ -206,8 +208,9 @@ what a child dropped is `parent.tools − child.tools`.
   `"decision"` (records from before 0.13.0).
 - **An `Allow` with nothing after it** is a body that ran with no egress hook.
   If every read in your application should be minimized, that count is zero.
-- **Orphans** — follow-up records whose decision is not in this file — are
-  reported, never dropped. Malformed lines are counted and skipped.
+- **Orphans** are follow-up records whose decision is not in this file. The
+  analyzer reports them and never drops them. Malformed lines are counted and
+  skipped.
 - A screening with no `decision_id` joins only by `ts` and `resource` next to
   its `egress` record. Give the screen the call's `resource` label, as the
   generators do.

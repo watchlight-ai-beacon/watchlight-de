@@ -1,6 +1,9 @@
 # Testing your policies
 
-A policy is the only thing between an agent and a real action. Unit-test it.
+A policy is the only thing standing between an agent and a real action, so it
+deserves unit tests like any other code. You describe a set of cases, each with
+the verdict you expect, and the governor checks every one against your loaded
+policies.
 
 ```python
 from watchlight import govern
@@ -19,21 +22,22 @@ report = govern.test([
 assert report["failed"] == 0, report
 ```
 
-Each fixture asserts the verdict for a `(principal, action, resource, context)`.
-A wrong expectation fails the suite.
+Each test case (a fixture) states the verdict you expect for one combination
+of principal, action, resource and context. If the engine reaches a different
+verdict for any case, the suite fails.
 
-`govern.test(...)` (Node: `await govern.test([...])`) drives the engine's
-decision core directly, so it writes nothing to the audit trail and holds no
-decision logic of its own.
+`govern.test(...)` (in Node, `await govern.test([...])`) calls the engine's
+decision core directly. That means it writes nothing to the audit trail, and it
+has no decision logic of its own that could drift from what production does.
 
-Three more fixture keys:
+Beyond the keys shown above, a fixture accepts three more:
 
-- `"approved": true` mints a single-use token and asserts the
-  `NeedsApproval → Allow` downgrade.
-- `"obligations": {"redact": ["ssn"]}` asserts the obligations an `Allow`
-  carries. Exact match; `{}` asserts none.
-- `"actor": "document-reader"` evaluates the case as that agent, which is what a
-  policy matching on `context.actor` needs.
+- `"approved": true` mints a single-use approval token for the case and asserts
+  that a `NeedsApproval` verdict becomes `Allow` once it is approved.
+- `"obligations": {"redact": ["ssn"]}` asserts the obligations that an `Allow`
+  carries. The match must be exact, and `{}` asserts that there are none.
+- `"actor": "document-reader"` evaluates the case as that agent. You need this
+  for any policy that matches on `context.actor`.
 
 ## Testing a policy that names the actor
 
@@ -51,22 +55,26 @@ report = govern.test([
 ])
 ```
 
-The case runs against the same loaded policies under a different `context.actor`
-— it is the governor renamed, not a second engine, so secrets and the approval
-store are shared. Without the key the case runs as the governor's own agent, and
-an actor-conditioned permit reads as a denial.
+The case runs against the same loaded policies, with `context.actor` set to the
+name you gave. It is the same governor under a different name, not a second
+engine, so the secrets and the approval store are shared. If you leave the
+`actor` key out, the case runs as the governor's own agent, and a permit that
+depends on the actor will come back as a denial.
 
-A key the runner does not implement raises rather than being dropped, so a
-misspelled `"actr"` fails the suite instead of passing a case that proves
-something else.
+A fixture key the runner does not recognise raises an error rather than being
+silently ignored. A misspelling such as `"actr"` therefore fails the suite,
+instead of quietly passing a case that tests something other than you meant.
 
 ## Run it in CI
 
-Put policies and fixtures in one `suite.json` —
-`{ policyFile?, policies?, tests: [...] }` — and run it. Exit 1 on any failure,
-and 2 on a suite that cannot be run as written: among other things, a
-`policyFile` that is missing, malformed or empty, or a suite that declares no
-policies at all.
+To run the same checks in CI, put the policies and the fixtures together in one
+`suite.json` file with the shape `{ policyFile?, policies?, tests: [...] }`.
+`policyFile` and `policies` are optional, and `tests` holds the fixtures. Then
+run it with the command below.
+
+The command exits with status 1 if any case fails. It exits with status 2 if the
+suite cannot be run as written, for example when the `policyFile` is missing,
+malformed or empty, or when the suite declares no policies at all.
 
 ```bash
 watchlight policy test suite.json                                 # Python
@@ -75,20 +83,33 @@ npx --package @watchlight/sdk watchlight policy test suite.json   # Node
 
 ## Worth knowing
 
-- **An unrecognised `@enforcement_effect` fails at load.** Anything outside
-  `attenuate`, `escalate`, `observe`, `quarantine`, `require_approval`, `revoke`,
-  `sever_subtree`, `terminate` raises `PolicyError`, and `load` adds nothing from
-  that file. A typo in the annotation *name* only warns.
-- `govern.load(path)` is idempotent per source, so priming an engine twice
-  cannot double the policy set. The memo is keyed on the resolved path, not on
-  content: edit a loaded file and pass `force=True` to load it again.
-- `govern.allow(code)` is always additive. The same code twice is two policies.
-- `govern.load(path)` raises on a missing file, invalid JSON, an unrecognised
-  shape or a file with no policies, naming the file. It accepts a list of
-  `{"name", "code"}`, `{"policies": [...]}` or a single policy object. Pass
-  `allow_empty=True` / `{ allowEmpty: true }` to load an empty set on purpose.
+- **An unrecognised `@enforcement_effect` value fails at load time.** Any value
+  other than `attenuate`, `escalate`, `observe`, `quarantine`,
+  `require_approval`, `revoke`, `sever_subtree` or `terminate` raises
+  `PolicyError`, and `load` adds nothing from that file. A typo in the
+  annotation *name* itself only produces a warning.
+- `govern.load(path)` loads each source only once, so loading the same file
+  twice cannot double the policy set. It remembers files by their resolved path,
+  not by their content. If you edit a file that is already loaded, pass
+  `force=True` to load it again. Because loading only ever adds, the previous
+  copy stays loaded alongside the new one.
+
+  To replace policies instead, use `reload`. Be careful: `reload(path)`
+  replaces the governor's **entire** policy set, not just that file. Every
+  other loaded file and every inline `allow` is dropped, so a `forbid` that
+  lived in another file can disappear without any warning. Give `reload` the
+  complete set you want to keep, either as one file that holds every policy or
+  as an in-memory list: `govern.reload(policies=[...])` in Python, or
+  `govern.reload({ policies: [...] })` in TypeScript (see [using the governor](using-the-governor.md#replacing-the-set-not-adding-to-it)).
+- `govern.allow(code)` always adds. Passing the same code twice gives you two
+  policies.
+- `govern.load(path)` raises an error that names the file when the file is
+  missing, contains invalid JSON, has an unrecognised shape, or holds no
+  policies. It accepts a list of `{"name", "code"}` objects, an object of the
+  form `{"policies": [...]}`, or a single policy object. To load an empty set on
+  purpose, pass `allow_empty=True` (in TypeScript, `{ allowEmpty: true }`).
 - `govern.policy_count` and `govern.has_policies` are worth asserting at
-  start-up. No policies means every call is denied.
+  start-up, because a governor with no policies denies every call.
 
 ## See also
 

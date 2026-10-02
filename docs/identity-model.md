@@ -1,6 +1,8 @@
 # The identity model
 
-What to pass, what gets recorded, and what a policy can name. Terms are defined
+Every governed call involves identities: the person or system the work is done
+for, and the agent doing it. This page explains what to pass for each, what gets
+recorded in the audit trail, and what a policy can refer to. Terms are defined
 in the [glossary](glossary.md).
 
 ```python
@@ -61,9 +63,10 @@ You choose the actor by choosing the handle, not by passing a field:
 | `delegate(scope, "seat-picker")` | `seat-picker` | `[flight-booker, seat-picker]` |
 | **a governor with no name configured** | **not set** | **not set** |
 
-`context.actor` and `context.actor_chain` are reserved and set by the SDK on
-every call. A caller-supplied value that differs raises `ReservedContextError`;
-an identical one is accepted.
+`context.actor` and `context.actor_chain` are reserved: the SDK sets them on
+every call. If a caller supplies its own value for either and it differs from
+the SDK's, the call raises `ReservedContextError`. An identical value is
+accepted.
 
 `as` and the per-call `agent` override always start a fresh single-element
 chain. Only `delegate` appends.
@@ -73,8 +76,9 @@ chain. Only `delegate` appends.
 | Did *this* agent make the call? | `context.actor == "seat-picker"` |
 | Was this agent anywhere in the delegation? | `context.actor_chain.contains("flight-booker")` |
 
-`context.actor_chain` is set-valued, so `contains` resolves. Outside any
-delegation it is the single-element `[agent]`, so both forms always work.
+`context.actor_chain` is a set, so `contains` works on it. Outside any
+delegation it holds just one element, `[agent]`, so both forms of policy work on
+every call.
 
 Do not use a context key of your own called `agent`. The engine overwrites
 `context.agent` with an object, so a policy comparing it to a string never
@@ -158,14 +162,17 @@ data.
 
 ### What every `principal` must satisfy
 
-Two rules, at every boundary that takes one — `authorize`, `tool`,
+Two rules apply everywhere a `principal` is accepted: `authorize`, `tool`,
 `mint_approval` / `mintApproval`, `counters`, `sanitize`, `screen`, and the
-`principal` binding on every framework adapter:
+`principal` option on every framework adapter.
 
-* **A non-empty string.** `""` or whitespace-only raises. `user?.id ?? ""` used
-  to record the *agent* as the subject.
-* **No control characters.** A newline in a JSONL audit line splits one record
-  into two, so one raises.
+* **It must be a non-empty string.** An empty or whitespace-only value raises an
+  error. This matters because code such as `user?.id ?? ""` turns a missing user
+  into an empty string, and earlier versions then recorded the *agent* as the
+  subject instead of failing.
+* **It must contain no control characters.** The audit trail is JSONL, one
+  record per line, so a newline inside a principal would split one record into
+  two. A principal containing a control character raises an error.
 
 To name no subject at all, omit `principal` (or pass `None` / `undefined`). That
 records the agent as its own subject.
@@ -251,21 +258,24 @@ The subject does not change on the way down. The actor does:
 
 Worth knowing:
 
-* **A scope is checked when you delegate, never when a call is authorized.** So
-  confining a sub-agent means narrowing the scope *and* writing the policy.
+* **A scope is checked when you delegate, never when a call is authorized.** To
+  confine a sub-agent you therefore need both: narrow its scope, *and* write a
+  policy that limits what it may do.
 * **A scope token does not carry the chain.** `to_token()` / `toToken()`
-  serialises capabilities only, so a scope re-established in another process
-  starts a fresh chain from the receiving governor's agent. Call `delegate`
-  there if the receiving side must record the delegation.
-* A delegate cannot widen what its parent held (`AttenuationDenied`), and the
-  chain is at most **`max_delegation_depth` + 1** entries — 9 by default. Past
-  that, `delegate` raises `DelegationDepthExceeded`.
-* A delegate cannot be renamed, because renaming it would drop the chain. Spawn
-  a further sub-agent with `delegate` instead.
-* `picker.delegated_scope` / `picker.delegatedScope` is the narrowed scope it
-  acts under.
+  serialises only the granted capabilities. A scope rebuilt in another process
+  therefore starts a fresh chain from the receiving governor's agent. If the
+  receiving side must record the delegation, call `delegate` there.
+* A delegate cannot widen what its parent held; trying raises
+  `AttenuationDenied`. The chain holds at most **`max_delegation_depth` + 1**
+  entries, which is 9 by default. Beyond that, `delegate` raises
+  `DelegationDepthExceeded`.
+* A delegate cannot be renamed, because renaming it would drop the chain. To
+  hand work further down, create another sub-agent with `delegate` instead.
+* `picker.delegated_scope` / `picker.delegatedScope` returns the narrowed scope
+  the delegate acts under.
 
-Each case is distinct in the trail — `principal` and `agent` on the same line:
+Each of the three cases looks different in the audit trail, because `principal`
+and `agent` are recorded on the same line:
 
 ```json
 {"agent":"flight-booker","principal":"Agent::\"flight-booker\"","intent":"cache","decision":"Allow"}
@@ -310,8 +320,13 @@ permit(principal is User, action == Action::"trace", resource)
 when { context.actor_chain.contains("flight-booker") };
 ```
 
-On `context.*` the engine resolves `==`, `is`, `like` and set `contains`. That
-is the whole operator surface.
+For conditions on `context.*`, the engine supports comparisons with `==`,
+`!=`, `<`, `<=`, `>` and `>=`, which you can combine with `&&`, `||` and `!`.
+It also supports `like` on strings, and `contains`, `containsAny` and
+`containsAll` on sets. Separately, `is` tests the entity type of the
+principal, the action or the resource, not a `context` value.
+[What the engine resolves](policies.md#what-the-engine-resolves) lists the
+forms that do not resolve and deny silently.
 
 ## Where the values come from
 
