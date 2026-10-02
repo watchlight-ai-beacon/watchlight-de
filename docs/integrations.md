@@ -1,8 +1,12 @@
 # Governing an agent you already have
 
-You do not have to write your agent around Watchlight. A **plugin** governs a
-framework agent; a **policy enforcement point** governs an MCP server. Both
-authorize before the call executes, and neither changes how the agent is built.
+You do not have to rebuild your agent around Watchlight. There are two ways to
+add governance to an agent you already have. If the agent is built on a
+supported framework, a **plugin** governs it from inside the agent process. If
+the agent calls an MCP server, a **policy enforcement point** (PEP) sits in
+front of that server and governs the calls that reach it. Both check each call
+against your policy before it runs, and neither changes how the agent is
+built.
 
 ## A framework agent
 
@@ -21,19 +25,22 @@ async with await plugin.start_run("research-agent") as handle:
     ...  # your tool runs, every action recorded to .watchlight/audit.jsonl
 ```
 
-This is the same plugin you ship to production. Going there is one environment
-variable — set `WATCHLIGHT_APDP_URL` and the identical code authorizes against a
-running policy service.
+This is the same plugin you ship to production. Moving to production takes one
+environment variable: set `WATCHLIGHT_APDP_URL`, and the same code authorizes
+against a running policy service instead of in-process.
 
 Runnable agents for all three frameworks are in [`examples/`](../examples/).
 
 ### Framework-created subagents inherit framework tools
 
-Some frameworks auto-register a general-purpose subagent with the parent's
-tool list. Watchlight cannot narrow a scope that the framework never asks it to
-authorize. For example, in deepagents, pass an explicit same-named spec as
-`subagents` to `create_deep_agent(...)` to prevent inheritance of the parent's
-custom tools:
+Some frameworks automatically create a general-purpose subagent and give it
+the parent's full tool list. Watchlight can only narrow a scope when the
+framework asks it to authorize something, so it cannot narrow a subagent that
+the framework sets up on its own. You have to configure the framework instead.
+In deepagents, for example, pass your own subagent spec with the same name,
+`general-purpose`, in the `subagents` argument to `create_deep_agent(...)`.
+That replaces the automatic one, so it does not inherit the parent's custom
+tools:
 
 ```python
 subagents=[{
@@ -44,14 +51,15 @@ subagents=[{
 }]
 ```
 
-An empty `tools` list does not remove tools added by the framework's middleware,
-including deepagents' filesystem tools. Configure those separately when the
-subagent needs tighter confinement.
+An empty `tools` list does not remove tools that the framework's middleware
+adds, such as deepagents' filesystem tools. If the subagent needs to be
+confined more tightly, configure those separately.
 
 ### Per-call governance goes on the run handle
 
-`governed_plugin()` is constructor wiring. The terms of a single call belong to
-the handle:
+`governed_plugin()` sets the plugin up once, so it only takes settings that
+apply to every call. Anything that belongs to a single call, such as who the
+call is for, goes on the run handle when you authorize that call:
 
 ```python
 await handle.authorize_action(
@@ -61,22 +69,25 @@ await handle.authorize_action(
 )
 ```
 
-`principal` defaults to the agent that runs, so existing calls are unchanged.
-Needs `watchlight-agent-sdk` 0.7.0 or later, which the extras already require.
+If you leave out `principal`, it defaults to the agent that is running, so
+calls you have already written keep working unchanged. These arguments need
+`watchlight-agent-sdk` 0.7.0 or later, which the extras already require.
 
-Pass `principal=`, `context=` or `resource=` to `governed_plugin()` and it
-refuses them by name rather than dropping them silently.
+If you pass `principal=`, `context=` or `resource=` to `governed_plugin()`
+instead, it raises an error that names the argument. It does not silently
+ignore it.
 
-**Name the entity type.** `User::"u-1"` is not matched by a policy naming
-`Agent::"u-1"`. A bare `u-1` is not inert: it matches that id under `User`,
-`Agent`, `Group` or `Role`, and when it matches more than one, an allow beats a
-forbid — the opposite of Cedar's usual rule. Always write the type. The action
-is always type `Action`; a policy that gives it another type is rejected.
+**Always name the entity type.** A policy that names `Agent::"u-1"` does not
+match `User::"u-1"`. Leaving the type off is not harmless either: a bare `u-1`
+matches that id as a `User`, an `Agent`, a `Group` or a `Role`. When it matches
+more than one of those, an allow beats a forbid, which is the opposite of
+Cedar's usual rule. So always write the type. The action is always of type
+`Action`, and a policy that gives it another type is rejected.
 
 ## An MCP server
 
 ```bash
-pip install watchlight-mcp
+pip install 'watchlight[mcp]'   # watchlight-mcp 0.4.4 or later
 ```
 
 ```python
@@ -91,28 +102,51 @@ watchlight_mcp.serve(
 )
 ```
 
-`watchlight-mcp` reads one policy object per file. `govern.load()` reads that
-shape too, so the same file governs an in-process agent and the PEP.
+`watchlight-mcp` reads one policy object per file. `govern.load()` reads the
+same shape, so one policy file can govern both an in-process agent and the
+PEP.
 
-Point your MCP client at `http://127.0.0.1:9700/mcp` instead of the server. Every
-governed call — `tools/call`, `resources/read`, `resources/subscribe`,
-`prompts/get` — is authorized in-process before it reaches the server, so a
-denied call never executes. The PEP implements MCP spec `2026-07-28`.
+Point your MCP client at `http://127.0.0.1:9700/mcp` instead of at the server.
+Four MCP methods are governed, because they make the server do something:
+`tools/call`, `resources/read`, `resources/subscribe` and `prompts/get`. The
+PEP authorizes each of these calls in its own process before passing it on, so
+a denied call never reaches the server. The PEP implements version
+`2026-07-28` of the MCP specification.
 
-[`examples/governed_mcp_server.py`](../examples/governed_mcp_server.py) fires an
-allowed and a denied call and proves the denied one never ran.
+The client must send a `Watchlight-Agent-Id: <agent>` header on every request.
+The PEP turns it into the principal, `Agent::"<agent>"`, that your policies
+match on. Since `watchlight-mcp` 0.4.4, the PEP refuses a governed call that
+has no such header. It answers with HTTP status 400 (bad request) and JSON-RPC
+error code `-32002`, the code it uses for a missing or refused identity. The
+PEP does not verify the header, so anyone who can reach the listener can claim
+any identity. Keep the PEP on loopback, or put it behind a gateway. That
+gateway must strip every `Watchlight-*` header the caller sent and then set
+`Watchlight-Agent-Id` from the identity it authenticated. Adding the header
+only when it is missing is not enough, because a caller could then choose its
+own identity. See
+[Using Watchlight with an MCP gateway you already run](existing-mcp-gateway.md).
 
-Other entry points:
+[`examples/governed_mcp_server.py`](../examples/governed_mcp_server.py) makes
+one allowed call and one denied call, and shows that the denied one never
+ran.
 
-- `serve_stdio(...)` for a stdio-launched server.
-- `serve_background(...)` to run non-blocking, with policy hot-reload.
-- `tls_cert=` / `tls_key=` to terminate HTTPS on the listener, `upstream_ca=` to
-  trust a private `https://` upstream.
+If your MCP traffic already goes through a gateway, you can keep it. Put the
+PEP between the gateway and the server, as described in
+[Using Watchlight with an MCP gateway you already run](existing-mcp-gateway.md).
+
+`serve()` is not the only way to start the PEP. Use `serve_stdio(...)` for an
+MCP server that is launched as a local process and talks over standard input
+and output. Use `serve_background(...)` when you do not want the call to block;
+it also lets you reload policies while the PEP is running. To serve HTTPS on
+the PEP's own listener, pass `tls_cert=` and `tls_key=`. If the MCP server uses
+`https://` with a certificate from a private certificate authority, pass that
+authority's certificate as `upstream_ca=` so the PEP can verify it.
 
 ### Watch the decisions
 
-`watchlight dev` tails `.watchlight/audit.jsonl`, so give the PEP that same
-`audit_path` and run the console from the same directory:
+`watchlight dev` is a local console that follows `.watchlight/audit.jsonl` as
+decisions are written to it. Give the PEP that same `audit_path`, and run the
+console from the same directory:
 
 ```bash
 python examples/governed_mcp_server.py   # terminal 1
@@ -127,4 +161,7 @@ watchlight dev                           # terminal 2 → http://127.0.0.1:7000
   `governTool()` for the Node frameworks.
 - [The identity model](identity-model.md) — what `principal`, the actor and the
   actor chain mean on a run handle.
+- [Using Watchlight with an MCP gateway you already run](existing-mcp-gateway.md)
+  — the PEP behind a gateway, the headers the gateway sets, and the failures
+  you will see.
 - [The MCP server guide](https://docs.watchlight.ai/de/mcp-server).

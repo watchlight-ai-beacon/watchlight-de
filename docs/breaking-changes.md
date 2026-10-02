@@ -8,6 +8,50 @@ different verdict. Only some announce themselves; the rest surface as a denial
 that looks exactly like a policy of yours doing its job. Read every entry
 between the version you are on and the one you are moving to.
 
+## Unreleased
+
+**The `mcp` extra now requires `watchlight-mcp` 0.4.4, which refuses a
+governed MCP call that carries no identity.** A governed call is one of
+`tools/call`, `resources/read`, `resources/subscribe` or `prompts/get`. In
+0.4.3, a governed call without a `Watchlight-Agent-Id` header was decided as
+the principal `Agent::"unattributed"`. A policy that permitted any principal
+therefore let it through. In 0.4.4 the PEP refuses that call and it never
+reaches the server. The PEP answers with HTTP status 400 (bad request) and
+JSON-RPC error code `-32002`, the code it uses for a missing or refused
+identity.
+
+Version 0.4.4 also checks the six `Watchlight-*` headers the PEP reads:
+`Watchlight-Agent-Id`, `Watchlight-Principal-Id`, `Watchlight-Execution-Id`,
+`Watchlight-Parent-Execution-Id`, `Watchlight-Session-Id` and
+`Watchlight-Task-Id`. These checks apply to **every** method, not only the
+governed ones, so `initialize` and `tools/list` can now be refused too. The
+PEP refuses a request, with the same HTTP status 400 and error code `-32002`,
+in each of these cases:
+
+- Any of the six headers appears more than once.
+- Any of them is empty, is longer than 512 bytes, or contains a character
+  that is not visible ASCII (a control character or a non-ASCII character).
+  For example, a client that sends a non-ASCII `Watchlight-Session-Id` now
+  fails at `initialize`.
+- The identity header contains a comma, names the reserved principal
+  `unattributed`, or is written as a malformed `Type::"id"`.
+- The request carries `Watchlight-Principal-Id` at all. The PEP takes the
+  identity from one header only, `Watchlight-Agent-Id` by default. If you start
+  the PEP with `principal_header="Watchlight-Principal-Id"`, the roles swap and
+  a request carrying `Watchlight-Agent-Id` is refused instead.
+
+All of these changes make the PEP stricter: requests that used to be allowed
+may now be refused, but nothing that used to be refused is now allowed.
+
+To fix it, make every client, or the gateway in front of the PEP, send
+`Watchlight-Agent-Id` on each request, send each `Watchlight-*` header at most
+once, and keep the values to plain visible ASCII. A gateway should strip every
+`Watchlight-*` header the caller sent before it sets its own. `serve_stdio`
+now refuses to start unless you pass `agent_id=` or `principal_id=`, or opt in
+with `allow_unattributed=True`. That option restores the old behaviour for
+deliberate anonymous use, but we do not recommend it. See
+[using Watchlight with an MCP gateway you already run](existing-mcp-gateway.md).
+
 ## 0.13.0
 
 **Loading a policy file that holds no usable policies raises.** Earlier
