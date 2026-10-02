@@ -100,6 +100,8 @@ from .attenuation import (
     ScopePreview,
 )
 from .scope_token import MAX_CHAIN_LENGTH as _DEPTH_BOUND
+from ._policy_file import policy_entries as _policy_entries
+from ._policy_file import read_policy_file as _read_policy_file
 from .policytest import load_test_suite, run_policy_tests
 from .scope_token import (
     ScopeTokenError,
@@ -2628,17 +2630,29 @@ class Watchlight:
         *,
         source_id: str | None = None,
         force: bool = False,
+        allow_empty: bool = False,
     ) -> "Watchlight":
-        """Load policies from a JSON file — a list of ``{"name", "code"}`` objects
-        (or ``{"policies": [...]}``). Fail-closed: a missing file loads nothing,
-        so every governed call is denied until a policy permits it.
+        """Load policies from a JSON file in one of three shapes: a list of
+        ``{"name", "code"}`` objects, ``{"policies": [...]}``, or a single
+        ``{"name", "code"}`` object (the MCP PEP's one-policy-per-file shape,
+        so one file serves both). Other keys on a policy (``id``,
+        ``description``) are ignored; ``"active": false`` is refused, because
+        every loaded policy is enforced.
+
+        NEVER EMPTY BY ACCIDENT. A missing path raises
+        :class:`FileNotFoundError`, a directory :class:`IsADirectoryError`, and
+        invalid JSON, an unrecognised shape or a malformed entry
+        :class:`ValueError` — each naming the file. A file that holds no
+        policies raises :class:`ValueError` too, unless you pass
+        ``allow_empty=True``: Cedar denies by default, so an empty set is safe
+        but denies every governed call, and that should never happen unseen.
 
         IDEMPOTENT PER SOURCE: the source is remembered under its real path
         (symlinks resolved), or under ``source_id`` when you give one, and
         loading the same source again is a no-op — priming an engine in a
         factory and loading the same file again from an initialiser cannot
-        double the set. A file that does not exist is not remembered, so it
-        loads once it appears. Two different paths to the same file are one
+        double the set. A file that raises is not remembered, so loading it
+        again once it is fixed works without ``force``. Two different paths to the same file are one
         source; two files with the same content are two, unless you give them a
         shared ``source_id``. The memo is shared with every governor from
         :meth:`as_`.
@@ -2663,10 +2677,7 @@ class Watchlight:
         key = source_id if source_id is not None else str(p.resolve())
         if key in self._shared.sources and not force:
             return self
-        if not p.exists():
-            return self
-        data = json.loads(p.read_text())
-        entries = data if isinstance(data, list) else data.get("policies", [])
+        entries = _read_policy_file(p, op="load", allow_empty=allow_empty)
         # Check the whole file before adding any of it, so one refused policy
         # leaves the governor exactly as it was rather than half-loaded.
         for offset, entry in enumerate(entries):
@@ -2718,8 +2729,10 @@ class Watchlight:
         that does not compile leaves the governor exactly as it was and raises.
         There is no window in which the engine holds half of either set.
 
-        A missing file (``FileNotFoundError``) or an empty set (``ValueError``)
-        RAISES rather than replacing the policies with nothing. Cedar default-denies, so an accidental empty
+        It reads the same file shapes as :meth:`load` and refuses the same
+        mistakes. A missing file (``FileNotFoundError``) or an empty set
+        (``ValueError``) RAISES rather than replacing the policies with nothing;
+        there is no ``allow_empty`` here. Cedar default-denies, so an accidental empty
         reload would be safe but total — every governed call in the process
         refused — and that is a failure to refuse loudly, not to absorb.
 
@@ -2736,25 +2749,16 @@ class Watchlight:
         if (path is None) == (policies is None):
             raise ValueError("reload takes exactly one of a path or policies=")
 
+        # An empty set is refused either way: replacing the policies with nothing
+        # would deny every governed call in this process.
         if policies is not None:
-            entries = list(policies)
-            where = "the policies given"
+            if isinstance(policies, (str, bytes, dict)):
+                raise ValueError(
+                    'reload: policies= takes a list of {"name", "code"} objects'
+                )
+            entries = _policy_entries(list(policies), "the policies given", op="reload")
         else:
-            p = pathlib.Path(path)  # type: ignore[arg-type]
-            if not p.exists():
-                # `load` treats a missing file as "nothing to add yet"; for a
-                # REPLACE that reading would empty the set, so it is an error.
-                raise FileNotFoundError(f"reload: no such policy file: {p}")
-            data = json.loads(p.read_text())
-            entries = data if isinstance(data, list) else data.get("policies", [])
-            where = str(p)
-
-        if not entries:
-            raise ValueError(
-                f"reload: {where} defines no policies. Replacing the set with nothing "
-                f"would deny every governed call in this process; load a set, or "
-                f"construct a governor with none deliberately."
-            )
+            entries = _read_policy_file(path, op="reload")  # type: ignore[arg-type]
 
         # Check every policy BEFORE building anything, so a refused annotation
         # leaves the governor untouched — the same contract `load` gives.

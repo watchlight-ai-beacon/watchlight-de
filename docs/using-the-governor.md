@@ -485,8 +485,20 @@ console.log(govern.policyCount);    // 6 — force adds another copy; nothing is
   below.
 - **`load` is idempotent per source.** Two paths to one file are one source.
   Give two files a shared `source_id` / `sourceId` to make them one too.
-- **A file that does not exist is not remembered**, so it loads the first time
-  it appears.
+- **A policy file has one of three shapes**: a list of `{"name", "code"}`
+  objects, `{"policies": [...]}`, or a single `{"name", "code"}` object (the
+  shape `watchlight-mcp` reads, so one file serves both). Other keys (`id`,
+  `description`) are ignored; `"active": false` is refused, because every
+  policy a governor holds is enforced.
+- **`load` never loads nothing quietly.** A missing path raises
+  `FileNotFoundError` (TypeScript: an `Error` with `code: "ENOENT"`), and a
+  directory, invalid JSON, an unrecognised shape, an entry without a Cedar
+  `code`, or a file that holds no policies raises `ValueError` /
+  `IsADirectoryError` (TypeScript: `Error`), naming the file. One bad entry
+  loads none of the file. To load an empty set on purpose, pass
+  `allow_empty=True` / `{ allowEmpty: true }`.
+- **A file that fails to load is not remembered**, so it loads once you fix
+  it, without `force`.
 - **Editing a loaded file and calling `load` again changes nothing.** No error,
   no warning. `force` loads the file again, but `load` never removes anything,
   so you then hold both copies — `reload` is what applies an edit.

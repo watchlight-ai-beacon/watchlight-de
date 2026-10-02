@@ -70,6 +70,7 @@ import {
 import { screen as screenText, ScreenError, type ScreenOptions, type ScreenResult } from "./screen";
 import { assertPrincipal, principals } from "./principals";
 import { checkPolicyAnnotations } from "./annotations";
+import { policyEntries, readPolicyFile, type PolicyEntry } from "./policy-file";
 import { DEFAULT_ON_RESULT_TIMEOUT_MS, EgressTimeout, resolveEgressTimeoutMs } from "./egress";
 import {
   runPolicyTests,
@@ -1163,16 +1164,24 @@ export class Watchlight {
     return this;
   }
 
-  /** Load policies from a JSON file — a list of `{name, code}` (or
-   *  `{policies:[...]}`). Fail-closed: a missing file loads nothing, so every
-   *  governed call is denied until a policy permits it. Chainable.
+  /** Load policies from a JSON file in one of three shapes: a list of
+   *  `{name, code}`, `{policies:[...]}`, or a single `{name, code}` object (the
+   *  MCP PEP's one-policy-per-file shape, so one file serves both). Other keys
+   *  on a policy (`id`, `description`) are ignored; `"active": false` is
+   *  refused, because every loaded policy is enforced. Chainable.
    *
- *  IDEMPOTENT PER SOURCE: the source is remembered under its real path
+   *  NEVER EMPTY BY ACCIDENT. A missing path, a directory, invalid JSON, an
+   *  unrecognised shape or a malformed entry throws, naming the file. A file
+   *  that holds no policies throws too, unless you pass `{ allowEmpty: true }`:
+   *  Cedar denies by default, so an empty set is safe but denies every governed
+   *  call, and that should never happen unseen.
+   *
+   *  IDEMPOTENT PER SOURCE: the source is remembered under its real path
    *  (symlinks resolved), or under `sourceId` when you give one, and loading the
    *  same source again is a no-op — priming an engine in a factory and loading
    *  the same file again from an initialiser cannot double the set. A file that
-   *  does not exist is not remembered, so it loads once it appears. Two
-   *  different paths to the same file are one source; two files with the same
+   *  throws is not remembered, so loading it again once it is fixed works
+   *  without `force`. Two different paths to the same file are one source; two files with the same
    *  content are two, unless you give them a shared `sourceId`. The memo is
    *  shared with every governor from {@link as}.
    *
@@ -1187,14 +1196,13 @@ export class Watchlight {
    *  {@link PolicyError} and NOTHING from that file is added — the governor is
    *  left exactly as it was, and the source is not remembered. See
    *  {@link allow}. */
-  load(file: string, opts: { sourceId?: string; force?: boolean } = {}): this {
+  load(
+    file: string,
+    opts: { sourceId?: string; force?: boolean; allowEmpty?: boolean } = {}
+  ): this {
     const key = opts.sourceId ?? resolveSource(file);
     if (!opts.force && this._shared.sources.has(key)) return this;
-    if (!fs.existsSync(file)) return this;
-    const data = JSON.parse(fs.readFileSync(file, "utf8"));
-    const entries: { name?: string; code: string }[] = Array.isArray(data)
-      ? data
-      : (data.policies ?? []);
+    const entries = readPolicyFile(file, { op: "load", allowEmpty: opts.allowEmpty });
     // Check the whole file before adding any of it, so one refused policy leaves
     // the governor exactly as it was rather than half-loaded.
     entries.forEach((e, offset) =>
@@ -1234,8 +1242,9 @@ export class Watchlight {
    * old set is gone, and the new one never decides without the policy that
    * failed. `await govern.reload(...).ready()` surfaces it at once.
    *
-   * A missing file or an empty set throws rather than replacing the policies
-   * with nothing. Cedar default-denies, so an accidental empty reload would be
+   * It reads the same file shapes as {@link load} and refuses the same
+   * mistakes. A missing file or an empty set throws rather than replacing the
+   * policies with nothing; there is no `allowEmpty` here. Cedar default-denies, so an accidental empty reload would be
    * safe but total — every governed call in the process refused — and that is a
    * failure to refuse loudly, not to absorb.
    *
@@ -1251,26 +1260,19 @@ export class Watchlight {
         "reload replaces the local policy set, which a networked backend does not hold"
       );
     }
-    let entries: { name?: string; code: string }[];
+    // An empty set is refused either way: replacing the policies with nothing
+    // would deny every governed call in this process.
+    let entries: PolicyEntry[];
     let key: string | undefined;
-    let where: string;
     if (typeof source === "string") {
-      if (!fs.existsSync(source)) throw new Error(`reload: no such policy file: ${source}`);
-      const data = JSON.parse(fs.readFileSync(source, "utf8"));
-      entries = Array.isArray(data) ? data : (data.policies ?? []);
+      entries = readPolicyFile(source, { op: "reload" });
       key = resolveSource(source);
-      where = source;
     } else {
-      entries = source.policies ?? [];
+      if (!Array.isArray(source.policies)) {
+        throw new Error('reload: { policies } takes a list of {"name", "code"} objects');
+      }
+      entries = policyEntries(source.policies, "the policies given", { op: "reload" });
       key = source.sourceId;
-      where = "the policies given";
-    }
-    if (!entries.length) {
-      throw new Error(
-        `reload: ${where} defines no policies. Replacing the set with nothing would deny ` +
-          `every governed call in this process; load a set, or construct a governor with ` +
-          `none deliberately.`
-      );
     }
     // Check every policy BEFORE building anything, so a refused annotation
     // leaves the governor untouched — the same contract `load` gives.

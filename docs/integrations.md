@@ -91,6 +91,9 @@ watchlight_mcp.serve(
 )
 ```
 
+`watchlight-mcp` reads one policy object per file. `govern.load()` reads that
+shape too, so the same file governs an in-process agent and the PEP.
+
 Point your MCP client at `http://127.0.0.1:9700/mcp` instead of the server. Every
 governed call — `tools/call`, `resources/read`, `resources/subscribe`,
 `prompts/get` — is authorized in-process before it reaches the server, so a

@@ -45,6 +45,19 @@ without recording a grant. One change affects code that reads the trail.
   [breaking changes](docs/breaking-changes.md).
 
 **Changed**
+- Loading a policy file never loads nothing quietly. `govern.load()`,
+  `govern.reload()` and `watchlight policy test` (both lanes) raise or throw,
+  naming the file, on a missing path, a directory, invalid JSON, an unrecognised
+  shape, an entry without a Cedar `code`, a policy marked `"active": false`, or
+  a file that holds no policies. A governor that loaded such a file used to hold
+  no policies and deny every call with no sign of why. An empty set loads only
+  with `allow_empty=True` / `{ allowEmpty: true }`; `reload` refuses it always.
+  `watchlight policy test` exits 2 on a suite that declares no policies. See
+  [breaking changes](docs/breaking-changes.md).
+- A policy file may hold a single `{"name", "code"}` object, which loads as one
+  policy. That is the shape `watchlight-mcp` reads, so one file serves both;
+  `examples/mcp.policy.json` used to load zero policies through `govern.load()`
+  and now loads its one.
 - Decision records carry `"event": "decision"`. See
   [breaking changes](docs/breaking-changes.md).
 - Hardening: `governed_plugin` in `watchlight.langgraph`,

@@ -257,7 +257,8 @@ def test_load_is_idempotent_per_source(tmp_path):
 
     later = tmp_path / "later.policy.json"
     g3 = Watchlight(agent="loader3", audit_dir=str(tmp_path))
-    g3.load(later)
+    with pytest.raises(FileNotFoundError):
+        g3.load(later)                       # a missing file raises, never loads nothing
     assert g3.policy_count == 0 and g3.has_policies is False
     later.write_text(json.dumps([{"name": "p", "code": "permit(principal, action, resource);"}]))
     g3.load(later)

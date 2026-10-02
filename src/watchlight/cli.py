@@ -235,6 +235,7 @@ def _print_report(file: str, report: dict) -> None:
 def _cmd_policy_test(args: argparse.Namespace) -> int:
     # Imported here so `watchlight dev` never pays for loading the engine.
     from . import PolicyCompileError, PolicyError, Watchlight
+    from ._policy_file import policy_entries
     from .policytest import load_test_suite
 
     file = pathlib.Path(args.suite)
@@ -247,16 +248,30 @@ def _cmd_policy_test(args: argparse.Namespace) -> int:
     # Fresh, policy-free governor (fail-closed); load only what the suite declares.
     # No audit is written — `test()` uses the engine's decision core directly.
     gov = Watchlight(agent="policy-test")
+    policy_file = suite.get("policy_file")
+    inline = suite.get("policies")
+    if not policy_file and inline is None:
+        # Zero policies would deny every fixture, and a suite of Deny fixtures
+        # would pass green against nothing.
+        print(
+            f"watchlight: suite '{file}' declares no policies: give it a policyFile "
+            f"or inline policies",
+            file=sys.stderr,
+        )
+        return 2
     try:
-        policy_file = suite.get("policy_file")
         if policy_file:
             gov.load(file.parent / policy_file)
-        for policy in suite.get("policies") or []:
-            gov.allow(policy["code"], policy.get("name"))
-    except (PolicyError, PolicyCompileError) as exc:
-        # A policy the engine could not honour as written — reported here rather
-        # than run, since the suite would otherwise be testing a different policy
-        # from the one on the page.
+        if inline is not None:
+            for policy in policy_entries(
+                inline, f"suite '{file}'", op="policy test", allow_empty=bool(policy_file)
+            ):
+                gov.allow(policy["code"], policy.get("name"))
+    except (PolicyError, PolicyCompileError, OSError, ValueError) as exc:
+        # A policy file that is missing, malformed or empty, a policy the engine
+        # refused to compile, or a policy it could not honour as written —
+        # reported here rather than run, since the suite would otherwise be
+        # testing a different policy set from the one on the page.
         print(f"watchlight: {exc}", file=sys.stderr)
         return 2
 
