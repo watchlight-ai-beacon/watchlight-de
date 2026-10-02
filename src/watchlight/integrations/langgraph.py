@@ -87,5 +87,6 @@ def governed_plugin(
 
 
 # The public home of this factory is ``watchlight.langgraph``, where it has
-# always lived: reprs, tracebacks and pickle name it there.
+# always lived: its repr, pickle and ``inspect.getmodule`` name it there.
+# (A traceback shows the file the code is in, this one.)
 governed_plugin.__module__ = "watchlight.langgraph"

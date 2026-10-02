@@ -139,8 +139,10 @@ To add one:
    `FRAMEWORK_ALIASES` and `FRAMEWORK_DOC_DIGESTS`.
 
 The new module must not import the plugin package or the governor
-(`watchlight`), or call `_select_backend_kwargs` or `in_process_backend`; the
-contract does all of that for you, and the layering test refuses each.
+(`watchlight`), or reach `_select_backend_kwargs`, `in_process_backend` or the
+contract's own steps; the contract does all of that for you. The layering test
+catches the common forms of each; the behavioural tests prove the refusal;
+review catches the rest.
 
 `tests/integrations/test_integration_contract.py` and
 `tests/test_adapter_parity.py` read their list from `INTEGRATIONS` and run
@@ -156,7 +158,7 @@ integration is reviewed against it.
 (audit, scopes, approvals, principals) never imports the governor; only the
 governor imports the compiled engine; an integration reaches governance only
 through the contract, and only the contract imports a framework plugin or
-calls the seam's backend builders. It reads `importlib.import_module("x")` and
+references the seam's backend builders. It reads `importlib.import_module("x")` and
 `__import__("x")` as imports, refuses any other dynamic import outside the
 contract, and refuses other routes to loading code (`exec`, `eval`, `compile`,
 `runpy`, `importlib.util`, `sys.modules`) in the foundation and in

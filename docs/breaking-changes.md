@@ -34,6 +34,9 @@ plugin directly rather than through `governed_plugin`:
 | `watchlight.pydantic_ai` | `watchlight_pydantic_ai.WatchlightPydanticAIPlugin(governance=...)` |
 | `watchlight.claude_agent` | `watchlight_claude_agent.WatchlightClaudeAgentSDKPlugin(governance=...)` |
 
+A plugin constructed this way uses the `governance=` object you pass and ignores
+`WATCHLIGHT_APDP_URL`.
+
 The `ImportError` that says to install the extra (`langgraph`, `pydantic-ai` or
 `claude-agent`) now covers only a missing plugin package or class. Any other
 error raised while the plugin imports, such as a missing dependency inside it,
