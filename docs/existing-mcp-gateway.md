@@ -22,12 +22,16 @@ sets one header.
                                  record
 ```
 
-The PEP is an ordinary HTTP upstream to the gateway. It parses each JSON-RPC
-request, and for a governed method (`tools/call`, `resources/read`,
-`resources/subscribe`, `prompts/get`) it asks the in-process Watchlight engine
-for a decision. Only an explicit permit is forwarded. A denied call is answered
-by the PEP and never reaches the server. Every other method, `tools/list`
-included, is forwarded unchanged and still gets an audit record.
+To the gateway, the PEP looks like any other HTTP upstream. MCP clients and
+servers talk JSON-RPC, so every request names a method. The PEP reads each
+request and checks that method. Four methods are *governed*, because they make
+the server do something: `tools/call`, `resources/read`, `resources/subscribe`
+and `prompts/get`. For each of these, the PEP asks the Watchlight engine, which
+runs inside the PEP's own process, for a decision. The call is forwarded to the
+server only when a policy explicitly permits it. When the call is denied, the
+PEP answers the caller itself, and the server never sees the request. Every
+other method, including `tools/list`, is forwarded unchanged, and the PEP still
+writes an audit record for it.
 
 ## Why enforcing at the server works with any gateway
 
@@ -55,19 +59,26 @@ included, is forwarded unchanged and still gets an audit record.
 pip install 'watchlight[mcp]'
 ```
 
-That installs the PEP (`watchlight-mcp` 0.4.4 or later) and the `watchlight`
-CLI you will use to watch decisions. This page needs 0.4.4: earlier releases
-accepted a governed call with no identity, and took the principal from more
-than one header.
+That command installs two things: the PEP itself (the `watchlight-mcp`
+package, version 0.4.4 or later) and the `watchlight` command-line tool you will
+use to watch decisions. This page needs version 0.4.4. Earlier releases
+accepted a governed call that carried no identity, and they could take the
+caller's identity from more than one header, which is unsafe behind a
+gateway.
 
 ### 2. Write a fail-closed policy
 
-Watchlight denies anything no policy permits. Permit only what this caller
-needs, and add a `forbid` for the action you never want, so that a broad
-`permit` added later cannot let it through.
+Watchlight denies anything that no policy permits, so you start from "nothing
+is allowed" and add what you need. Permit only the tools this caller needs.
+Then add a `forbid` policy for any action that must never happen. A `forbid`
+always wins over a `permit`, so a broad `permit` that someone adds later still
+cannot let that action through.
 
-The PEP takes **one policy object per file**, with `id`, `name` and `code`, in
-the shape of [`examples/mcp.policy.json`](../examples/mcp.policy.json).
+The PEP reads **one policy object per file**. Each object has an `id`, a `name`
+and the Cedar `code`, in the same shape as
+[`examples/mcp.policy.json`](../examples/mcp.policy.json). The two files below
+let a research agent read from GitHub and stop every caller from deleting a
+repository.
 
 `policies/github-read.json`:
 
@@ -91,7 +102,8 @@ the shape of [`examples/mcp.policy.json`](../examples/mcp.policy.json).
 }
 ```
 
-What a policy can read on an MCP request:
+When the PEP asks for a decision on an MCP request, it fills in the following
+values. Your policies can match on any of them.
 
 | In Cedar | Holds |
 |---|---|
@@ -102,10 +114,11 @@ What a policy can read on an MCP request:
 | `context.mcp.tool` | the tool name, from the request body |
 | `context.mcp.arguments` | the tool's arguments, for `when` conditions on values |
 
-Write the principal with its type, `Agent::"research-agent"`. Policies that
-name a specific principal and a specific tool fail closed. A bare
-`permit(principal, action, resource);` lets every caller run every tool and
-should never be loaded in front of a real server.
+Always write the principal with its type, as in `Agent::"research-agent"`.
+A policy that names one specific principal and specific tools fails closed:
+any caller or tool it does not name is denied. A bare
+`permit(principal, action, resource);` is the opposite. It lets every caller
+run every tool, and it should never be loaded in front of a real server.
 
 ### 3. Put the PEP in front of the server
 
@@ -131,11 +144,13 @@ watchlight_mcp.serve(
 python pep.py
 ```
 
-`serve()` blocks until Ctrl-C. It writes structured JSON logs to stdout and one
-audit record per request to the audit file. Neither contains tool argument
-values.
+`serve()` keeps running until you press Ctrl-C. While it runs, it writes
+structured JSON logs to standard output, and it writes one audit record per
+request to the audit file. Neither the logs nor the audit records contain the
+values of tool arguments.
 
-Two placement rules carry the security of this setup:
+The security of this setup depends on where the PEP and the server can be
+reached from. Two rules matter:
 
 - **The MCP server must be reachable only through the PEP.** Bind it to
   loopback on the PEP's host, or restrict it at the network layer so that
@@ -160,14 +175,16 @@ Two placement rules carry the security of this setup:
   )                                                # readable only by the PEP's user
   ```
 
-  Have the gateway verify that certificate against your CA. Do not turn
-  verification off. If the MCP server itself speaks `https://` with a private
-  CA, pass `upstream_ca=` with that CA's certificate. The PEP refuses an
-  upstream whose certificate does not verify.
+  Configure the gateway to verify that certificate against your certificate
+  authority (CA). Do not turn verification off. If the MCP server itself uses
+  `https://` with a certificate from a private CA, pass that CA's certificate
+  to the PEP as `upstream_ca=`. The PEP refuses to talk to an upstream server
+  whose certificate does not verify.
 
 ### 4. Point the gateway at the PEP
 
-Change three things in the gateway's route for this server:
+The gateway already has a route that sends this server's traffic to the
+server. Change three things in that route:
 
 1. **Upstream.** Send the route to the PEP (`http://127.0.0.1:9700/mcp`, or the
    `https://` address from step 3) instead of the server.
@@ -183,18 +200,23 @@ Change three things in the gateway's route for this server:
 
 The gateway's own authentication, rate limits and logging stay as they are.
 
-The PEP refuses, with JSON-RPC error `-32002` and HTTP 400, a governed call that
-arrives without `Watchlight-Agent-Id`. It also refuses one whose identity
-headers are malformed: empty, repeated, containing a comma or non-ASCII
-characters, or naming the reserved `unattributed` principal. Methods that are
-not governed, such as `initialize` and `tools/list`, need no identity. A
-`serve(..., allow_unattributed=True)` option exists for deliberate anonymous
-use: calls without identity are then decided as `Agent::"unattributed"`. Do not
-use it behind a gateway. A missing header there means the gateway is
-misconfigured, and the refusal is how you find out.
+A governed call must say who is calling. If one arrives without a
+`Watchlight-Agent-Id` header, the PEP refuses it: it answers with HTTP status
+400 (bad request) and JSON-RPC error code `-32002`, which is the code the PEP
+uses for a missing or refused identity. The PEP also refuses a call whose
+identity header is malformed, meaning it is empty, appears more than once,
+contains a comma or non-ASCII characters, or names the reserved principal
+`unattributed`. Methods that are not governed, such as `initialize` and
+`tools/list`, do not need an identity.
 
-To check the PEP before changing the gateway, send it the request the gateway
-will send:
+There is an option, `serve(..., allow_unattributed=True)`, for the rare case
+where you deliberately want anonymous callers. With it, a call without an
+identity is decided as the principal `Agent::"unattributed"` instead of being
+refused. Do not use it behind a gateway. Behind a gateway, a missing header
+means the gateway is misconfigured, and the refusal is how you find out.
+
+You can check the PEP before you change the gateway. Send it, by hand, the
+same request the gateway will send:
 
 ```bash
 curl -s http://127.0.0.1:9700/mcp \
@@ -204,18 +226,24 @@ curl -s http://127.0.0.1:9700/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_file_contents","arguments":{"path":"README.md"}}}'
 ```
 
-That call is permitted and returns the server's result. Change the tool name to
-`delete_repository`, and the PEP answers without contacting the server:
+The policies above permit that call, so the PEP forwards it and returns the
+server's result. Now change the tool name to `delete_repository`. This time the
+PEP answers by itself, without contacting the server:
 
 ```json
 {"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"not authorized"}}
 ```
 
 The caller always gets the same `not authorized` message, whether no policy
-permitted the call, a `forbid` matched, or the PEP failed. The reason is only
-in the audit record.
+permitted the call, a `forbid` matched, or the PEP itself failed. This is
+deliberate: the reason would tell a caller how to get around your policy. You
+can find the real reason in the audit record.
 
-What the PEP answers:
+The table below lists every answer the PEP can give. Each answer has two
+parts. The JSON-RPC error code, inside the response body, says what happened
+in MCP terms. The HTTP status code is what your gateway sees and counts. Note
+that a policy denial comes back with HTTP status 200, because the request
+itself was valid and the refusal is a normal JSON-RPC answer.
 
 | Outcome | JSON-RPC error | HTTP status |
 |---|---|---|
@@ -229,13 +257,15 @@ What the PEP answers:
 
 ### 5. Watch ALLOW and DENY in the audit trail
 
-From the directory the PEP runs in:
+The audit file records every decision the PEP makes. To watch the decisions in
+a browser, run the local console from the directory the PEP runs in:
 
 ```bash
 watchlight dev            # → http://127.0.0.1:7000
 ```
 
-Or read the file. Each governed call is one JSON line (wrapped here):
+You can also read the file directly. Each governed call is one line of JSON.
+The record below is wrapped to fit the page:
 
 ```json
 {"timestamp":"…","json_rpc_request_id":"1","watchlight_execution_id":"req-0002",
@@ -246,74 +276,85 @@ Or read the file. Each governed call is one JSON line (wrapped here):
  "policy_effect":"forbid","authorization_latency_us":282}
 ```
 
-- `decision` is `permit`, `deny`, or `pass` for a method that is forwarded
-  without a decision, such as `tools/list`.
-- `policy_effect` tells an explicit refusal (`forbid`, with the `policy_id`
-  that matched) from an absent grant (`default-deny`, with no `policy_id`).
-- There is no field for tool arguments, tokens or other header values. The
-  `path` in the request above appears nowhere in the record, and nowhere in the
-  PEP's process log either.
+The `decision` field is `permit` or `deny` for a governed call. It is `pass`
+for a method that is forwarded without a decision, such as `tools/list`.
+
+The `policy_effect` field tells you *why* a call was denied. A value of
+`forbid` means a `forbid` policy explicitly refused the call, and `policy_id`
+names that policy. A value of `default-deny` means no policy permitted the
+call, so there is no `policy_id`.
+
+The record has no field for tool arguments, tokens or any other header values.
+For example, the `path` argument from the request above appears nowhere in the
+record, and nowhere in the PEP's process log either.
 
 ## Optional: also govern inside the agent
 
-The PEP sees only the MCP calls that pass through it. If you also own the agent
-code, a framework plugin authorizes each action in the agent process too, before
-the request leaves for the gateway. See
+The PEP sees only the MCP calls that pass through it. If you also own the
+agent's code, you can add a second check inside the agent itself. A framework
+plugin authorizes each action in the agent's own process, before the request
+leaves for the gateway. See
 [Governing an agent you already have](integrations.md#a-framework-agent).
 
-With both layers, a call has to be permitted twice: once by the agent's policy
-before the request is sent, and once by the PEP's policy before the server runs
-it. The agent layer is also where sub-agent scopes and attenuation live
-(`govern.scope()`, `delegate()`; see [the identity model](identity-model.md)).
-The PEP itself does not narrow scopes.
+With both layers in place, a call has to be permitted twice: once by the
+agent's policy before the request is sent, and once by the PEP's policy before
+the server runs it. The agent layer is also where you narrow what a sub-agent
+may do, using scopes and attenuation (`govern.scope()` and `delegate()`; see
+[the identity model](identity-model.md)). The PEP itself does not narrow
+scopes.
 
 ## Who does what
 
-**Your gateway keeps doing:**
+Your gateway keeps every job it does today. It authenticates callers and
+terminates TLS at the edge. It routes each request to the right upstream. It
+enforces rate limits and quotas, and it keeps access and traffic logs. The one
+new job is to set `Watchlight-Agent-Id` from the identity it authenticated, and
+to remove any `Watchlight-*` headers the caller sent.
 
-- authenticating callers to the gateway, and terminating TLS at the edge;
-- routing each request to the right upstream;
-- rate limits and quotas;
-- access and traffic logs;
-- setting `Watchlight-Agent-Id` from the identity it authenticated.
-
-**Watchlight adds:**
-
-- a decision on each governed call against Cedar policy, by principal, by tool,
-  and by argument value where a policy asks for it;
-- a denied call blocked before it reaches the server, and a call blocked on any
-  error rather than forwarded;
-- refusal of a request whose routing headers disagree with its body;
-- one value-free audit record per request, naming the policy that decided it;
-- with a framework plugin in the agent, scopes and sub-agent attenuation.
+Watchlight adds the authorization decision. For each governed call, it checks
+your Cedar policy against the caller, the tool and, when a policy asks for it,
+the values of the tool's arguments. A denied call is blocked before it reaches
+the server. If anything goes wrong while deciding, the call is blocked rather
+than forwarded. The PEP also refuses a request whose routing headers disagree
+with its body. It writes one audit record per request that names the policy
+which decided it and contains no argument values. If you also add a framework
+plugin to the agent, you get scopes and sub-agent attenuation as well.
 
 ## Limitations
 
-- **The identity is asserted, not proven.** The PEP takes the principal from
-  `Watchlight-Agent-Id` and does not authenticate the gateway. This setup is
-  only as strong as the two rules in step 3 and the header rules in step 4. The
-  PEP's TLS listener does not request client certificates, and the PEP does not
-  refuse a plain-HTTP listener on a non-loopback address, so restrict who can
-  connect to it at the network layer.
-- **One server per PEP.** Each `serve()` fronts one `upstream_url`. Run one PEP
-  for each server you govern, each with its own `upstream_server` name.
-- **Listing is not filtered.** `tools/list` and other non-governed methods are
-  forwarded unchanged, so an agent still sees tools it is not permitted to call.
-  Calling one is denied.
-- **The audit file is local and unsigned.** It is a JSONL file on the PEP's host.
-  Ship it to your own store if you need it kept.
-- **Policy changes need a restart with `serve()`.** To swap policies while
-  running, start the PEP with `serve_background(...)` and call
-  `reload_policies([...])` on the handle it returns.
-- **Streamable HTTP for `serve()`.** If your gateway launches MCP servers over
-  stdio rather than calling them over HTTP, have it launch
-  `watchlight_mcp.serve_stdio(...)` instead. That entry point spawns the server
-  itself and takes the identity as `agent_id=` for the whole session, since there
-  are no per-request headers. It refuses to start without one.
+This setup has limits you should know about before you rely on it.
+
+- **The identity is asserted, not proven.** The PEP believes whatever
+  `Watchlight-Agent-Id` says, and it does not check that the request really
+  came from your gateway. This setup is therefore only as strong as the two
+  placement rules in step 3 and the header rules in step 4. The PEP's TLS
+  listener does not ask for client certificates, and the PEP will run a
+  plain-HTTP listener on a non-loopback address without complaint. Restrict
+  who can connect to it at the network layer.
+- **One server per PEP.** Each `serve()` call sits in front of exactly one
+  `upstream_url`. Run one PEP for each server you govern, and give each one its
+  own `upstream_server` name.
+- **Tool lists are not filtered.** `tools/list` and the other methods that are
+  not governed are forwarded unchanged. An agent therefore still sees tools it
+  is not permitted to call. If it tries to call one, the call is denied.
+- **The audit file is local and unsigned.** It is a JSON Lines file on the
+  PEP's host. If you need to keep the records, ship them to your own store.
+- **With `serve()`, changing policies needs a restart.** If you want to swap
+  policies while the PEP is running, start it with `serve_background(...)`
+  instead, and call `reload_policies([...])` on the handle it returns.
+- **`serve()` speaks only Streamable HTTP.** Some gateways start MCP servers as
+  local processes and talk to them over standard input and output (stdio)
+  rather than over HTTP. If yours does, have it launch
+  `watchlight_mcp.serve_stdio(...)` instead. That entry point starts the server
+  itself. Because stdio has no per-request headers, it takes the identity once,
+  as `agent_id=`, for the whole session, and it refuses to start without
+  one.
 
 ## Troubleshooting
 
-Every one of these fails closed: the call does not reach the server.
+Every problem in the table below fails closed, which means the call does not
+reach the server. Find the symptom you see in the first column. The second
+column explains what causes it, and the third tells you how to fix it.
 
 | You see | Cause | Fix |
 |---|---|---|

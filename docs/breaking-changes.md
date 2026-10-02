@@ -10,20 +10,28 @@ between the version you are on and the one you are moving to.
 
 ## Unreleased
 
-**The `mcp` extra requires `watchlight-mcp` 0.4.4, which refuses a governed
-MCP call that carries no identity.** In 0.4.3 a `tools/call`,
-`resources/read`, `resources/subscribe` or `prompts/get` without
-`Watchlight-Agent-Id` was decided as `Agent::"unattributed"`, so a policy that
-permitted any principal let it through. In 0.4.4 it is refused with JSON-RPC
-error `-32002` and HTTP 400, and never reaches the server. So is a request
-that carries `Watchlight-Principal-Id` (unless the PEP was started with
-`principal_header="Watchlight-Principal-Id"`), repeats an identity header, or
-sends an empty or malformed one. Both changes fail in the closed direction.
+**The `mcp` extra now requires `watchlight-mcp` 0.4.4, which refuses a
+governed MCP call that carries no identity.** A governed call is one of
+`tools/call`, `resources/read`, `resources/subscribe` or `prompts/get`. In
+0.4.3, a governed call without a `Watchlight-Agent-Id` header was decided as
+the principal `Agent::"unattributed"`. A policy that permitted any principal
+therefore let it through. In 0.4.4 the PEP refuses that call and it never
+reaches the server. The PEP answers with HTTP status 400 (bad request) and
+JSON-RPC error code `-32002`, the code it uses for a missing or refused
+identity.
 
-Fix: have every client, or the gateway in front of the PEP, send
+The PEP refuses a request in the same way when it carries a
+`Watchlight-Principal-Id` header (unless the PEP was started with
+`principal_header="Watchlight-Principal-Id"`), when it repeats an identity
+header, or when an identity header is empty or malformed. Both of these
+changes make the PEP stricter: calls that used to be allowed may now be
+refused, but nothing that used to be refused is now allowed.
+
+To fix it, make every client, or the gateway in front of the PEP, send
 `Watchlight-Agent-Id` on each request. `serve_stdio` now refuses to start
-without `agent_id=`. `allow_unattributed=True` restores the old behaviour for
-deliberate anonymous use; it is not recommended. See
+unless you pass `agent_id=`. If you deliberately want anonymous callers,
+`allow_unattributed=True` restores the old behaviour, but we do not recommend
+it. See
 [using Watchlight with an MCP gateway you already run](existing-mcp-gateway.md).
 
 ## 0.13.0

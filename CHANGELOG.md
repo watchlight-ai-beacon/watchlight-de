@@ -33,11 +33,12 @@ Each entry links to its release, which carries the reasoning and the measurement
   (TypeScript: an `Error` with `code: "ENOENT"`).
 
 **Changed**
-- The `mcp` and `all` extras require `watchlight-mcp` 0.4.4 or later. In
-  0.4.4 a governed MCP call without `Watchlight-Agent-Id` is refused with
-  `-32002` (HTTP 400) instead of being decided as an unattributed principal,
-  the principal comes from that one header, and the process log no longer
-  carries tool argument values. See
+- The `mcp` and `all` extras now require `watchlight-mcp` 0.4.4 or later.
+  Version 0.4.4 changes three things. A governed MCP call that has no
+  `Watchlight-Agent-Id` header is now refused (HTTP status 400, JSON-RPC error
+  code `-32002`) instead of being decided as an unattributed principal. The
+  principal now comes from that one header only. And the PEP's process log no
+  longer contains tool argument values. See
   [breaking changes](docs/breaking-changes.md).
 
 ## 0.13.0 — 2026-10-02
