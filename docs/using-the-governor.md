@@ -497,8 +497,12 @@ console.log(govern.policyCount);    // 6 — force adds another copy; nothing is
   invalid UTF-8 or JSON, an unrecognised shape, an entry without a Cedar
   `code`, or a file that holds no policies raises `ValueError` /
   `IsADirectoryError` (TypeScript: `Error`), naming the file. A JSON error
-  gives the line and column and never quotes the file. A shape or entry error
-  loads none of the file. To load an empty set on purpose, pass
+  gives the line and column and never quotes the file. **It is whole file or
+  nothing**: a shape, entry, annotation or compile error loads none of the
+  file. (In TypeScript a compile error surfaces at `await govern.ready()` or
+  the first decision, and every decision is refused until a reload succeeds;
+  see [Replacing the set](#replacing-the-set-not-adding-to-it).) To load an
+  empty set on purpose, pass
   `allow_empty=True` / `{ allowEmpty: true }`.
 - **A file that fails to load is not remembered**, so it loads once you fix
   it, without `force`.
