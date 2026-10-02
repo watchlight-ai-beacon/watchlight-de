@@ -10,6 +10,51 @@ between the version you are on and the one you are moving to.
 
 ## Unreleased
 
+**Loading a policy file that holds no usable policies raises.** Earlier
+releases loaded nothing, without a word, when `govern.load()` was given a path
+that does not exist, a JSON object with neither `"policies"` nor `"code"`, or
+an empty list. The governor then held no policies and denied every governed
+call, which looked exactly like a policy doing its job. `watchlight policy
+test` did the same with a missing `policyFile`, and ran the fixtures against
+zero policies. Each of these now fails loudly, at start-up, naming the file:
+
+| Was | Now (Python / TypeScript) |
+|---|---|
+| a missing path loaded nothing | `FileNotFoundError` / `Error` with `code: "ENOENT"` |
+| `[]`, `{"policies": []}` loaded nothing | `ValueError` / `Error`, unless `allow_empty=True` / `{ allowEmpty: true }` |
+| an object with neither `"policies"` nor `"code"` loaded nothing | `ValueError` / `Error` |
+| an entry without `code` failed with an unrelated `KeyError` (Python) or was counted as a policy (TypeScript) | `ValueError` / `Error` naming the policy |
+| `"active": false` was ignored and the policy enforced | `ValueError` / `Error` |
+| `policy test` with a missing or empty `policyFile`, or no policies at all, ran the fixtures against zero policies | exit `2` |
+
+A single `{"name", "code"}` object is now a supported shape and loads as one
+policy, where it used to load nothing; that is the shape `watchlight-mcp` reads,
+for example `examples/mcp.policy.json`. A file of that shape now grants what it
+says it grants, so check what such a file permits before upgrading. It is the
+only way this change can widen a decision.
+
+Code that loaded a file which might not exist yet, and relied on it loading
+once it appeared, checks for it first:
+
+```python
+if path.exists():          # was: govern.load(path) — a missing file was a no-op
+    govern.load(path)
+```
+
+An empty set on purpose takes the opt-in:
+
+```python
+govern.load("policies.json", allow_empty=True)
+```
+
+```ts
+govern.load("policies.json", { allowEmpty: true });
+```
+
+`govern.reload()` reads the same shapes and still refuses an empty set; it has
+no opt-in, because replacing the policies with nothing would deny every
+governed call in the process.
+
 **A policy that does not compile fails the load, or every decision, instead of
 being skipped.** This fails loudly, in the closed direction.
 

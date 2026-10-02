@@ -100,8 +100,24 @@ to production is one environment variable (`WATCHLIGHT_APDP_URL`), never a rewri
 ## Policies
 
 The `*.policy.json` files are plain [Cedar](https://docs.watchlight.ai/de/policies)
-policies in the shape the engine loads — a list of `{"name", "code"}` objects.
-Edit them and re-run to see the decisions change.
+policies. `govern.load()`, `govern.reload()` and `watchlight policy test` read
+three shapes:
+
+| Shape | Example |
+|---|---|
+| a list of policy objects | [`watchlight.policy.json`](watchlight.policy.json), [`research.policy.json`](research.policy.json) |
+| `{"policies": [...]}` | every showcase's `policy.suite.json` |
+| one policy object | [`mcp.policy.json`](mcp.policy.json) |
+
+A policy object needs a Cedar `code` string; `name` is optional, and other keys
+(`id`, `description`) are ignored. The one-object shape is the one
+`watchlight-mcp` reads (one policy per file, passed in `policy_files=[...]`), so
+`mcp.policy.json` works with both. A policy marked `"active": false` is refused
+rather than loaded, because every policy a governor holds is enforced.
+
+A missing file, invalid JSON, an unrecognised shape or a file with no policies
+raises and names the file. It never loads nothing quietly. Edit the files and
+re-run to see the decisions change.
 
 ## Beyond the Developer Edition
 

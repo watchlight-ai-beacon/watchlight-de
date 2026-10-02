@@ -63,7 +63,10 @@ something else.
 ## Run it in CI
 
 Put policies and fixtures in one `suite.json` —
-`{ policyFile?, policies?, tests: [...] }` — and run it. Exit 1 on any failure:
+`{ policyFile?, policies?, tests: [...] }` — and run it. Exit 1 on any failure,
+and 2 on a suite that cannot be run as written: among other things, a
+`policyFile` that is missing, malformed or empty, or a suite that declares no
+policies at all.
 
 ```bash
 watchlight policy test suite.json                                 # Python
@@ -80,6 +83,10 @@ npx --package @watchlight/sdk watchlight policy test suite.json   # Node
   cannot double the policy set. The memo is keyed on the resolved path, not on
   content: edit a loaded file and pass `force=True` to load it again.
 - `govern.allow(code)` is always additive. The same code twice is two policies.
+- `govern.load(path)` raises on a missing file, invalid JSON, an unrecognised
+  shape or a file with no policies, naming the file. It accepts a list of
+  `{"name", "code"}`, `{"policies": [...]}` or a single policy object. Pass
+  `allow_empty=True` / `{ allowEmpty: true }` to load an empty set on purpose.
 - `govern.policy_count` and `govern.has_policies` are worth asserting at
   start-up. No policies means every call is denied.
 

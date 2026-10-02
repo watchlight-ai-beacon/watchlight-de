@@ -16,7 +16,8 @@
 // scoped to policy testing.
 
 import * as path from "node:path";
-import { PolicyCompileError, PolicyError, Watchlight } from "./index";
+import { Watchlight } from "./index";
+import { policyEntries } from "./policy-file";
 import { loadTestSuite, type PolicyTestReport } from "./policytest";
 
 const USAGE = `watchlight — Watchlight Developer Edition (Node)
@@ -66,26 +67,40 @@ async function policyTest(file: string | undefined): Promise<number> {
   try {
     suite = loadTestSuite(file);
   } catch (e) {
-    console.error(`watchlight: could not read suite '${file}': ${(e as Error).message}`);
+    console.error(`watchlight: could not read suite '${file}': ${errorText(e)}`);
     return 2;
   }
   // Fresh, policy-free governor (fail-closed); load only what the suite declares.
   // No audit is written — `test()` uses the engine's decision core directly.
   const gov = new Watchlight({ agent: "policy-test" });
+  if (!suite.policyFile && suite.policies == null) {
+    // Zero policies would deny every fixture, and a suite of Deny fixtures
+    // would pass green against nothing.
+    console.error(
+      `watchlight: suite '${file}' declares no policies: give it a policyFile or inline policies`
+    );
+    return 2;
+  }
   try {
     if (suite.policyFile) {
       gov.load(path.resolve(path.dirname(file), suite.policyFile));
     }
-    for (const p of suite.policies ?? []) gov.allow(p.code, p.name);
+    if (suite.policies != null) {
+      const inline = policyEntries(suite.policies, `suite '${file}'`, {
+        op: "policy test",
+        allowEmpty: Boolean(suite.policyFile),
+      });
+      for (const p of inline) gov.allow(p.code, p.name);
+    }
     // Compile now, so a Cedar error is reported as itself rather than as the
     // first fixture's failure.
     await gov.ready();
   } catch (e) {
-    if (!(e instanceof PolicyError) && !(e instanceof PolicyCompileError)) throw e;
-    // A policy the engine could not honour as written — reported here rather
-    // than run, since the suite would otherwise be testing a different policy
-    // from the one on the page.
-    console.error(`watchlight: ${e.message}`);
+    // A policy file that is missing, malformed or empty, a policy the engine
+    // refused to compile, or a policy it could not honour as written —
+    // reported here rather than run, since the suite would otherwise be
+    // testing a different policy set from the one on the page.
+    console.error(`watchlight: ${errorText(e)}`);
     return 2;
   }
 
@@ -98,11 +113,22 @@ async function policyTest(file: string | undefined): Promise<number> {
     report = await gov.test(suite.tests);
   } catch (e) {
     // malformed fixture (missing action/expect)
-    console.error(`watchlight: ${(e as Error).message}`);
+    console.error(`watchlight: ${errorText(e)}`);
     return 2;
   }
   printReport(file, report);
   return report.failed > 0 ? 1 : 0;
+}
+
+/** A thrown value as text: an Error's message, or the value itself — never
+ *  `undefined` for a throw that is not an Error. */
+function errorText(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  try {
+    return typeof e === "string" ? e : (JSON.stringify(e) ?? String(e));
+  } catch {
+    return String(e);
+  }
 }
 
 async function main(argv: string[]): Promise<number> {
@@ -120,6 +146,6 @@ async function main(argv: string[]): Promise<number> {
 main(process.argv.slice(2))
   .then((code) => process.exit(code))
   .catch((e) => {
-    console.error(`watchlight: ${e?.message ?? e}`);
+    console.error(`watchlight: ${errorText(e)}`);
     process.exit(1);
   });

@@ -236,8 +236,10 @@ async function main() {
 
     const later = join(dir, "later.policy.json");
     const g2 = new Watchlight({ agent: "loader2", auditDir: dir });
-    g2.load(later);
-    ok("a missing file loads nothing", g2.policyCount === 0 && g2.hasPolicies === false);
+    let missing = null;
+    try { g2.load(later); } catch (e) { missing = e; }
+    ok("a missing file throws, never loads nothing",
+      missing !== null && g2.policyCount === 0 && g2.hasPolicies === false);
     fs.writeFileSync(later, JSON.stringify([{ name: "p", code: "permit(principal, action, resource);" }]));
     g2.load(later);
     ok("a missing source is not remembered — it loads once it appears", g2.policyCount === 1);

@@ -63,6 +63,7 @@ LAYERS: Dict[str, str] = {
     "watchlight._approval": "foundation",
     "watchlight._audit": "foundation",
     "watchlight._counters": "foundation",
+    "watchlight._policy_file": "foundation",
     "watchlight.scope_token": "foundation",
     "watchlight.attenuation": "foundation",
     "watchlight.policytest": "foundation",

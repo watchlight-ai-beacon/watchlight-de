@@ -99,12 +99,14 @@ Exit codes, identical in both CLIs:
 |---|---|
 | `0` | every fixture produced its expected verdict |
 | `1` | at least one verdict differed from `expect` |
-| `2` | the suite file is missing or not valid JSON, has no `tests`, or a fixture lacks `action` or `expect` |
+| `2` | the suite file is missing or not valid JSON, has no `tests`, or a fixture lacks `action` or `expect`; its `policyFile` is missing, malformed or holds no policies; or it declares no policies at all |
 
-**A `policyFile` path that does not exist is not an error.** The engine is
-fail-closed. A missing file loads nothing, so every fixture runs against zero
-policies. Every `Allow` fixture then fails. But a suite of nothing but `Deny`
-fixtures would pass green, so keep at least one `Allow` fixture in every suite.
+**A suite never runs against zero policies.** A `policyFile` that does not
+exist, is not valid JSON or holds no policies exits `2`, and so does a suite
+with neither `policyFile` nor `policies`. Against zero policies every fixture
+denies, so a suite of nothing but `Deny` fixtures would pass green while testing
+nothing. Keep at least one `Allow` fixture in every suite all the same: it is
+what proves the policy you meant is the one that loaded.
 
 `gate-has-teeth` also demands exit code exactly `1` from the widened suite. A
 missing CLI (`127`) or a malformed suite (`2`) can never read as a working gate.
