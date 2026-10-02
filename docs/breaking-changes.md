@@ -8,7 +8,7 @@ different verdict. Only some announce themselves; the rest surface as a denial
 that looks exactly like a policy of yours doing its job. Read every entry
 between the version you are on and the one you are moving to.
 
-## Unreleased
+## 0.13.0
 
 **Loading a policy file that holds no usable policies raises.** Earlier
 releases loaded nothing, without a word, when `govern.load()` was given a path
@@ -16,16 +16,22 @@ that does not exist, a JSON object with neither `"policies"` nor `"code"`, or
 an empty list. The governor then held no policies and denied every governed
 call, which looked exactly like a policy doing its job. `watchlight policy
 test` did the same with a missing `policyFile`, and ran the fixtures against
-zero policies. Each of these now fails loudly, at start-up, naming the file:
+zero policies. Each of these now fails loudly, at start-up, naming the file,
+in the closed direction:
 
 | Was | Now (Python / TypeScript) |
 |---|---|
 | a missing path loaded nothing | `FileNotFoundError` / `Error` with `code: "ENOENT"` |
+| a directory, or a path that could not be read, raised the platform's own error, or loaded nothing where the existence check could not see the file | `IsADirectoryError` or the matching `OSError` (`PermissionError`, …) / `Error` with `code: "EISDIR"` or the system's code (`EACCES`, …), naming the file |
+| invalid JSON raised the parser's error (`SyntaxError` in TypeScript), whose message quotes the text around the error; TypeScript decoded invalid UTF-8 with replacement characters | `ValueError` / `Error` naming the file and, for JSON, the line and column, never the contents |
 | `[]`, `{"policies": []}` loaded nothing | `ValueError` / `Error`, unless `allow_empty=True` / `{ allowEmpty: true }` |
 | an object with neither `"policies"` nor `"code"` loaded nothing | `ValueError` / `Error` |
 | an entry without `code` failed with an unrelated `KeyError` (Python) or was counted as a policy (TypeScript) | `ValueError` / `Error` naming the policy |
 | `"active": false` was ignored and the policy enforced | `ValueError` / `Error` |
 | `policy test` with a missing or empty `policyFile`, or no policies at all, ran the fixtures against zero policies | exit `2` |
+
+Code that caught `json.JSONDecodeError` (Python) or `SyntaxError` (TypeScript)
+around a load catches `ValueError` / `Error` instead.
 
 A single `{"name", "code"}` object is now a supported shape and loads as one
 policy, where it used to load nothing; that is the shape `watchlight-mcp` reads,
@@ -75,6 +81,9 @@ being skipped.** This fails loudly, in the closed direction.
   engine raised a bare `RuntimeError`. It subclasses `RuntimeError`, so an
   existing handler still catches it. `load` now adds nothing from a file with a
   policy that does not compile; it used to keep the policies before it.
+
+`watchlight policy test` exits `2` on a policy that does not compile, in both
+lanes.
 
 **`governed_plugin` refuses `governance=` and `apdp_url=`** in
 `watchlight.langgraph`, `watchlight.pydantic_ai` and `watchlight.claude_agent`.
