@@ -187,9 +187,13 @@ read from `watchlight_core.current_subagent_handle()`, which is the SDK's own
 handle; see [integrations](integrations.md#what-the-plugin-records). A
 `preflight_step` is advisory and writes no record; the gate is
 `authorize_action`. Every field is recorded exactly as given, as on the direct
-path, so `counters()` matches it exactly. The one limit is that `counters()`
-refuses a principal containing control characters with a `TypeError`, so a
-quota keyed on such a principal fails closed with that error.
+path, so `counters()` matches it exactly. The plugin applies the direct path's
+name limits at the decision: a principal, action, resource or `execution_id`
+that breaks one is refused with a `TypeError` before the engine sees it, and
+nothing is recorded. An agent name over its limit, or a term that breaks a
+limit in a refusal the handle makes on its own, is recorded as a value-free
+marker in a record marked `"oversized": true`, which counts toward every quota.
+See [integrations](integrations.md#what-the-plugin-records).
 
 The plugin also writes `execution_started` and `execution_completed` lines when
 a run begins and ends. Those lines name their kind in `event_type`, and they

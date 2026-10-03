@@ -43,15 +43,6 @@ handle makes on its own. It behaves the same, but
 `isinstance(handle, BaseRunHandle)` is now `False`. If your code checks the
 handle's type, check for the method it needs instead.
 
-**Names longer than 4096 bytes are refused.** A principal, action, resource or
-agent name longer than 4096 bytes of UTF-8 (`MAX_NAME_BYTES`) now raises a
-`TypeError` before the engine sees it, and nothing is recorded. The bound
-applies to `authorize`, `tool`, `counters`, the agent name you give the
-constructor, `as` / `as_`, `delegate` and the `WATCHLIGHT_AGENT` variable.
-`sanitize` and `screen` refuse an `intent` or `resource` over the limit with
-`SanitizeError` and `ScreenError`. A governed tool whose name is over the limit
-does not run. Earlier releases accepted a name of any length.
-
 **Names that are too long, or are not strings, are refused.** Every name the
 governor records now has a limit in bytes of UTF-8. A principal, an action, a
 resource and each entry of a scope's `tools`, `resources` or `intents` can be
@@ -69,7 +60,10 @@ name you give the constructor, `as` / `as_`, `delegate`, `scope`,
 `preview_scope` / `previewScope`, `attenuate` and its preview, and the
 `WATCHLIGHT_AGENT` variable. `sanitize` and `screen` refuse an `intent` or
 `resource` that breaks a rule with `SanitizeError` and `ScreenError`. A
-governed tool whose name breaks a rule does not run. Earlier releases accepted
+governed tool whose name breaks a rule does not run. A framework plugin's
+`handle.authorize_action` applies the same rules to its principal, action,
+resource and `execution_id`: a resource holding a tab, for example, now raises
+a `TypeError` and is not recorded. Earlier releases accepted
 names of any length, and passed a non-string action or resource to the engine,
 which refused it and recorded the value it was given. See
 [using the governor](using-the-governor.md#names-have-a-length-limit) for the

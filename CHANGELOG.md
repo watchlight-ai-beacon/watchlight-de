@@ -31,7 +31,14 @@ as `counters()`, now counts the plugin's decisions too, so read
   Task sub-agents and on the handles Pydantic AI's instrumentation opens. A
   handle read from `watchlight_core.current_subagent_handle()` is the one route
   whose self-made refusals are not recorded. Every field is stored exactly as
-  given, as on the direct path, so counting matches it.
+  given, as on the direct path, so counting matches it. The plugin applies the
+  direct path's name limits at the decision (see Changed): a principal,
+  action, resource or `execution_id` that breaks one is refused with a
+  `TypeError` from `authorize_action` before the engine, and nothing is
+  recorded. `start_run` and `spawn_subagent` never raise for an agent name; one
+  over its limit, or a term over a limit in a refusal the handle makes on its
+  own, is recorded as a value-free marker in a record marked
+  `"oversized": true`, which the counters count toward every quota.
   A sub-agent's decision names the sub-agent and carries the delegation chain in
   `actor_chain`. The run lifecycle lines are still written. A `preflight_step`
   writes no record, because it is advisory and gates nothing. The run handle a
@@ -48,37 +55,6 @@ as `counters()`, now counts the plugin's decisions too, so read
   record per decision and no call values. In TypeScript, `governTool()` and
   `governedHooks()` already did this, because they decide through the
   governor's own `authorize`.
-
-**Changed**
-- `count_audit_records`, `counters()` and `watchlight dev` now count the
-  decisions a framework plugin makes.
-- With `audit_path=None` and no sink, a framework plugin now prints a one-time
-  warning that its decision records are discarded.
-- `examples/context_governance.py` now records its decisions to
-  `.watchlight/audit.jsonl` like the other examples, instead of turning the
-  audit file off.
-- The `langgraph`, `pydantic-ai`, `claude-agent`, `sdk` and `all` extras now
-  require `watchlight-agent-sdk` below 0.9. The recording depends on that
-  package's client, and a new release is checked before it is allowed.
-
-**Fixed**
-- A framework plugin's run lifecycle lines (`execution_started`,
-  `execution_completed`) have neither an `event` nor a `decision` field, and
-  three readers mistook them:
-  - `watchlight dev` showed each one as a denied decision. It now shows only
-    decisions. This also takes out the other non-decision records it used to
-    list: sanitization, screening and egress records (shown as denied) and
-    attenuation records, which it still shows in its attenuation tree.
-  - `counters()` and `count_audit_records` (and `counters()` in TypeScript)
-    counted each one in `skipped`, the count of malformed lines. They now count
-    it as a well-formed record that is not a decision.
-  - The jq recipes in
-    [audit forensics](examples/showcase/audit-forensics/recipes.md) counted
-    each one as a decision. Every recipe now selects decisions with
-    `has("decision") and ((.event // "decision") == "decision")`, and
-    `forensics.py` no longer counts them as decisions.
-
-**Added**
 - `watchlight audit check [file]`, in both lanes, lists every line of an audit
   file that could count toward quotas without being a well-formed matching
   decision: a line `counters()` cannot read, a decision whose `ts` cannot be
@@ -91,6 +67,16 @@ as `counters()`, now counts the plugin's decisions too, so read
   replacement marked `"oversized": true`, never dropped (see Changed).
 
 **Changed**
+- `count_audit_records`, `counters()` and `watchlight dev` now count the
+  decisions a framework plugin makes.
+- With `audit_path=None` and no sink, a framework plugin now prints a one-time
+  warning that its decision records are discarded.
+- `examples/context_governance.py` now records its decisions to
+  `.watchlight/audit.jsonl` like the other examples, instead of turning the
+  audit file off.
+- The `langgraph`, `pydantic-ai`, `claude-agent`, `sdk` and `all` extras now
+  require `watchlight-agent-sdk` below 0.9. The recording depends on that
+  package's client, and a new release is checked before it is allowed.
 - The audit trail now bounds every record it writes, as a backstop behind the
   checks at each entry point. A record that would serialise to more than
   512 KiB, that nests deeper than the counters read, or that holds a value JSON
@@ -151,6 +137,21 @@ as `counters()`, now counts the plugin's decisions too, so read
   not a well-formed record.
 
 **Fixed**
+- A framework plugin's run lifecycle lines (`execution_started`,
+  `execution_completed`) have neither an `event` nor a `decision` field, and
+  three readers mistook them:
+  - `watchlight dev` showed each one as a denied decision. It now shows only
+    decisions. This also takes out the other non-decision records it used to
+    list: sanitization, screening and egress records (shown as denied) and
+    attenuation records, which it still shows in its attenuation tree.
+  - `counters()` and `count_audit_records` (and `counters()` in TypeScript)
+    counted each one in `skipped`, the count of malformed lines. They now count
+    it as a well-formed record that is not a decision.
+  - The jq recipes in
+    [audit forensics](examples/showcase/audit-forensics/recipes.md) counted
+    each one as a decision. Every recipe now selects decisions with
+    `has("decision") and ((.event // "decision") == "decision")`, and
+    `forensics.py` no longer counts them as decisions.
 - Hardening: a decision with a very long resource or action name produced an
   audit record longer than the line limit the counters read. The counters
   ignored that line, so a quota built on `counters()` did not count the

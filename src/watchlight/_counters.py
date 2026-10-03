@@ -42,8 +42,9 @@ line the scan cannot fully read can never LOWER a count:
 
 All three are counted in ``unreadable`` (so ``count`` minus ``unreadable`` is the
 number of well-formed matching decisions) and in ``skipped``. A well-formed
-object that is not a decision — no string ``decision``, like a framework run's
-lifecycle line — is counted in ``skipped`` only and never counts. Because an
+object that is not a decision — a framework run's lifecycle line, or another
+record kind — is counted in ``records`` and never counts; one that has a
+``decision`` that is not a string is counted in ``skipped`` and never counts. Because an
 unreadable line counts in every outcome, ``allowed + denied == all`` holds for
 well-formed decisions only.
 
@@ -432,8 +433,8 @@ def _tally_line(raw: Optional[bytes], f: dict, t: _Tally) -> None:
         return
     decision = rec.get("decision")
     if not isinstance(decision, str):
-        # Not a decision: no verdict to count (a framework run's lifecycle line,
-        # say). Never counts.
+        # Decision-shaped but with no verdict to count: not a well-formed
+        # record. Never counts.
         t.skipped += 1
         return
     outcome = f["outcome"]

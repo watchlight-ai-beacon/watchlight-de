@@ -231,7 +231,7 @@ console.log("fail-closed: a line that cannot be read never lowers a count");
     JSON.stringify({ ts: "2026-01-15T11:59:00.000Z", principal: ALICE, decision: true }) + "\n");
   for (const outcome of ["allowed", "denied", "all"]) {
     const r = countAuditRecords(p, { principal: ALICE, outcome, now: NOW });
-    eq(`a well-formed non-decision never counts (${outcome})`, [r.count, r.unreadable, r.skipped], [0, 0, 2]);
+    eq(`a well-formed non-decision never counts (${outcome})`, [r.count, r.unreadable, r.records, r.skipped], [0, 0, 1, 1]);
   }
 
   throws("a filter intent longer than any name is refused", () => at({ intent: "i".repeat(MAX_NAME_BYTES + 1) }), TypeError);

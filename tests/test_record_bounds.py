@@ -545,3 +545,132 @@ def test_the_threshold_is_measured_as_written_and_matches_typescript(count, shor
 
     out = json.loads(bounded_line({"ts": "t", "principal": "é" * count}))
     assert ("oversized" in out) is shortened
+
+
+# ── the framework-plugin path ───────────────────────────────────────────────
+
+PLUGIN_POLICIES = [
+    {"name": "everything", "code": "permit(principal, action, resource);"},
+    {
+        "name": "quarantine-on-exfiltrate",
+        "code": '@enforcement_effect("quarantine")\n'
+        'forbid(principal, action == Action::"exfiltrate", resource);',
+    },
+]
+
+
+def _plugin_modules():
+    import importlib
+
+    from watchlight.integrations import INTEGRATIONS
+
+    modules = []
+    for name in sorted(INTEGRATIONS):
+        try:
+            importlib.import_module(INTEGRATIONS[name].plugin_module)
+        except ImportError:
+            continue
+        modules.append(importlib.import_module(f"watchlight.{name}"))
+    return modules
+
+
+async def _attempt_async(fn):
+    try:
+        await fn()
+    except Exception:  # noqa: BLE001 — refusals are expected; the trail is what is checked
+        pass
+
+
+def test_no_plugin_decision_writes_an_unreadable_or_oversized_line(tmp_path, monkeypatch, capsys):
+    """The plugin path applies the direct path's bounds at the decision: an odd
+    principal, action, resource or execution id is refused before the engine,
+    and nothing it writes is unreadable or shortened."""
+    pytest.importorskip("watchlight_core")
+    from watchlight.inprocess import in_process_backend
+
+    monkeypatch.delenv("WATCHLIGHT_APDP_URL", raising=False)
+    audit = tmp_path / "audit.jsonl"
+    backend = in_process_backend(PLUGIN_POLICIES, audit_path=str(audit))
+    odd = [x for x in ODD if x is not None] + [Sneaky("y" * (2 * MAX_COUNTERS_LINE_BYTES)), Sneaky("ok")]
+
+    async def drive():
+        assert (await backend.authorize('Agent::"a"', 'Action::"read"', 'Tool::"x"'))["decision"] == "Allow"
+        for x in odd:
+            await _attempt_async(lambda: backend.authorize(x, 'Action::"read"', 'Tool::"x"'))
+            await _attempt_async(lambda: backend.authorize('Agent::"a"', x, 'Tool::"x"'))
+            await _attempt_async(lambda: backend.authorize('Agent::"a"', 'Action::"read"', x))
+            await _attempt_async(lambda: backend.authorize('Agent::"a"', 'Action::"read"', 'Tool::"x"', execution_id=x))
+        for module in _plugin_modules():
+            plugin = module.governed_plugin(PLUGIN_POLICIES, audit_path=str(audit))
+            async with await plugin.start_run("battery-agent") as handle:
+                for x in odd:
+                    await _attempt_async(lambda: handle.authorize_action(x, 'Tool::"x"'))
+                    await _attempt_async(lambda: handle.authorize_action('Action::"read"', x))
+                    await _attempt_async(lambda: handle.authorize_action('Action::"read"', 'Tool::"x"', principal=x))
+                    await _attempt_async(lambda: handle.authorize_action_detailed(x, x, principal=x))
+
+    asyncio.run(drive())
+    capsys.readouterr()
+    assert trail_lines(tmp_path)
+    assert_every_line_readable(tmp_path)
+
+
+def test_plugin_refusals_after_a_quarantine_never_record_an_oversized_name(tmp_path, monkeypatch, capsys):
+    """After a quarantine the handle refuses calls itself, without asking the
+    backend; those refusals are recorded from the call's own terms. A term that
+    breaks the bounds is replaced by a value-free marker and the record is
+    marked oversized, so it counts toward every quota and is never written."""
+    pytest.importorskip("watchlight_core")
+    from watchlight_core import AgentQuarantinedError, SubtreeSeveredError
+
+    monkeypatch.delenv("WATCHLIGHT_APDP_URL", raising=False)
+    modules = _plugin_modules()
+    if not modules:
+        pytest.skip("no framework plugin installed")
+    audit = tmp_path / "audit.jsonl"
+    plugin = modules[0].governed_plugin(PLUGIN_POLICIES, audit_path=str(audit))
+    huge = "z" * (2 * MAX_COUNTERS_LINE_BYTES)
+
+    async def run():
+        async with await plugin.start_run("contained-agent") as handle:
+            with pytest.raises((AgentQuarantinedError, SubtreeSeveredError)):
+                await handle.authorize_action('Action::"exfiltrate"', 'Tool::"x"')
+            for args in ((huge, 'Tool::"x"'), ('Action::"read"', huge), ('Action::"read"', 'Tool::"a\nb"')):
+                with pytest.raises((AgentQuarantinedError, SubtreeSeveredError)):
+                    await handle.authorize_action(*args)
+
+    asyncio.run(run())
+    capsys.readouterr()
+    lines = trail_lines(tmp_path)
+    assert all(len(line) < 64 * 1024 for line in lines)
+    decisions = [json.loads(line) for line in lines if b'"event": "decision"' in line]
+    assert [d.get("oversized") for d in decisions] == [None, True, True, True]
+    assert huge[:64].encode() not in audit.read_bytes()
+    # Each marked refusal counts toward every quota (fail-closed), so a refusal
+    # with a refused name can never make a denied-count under-count.
+    r = count_audit_records(audit, 'User::"anyone"', outcome="denied")
+    assert (r["count"], r["unreadable"]) == (3, 3)
+
+
+def test_a_plugin_agent_name_is_never_refused_and_never_written_oversized(tmp_path, monkeypatch, capsys):
+    """Agent names come from start_run, which must never raise for them (a
+    framework's instrumentation may swallow the error). One over the bound is
+    replaced by a marker in the record, which is marked oversized."""
+    pytest.importorskip("watchlight_core")
+    monkeypatch.delenv("WATCHLIGHT_APDP_URL", raising=False)
+    modules = _plugin_modules()
+    if not modules:
+        pytest.skip("no framework plugin installed")
+    audit = tmp_path / "audit.jsonl"
+    plugin = modules[0].governed_plugin(PLUGIN_POLICIES, audit_path=str(audit))
+    long_name = "n" * (MAX_AGENT_NAME_BYTES + 1)
+
+    async def run():
+        async with await plugin.start_run(long_name) as handle:
+            assert await handle.authorize_action('Action::"read"', 'Tool::"x"')
+
+    asyncio.run(run())
+    capsys.readouterr()
+    [decision] = [json.loads(line) for line in trail_lines(tmp_path) if b'"event": "decision"' in line]
+    assert decision["oversized"] is True and decision["agent"]["omitted"] == "oversized"
+    assert long_name.encode() not in audit.read_bytes()

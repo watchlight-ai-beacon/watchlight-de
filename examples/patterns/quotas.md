@@ -228,7 +228,7 @@ re-decision an approval triggers, so both see the same attributes.
   `"oversized": true`, see below) counts toward every query in the same way.
   `skipped` counts every line that is not a well-formed record, including
   these. A line that is well-formed but is not a decision, such as a
-  framework run's lifecycle line, is skipped and never counts.
+  framework run's lifecycle line, is counted in `records` and never counts.
 - **The governor never writes an unreadable line.** Every name it records has a
   limit (see
   [using the governor](../../docs/using-the-governor.md#names-have-a-length-limit)),

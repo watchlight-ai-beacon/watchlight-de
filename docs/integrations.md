@@ -67,6 +67,18 @@ whatever characters they contain. Agent names, including a sub-agent name
 chosen by the framework, are recorded as given; a plugin agent named
 `<unconfigured>` is recorded under that name.
 
+The plugin applies the same name limits as `Watchlight.authorize` (see
+[using the governor](using-the-governor.md#names-have-a-length-limit)), at the
+decision. A principal, action, resource or `execution_id` that is not a string,
+holds a control character or is longer than 4096 bytes raises a `TypeError`
+from `handle.authorize_action` before the engine sees it, and nothing is
+recorded. `start_run` and `spawn_subagent` never raise for an agent name. An
+agent name longer than 4087 bytes is recorded as a value-free marker (its
+length and a digest), and the record is marked `"oversized": true`, which
+`counters()` counts toward every quota. A refusal the handle makes on its own
+after a quarantine or a sever is recorded the same way when one of the call's
+terms breaks a limit.
+
 The run handle a governed plugin returns is a wrapper around the SDK's handle.
 It behaves the same, but `isinstance(handle, BaseRunHandle)` is `False` for it.
 

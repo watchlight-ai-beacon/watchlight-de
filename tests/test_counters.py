@@ -287,8 +287,9 @@ def test_a_decision_with_an_unreadable_time_counts_when_it_matches(tmp_path):
 
 
 def test_a_well_formed_non_decision_never_counts(tmp_path):
-    """A JSON object with no string `decision` (a framework run's lifecycle line,
-    say) is readable and is not a decision: skipped, never counted."""
+    """A framework run's lifecycle line is a well-formed record that is not a
+    decision; an object with a non-string `decision` is not a well-formed
+    record (skipped). Neither ever counts."""
     p = tmp_path / "audit.jsonl"
     p.write_text(
         json.dumps({"ts": "2026-01-15T11:59:00.000Z", "event_type": "execution_started",
@@ -297,7 +298,7 @@ def test_a_well_formed_non_decision_never_counts(tmp_path):
     )
     for outcome in ("allowed", "denied", "all"):
         r = count_audit_records(p, ALICE, now=NOW, outcome=outcome)
-        assert (r["count"], r["unreadable"], r["skipped"]) == (0, 0, 2)
+        assert (r["count"], r["unreadable"], r["records"], r["skipped"]) == (0, 0, 1, 1)
 
 
 def test_a_filter_longer_than_any_name_is_refused():

@@ -39,8 +39,9 @@
 //     be the one a query matches on.
 // All three are counted in `unreadable` (so `count - unreadable` is the number of
 // well-formed matching decisions) and in `skipped`. A well-formed object that
-// is not a decision — no string `decision`, like a framework run's lifecycle
-// line — is counted in `skipped` only and never counts. Because an unreadable
+// is not a decision — a framework run's lifecycle line, or another record kind
+// — is counted in `records` and never counts; one that has a `decision` that is
+// not a string is counted in `skipped` and never counts. Because an unreadable
 // line counts in every outcome, `allowed + denied == all` holds for well-formed
 // decisions only.
 //
@@ -491,8 +492,8 @@ function tallyLine(bytes: Buffer | null, filter: Filter, t: Tally): void {
   }
   const decision = r.decision;
   if (typeof decision !== "string") {
-    // Not a decision: no verdict to count (a framework run's lifecycle line,
-    // say). Never counts.
+    // Decision-shaped but with no verdict to count: not a well-formed record.
+    // Never counts.
     t.skipped += 1;
     return;
   }
