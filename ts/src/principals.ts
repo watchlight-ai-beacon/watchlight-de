@@ -88,38 +88,120 @@ export function policyEntityRef(type: string, id: string): string {
   return `${type}::"${escapeCedarString(id)}"`;
 }
 
-/** The longest name the SDK decides on or records, in bytes of UTF-8: a
- *  principal, an action (intent), a resource, an agent name. Real names are a
- *  few dozen bytes; 4 KiB leaves room for a long URL or path as a resource. The
- *  bound keeps every audit record far below the line limit the counters read
- *  (`MAX_COUNTERS_LINE_BYTES`, 1 MiB), so no record the SDK writes is too long
- *  to be counted. A longer name is refused before anything is decided or
- *  recorded. Measured in UTF-8 bytes so both language packages draw the line at
- *  exactly the same place. */
+// ── bounds on what the SDK records ──────────────────────────────────────────
+//
+// Every audit record the SDK writes must stay below the line limit the counters
+// read (`MAX_COUNTERS_LINE_BYTES`, 1 MiB): a line over it counts toward every
+// quota (fail-closed), so a record that could exceed it would let a caller
+// exhaust every quota. These bounds are what guarantee it. The worst case each
+// record kind can reach is built and measured by `ts/test/counters.test.mjs`
+// (and `tests/test_record_bounds.py` in Python): under 270,000 bytes with
+// TypeScript's escaping and under 400,000 with Python's, at most about 38% of
+// the limit. All bounds are measured in UTF-8 bytes, so both language packages
+// draw every line in exactly the same place.
+
+/** The longest name the SDK decides on or records: a principal, an action
+ *  (intent), a resource, and each entry of a scope's tool, resource and intent
+ *  lists. Real names are a few dozen bytes; 4 KiB leaves room for a long URL or
+ *  path as a resource. A longer name is refused before anything is decided or
+ *  recorded. */
 export const MAX_NAME_BYTES = 4096;
+
+/** The longest agent name: short enough that the principal derived from it,
+ *  `Agent::"<name>"`, is itself within {@link MAX_NAME_BYTES}. */
+export const MAX_AGENT_NAME_BYTES = MAX_NAME_BYTES - 'Agent::""'.length;
+
+/** The most entries a scope's `tools`, `resources` or `intents` list may hold. */
+export const MAX_SCOPE_ENTRIES = 256;
+
+/** The most UTF-8 bytes the entries of one scope list may hold in total. */
+export const MAX_SCOPE_LIST_BYTES = 64 * 1024;
+
+/** The most UTF-8 bytes the agent names of one delegation chain may hold in
+ *  total. The chain is written on every record a delegated governor produces. */
+export const MAX_ACTOR_CHAIN_BYTES = 64 * 1024;
 
 /** The fixed, value-free message a name over {@link MAX_NAME_BYTES} is refused with. */
 export const NAME_TOO_LONG_MESSAGE = `is longer than the maximum of ${MAX_NAME_BYTES} bytes`;
 
-/** Refuse a string `value` longer than {@link MAX_NAME_BYTES} (UTF-8 bytes) and
- *  return it unchanged otherwise. A non-string passes through: the type is each
- *  caller's own rule. The message names the field and the bound, never the
- *  value. A lone surrogate counts 3 bytes, as in Python. @internal */
+const utf8Length = (value: string): number => Buffer.byteLength(value, "utf8");
+
+/** Refuse a string `value` longer than `limit` (default {@link MAX_NAME_BYTES})
+ *  UTF-8 bytes and return it unchanged otherwise. A non-string passes through:
+ *  the type is each caller's own rule. The message names the field and the
+ *  bound, never the value. A lone surrogate counts 3 bytes, as in Python.
+ *  @internal */
 export function assertNameLength<T>(
   value: T,
   field: string,
-  makeError: (message: string) => Error = (m) => new TypeError(m)
+  makeError: (message: string) => Error = (m) => new TypeError(m),
+  limit: number = MAX_NAME_BYTES
 ): T {
   // Cheap first test: at most 3 UTF-8 bytes per UTF-16 code unit, so a string
-  // of at most MAX_NAME_BYTES / 3 code units cannot exceed the bound.
-  if (
-    typeof value === "string" &&
-    value.length * 3 > MAX_NAME_BYTES &&
-    Buffer.byteLength(value, "utf8") > MAX_NAME_BYTES
-  ) {
-    throw makeError(`${field} ${NAME_TOO_LONG_MESSAGE}`);
+  // of at most limit / 3 code units cannot exceed the bound.
+  if (typeof value === "string" && value.length * 3 > limit && utf8Length(value) > limit) {
+    throw makeError(`${field} is longer than the maximum of ${limit} bytes`);
   }
   return value;
+}
+
+/** A name the SDK decides on and records — an action, a resource, a scope
+ *  entry: a string, with no control characters, of at most
+ *  {@link MAX_NAME_BYTES}. Refused value-free otherwise. @internal */
+export function assertName(
+  value: unknown,
+  field: string,
+  makeError: (message: string) => Error = (m) => new TypeError(m)
+): string {
+  if (typeof value !== "string") throw makeError(`${field} must be a string`);
+  if (CONTROL_CHARS.test(value)) throw makeError(`${field} must not contain control characters`);
+  return assertNameLength(value, field, makeError);
+}
+
+/** An agent name: a non-empty string with no control characters, of at most
+ *  {@link MAX_AGENT_NAME_BYTES}. Throws a `TypeError` prefixed with `where`.
+ *  @internal */
+export function assertAgentNameRules(value: unknown, where: string): string {
+  if (typeof value !== "string" || !value.trim()) {
+    throw new TypeError(`${where}: agent must be a non-empty string`);
+  }
+  if (CONTROL_CHARS.test(value)) {
+    throw new TypeError(`${where}: agent must not contain control characters`);
+  }
+  return assertNameLength(value, `${where}: agent`, (m) => new TypeError(m), MAX_AGENT_NAME_BYTES);
+}
+
+/** Refuse a delegation chain whose agent names hold more than
+ *  {@link MAX_ACTOR_CHAIN_BYTES} in total. @internal */
+export function assertActorChain(chain: readonly string[], where: string): void {
+  let total = 0;
+  for (const name of chain) total += utf8Length(name);
+  if (total > MAX_ACTOR_CHAIN_BYTES) {
+    throw new TypeError(
+      `${where}: the delegation chain is longer than the maximum of ${MAX_ACTOR_CHAIN_BYTES} bytes`
+    );
+  }
+}
+
+/** A scope's `tools` / `resources` / `intents`: `undefined` (inherit), or at
+ *  most {@link MAX_SCOPE_ENTRIES} names (each checked by {@link assertName}) of
+ *  at most {@link MAX_SCOPE_LIST_BYTES} in total. @internal */
+export function assertNameList(values: unknown, field: string): void {
+  if (values === undefined || values === null) return;
+  if (typeof values === "string" || typeof (values as Iterable<unknown>)[Symbol.iterator] !== "function") {
+    throw new TypeError(`${field} must be a list of strings`);
+  }
+  const items = [...(values as Iterable<unknown>)];
+  if (items.length > MAX_SCOPE_ENTRIES) {
+    throw new TypeError(`${field} holds more than the maximum of ${MAX_SCOPE_ENTRIES} entries`);
+  }
+  let total = 0;
+  for (const item of items) {
+    total += utf8Length(assertName(item, `${field} entry`));
+  }
+  if (total > MAX_SCOPE_LIST_BYTES) {
+    throw new TypeError(`${field} is longer than the maximum of ${MAX_SCOPE_LIST_BYTES} bytes in total`);
+  }
 }
 
 /** What a caller-supplied `principal` must satisfy at EVERY boundary that takes

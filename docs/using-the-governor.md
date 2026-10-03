@@ -597,29 +597,45 @@ Worth knowing:
 
 ## Names have a length limit
 
-A principal, an action, a resource and an agent name can each be at most 4096
-bytes of UTF-8. The limit is exported as `MAX_NAME_BYTES` in both lanes. It is
-measured in bytes rather than characters so that the Python and TypeScript
-packages refuse exactly the same names. A character outside ASCII takes two to
-four bytes.
+Every name the governor records has a limit. All limits are measured in bytes
+of UTF-8 rather than characters, so the Python and TypeScript packages refuse
+exactly the same names. A character outside ASCII takes two to four bytes. Each
+limit is exported under the same name in both lanes.
 
-A name over the limit raises a `TypeError` before the engine sees it. Nothing is
-decided and nothing is recorded. A governed tool whose name is over the limit
-does not run. The limit is checked by `authorize`, `tool`, `counters`, the
-constructor's agent name, `as` / `as_`, `delegate` and the `WATCHLIGHT_AGENT`
-variable. `sanitize` and `screen` check their `intent` and `resource`, and raise
-`SanitizeError` and `ScreenError`. The error names the field and the limit, and
-never contains the value.
+| What | Limit | Constant |
+|---|---|---|
+| A principal, an action, a resource | 4096 bytes | `MAX_NAME_BYTES` |
+| An agent name | 4087 bytes, so that `Agent::"<name>"` is within 4096 | `MAX_AGENT_NAME_BYTES` |
+| Each entry of a scope's `tools`, `resources` or `intents` | 4096 bytes | `MAX_NAME_BYTES` |
+| The number of entries in one of those lists | 256 | `MAX_SCOPE_ENTRIES` |
+| All the entries of one of those lists together | 65536 bytes | `MAX_SCOPE_LIST_BYTES` |
+| All the agent names of one delegation chain together | 65536 bytes | `MAX_ACTOR_CHAIN_BYTES` |
 
-The limit exists so that every audit record the governor writes can be read
-back. `counters()` reads lines up to 1 MiB long. With every name at the limit, a
-record stays far below that. A long value is usually data rather than a name.
-Use a short, stable identifier instead, such as a document id, a path without
-its query string, or a hash of the long value.
+An action, a resource and a scope entry must also be strings with no control
+characters, the same rule a principal and an agent name already follow. A scope
+list must be a list, not a single string.
 
-`counters()` also fails closed on a line it cannot read, which a trail written
-only by the governor never holds. Such a line counts toward the quota and is
-reported in `unreadable`. See
+A name that breaks a rule raises a `TypeError` before the engine sees it.
+Nothing is decided and nothing is recorded, and a governed tool does not run.
+The checks run in `authorize`, `tool`, `counters`, the constructor's agent name,
+`as` / `as_`, `delegate`, `scope`, `preview_scope` / `previewScope`, `attenuate`
+and its preview, and on the `WATCHLIGHT_AGENT` variable. `sanitize` and `screen`
+check their `intent` and `resource` and raise `SanitizeError` and `ScreenError`.
+The error names the field and the limit, and never contains the value.
+
+The limits exist so that every audit record the governor writes can be read
+back. `counters()` reads lines up to 1 MiB long. With every name at its limit,
+the longest delegation chain and the characters that take the most space once
+escaped, the largest record the governor can write is under 400,000 bytes in
+Python, about 38% of that. The tests build that record in both lanes. A long
+value is usually data rather than a name. Use a short, stable identifier
+instead, such as a document id, a path without its query string, or a hash of
+the long value.
+
+`counters()` also fails closed on a line it cannot read. A trail written only
+by the governor never holds one. Such a line counts toward the quota, never ages
+out of a window, and is reported in `unreadable`. To find it, run
+`watchlight audit check`. See
 [what the counter counts](../examples/patterns/quotas.md#reading-the-local-file).
 
 ## See also

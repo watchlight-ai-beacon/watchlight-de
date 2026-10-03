@@ -11,6 +11,7 @@ import * as crypto from "node:crypto";
 import type { Engine, GrantedScope, RequestedScope } from "@watchlight/engine";
 import * as path from "node:path";
 import { AuditTrail, type AttenuationRecord, type WritableAuditRecord } from "./audit";
+import { assertActorChain, assertAgentNameRules, assertNameList } from "./principals";
 import {
   MAX_CHAIN_LENGTH,
   ScopeTokenError,
@@ -59,6 +60,20 @@ export class DelegationDepthExceeded extends AttenuationDenied {
 }
 
 const norm = (x?: readonly string[] | null): string[] => (x ? [...x] : []);
+
+/** The bounds on a child scope's request (see `principals.ts`): each list
+ *  bounded in entries and bytes, the sub-agent's name a valid agent name, and
+ *  the chain it extends within `MAX_ACTOR_CHAIN_BYTES`. Value-free `TypeError`;
+ *  nothing is decided or recorded. */
+function checkRequest(opts: AttenuateOptions, chain: readonly string[], where: string): void {
+  assertNameList(opts.tools, "tools");
+  assertNameList(opts.resources, "resources");
+  assertNameList(opts.intents, "intents");
+  if (opts.agent !== undefined && opts.agent !== null && opts.agent !== "") {
+    assertAgentNameRules(opts.agent, where);
+    assertActorChain([...chain, opts.agent], where);
+  }
+}
 /** Fixed message for a spent scope (never carries scope or token details). */
 const EXPIRED_SCOPE = "scope has expired";
 const nodeId = (): string => crypto.randomBytes(4).toString("hex");
@@ -344,6 +359,9 @@ export class Scope {
    */
   attenuate(opts: AttenuateOptions = {}): Scope {
     this.assertActive(); // a spent scope grants nothing further (fail-closed)
+    // Bounded before the engine and before any record: the requested tools, the
+    // sub-agent's name and the chain it extends are all written down.
+    checkRequest(opts, this.actorChain, "attenuate()");
     // A named sub-agent's records carry the chain it would act under.
     const named = opts.agent ? [...this.actorChain, opts.agent] : undefined;
     const out = attenuationOutcome(this._engine, this, opts);
@@ -403,6 +421,7 @@ export class Scope {
    */
   previewAttenuate(opts: AttenuateOptions = {}): ScopePreview {
     this.assertActive();
+    checkRequest(opts, this.actorChain, "previewAttenuate()");
     return previewChild(this._engine, this, this.actorChain, opts);
   }
 
@@ -540,6 +559,7 @@ export class ScopePreview {
    *  decide it. Below a preview that would be refused, nothing would be granted
    *  either. */
   previewAttenuate(opts: AttenuateOptions = {}): ScopePreview {
+    checkRequest(opts, this.actorChain, "previewAttenuate()");
     if (!this.allowed) {
       return new ScopePreview({
         engine: this._engine,

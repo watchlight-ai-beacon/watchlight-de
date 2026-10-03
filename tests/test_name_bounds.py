@@ -10,8 +10,12 @@ import json
 import pytest
 
 from watchlight import (
+    MAX_ACTOR_CHAIN_BYTES,
+    MAX_AGENT_NAME_BYTES,
     MAX_COUNTERS_LINE_BYTES,
     MAX_NAME_BYTES,
+    MAX_SCOPE_ENTRIES,
+    MAX_SCOPE_LIST_BYTES,
     SanitizeError,
     ScreenError,
     Watchlight,
@@ -34,11 +38,13 @@ def lines(tmp_path):
     return path.read_text().splitlines() if path.exists() else []
 
 
-def test_the_bound():
+def test_the_bounds():
     assert MAX_NAME_BYTES == 4096 == principals.MAX_NAME_BYTES
-    # Far below the line the counters read: every field at the bound, escaped as
-    # the trail escapes it, still fits many times over.
-    assert 16 * MAX_NAME_BYTES * 6 < MAX_COUNTERS_LINE_BYTES
+    # Agent::"<name>" must itself be a bounded name.
+    assert MAX_AGENT_NAME_BYTES == MAX_NAME_BYTES - len('Agent::""') == 4087
+    assert (MAX_SCOPE_ENTRIES, MAX_SCOPE_LIST_BYTES, MAX_ACTOR_CHAIN_BYTES) == (256, 65536, 65536)
+    # What the worst case of each record kind measures is asserted in
+    # tests/test_record_bounds.py.
 
 
 @pytest.mark.parametrize(
@@ -121,8 +127,110 @@ def test_an_oversized_agent_name_is_refused(tmp_path):
         g.authorize(action="read", agent=OVER)
     with pytest.raises(TypeError, match="agent is longer"):
         g.delegate(g, OVER)
-    assert Watchlight(agent=AT_LIMIT, audit_dir=str(tmp_path)).agent == AT_LIMIT
+    at_agent_limit = "a" * MAX_AGENT_NAME_BYTES
+    g2 = Watchlight(agent=at_agent_limit, audit_dir=str(tmp_path))
+    assert g2.agent == at_agent_limit
+    with pytest.raises(TypeError, match="agent is longer than the maximum of 4087 bytes"):
+        Watchlight(agent="a" * (MAX_AGENT_NAME_BYTES + 1), audit_dir=str(tmp_path))
     assert lines(tmp_path) == []
+
+
+def test_an_agent_at_its_limit_derives_a_principal_within_the_name_limit(tmp_path):
+    """The principal a call that names none is recorded under, Agent::"<name>",
+    fits MAX_NAME_BYTES, so the decision is recorded (and an approval token is
+    never spent on a decision that then fails to record)."""
+    agent = "a" * MAX_AGENT_NAME_BYTES
+    g = Watchlight(agent=agent, audit_dir=str(tmp_path))
+    g.allow('@enforcement_effect("require_approval") permit(principal, action == Action::"wire", resource);')
+    g.allow('permit(principal, action == Action::"read", resource);')
+    assert g.authorize(action="read")["allowed"]
+    held = g.authorize(action="wire")
+    assert held["needs_approval"]
+    token = g.mint_approval(action="wire")
+    assert g.authorize(action="wire", approval=token)["approved"]
+    recs = [json.loads(line) for line in lines(tmp_path)]
+    assert [r["principal"] for r in recs] == [principals.agent(agent)] * 3
+    assert len(principals.agent(agent).encode()) == MAX_NAME_BYTES
+
+
+@pytest.mark.parametrize("bad", [{"k": "v"}, ["a"], 5, b"bytes", 3.5])
+def test_a_non_string_action_or_resource_is_refused_before_the_engine(tmp_path, bad):
+    g = governor(tmp_path)
+    with pytest.raises(TypeError, match="action must be a string"):
+        g.authorize(action=bad)
+    with pytest.raises(TypeError, match="resource must be a string"):
+        g.authorize(action="read", resource=bad)
+    ran = []
+
+    @g.tool(intent="read", resource=lambda: {"blob": "x" * (2 * MAX_COUNTERS_LINE_BYTES)})
+    def fetch():
+        ran.append(1)
+
+    with pytest.raises(TypeError, match="resource must be a string"):
+        fetch()
+    assert ran == [] and lines(tmp_path) == []
+
+
+@pytest.mark.parametrize("field", ["action", "resource"])
+def test_control_characters_in_action_or_resource_are_refused(tmp_path, field):
+    g = governor(tmp_path)
+    kw = {"action": "read", field: "a\nb"}
+    with pytest.raises(TypeError, match=f"{field} must not contain control characters"):
+        g.authorize(**kw)
+    assert lines(tmp_path) == []
+
+
+def test_attenuate_checks_the_sub_agent_name(tmp_path):
+    g = governor(tmp_path)
+    root = g.scope(tools=["a", "b"])
+    for bad in ["x" * (MAX_AGENT_NAME_BYTES + 1), "a\nb", "a\x00b", 5, "   "]:
+        with pytest.raises(TypeError, match="attenuate"):
+            root.attenuate(tools=["a"], agent=bad)
+        with pytest.raises(TypeError, match="preview_attenuate"):
+            root.preview_attenuate(tools=["a"], agent=bad)
+    assert len(lines(tmp_path)) == 1  # the root only: nothing else was recorded
+
+
+def test_scope_lists_are_bounded(tmp_path):
+    g = governor(tmp_path)
+    for kw in [
+        {"tools": ["t"] * (MAX_SCOPE_ENTRIES + 1)},
+        {"resources": ["r"] * (MAX_SCOPE_ENTRIES + 1)},
+        {"intents": ["i"] * (MAX_SCOPE_ENTRIES + 1)},
+        {"tools": ["x" * MAX_NAME_BYTES] * 17},  # 17 x 4096 > 64 KiB
+        {"tools": ["x" * (MAX_NAME_BYTES + 1)]},
+        {"tools": ["a\nb"]},
+        {"tools": [{"name": "t"}]},
+        {"tools": "search"},  # a bare string is not a list of names
+    ]:
+        with pytest.raises(TypeError):
+            g.scope(**kw)
+        with pytest.raises(TypeError):
+            g.preview_scope(**kw)
+    assert lines(tmp_path) == []
+    # At the bounds: accepted.
+    g.scope(tools=[f"t{i}" for i in range(MAX_SCOPE_ENTRIES)])
+    g.scope(tools=["x" * MAX_NAME_BYTES] * 16)
+    root = g.scope(tools=["a"])
+    with pytest.raises(TypeError):
+        root.attenuate(tools=["a"] * (MAX_SCOPE_ENTRIES + 1))
+    with pytest.raises(TypeError):
+        g.delegate(root, "sub", tools=["x" * (MAX_NAME_BYTES + 1)])
+    assert len(lines(tmp_path)) == 3
+
+
+def test_the_delegation_chain_is_bounded_in_bytes(tmp_path):
+    g = Watchlight(agent="root", audit_dir=str(tmp_path), max_delegation_depth=64)
+    g.allow("permit(principal, action, resource);")
+    name = "n" * 4000
+    gov = g.delegate(g.scope(tools=["a"]), name + "0")
+    hops = 1
+    with pytest.raises(TypeError, match="delegation chain is longer than the maximum of 65536 bytes"):
+        while True:
+            gov = g.delegate(gov, name + str(hops))
+            hops += 1
+    assert sum(len(n.encode()) for n in gov.actor_chain) <= MAX_ACTOR_CHAIN_BYTES
+    assert hops == MAX_ACTOR_CHAIN_BYTES // 4002  # every hop that fitted was granted
 
 
 def test_an_oversized_agent_name_from_the_environment_is_refused(tmp_path, monkeypatch):

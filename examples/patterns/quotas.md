@@ -227,10 +227,18 @@ re-decision an approval triggers, so both see the same attributes.
   decisions. `skipped` counts every line that is not a well-formed record,
   including these. A line that is well-formed but is not a decision, such as a
   framework run's lifecycle line, is skipped and never counts.
-- **The governor never writes an unreadable line.** Names are limited to 4096
-  bytes (`MAX_NAME_BYTES`), so every record it writes is far below 1 MiB. A
-  non-zero `unreadable` means a damaged or foreign line in the file. Repair the
-  file; until then each such line costs every quota one call.
+- **The governor never writes an unreadable line.** Every name it records has a
+  limit (see
+  [using the governor](../../docs/using-the-governor.md#names-have-a-length-limit)),
+  and the largest record it can write is under 400,000 bytes, about 38% of
+  1 MiB. A non-zero `unreadable` means a damaged or foreign line in the file,
+  for example one cut short by a crash or added by another tool.
+- **An unreadable line never ages out.** It has no time the scan can read, so
+  it counts in every window until you remove it. The remedy is to repair the
+  file or rotate it. To find the lines, run `watchlight audit check` (Python or
+  Node). It prints the number of each unreadable line and why it cannot be
+  read, never its content, and exits 1 when there are any. It uses the
+  counters' own reader, so it lists exactly the lines that count.
 - A missing file yields zeros; a file that exists but cannot be read raises
   `AuditTrailUnreadable`.
 

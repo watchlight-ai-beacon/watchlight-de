@@ -1,0 +1,41 @@
+{
+  "expected": [
+    {
+      "line": 2,
+      "reason": "unreadable-ts"
+    },
+    {
+      "line": 3,
+      "reason": "unreadable-ts"
+    },
+    {
+      "line": 4,
+      "reason": "unreadable-ts"
+    },
+    {
+      "line": 5,
+      "reason": "not-json"
+    },
+    {
+      "line": 6,
+      "reason": "not-json"
+    },
+    {
+      "line": 11,
+      "reason": "not-json"
+    },
+    {
+      "line": 12,
+      "reason": "not-json"
+    },
+    {
+      "line": 13,
+      "reason": "not-json"
+    },
+    {
+      "line": 15,
+      "reason": "not-an-object"
+    }
+  ],
+  "lines": 16
+}

@@ -176,8 +176,9 @@ Three rules apply everywhere a `principal` is accepted: `authorize`, `tool`,
 * **It must be at most 4096 bytes of UTF-8** (`MAX_NAME_BYTES`). Every record
   that names the principal must stay short enough for `counters()` to read it
   back, so a longer principal raises an error before anything is decided or
-  recorded. The same limit applies to the action, the resource and the agent
-  name. See [using the governor](using-the-governor.md#names-have-a-length-limit).
+  recorded. The same limit applies to the action and the resource. An agent
+  name is limited to 4087 bytes, so that `Agent::"<name>"` fits within 4096.
+  See [using the governor](using-the-governor.md#names-have-a-length-limit).
 
 To name no subject at all, omit `principal` (or pass `None` / `undefined`). That
 records the agent as its own subject.

@@ -78,15 +78,39 @@ as `counters()`, now counts the plugin's decisions too, so read
     `has("decision") and ((.event // "decision") == "decision")`, and
     `forensics.py` no longer counts them as decisions.
 
+**Added**
+- `watchlight audit check [file]`, in both lanes, lists the lines of an audit
+  file that `counters()` cannot read, by line number and reason, never content.
+  It exits 1 when there are any. The same check is available as
+  `find_unreadable_lines` / `findUnreadableLines`. Both use the counters' own
+  reader, so they list exactly the lines that count.
+
 **Changed**
-- Names are now bounded. A principal, action, resource or agent name longer
-  than 4096 bytes of UTF-8 (`MAX_NAME_BYTES`, in both lanes) is refused with a
-  `TypeError` before anything is decided or recorded. This applies to
-  `authorize`, `tool`, `counters`, the agent name given to the constructor,
-  `as` / `as_`, `delegate` and the `WATCHLIGHT_AGENT` variable. `sanitize` and
-  `screen` refuse an `intent` or `resource` over the limit with `SanitizeError`
-  and `ScreenError`. The message names the field and the limit, never the
-  value. See [breaking changes](docs/breaking-changes.md).
+- Every name the governor records is now bounded, in both lanes, and a name
+  over its limit is refused with a `TypeError` before anything is decided or
+  recorded. The message names the field and the limit, never the value. The
+  limits are measured in bytes of UTF-8:
+  - a principal, an action, a resource, and each entry of a scope's `tools`,
+    `resources` or `intents`: 4096 bytes (`MAX_NAME_BYTES`);
+  - an agent name: 4087 bytes (`MAX_AGENT_NAME_BYTES`), so that
+    `Agent::"<name>"` fits within 4096;
+  - a scope list: 256 entries (`MAX_SCOPE_ENTRIES`) and 65536 bytes in total
+    (`MAX_SCOPE_LIST_BYTES`);
+  - a delegation chain: 65536 bytes of agent names in total
+    (`MAX_ACTOR_CHAIN_BYTES`).
+- An action or resource must be a string with no control characters, as a
+  principal already had to be. A non-string used to reach the engine and be
+  recorded as given. A scope list must be a list, not a single string.
+  `attenuate()` now checks the sub-agent's name as `delegate()` does.
+  `sanitize` and `screen` apply the same rules to their `intent` and
+  `resource`, with `SanitizeError` and `ScreenError`. See
+  [breaking changes](docs/breaking-changes.md).
+- An `on_result` / `onResult` hook now receives a copy of its `info` argument.
+  The egress record is written from the original.
+- The counters apply the same rules to crafted lines in both lanes. A
+  timestamp or window with non-ASCII digits or a trailing newline is not
+  readable in Python either, and an integer of more than 4300 digits makes a
+  line unreadable in TypeScript too, whatever the interpreter's own setting.
 - `counters()` and `count_audit_records` / `countAuditRecords` now fail closed
   on lines they cannot read. Such a line counts toward the quota instead of
   being ignored. A line that cannot be read at all (longer than 1 MiB, not
@@ -102,7 +126,12 @@ as `counters()`, now counts the plugin's decisions too, so read
   ignored that line, so a quota built on `counters()` did not count the
   decision. Both changes above close this, in both lanes: such names are now
   refused before a record is written, and a line that is too long to read now
-  counts toward the quota.
+  counts toward the quota. A later review found further ways to write such a
+  line: a non-string action or resource, an unchecked sub-agent name in
+  `attenuate()`, unbounded scope lists, and an `on_result` hook rewriting the
+  names in its `info`. Each is now closed, and a test drives every public write
+  path with oversized and odd input and checks that no line the counters
+  cannot read is ever written.
 
 ## 0.13.1 — 2026-10-02
 

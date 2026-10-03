@@ -68,7 +68,7 @@ import {
   type SanitizeResult,
 } from "./sanitize";
 import { screen as screenText, ScreenError, type ScreenOptions, type ScreenResult } from "./screen";
-import { assertNameLength, assertPrincipal, principals } from "./principals";
+import { assertAgentNameRules, assertName, assertNameList, assertPrincipal, principals } from "./principals";
 import { checkPolicyAnnotations } from "./annotations";
 import { policyEntries, readPolicyFile, type PolicyEntry } from "./policy-file";
 import { DEFAULT_ON_RESULT_TIMEOUT_MS, EgressTimeout, resolveEgressTimeoutMs } from "./egress";
@@ -112,9 +112,11 @@ export {
   MAX_COUNTERS_WINDOW_SECONDS,
   MAX_COUNTERS_LINE_BYTES,
   MAX_COUNTERS_NESTING,
+  findUnreadableLines,
+  UNREADABLE_REASONS,
 } from "./counters";
 export { CounterSourceError } from "./counters";
-export type { Counters, CountersOptions, CounterOutcome, CounterWindow } from "./counters";
+export type { Counters, CountersOptions, CounterOutcome, CounterWindow, UnreadableLines, UnreadableReason } from "./counters";
 export type { CounterQuery, CounterSource, CounterSourceKind } from "./counters";
 export { PolicyCompileError } from "./backend";
 export { governedHooks } from "./claude-agent";
@@ -150,7 +152,17 @@ export type {
   SanitizeReport,
   SanitizeResult,
 } from "./sanitize";
-export { principals, entityRef, policyEntityRef, escapeCedarString, MAX_NAME_BYTES } from "./principals";
+export {
+  principals,
+  entityRef,
+  policyEntityRef,
+  escapeCedarString,
+  MAX_NAME_BYTES,
+  MAX_AGENT_NAME_BYTES,
+  MAX_SCOPE_ENTRIES,
+  MAX_SCOPE_LIST_BYTES,
+  MAX_ACTOR_CHAIN_BYTES,
+} from "./principals";
 export { PolicyError, ENFORCEMENT_EFFECTS, ENFORCEMENT_EFFECT_ANNOTATION } from "./annotations";
 export type { EnforcementEffect } from "./annotations";
 export {
@@ -595,14 +607,9 @@ export const AGENT_ENV = "WATCHLIGHT_AGENT";
  *  later, inside the engine. `null` is a value, not an absent option: a caller
  *  who passed one meant to pass a name. */
 function assertAgentName(agent: unknown, where: string): asserts agent is string {
-  if (typeof agent !== "string" || !agent.trim()) {
-    throw new TypeError(`${where}: agent must be a non-empty string`);
-  }
-  // eslint-disable-next-line no-control-regex
-  if (/[\u0000-\u001f\u007f]/.test(agent)) {
-    throw new TypeError(`${where}: agent must not contain control characters`);
-  }
-  assertNameLength(agent, `${where}: agent`);
+  // Non-empty, no control characters, and at most MAX_AGENT_NAME_BYTES, so the
+  // principal derived from it (Agent::"<name>") is itself a bounded name.
+  assertAgentNameRules(agent, where);
   if (agent === UNCONFIGURED_AGENT) {
     throw new TypeError(
       `${where}: '${UNCONFIGURED_AGENT}' is reserved for a governor whose agent name was ` +
@@ -1327,6 +1334,10 @@ export class Watchlight {
   }
 
   async scope(opts: ScopeOptions = {}): Promise<Scope> {
+    // Bounded before the engine: the root's tools are recorded.
+    assertNameList(opts.tools, "tools");
+    assertNameList(opts.resources, "resources");
+    assertNameList(opts.intents, "intents");
     const budget = this._rootBudget(opts.maxDepth);
     const eng = this._backend.engine();
     if (!eng) {
@@ -1362,6 +1373,10 @@ export class Watchlight {
    * authorize, delegate, or mint a token.
    */
   async previewScope(opts: ScopeOptions = {}): Promise<ScopePreview> {
+    // Bounded before the engine: the root's tools are recorded.
+    assertNameList(opts.tools, "tools");
+    assertNameList(opts.resources, "resources");
+    assertNameList(opts.intents, "intents");
     const budget = this._rootBudget(opts.maxDepth);
     const eng = this._backend.engine();
     if (!eng) {
@@ -1606,8 +1621,10 @@ export class Watchlight {
     // Names longer than MAX_NAME_BYTES are refused here, before the engine and
     // before the trail: nothing is decided and nothing is recorded, so no record
     // is ever too long for the counters to read back.
-    assertNameLength(req.action, "action");
-    assertNameLength(req.resource, "resource");
+    // A non-string or control character is refused too: the engine would
+    // refuse it, and that refusal is recorded with the value it was given.
+    assertName(req.action, "action");
+    if (req.resource !== undefined) assertName(req.resource, "resource");
     let decided;
     try {
       decided = await this._decide(req);
@@ -1794,8 +1811,8 @@ export class Watchlight {
     }
     const { intent = "read", resource = "document", mode, types, decisionId, known, personExclusions } = opts;
     // Refused before anything is recorded, as on `authorize`.
-    assertNameLength(intent, "intent", (m) => new SanitizeError(m));
-    assertNameLength(resource, "resource", (m) => new SanitizeError(m));
+    assertName(intent, "intent", (m) => new SanitizeError(m));
+    assertName(resource, "resource", (m) => new SanitizeError(m));
     // The subject the redaction was performed FOR. A call that names none has
     // this agent as its subject — recorded as the TYPED `Agent::"<name>"`, the
     // same reference the decision line carries, never a bare name.
@@ -1831,8 +1848,8 @@ export class Watchlight {
       return this.as(agent).screen(content, rest);
     }
     const { intent = "read", resource = "content", mode, families, decisionId } = opts;
-    assertNameLength(intent, "intent", (m) => new ScreenError(m));
-    assertNameLength(resource, "resource", (m) => new ScreenError(m));
+    assertName(intent, "intent", (m) => new ScreenError(m));
+    assertName(resource, "resource", (m) => new ScreenError(m));
     // As in `sanitize`: the subject the screening was performed for, typed when
     // the call names none.
     // As above: the primitive's own error type.
@@ -1956,7 +1973,9 @@ export class Watchlight {
     opts: { timeoutMs?: number } = {}
   ): Promise<{ value: R; replaced: boolean }> {
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const attempt = Promise.resolve().then(() => hook(result, info));
+    // A copy: the record is written from `info`, which the hook must not be
+    // able to change.
+    const attempt = Promise.resolve().then(() => hook(result, { ...info }));
     // A late rejection after the deadline must not surface as an unhandled one.
     attempt.catch(() => {});
     const deadline = new Promise<never>((_, reject) => {

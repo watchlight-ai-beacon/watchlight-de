@@ -1,8 +1,10 @@
 """``watchlight`` command-line entry point.
 
-Currently one command:
+Commands:
 
-    watchlight dev        # a local dashboard for the in-process audit trail
+    watchlight dev                 # a local dashboard for the in-process audit trail
+    watchlight policy test FILE    # run policy fixtures (exit 1 on failure)
+    watchlight audit check [FILE]  # find audit lines the counters cannot read
 
 ``watchlight dev`` serves a dependency-free web page that tails the local
 ``.watchlight/audit.jsonl`` and shows every governance decision as it happens —
@@ -301,6 +303,39 @@ def _cmd_policy_test(args: argparse.Namespace) -> int:
     return 1 if report["failed"] else 0
 
 
+def _cmd_audit_check(args: argparse.Namespace) -> int:
+    """List the lines of the audit file that ``counters()`` cannot read — each
+    one counts toward every quota until the file is repaired. Value-free: line
+    numbers and reasons only. Exit 0 when there are none, 1 when there are, 2
+    when the file cannot be read."""
+    from ._counters import UNREADABLE_REASONS, AuditTrailUnreadable, find_unreadable_lines
+
+    path = pathlib.Path(args.audit)
+    try:
+        found = find_unreadable_lines(path, limit=args.limit)
+    except AuditTrailUnreadable:
+        print(f"watchlight: audit trail '{path}' is not readable", file=sys.stderr)
+        return 2
+    if not path.exists():
+        print(f"watchlight audit check — {path}: no such file, nothing to check")
+        return 0
+    print(f"watchlight audit check — {path} ({found['lines']} lines)")
+    for item in found["findings"]:
+        print(f"  line {item['line']}: {UNREADABLE_REASONS[item['reason']]}")
+    if found["truncated"]:
+        print(f"  … and {found['total'] - len(found['findings'])} more (raise --limit to list them)")
+    if found["total"] == 0:
+        print("no unreadable lines: every line counts as what it is")
+        return 0
+    print(
+        f"{found['total']} unreadable line(s). They count toward quotas: a line that "
+        "cannot be read at all toward every quota, a decision with an unreadable ts "
+        "toward every quota it matches. They never age out of a window. Remove or "
+        "repair them, or rotate the file."
+    )
+    return 1
+
+
 def _default_audit_path() -> str:
     """The file ``watchlight dev`` tails when ``--audit`` names none: the same
     directory ``WATCHLIGHT_AUDIT_DIR`` sends the default governor's trail to, so
@@ -333,6 +368,26 @@ def main(argv: list[str] | None = None) -> int:
     ptest = policy_sub.add_parser("test", help="run policy fixtures (exit 1 on failure)")
     ptest.add_argument("suite", help="suite JSON: {policyFile?|policies?, tests:[...]}")
     ptest.set_defaults(func=_cmd_policy_test)
+
+    audit = sub.add_parser("audit", help="audit trail tooling")
+    audit_sub = audit.add_subparsers(dest="audit_command")
+    acheck = audit_sub.add_parser(
+        "check",
+        help="list the lines counters() cannot read (exit 1 if any)",
+    )
+    acheck.add_argument(
+        "audit",
+        nargs="?",
+        default=_default_audit_path(),
+        help=(
+            "audit JSONL to check (default: $WATCHLIGHT_AUDIT_DIR/audit.jsonl when that "
+            "is set, else .watchlight/audit.jsonl)"
+        ),
+    )
+    acheck.add_argument(
+        "--limit", type=int, default=100, help="list at most this many lines (default: 100)"
+    )
+    acheck.set_defaults(func=_cmd_audit_check)
 
     args = parser.parse_args(argv)
     if not getattr(args, "command", None) or not getattr(args, "func", None):

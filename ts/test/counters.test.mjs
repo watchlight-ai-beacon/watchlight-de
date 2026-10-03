@@ -13,7 +13,10 @@ const {
   Watchlight, countAuditRecords, parseWindowSeconds, AuditTrailUnreadable,
   DEFAULT_COUNTERS_MAX_BYTES, MAX_COUNTERS_WINDOW_SECONDS, MAX_COUNTERS_LINE_BYTES, MAX_COUNTERS_NESTING,
   MAX_NAME_BYTES, SanitizeError, ScreenError,
+  MAX_AGENT_NAME_BYTES, MAX_SCOPE_ENTRIES, MAX_SCOPE_LIST_BYTES, MAX_ACTOR_CHAIN_BYTES,
+  findUnreadableLines, UNREADABLE_REASONS, principals,
 } = require("../dist/index.js");
+import { spawnSync } from "node:child_process";
 
 let pass = 0, fail = 0;
 const ok = (name, cond, detail = "") => {
@@ -238,7 +241,7 @@ console.log("names are bounded (shared with Python)");
 {
   const OVER = "x".repeat(MAX_NAME_BYTES + 1);
   const AT_LIMIT = "x".repeat(MAX_NAME_BYTES);
-  eq("the bound is 4096 bytes and far below the line limit", [MAX_NAME_BYTES, 16 * MAX_NAME_BYTES * 6 < MAX_COUNTERS_LINE_BYTES], [4096, true]);
+  eq("the bounds (shared with Python)", [MAX_NAME_BYTES, MAX_AGENT_NAME_BYTES, MAX_SCOPE_ENTRIES, MAX_SCOPE_LIST_BYTES, MAX_ACTOR_CHAIN_BYTES], [4096, 4087, 256, 65536, 65536]);
   const fresh = (agent = "bounded") => {
     const auditDir = fs.mkdtempSync(join(os.tmpdir(), "wl-names-"));
     const g = new Watchlight({ agent, auditDir });
@@ -307,7 +310,9 @@ console.log("names are bounded (shared with Python)");
     throws("... by as()", () => g.as(OVER), TypeError);
     eq("... by authorize({ agent })", (await rejects(() => g.authorize({ action: "read", agent: OVER })))?.name, "TypeError");
     throws("... by delegate()", () => g.delegate(g, OVER), TypeError);
-    eq("an agent name at the bound is accepted", new Watchlight({ agent: AT_LIMIT, auditDir }).agent, AT_LIMIT);
+    const atAgentLimit = "a".repeat(MAX_AGENT_NAME_BYTES);
+    eq("an agent name at its bound is accepted", new Watchlight({ agent: atAgentLimit, auditDir }).agent, atAgentLimit);
+    throws("... one byte over is refused", () => new Watchlight({ agent: atAgentLimit + "a", auditDir }), TypeError);
     const prev = process.env.WATCHLIGHT_AGENT;
     process.env.WATCHLIGHT_AGENT = OVER;
     try { throws("... from the environment", () => new Watchlight({ auditDir }), TypeError); }
@@ -338,6 +343,238 @@ console.log("names are bounded (shared with Python)");
     fs.appendFileSync(join(auditDir, "audit.jsonl"), JSON.stringify({ ts: "2026-01-15T11:59:00.000Z", principal: ALICE, intent: "read", resource: "r".repeat(MAX_COUNTERS_LINE_BYTES), decision: "Allow" }) + "\n");
     const c = g.counters({ principal: ALICE, intent: "read" });
     eq("an over-limit line in the trail counts toward the quota", [c.count, c.unreadable], [3, 1]);
+  }
+}
+
+console.log("every write path is bounded (shared with Python)");
+{
+  const OVER = "x".repeat(MAX_NAME_BYTES + 1);
+  const SECRET = "k".repeat(48);
+  const dirOf = () => fs.mkdtempSync(join(os.tmpdir(), "wl-bounds-"));
+  const trailLines = (auditDir) => {
+    const f = join(auditDir, "audit.jsonl");
+    return fs.existsSync(f) ? fs.readFileSync(f).toString("latin1").split("\n").slice(0, -1) : [];
+  };
+  const rejects = async (fn) => { try { await fn(); return null; } catch (e) { return e; } };
+  const quiet = async (fn) => {
+    const orig = console.log;
+    console.log = () => {};
+    try { return await fn(); } finally { console.log = orig; }
+  };
+  const allReadable = (name, auditDir) => {
+    const longest = Math.max(0, ...trailLines(auditDir).map((l) => l.length)); // latin1: one char per byte
+    const found = findUnreadableLines(join(auditDir, "audit.jsonl"));
+    ok(name, longest < MAX_COUNTERS_LINE_BYTES && found.total === 0, `longest ${longest}, ${JSON.stringify(found.findings)}`);
+    return longest;
+  };
+  const fill = (ch, nbytes) => ch.repeat(Math.floor(nbytes / Buffer.byteLength(ch)));
+  const pad2 = (i) => String(i).padStart(2, "0");
+
+  // An agent at its bound derives a principal within the name bound, so the
+  // decision is recorded and an approval token is never spent on a decision
+  // that then fails to record.
+  {
+    const auditDir = dirOf();
+    const agent = "a".repeat(MAX_AGENT_NAME_BYTES);
+    const g = new Watchlight({ agent, auditDir });
+    g.allow('@enforcement_effect("require_approval") permit(principal, action == Action::"wire", resource);', "hold");
+    g.allow('permit(principal, action == Action::"read", resource);', "read");
+    await quiet(async () => {
+      eq("agent at its bound: the decision is recorded", (await g.authorize({ action: "read" })).allowed, true);
+      const held = await g.authorize({ action: "wire" });
+      const token = g.mintApproval({ action: "wire" });
+      eq("... an approved decision is recorded too", [held.needsApproval, (await g.authorize({ action: "wire", approval: token })).approved], [true, true]);
+    });
+    eq("... under Agent::\"<name>\", which fits the name bound",
+      [trailLines(auditDir).map((l) => JSON.parse(l).principal), Buffer.byteLength(principals.agent(agent))],
+      [[principals.agent(agent), principals.agent(agent), principals.agent(agent)], MAX_NAME_BYTES]);
+  }
+
+  // Non-string and control-character names are refused before the engine.
+  {
+    const auditDir = dirOf();
+    const g = new Watchlight({ agent: "w", auditDir });
+    g.allow("permit(principal, action, resource);", "all");
+    for (const bad of [{ k: "v" }, ["a"], 5, 3.5, true]) {
+      const e1 = await rejects(() => g.authorize({ action: bad }));
+      const e2 = await rejects(() => g.authorize({ action: "read", resource: bad }));
+      eq(`a non-string action / resource is refused (${JSON.stringify(bad)})`, [e1?.message, e2?.message], ["action must be a string", "resource must be a string"]);
+    }
+    const ran = [];
+    const fetchIt = g.tool(async () => { ran.push(1); }, { intent: "read", resource: () => ({ blob: "x".repeat(2 * MAX_COUNTERS_LINE_BYTES) }) });
+    eq("a tool whose resource binding returns a structure is refused", (await rejects(() => fetchIt()))?.message, "resource must be a string");
+    for (const field of ["action", "resource"]) {
+      const e = await rejects(() => g.authorize({ action: "read", [field]: "a\nb" }));
+      eq(`control characters in ${field} are refused`, e?.message, `${field} must not contain control characters`);
+    }
+    eq("... the body never ran and nothing was recorded", [ran, trailLines(auditDir).length], [[], 0]);
+  }
+
+  // attenuate() checks the sub-agent's name; scope lists and the chain are bounded.
+  {
+    const auditDir = dirOf();
+    const g = new Watchlight({ agent: "w", auditDir, maxDelegationDepth: 64 });
+    g.allow("permit(principal, action, resource);", "all");
+    const root = await g.scope({ tools: ["a", "b"] });
+    for (const bad of ["x".repeat(MAX_AGENT_NAME_BYTES + 1), "a\nb", "a\u0000b", 5, "   "]) {
+      throws(`attenuate refuses the sub-agent name ${JSON.stringify(bad).slice(0, 12)}`, () => root.attenuate({ tools: ["a"], agent: bad }), TypeError);
+      throws("... and so does previewAttenuate", () => root.previewAttenuate({ tools: ["a"], agent: bad }), TypeError);
+    }
+    for (const [label, opts] of [
+      ["too many tools", { tools: Array(MAX_SCOPE_ENTRIES + 1).fill("t") }],
+      ["too many resources", { resources: Array(MAX_SCOPE_ENTRIES + 1).fill("r") }],
+      ["too many intents", { intents: Array(MAX_SCOPE_ENTRIES + 1).fill("i") }],
+      ["too many bytes", { tools: Array(17).fill("x".repeat(MAX_NAME_BYTES)) }],
+      ["one entry too long", { tools: [OVER] }],
+      ["a control character", { tools: ["a\nb"] }],
+      ["a non-string entry", { tools: [{ name: "t" }] }],
+      ["a bare string", { tools: "search" }],
+    ]) {
+      eq(`scope() refuses ${label}`, (await rejects(() => g.scope(opts)))?.name, "TypeError");
+      eq(`previewScope() refuses ${label}`, (await rejects(() => g.previewScope(opts)))?.name, "TypeError");
+    }
+    throws("attenuate() refuses an over-long list", () => root.attenuate({ tools: Array(MAX_SCOPE_ENTRIES + 1).fill("a") }), TypeError);
+    throws("delegate() refuses an over-long tool name", () => g.delegate(root, "sub", { tools: [OVER] }), TypeError);
+    eq("lists at their bounds are accepted", [
+      (await g.scope({ tools: Array.from({ length: MAX_SCOPE_ENTRIES }, (_, i) => `t${i}`) })).allowedTools.length,
+      (await g.scope({ tools: Array(16).fill("x".repeat(MAX_NAME_BYTES)) })).allowedTools.length,
+    ], [MAX_SCOPE_ENTRIES, 16]);
+    const name = "n".repeat(4000);
+    let gov = g.delegate(await g.scope({ tools: ["a"] }), name + "0");
+    let hops = 1;
+    let err;
+    try { for (;;) { gov = g.delegate(gov, name + hops); hops++; } } catch (e) { err = e; }
+    eq("the delegation chain is bounded in bytes", [err?.message?.includes("the delegation chain is longer than the maximum of 65536 bytes"), hops], [true, Math.floor(MAX_ACTOR_CHAIN_BYTES / 4002)]);
+    allReadable("nothing written by a refusal", auditDir);
+  }
+
+  // The worst case of every record kind fits the line limit. TypeScript writes
+  // non-ASCII raw, so a quote or backslash (doubled when escaped, and again
+  // inside the engine's reason text) costs the most here.
+  for (const ch of ["é", '"', "\\", "\u{1F600}"]) {
+    const auditDir = dirOf();
+    const perName = Math.floor(MAX_ACTOR_CHAIN_BYTES / 65);
+    const names = Array.from({ length: 65 }, (_, i) => fill(ch, perName - 2) + pad2(i));
+    const g = new Watchlight({ agent: names[0], auditDir, maxDelegationDepth: 64, signingSecret: SECRET });
+    g.allow("permit(principal, action, resource);", "all");
+    const tools = Array.from({ length: MAX_SCOPE_LIST_BYTES / MAX_NAME_BYTES }, (_, i) => fill(ch, MAX_NAME_BYTES - 2) + pad2(i));
+    let gov = g.delegate(await g.scope({ tools, resources: tools, intents: tools }), names[1]);
+    for (const n of names.slice(2)) gov = g.delegate(gov, n);
+    const name = fill(ch, MAX_NAME_BYTES);
+    const principal = 'User::"' + fill(ch, MAX_NAME_BYTES - 9) + '"';
+    await quiet(async () => {
+      await gov.authorize({ action: name, principal, resource: name });
+      const body = gov.tool(async () => "ok", {
+        intent: name, principal: () => principal, resource: () => name,
+        onResult: (_r, info) => { info.intent = info.resource = "x".repeat(2 * MAX_COUNTERS_LINE_BYTES); },
+      });
+      await body();
+      gov.sanitize("mail a@example.com", { intent: name, resource: name, principal: "p".repeat(128), decisionId: "d".repeat(128) });
+      gov.screen("hello", { intent: name, resource: name, principal: "p".repeat(128), decisionId: "d".repeat(128) });
+    });
+    const outside = Array.from({ length: MAX_SCOPE_LIST_BYTES / MAX_NAME_BYTES }, (_, i) => fill(ch, MAX_NAME_BYTES - 3) + "z" + pad2(i));
+    throws(`worst case (${JSON.stringify(ch)}): the refused attenuation throws`, () => gov.delegatedScope.attenuate({ tools: outside, resources: outside, intents: outside, timeBudgetSeconds: 1e9 }), Error);
+    eq(`worst case (${JSON.stringify(ch)}): the chain is the longest there is`, gov.actorChain.length, 65);
+    const longest = allReadable(`worst case (${JSON.stringify(ch)}): every record fits the line limit`, auditDir);
+    ok(`worst case (${JSON.stringify(ch)}): well inside it`, longest < 0.5 * MAX_COUNTERS_LINE_BYTES, String(longest));
+  }
+
+  // Every public write path, driven with odd inputs: no line it writes is one
+  // the counters cannot read.
+  {
+    const auditDir = dirOf();
+    const HUGE = "h".repeat(2 * MAX_COUNTERS_LINE_BYTES);
+    const ODD = [HUGE, "a\nb", "\u0000", " ", "\ud800", "", "   ", { blob: HUGE }, [HUGE], 10n ** 5000n, 3.5, NaN, null, undefined, true];
+    const g = new Watchlight({ agent: "w", auditDir, signingSecret: SECRET });
+    g.allow("permit(principal, action, resource);", "all");
+    const root = await g.scope({ tools: ["a", "b"] });
+    const sub = g.delegate(root, "sub", { tools: ["a"] });
+    const attempt = async (fn) => { try { await fn(); } catch { /* refusals are expected; the trail is what is checked */ } };
+    await quiet(async () => {
+      for (const x of ODD) {
+        await attempt(() => new Watchlight({ agent: x, auditDir }));
+        await attempt(() => g.as(x));
+        await attempt(() => g.authorize({ action: x }));
+        await attempt(() => g.authorize({ action: "read", resource: x }));
+        await attempt(() => g.authorize({ action: "read", principal: x }));
+        await attempt(() => g.authorize({ action: "read", agent: x }));
+        await attempt(() => g.authorize({ action: "read", context: { k: x } }));
+        await attempt(() => g.authorize({ action: "read", approval: x }));
+        await attempt(() => sub.authorize({ action: x, resource: x }));
+        await attempt(() => g.check(x, x));
+        await attempt(() => g.mintApproval({ action: x, resource: x, principal: x }));
+        await attempt(() => g.tool(async () => "r", { intent: x })());
+        await attempt(() => g.tool(async () => "r", { intent: "read", resource: () => x })());
+        await attempt(() => g.tool(async () => "r", { intent: "read", principal: () => x })());
+        const mutate = (_r, info) => { for (const k of ["intent", "resource", "principal", "decisionId"]) info[k] = x; };
+        await attempt(() => g.tool(async () => "r", { intent: "read", onResult: mutate })());
+        for (const k of ["intent", "resource", "principal", "decisionId", "agent"]) {
+          await attempt(() => g.sanitize("a@example.com", { [k]: x }));
+          await attempt(() => g.screen("hello", { [k]: x }));
+        }
+        await attempt(() => g.sanitize(x));
+        await attempt(() => g.screen(x));
+        for (const k of ["tools", "resources", "intents"]) {
+          await attempt(() => g.scope({ [k]: x }));
+          await attempt(() => g.scope({ [k]: [x] }));
+          await attempt(() => root.attenuate({ [k]: [x] }));
+          await attempt(() => g.delegate(root, "d", { [k]: [x] }));
+        }
+        await attempt(() => g.scope({ tools: ["a"], timeBudgetSeconds: x }));
+        await attempt(() => root.attenuate({ tools: ["a"], agent: x }));
+        await attempt(() => root.attenuate({ tools: ["a"], timeBudgetSeconds: x }));
+        await attempt(() => g.delegate(root, x));
+        await attempt(() => g.delegate(sub, x));
+        await attempt(() => g.scopeFromToken(x));
+      }
+    });
+    ok("the battery wrote records", trailLines(auditDir).length > 0);
+    allReadable("no public write path writes an unreadable line", auditDir);
+  }
+
+  // The two lanes classify crafted lines identically.
+  {
+    const PARITY = join(here, "..", "..", "tests", "fixtures", "counters-parity.jsonl");
+    const expected = JSON.parse(fs.readFileSync(join(here, "..", "..", "tests", "fixtures", "counters-parity.expected.json"), "utf8"));
+    const found = findUnreadableLines(PARITY);
+    eq("crafted lines classify as in Python", [found.lines, found.findings], [expected.lines, expected.expected]);
+    const r = countAuditRecords(PARITY, { principal: ALICE, intent: "read", now: NOW });
+    eq("... and count as in Python", [r.count, r.unreadable], [14, 9]);
+    for (const spec of ["1h\n", "١h", "１h", "1١"]) {
+      throws(`the window grammar is ASCII-only (${JSON.stringify(spec)})`, () => parseWindowSeconds(spec), RangeError);
+    }
+  }
+
+  // `watchlight audit check`: line numbers and reasons, never content.
+  {
+    const dir = dirOf();
+    const p = join(dir, "audit.jsonl");
+    const secretWord = "s3cr3t-value";
+    fs.writeFileSync(p, Buffer.concat([
+      Buffer.from('{"ts":"2026-01-15T11:59:00Z","principal":"p","decision":"Allow"}\n'),
+      Buffer.from(`{"x":"${secretWord}"\n`),
+      Buffer.from(`{"pad":"${"p".repeat(MAX_COUNTERS_LINE_BYTES)}"}\n`),
+      Buffer.from([0x22, 0xff, 0x22, 0x0a]),
+      Buffer.from("[".repeat(40) + "]".repeat(40) + "\n"),
+      Buffer.from("[1]\n"),
+      Buffer.from(`{"ts":"never","principal":"p","decision":"Allow","note":"${secretWord}"}\n`),
+      Buffer.from('{"event_type":"execution_started"}\n'),
+    ]));
+    const cli = (...args) => spawnSync(process.execPath, [join(here, "..", "dist", "cli.js"), "audit", "check", ...args], { encoding: "utf8" });
+    const r = cli(p);
+    const want = [[2, "not JSON"], [3, `longer than ${MAX_COUNTERS_LINE_BYTES} bytes`], [4, "not valid UTF-8"],
+      [5, "nested deeper than 32 levels"], [6, "not a JSON object"], [7, "a decision whose ts cannot be read"]];
+    ok("audit check lists every unreadable line with its reason", r.status === 1 && want.every(([n, why]) => r.stdout.includes(`line ${n}: ${why}`)), r.stdout + r.stderr);
+    ok("... and nothing else", !r.stdout.includes("line 1:") && !r.stdout.includes("line 8:"), r.stdout);
+    ok("... value-free", !r.stdout.includes(secretWord) && !r.stdout.includes("ppp"), r.stdout);
+    ok("... says the lines never age out", r.stdout.includes("never age out of a window"), r.stdout);
+    eq("... the reasons are the shared ones", Object.keys(UNREADABLE_REASONS), ["oversized", "not-utf8", "too-deep", "not-json", "not-an-object", "unreadable-ts"]);
+    eq("... the counters see exactly those lines", countAuditRecords(p, { principal: "p", now: "2026-01-15T12:00:00Z" }).unreadable, 6);
+    const limited = cli(p, "--limit", "2");
+    ok("--limit caps the listing", limited.status === 1 && limited.stdout.includes("and 4 more"), limited.stdout);
+    const clean = join(dir, "clean.jsonl");
+    fs.writeFileSync(clean, '{"ts":"2026-01-15T11:59:00Z","principal":"p","decision":"Allow"}\n');
+    eq("a clean file exits 0, a missing one 0, a directory 2", [cli(clean).status, cli(join(dir, "missing.jsonl")).status, cli(dir).status], [0, 0, 2]);
   }
 }
 

@@ -247,12 +247,15 @@ in TypeScript, previews a child of a live scope the same way.
   await one and raises `TypeError`.
 - `authorize` takes a context you have already resolved. Handing it an
   unresolved awaitable raises `UnresolvedContextError` and records no decision.
-- Malformed lines in the file are skipped and counted, never echoed.
 - A file shared with a framework plugin also holds its run lifecycle lines,
   which have no `event` field. A query that reads a missing `event` as a
   decision must also require a `decision` field, for example in jq:
   `select(has("decision") and ((.event // "decision") == "decision"))`.
   `counters()` and `watchlight dev` already do this.
+- A line in the file that `counters()` cannot read is never echoed, and it
+  counts toward every quota until the file is repaired or rotated; it never
+  ages out of a window. A decision whose `ts` cannot be read counts toward
+  every quota it matches. `watchlight audit check` lists both by line number.
 
 ## See also
 
