@@ -310,6 +310,14 @@ function tallyLine(
     t.records += 1;
     return;
   }
+  // A framework plugin's run lifecycle line (`execution_started`,
+  // `execution_completed`) names its kind in `event_type` and carries neither
+  // `event` nor `decision`. It is well-formed and not a decision — not a
+  // malformed line, so it is not counted as skipped.
+  if (!("event" in r) && !("decision" in r) && typeof r.event_type === "string") {
+    t.records += 1;
+    return;
+  }
   const decision = r.decision;
   const ts = parseIsoMillis(r.ts);
   if (typeof decision !== "string" || ts === undefined) {

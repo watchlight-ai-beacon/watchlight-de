@@ -64,6 +64,18 @@ def _read_events(audit_path: pathlib.Path, limit: int = 500) -> list[dict[str, A
             raw = json.loads(line)
         except (ValueError, TypeError):
             continue
+        # Decisions only: a record whose `event` is "decision", or one with no
+        # `event` that carries a `decision` (an earlier release's decision, or
+        # the MCP PEP's). Every other line — sanitization, screening, egress,
+        # attenuation, and a framework plugin's run lifecycle lines, which have
+        # neither field — is not a decision and is never counted as a denial.
+        if not isinstance(raw, dict):
+            continue
+        if "event" in raw:
+            if raw.get("event") != "decision":
+                continue
+        elif "decision" not in raw:
+            continue
         decision = str(raw.get("decision", "")).strip()
         # Normalize both shapes so either renders identically: the `govern`
         # decorator writes {ts, agent, intent, resource, decision:Allow/Deny};

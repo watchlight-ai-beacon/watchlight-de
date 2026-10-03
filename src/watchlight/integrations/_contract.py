@@ -40,7 +40,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, FrozenSet, Optional
 
-from ..inprocess import Policies, _select_backend_kwargs
+from ..inprocess import Policies, _audited_plugin_class, _select_backend_kwargs
 
 _NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 _EXTRA = re.compile(r"^[a-z][a-z0-9-]*$")
@@ -163,8 +163,16 @@ def build_governed_plugin(
       (``principal``, ``context``, ``resource``) by name and picks the backend:
       ``WATCHLIGHT_APDP_URL`` set → the plugin's own networked client, otherwise
       the in-process engine with a local, value-free audit trail, where
-      ``policies=None`` denies every action (fail-closed).
+      ``policies=None`` denies every action (fail-closed);
+    * in-process, the plugin is built from a subclass whose run handles also
+      record the refusals a handle makes without asking the backend.
     """
     _refuse_backend_overrides(plugin_kwargs)
     plugin_cls = _load_plugin_class(integration)
-    return plugin_cls(**_select_backend_kwargs(policies, audit_path, plugin_kwargs))
+    kwargs = _select_backend_kwargs(policies, audit_path, plugin_kwargs)
+    if "governance" in kwargs:
+        # In-process: a subclass of the plugin whose run handles also record
+        # the refusals a handle makes on its own (after a quarantine or a
+        # sever), which never reach the backend. Nothing is patched.
+        plugin_cls = _audited_plugin_class(plugin_cls)
+    return plugin_cls(**kwargs)

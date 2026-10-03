@@ -100,6 +100,21 @@ async function main() {
     ok("governedHooks: counters() counts the adapter's deny", c.count === 1, JSON.stringify(c));
   }
 
+  // ── a Python framework plugin's lifecycle lines in a shared trail ──
+  // They name their kind in `event_type` and carry neither `event` nor
+  // `decision`: well-formed, not decisions, and not counted as skipped.
+  {
+    const agent = "shared-trail-agent";
+    const { gov, dir } = governor(agent);
+    await governTool({ name: "web_search", invoke: async () => "ok" }, { governor: gov, intent: "research" }).invoke({});
+    fs.appendFileSync(join(dir, "audit.jsonl"),
+      JSON.stringify({ event_id: "evt_1", event_type: "execution_started", timestamp: new Date().toISOString(), execution_id: "exec_1" }) + "\n" +
+      JSON.stringify({ event_id: "evt_2", event_type: "execution_completed", timestamp: new Date().toISOString(), execution_id: "exec_1" }) + "\n");
+    const c = gov.counters({ principal: `Agent::"${agent}"`, window: "1h", outcome: "all" });
+    ok("counters(): lifecycle lines are not skipped", c.skipped === 0, JSON.stringify(c));
+    ok("counters(): lifecycle lines are not decisions", c.count === 1, JSON.stringify(c));
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`);
   if (fail) process.exit(1);
 }

@@ -10,32 +10,36 @@ between the version you are on and the one you are moving to.
 
 ## Unreleased
 
-**A framework plugin now records every decision, so counts of decisions go
-up.** This affects you if you use `watchlight.langgraph`,
+**A framework plugin now records every decision, so counts of decisions in the
+audit file go up.** This affects you if you use `watchlight.langgraph`,
 `watchlight.pydantic_ai` or `watchlight.claude_agent` through
-`governed_plugin()`. Each `handle.authorize_action` call now appends one
-decision record to the audit file. Before, the plugin wrote only one line when
-a run started and one when it ended. So a quota built on `counters()`,
-`count_audit_records` or a `counter_source`, or any query that filters on
-`coalesce(record->>'event', 'decision') = 'decision'`, now counts the plugin's
-decisions as well. A quota that was never reached can now be reached, and an
-action it limits is then denied. This only ever moves in the closed
-direction: more decisions are counted, never fewer.
+`governed_plugin()`. Each decision the plugin makes now appends one decision
+record to the audit file. Before, the plugin wrote only one line when a run
+started and one when it ended. So `counters()` and `count_audit_records`, which
+read that file, now count the plugin's decisions as well. A quota built on them
+that was never reached can now be reached, and an action it limits is then
+denied. This only ever moves in the closed direction: more decisions are
+counted, never fewer.
+
+A quota that counts rows in your own store, through a `counter_source`, does
+not change on upgrade. The plugin never had a sink, so nothing of the plugin's
+reached your store. It changes when you pass the new `audit_sink` option to
+`governed_plugin()`: from then on the plugin's decisions reach your store, and
+a query that filters on `coalesce(record->>'event', 'decision') = 'decision'`
+counts them.
 
 To fix it, check every quota or alert that counts decisions for an agent that
 runs through a plugin, and raise its limit if it was set while the plugin's
 decisions were missing. To count only the decisions made through the governor,
-filter out records that carry `execution_id`, which only plugin decisions have.
+leave out records that carry `execution_id`, which only plugin decisions have.
 
 The audit file also grows by one line per plugin decision. If you ship the file
 somewhere with a size limit, allow for that.
 
-If you query the file directly, note that a plugin's run lifecycle lines
-(`execution_started` and `execution_completed`) have no `event` field. A filter
-that reads a missing `event` as a decision also matches them. Require a
-`decision` field as well, for example
-`select((.event // "decision") == "decision" and .decision != null)` in jq.
-`counters()` already does this.
+**A framework plugin refuses some agent names.** `start_run` now raises
+`TypeError` for an agent name that is empty, contains control characters, is
+longer than 256 characters, or is the reserved `<unconfigured>`. These are the
+names a governor already refuses. Rename the agent.
 
 ## 0.13.1
 

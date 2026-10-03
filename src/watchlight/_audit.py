@@ -366,12 +366,19 @@ class AuditTrail:
         sink_batch: Optional[int] = None,
         sink_interval: Optional[float] = None,
         sink_queue_max: int = DEFAULT_SINK_QUEUE_MAX,
+        no_destination_message: Optional[str] = None,
     ) -> None:
         #: The local file every record is appended to, or ``None`` when the file
         #: is disabled (``audit_file=False``) and the sink is the sole destination.
         self.path = pathlib.Path(path) if path is not None else None
         self._sink = sink
         self._warned_no_destination = False
+        # The one-time "nowhere to go" warning names the options of whoever
+        # built this trail: `audit_file` on a governor, `audit_path` on a plugin.
+        self._no_destination_message = no_destination_message or (
+            "watchlight: the audit file is disabled and no audit_sink is configured — "
+            "audit records are discarded. Configure `audit_sink`, or leave `audit_file` on."
+        )
         # Sanitized error kinds already reported — one warning per kind, so a
         # "no running loop" condition never silences a later real failure.
         self._warned_kinds: set[str] = set()
@@ -563,11 +570,7 @@ class AuditTrail:
         if self._warned_no_destination:
             return
         self._warned_no_destination = True
-        print(
-            "watchlight: the audit file is disabled and no audit_sink is configured — "
-            "audit records are discarded. Configure `audit_sink`, or leave `audit_file` on.",
-            file=sys.stderr,
-        )
+        print(self._no_destination_message, file=sys.stderr)
 
     def _warn_once(self, exc: BaseException) -> None:
         # Only the error TYPE is reported — never the record, never a message

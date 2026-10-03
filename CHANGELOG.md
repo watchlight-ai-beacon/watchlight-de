@@ -15,22 +15,23 @@ Each entry links to its release, which carries the reasoning and the measurement
 
 A framework plugin built with `governed_plugin()` now writes a decision record
 for every decision it makes. Until now it wrote only a line when a run started
-and a line when it ended. Anything that counts decisions, such as a quota, now
-counts the plugin's decisions too, so read
+and a line when it ended. Anything that counts decisions in the audit file, such
+as `counters()`, now counts the plugin's decisions too, so read
 [breaking changes](docs/breaking-changes.md) before upgrading.
 
 **Added**
 - The framework-plugin path (`watchlight.langgraph`, `watchlight.pydantic_ai`
-  and `watchlight.claude_agent`) writes one decision record per
-  `handle.authorize_action` call. It is the record `Watchlight.authorize`
-  writes, built by the same function and written through the same audit trail:
-  the agent, the principal, the action, the resource, the verdict and
-  `"event": "decision"`. It never contains the values the call carried. The run
-  lifecycle lines are still written. A `preflight_step` writes no record,
-  because it is a read-only check.
-- A decision record can carry `execution_id`, the id of the run a framework
-  plugin made the decision in. The same id is on the run's lifecycle lines, so
-  the two join. Both lanes' record types include the field.
+  and `watchlight.claude_agent`) writes one decision record per decision. It is
+  the record `Watchlight.authorize` writes, built by the same function and
+  written through the same audit trail: the agent, the principal, the action,
+  the resource, the verdict and `"event": "decision"`. It never contains the
+  values the call carried. This covers every `handle.authorize_action`, and also
+  the calls a plugin refuses on its own after a run is quarantined or severed.
+  A sub-agent's decision names the sub-agent and carries the delegation chain in
+  `actor_chain`. The run lifecycle lines are still written. A `preflight_step`
+  writes no record, because it is advisory and gates nothing.
+- A decision record can carry `execution_id`, the execution id a framework
+  plugin made the decision under. Both lanes' record types include the field.
 - `governed_plugin()` and `in_process_backend()` take `audit_sink`,
   `audit_sink_batch` and `audit_sink_interval`, with the same meaning they have
   on `Watchlight`. The sink receives the plugin's decision records. These
@@ -42,13 +43,38 @@ counts the plugin's decisions too, so read
   governor's own `authorize`.
 
 **Changed**
-- `count_audit_records`, `counters()` and the quota and forensics queries in
-  the examples now count the decisions a framework plugin makes.
-- With `audit_path=None` and no sink, a framework plugin now prints the same
-  one-time warning the governor prints when its records have nowhere to go.
-- The jq recipes in [audit forensics](examples/showcase/audit-forensics/recipes.md)
-  explain how to exclude a plugin's lifecycle lines, which have no `event`
-  field.
+- `count_audit_records`, `counters()` and `watchlight dev` now count the
+  decisions a framework plugin makes.
+- A framework plugin refuses to start a run whose agent name is empty, contains
+  control characters, is longer than 256 characters, or is the reserved
+  `<unconfigured>`, the same names a governor refuses. A principal, action,
+  resource or execution id is stored in the record with control characters
+  replaced and cut to a bounded length; the decision still uses the full value.
+- With `audit_path=None` and no sink, a framework plugin now prints a one-time
+  warning that its decision records are discarded.
+- `examples/context_governance.py` now records its decisions to
+  `.watchlight/audit.jsonl` like the other examples, instead of turning the
+  audit file off.
+- The `langgraph`, `pydantic-ai`, `claude-agent`, `sdk` and `all` extras now
+  require `watchlight-agent-sdk` below 0.9. The recording depends on that
+  package's client, and a new release is checked before it is allowed.
+
+**Fixed**
+- A framework plugin's run lifecycle lines (`execution_started`,
+  `execution_completed`) have neither an `event` nor a `decision` field, and
+  three readers mistook them:
+  - `watchlight dev` showed each one as a denied decision. It now shows only
+    decisions. This also takes out the other non-decision records it used to
+    list: sanitization, screening and egress records (shown as denied) and
+    attenuation records, which it still shows in its attenuation tree.
+  - `counters()` and `count_audit_records` (and `counters()` in TypeScript)
+    counted each one in `skipped`, the count of malformed lines. They now count
+    it as a well-formed record that is not a decision.
+  - The jq recipes in
+    [audit forensics](examples/showcase/audit-forensics/recipes.md) counted
+    each one as a decision. Every recipe now selects decisions with
+    `has("decision") and ((.event // "decision") == "decision")`, and
+    `forensics.py` no longer counts them as decisions.
 
 ## 0.13.1 — 2026-10-02
 

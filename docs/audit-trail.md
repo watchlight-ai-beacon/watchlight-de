@@ -176,11 +176,18 @@ The full counting rules are in
 ## Decisions made by a framework plugin
 
 A framework plugin built with `governed_plugin()` writes one decision record for
-every `handle.authorize_action` call. The record has the same fields as one
-written by `authorize()`, plus `execution_id`, the id of the run it was made in.
+every decision it makes. The record has the same fields as one written by
+`authorize()`, plus `execution_id`, the execution id the decision was made
+under. That is normally the run's id; if you pass your own `execution_id` to
+`authorize_action`, the record carries yours. A sub-agent's decision names the
+sub-agent as `agent` and carries the delegation chain in `actor_chain`. After a
+run is quarantined or severed, the plugin refuses every later call itself, and
+each of those refusals is recorded as a `Deny`. A `preflight_step` is advisory
+and writes no record; the gate is `authorize_action`.
+
 The plugin also writes `execution_started` and `execution_completed` lines when
-a run begins and ends. Those lines name their kind in `event_type`, not
-`event`, and they have no `decision` field.
+a run begins and ends. Those lines name their kind in `event_type`, and they
+have neither an `event` nor a `decision` field.
 
 `governed_plugin()` takes `audit_sink`, `audit_sink_batch` and
 `audit_sink_interval`, and they mean exactly what they mean on `Watchlight`.
@@ -188,11 +195,14 @@ The sink receives the decision records. The lifecycle lines and the sub-agent
 `attenuation` lines are written to the file only.
 
 Writing a record works the same way on both paths. The file is written first,
-then the sink is called. Neither can raise into your code, and neither can
-change or delay a decision: if the file cannot be written, the decision still
-stands, and a sink failure is reported once. The decision itself fails closed
-on both paths. A request the engine cannot evaluate is recorded as a `Deny`
-and then raised.
+then the sink is called. Neither can raise into your code or change a decision:
+if the file cannot be written, the decision still stands, and a sink failure is
+reported once. A synchronous sink without batching does run inside the decision
+and adds its own time to it, on both paths. On the plugin path the decision is
+made on your event loop, so a slow synchronous sink also holds up every other
+task on that loop. Use batching or an `async` sink there. The decision itself
+fails closed on both paths. A request the engine cannot evaluate is recorded as
+a `Deny` and then raised.
 
 The TypeScript adapters, `governTool()` and `governedHooks()`, decide through
 the governor's own `authorize`, so they have always written one decision
@@ -234,9 +244,9 @@ in TypeScript, previews a child of a live scope the same way.
 - Malformed lines in the file are skipped and counted, never echoed.
 - A file shared with a framework plugin also holds its run lifecycle lines,
   which have no `event` field. A query that reads a missing `event` as a
-  decision should also require a `decision` field, for example in jq:
-  `select((.event // "decision") == "decision" and .decision != null)`.
-  `counters()` already does this.
+  decision must also require a `decision` field, for example in jq:
+  `select(has("decision") and ((.event // "decision") == "decision"))`.
+  `counters()` and `watchlight dev` already do this.
 
 ## See also
 

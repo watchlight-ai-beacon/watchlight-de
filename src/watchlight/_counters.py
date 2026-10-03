@@ -287,6 +287,13 @@ def _tally_line(raw: bytes, f: dict, t: _Tally) -> None:
     if rec.get("event", "decision") != "decision":
         t.records += 1
         return
+    # A framework plugin's run lifecycle line (`execution_started`,
+    # `execution_completed`) names its kind in `event_type` and carries neither
+    # `event` nor `decision`. It is well-formed and not a decision — not a
+    # malformed line, so it is not counted as skipped.
+    if "event" not in rec and "decision" not in rec and isinstance(rec.get("event_type"), str):
+        t.records += 1
+        return
     decision = rec.get("decision")
     ts = _parse_iso_millis(rec.get("ts"))
     if not isinstance(decision, str) or ts is None:

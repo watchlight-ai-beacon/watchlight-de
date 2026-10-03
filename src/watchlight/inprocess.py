@@ -18,10 +18,20 @@ asks it for (``handle.authorize_action`` and everything built on it) writes one
 value-free decision record — the same record, built by the same function
 (:func:`watchlight._audit.decision_record`) and written through the same
 :class:`~watchlight._audit.AuditTrail`, as :meth:`watchlight.Watchlight.authorize`.
-The run's ``execution_started`` / ``execution_completed`` lifecycle lines and
-the sub-agent ``attenuation`` lines are written by the SDK's client, to the same
-file, as before. A ``preflight_step`` is a read-only what-if (it does not count
-toward the run's budget) and writes no record.
+A sub-agent's decision names the sub-agent as ``agent`` and carries the
+delegation chain, root first, as ``actor_chain``. The run's
+``execution_started`` / ``execution_completed`` lifecycle lines and the
+sub-agent ``attenuation`` lines are written by the SDK's client, to the same
+file, as before. A ``preflight_step`` is an advisory, read-only what-if (it does
+not count toward the run's budget and gates nothing) and writes no record; the
+gate is ``authorize_action``.
+
+Once a run is quarantined or severed, the plugin's handle refuses every later
+call itself, without asking the backend. A plugin built by ``governed_plugin``
+hands out run handles that record those refusals too (:class:`_AuditedRunHandle`),
+so every refusal is in the trail. A plugin you construct yourself around
+:func:`in_process_backend` records every decision the backend makes, but not
+those refusals.
 
     from watchlight.inprocess import in_process_backend
     from watchlight_langgraph import WatchlightLangGraphPlugin
@@ -36,12 +46,15 @@ Most users never import this directly — the per-framework helpers
 
 from __future__ import annotations
 
+import contextvars
 import functools
+import inspect
 import os
+import re
 import sys
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
-from ._audit import UNCONFIGURED_AGENT, AuditSink, AuditTrail, decision_record
+from ._audit import UNCONFIGURED_AGENT, AuditSink, AuditTrail, _error_kind, decision_record
 
 # A local policy source: a path to a JSON policy file, or an in-memory list of
 # ``{"name", "code"}`` Cedar policy objects. ``None`` loads no policies —
@@ -68,11 +81,15 @@ def in_process_backend(
     :param audit_sink: an additional destination for every DECISION record,
         with exactly the semantics of ``Watchlight(audit_sink=...)``: it receives
         its own copy of the fields the file line carries, after the file append;
-        an awaitable it returns is scheduled on the running loop, never awaited
-        inline; a failure is reported once on stderr and never changes or delays
-        a decision. The run lifecycle and attenuation lines go to the file only.
+        a failure is reported once on stderr and never changes a decision. A
+        synchronous sink runs INSIDE the decision and adds its own time to it —
+        and on this path the decision is made on the event loop, so a slow
+        synchronous sink also blocks every other task on that loop. Use an
+        async sink (an awaitable it returns is scheduled on the running loop,
+        never awaited inline) or batching. The run lifecycle and attenuation
+        lines go to the file only.
     :param audit_sink_batch: as ``Watchlight(audit_sink_batch=...)`` — hand the
-        sink lists from a background worker.
+        sink lists from a background worker, off the decision path.
     :param audit_sink_interval: as ``Watchlight(audit_sink_interval=...)``.
     :returns: a ``watchlight_core.InProcessClient`` — pass it to any Watchlight
         framework plugin via ``governance=``. Every ``authorize`` it answers
@@ -86,13 +103,66 @@ def in_process_backend(
         audit_sink,
         sink_batch=audit_sink_batch,
         sink_interval=audit_sink_interval,
+        no_destination_message=(
+            "watchlight: audit_path is None and no audit_sink is configured — the plugin's "
+            "decision records are discarded. Configure `audit_sink`, or pass an `audit_path`."
+        ),
     )
     return _audited_client_class()(policies, audit_path=audit_path, trail=trail)
 
 
+#: Characters no record field may carry: C0 and C1 controls, DEL, and the two
+#: Unicode line separators. A record is one line of JSON read by people and by
+#: line-oriented tools, so a term carrying one is stored with it replaced.
+_CONTROL = re.compile("[\x00-\x1f\x7f-\x9f  ]")
+#: Bounds on what a record stores of a caller-supplied string. A term longer
+#: than this is stored cut, with a trailing ``…``: the decision used the whole
+#: term, the record keeps enough of it to read.
+_MAX_NAME = 256  # the run's agent name, an execution id
+_MAX_TERM = 1024  # a principal, an action, a resource
+
+@functools.lru_cache(maxsize=None)
+def _short_circuit_errors() -> Tuple[type, ...]:
+    """The refusals a plugin's handle makes WITHOUT asking the backend: a handle
+    that is quarantined or severed refuses every later call itself. The handle
+    wrapper records each one (see :class:`_AuditedRunHandle`)."""
+    from watchlight_core import AgentQuarantinedError, SubtreeSeveredError
+
+    return (AgentQuarantinedError, SubtreeSeveredError)
+
+#: Set by the handle wrapper for the duration of one call; the backend marks it
+#: when it answers. A short-circuit refusal is one the backend never saw.
+_CALL_MARKER: "contextvars.ContextVar[Optional[Dict[str, bool]]]" = contextvars.ContextVar(
+    "watchlight_plugin_call", default=None
+)
+
+
+def _clean(value: Any, limit: int) -> str:
+    text = _CONTROL.sub("�", str(value))
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def _check_agent_slug(slug: Any) -> str:
+    """The run's agent name is what every record of the run carries as
+    ``agent``. Rejected here, at the name, on the same terms the governor
+    rejects an agent name — rather than stored mangled."""
+    if not isinstance(slug, str) or not slug.strip():
+        raise TypeError("start_run: the agent name must be a non-empty string")
+    if _CONTROL.search(slug):
+        raise TypeError("start_run: the agent name must not contain control characters")
+    if len(slug) > _MAX_NAME:
+        raise TypeError(f"start_run: the agent name must be at most {_MAX_NAME} characters")
+    if slug == UNCONFIGURED_AGENT:
+        raise TypeError(
+            f"start_run: {UNCONFIGURED_AGENT!r} is reserved for an agent that was never "
+            "named — it must not name a real agent"
+        )
+    return slug
+
+
 @functools.lru_cache(maxsize=None)
 def _audited_client_class() -> Any:
-    """The SDK's ``InProcessClient``, with one decision record per ``authorize``.
+    """The SDK's ``InProcessClient``, with one decision record per decision.
 
     Built on first use, because the SDK is an optional dependency: ``import
     watchlight`` must never require it."""
@@ -112,19 +182,30 @@ def _audited_client_class() -> Any:
         the SDK's own implementation for the behaviour — the decision itself is
         never computed here. The overrides only observe: the agent's name
         (``resolve_agent``), which agent a session belongs to
-        (``create_session``), and the verdict (``authorize``)."""
+        (``create_session``, ``spawn_subagent``), and the verdict
+        (``authorize``). ``tests/integrations/test_plugin_decision_audit.py``
+        lists the SDK client's public methods, so one added in a later SDK
+        release fails a test until it is classified here."""
 
         def __init__(self, policies: Any = None, *, audit_path: Optional[str], trail: AuditTrail) -> None:
             super().__init__(policies, audit_path=audit_path)
             self._wl_trail = trail
-            # agent id -> the slug the run was started with, so a record names
+            # agent id -> the name the run was started with, so a record names
             # the agent as the developer did ("research-agent"), like the direct
             # path's `agent`, rather than as its derived id.
             self._wl_agent_names: Dict[str, str] = {}
-            # session id -> agent id, for the record's `agent`.
-            self._wl_session_agents: Dict[str, str] = {}
+            # session id -> the delegation chain of agent ids, root first. A
+            # root run's chain is its own agent; a sub-agent's is its parent's
+            # chain plus itself.
+            self._wl_sessions: Dict[str, Tuple[str, ...]] = {}
+            # child run-handle id -> its chain, so a grandchild finds its parent.
+            self._wl_handles: Dict[str, Tuple[str, ...]] = {}
+            self._wl_warned_record = False
+
+        # ── observation: who is acting ───────────────────────────────
 
         async def resolve_agent(self, slug: str) -> Optional[Dict[str, Any]]:
+            _check_agent_slug(slug)
             agent = await super().resolve_agent(slug)
             if isinstance(agent, dict) and agent.get("id"):
                 self._wl_agent_names[str(agent["id"])] = slug
@@ -134,16 +215,44 @@ def _audited_client_class() -> Any:
             response = await super().create_session(agent_id, *args, **kwargs)
             session = (response or {}).get("session") if isinstance(response, dict) else None
             if isinstance(session, dict) and session.get("id"):
-                self._wl_session_agents[str(session["id"])] = str(agent_id)
+                self._wl_sessions[str(session["id"])] = (str(agent_id),)
+            return response
+
+        async def spawn_subagent(
+            self, request_body: Dict[str, Any], session_token: Optional[str] = None
+        ) -> Dict[str, Any]:
+            response = await super().spawn_subagent(request_body, session_token=session_token)
+            try:
+                parent_handle = str(request_body["parent_run_handle_id"])
+                parent_chain = self._wl_handles.get(parent_handle) or (
+                    str(request_body["parent_agent_id"]),
+                )
+                chain = parent_chain + (str(request_body["child_agent_id"]),)
+                child_handle = str(response["child_run_handle_id"])
+                # The session the SDK's handle uses for the child: the one the
+                # backend returned, else `ses_<child run handle>` — the SDK's
+                # own derivation, in the base handle and in every plugin.
+                child_session = response.get("child_session_id") or f"ses_{child_handle}"
+                self._wl_handles[child_handle] = chain
+                self._wl_sessions[str(child_session)] = chain
+            except Exception as exc:  # noqa: BLE001 — observing never changes the spawn
+                self._wl_report_record_failure(exc)
             return response
 
         async def complete_session(self, session_id: str) -> bool:
-            self._wl_session_agents.pop(session_id, None)
+            self._wl_forget(session_id)
             return await super().complete_session(session_id)
 
         async def terminate_session(self, session_id: str, reason: str = "manual") -> bool:
-            self._wl_session_agents.pop(session_id, None)
+            self._wl_forget(session_id)
             return await super().terminate_session(session_id, reason)
+
+        def _wl_forget(self, session_id: str) -> None:
+            self._wl_sessions.pop(session_id, None)
+            if isinstance(session_id, str) and session_id.startswith("ses_"):
+                self._wl_handles.pop(session_id[4:], None)
+
+        # ── the decision ─────────────────────────────────────────────
 
         async def authorize(
             self,
@@ -156,6 +265,9 @@ def _audited_client_class() -> Any:
             intent: Optional[Dict[str, Any]] = None,
             session_token: Optional[str] = None,
         ) -> Dict[str, Any]:
+            marker = _CALL_MARKER.get()
+            if marker is not None:
+                marker["reached"] = True
             try:
                 result = await super().authorize(
                     principal,
@@ -170,52 +282,211 @@ def _audited_client_class() -> Any:
             except Exception:
                 # The direct path's rule: a request the engine cannot evaluate
                 # is a refusal like any other — recorded, then raised as itself.
-                self._wl_record(principal, action, resource, "Deny", execution_id, session_id)
+                self._wl_record(session_id, None, principal, action, resource, "Deny", execution_id)
                 raise
-            # The verdict the plugin acts on: only an engine "Allow" lets the
-            # call proceed; anything else is a refusal, and is recorded as one.
+            # The verdict the plugin acts on. The SDK reads it the same way —
+            # case- and space-insensitively — and anything but an Allow is a
+            # refusal (a Deny, a Quarantine, a Terminate, a SeverSubtree, …).
             verdict = result.get("decision") if isinstance(result, dict) else None
+            allowed = str(verdict).strip().lower() == "allow"
             self._wl_record(
-                principal, action, resource,
-                "Allow" if verdict == "Allow" else "Deny",
-                execution_id, session_id,
+                session_id, None, principal, action, resource,
+                "Allow" if allowed else "Deny", execution_id,
             )
             return result
 
+        def _wl_record_refusal(self, handle: Any, action: Any, resource: Any, principal: Any) -> None:
+            """Record a refusal the plugin's handle made without asking us."""
+            try:
+                agent_id = str(getattr(handle, "agent_uuid", "") or "")
+                session_id = getattr(handle, "session_id", None)
+                execution_id = getattr(handle, "execution_id", None)
+            except Exception as exc:  # noqa: BLE001
+                self._wl_report_record_failure(exc)
+                return
+            self._wl_record(
+                session_id,
+                agent_id or None,
+                principal or (f'Agent::"{agent_id}"' if agent_id else ""),
+                action,
+                resource,
+                "Deny",
+                execution_id,
+            )
+
         def _wl_record(
             self,
+            session_id: Optional[str],
+            agent_id: Optional[str],
             principal: Any,
             action: Any,
             resource: Any,
             decision: str,
             execution_id: Optional[str],
-            session_id: Optional[str],
         ) -> None:
             # Names only: the principal, the action and the resource label, as
             # the engine received them. The Cedar `context` and the declared
             # `intent` — where a call's values travel — are never read here.
-            agent_id = self._wl_session_agents.get(session_id or "")
-            agent = (
-                self._wl_agent_names.get(agent_id, agent_id)
-                if agent_id
-                else UNCONFIGURED_AGENT
-            )
-            # AuditTrail.write never raises, but the record is built here; the
-            # direct path's guarantee is that auditing never changes a decision.
+            # Everything, the lookups included, is inside the try: building the
+            # record must never alter, delay or replace a decision.
             try:
-                record = decision_record(
-                    agent=str(agent),
-                    principal=str(principal),
-                    intent=str(action),
-                    resource=str(resource),
-                    decision=decision,
-                    execution_id=str(execution_id) if execution_id else None,
+                chain = self._wl_sessions.get(session_id or "") or (
+                    (agent_id,) if agent_id else ()
                 )
-            except Exception:  # noqa: BLE001 — never let auditing alter a decision
+                names = [_clean(self._wl_agent_names.get(a, a), _MAX_NAME) for a in chain]
+                record = decision_record(
+                    agent=names[-1] if names else UNCONFIGURED_AGENT,
+                    actor_chain=names if len(names) > 1 else None,
+                    principal=_clean(principal, _MAX_TERM),
+                    intent=_clean(action, _MAX_TERM),
+                    resource=_clean(resource, _MAX_TERM),
+                    decision=decision,
+                    execution_id=_clean(execution_id, _MAX_NAME) if execution_id else None,
+                )
+            except Exception as exc:  # noqa: BLE001 — never let auditing alter a decision
+                self._wl_report_record_failure(exc)
                 return
             self._wl_trail.write(record)
 
+        def _wl_report_record_failure(self, exc: BaseException) -> None:
+            # A record that could not be built is a hole in the trail; said
+            # once, by error type only, the way a failing sink is reported.
+            if self._wl_warned_record:
+                return
+            self._wl_warned_record = True
+            print(
+                f"watchlight: a framework-plugin decision could not be recorded ({_error_kind(exc)}); "
+                "further failures are suppressed",
+                file=sys.stderr,
+            )
+
     return AuditedInProcessClient
+
+
+class _AuditedRunHandle:
+    """The run handle a governed plugin hands out, recording every refusal.
+
+    A plugin's handle refuses some calls ITSELF, without asking the backend: once
+    a run is quarantined or severed, every later ``authorize_action`` raises at
+    once. Those refusals never reach :class:`AuditedInProcessClient`, so this
+    wrapper records them. Everything else is the SDK's handle, unchanged: every
+    attribute and method is delegated, and the decision is always the handle's.
+
+    A refusal is recorded here only when the backend did NOT answer the call —
+    one it answered is already recorded — so each decision is recorded once."""
+
+    __slots__ = ("_wl_inner", "_wl_backend")
+
+    def __init__(self, inner: Any, backend: Any) -> None:
+        object.__setattr__(self, "_wl_inner", inner)
+        object.__setattr__(self, "_wl_backend", backend)
+
+    def __getattr__(self, name: str) -> Any:
+        value = getattr(self._wl_inner, name)
+        if name == "guarded_tool" and callable(value):
+            return self._wl_guarded_tool(value)
+        return value
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        setattr(self._wl_inner, name, value)
+
+    def __repr__(self) -> str:
+        return repr(self._wl_inner)
+
+    async def __aenter__(self) -> "_AuditedRunHandle":
+        await self._wl_inner.__aenter__()
+        return self
+
+    async def __aexit__(self, *exc_info: Any) -> Any:
+        return await self._wl_inner.__aexit__(*exc_info)
+
+    async def authorize_action(self, *args: Any, **kwargs: Any) -> Any:
+        method = self._wl_inner.authorize_action
+        return await self._wl_watch(method, args, kwargs)
+
+    async def authorize_action_detailed(self, *args: Any, **kwargs: Any) -> Any:
+        method = self._wl_inner.authorize_action_detailed
+        return await self._wl_watch(method, args, kwargs)
+
+    async def spawn_subagent(self, *args: Any, **kwargs: Any) -> Any:
+        child = await self._wl_inner.spawn_subagent(*args, **kwargs)
+        return _AuditedRunHandle(child, self._wl_backend)
+
+    async def _wl_watch(self, method: Any, args: tuple, kwargs: dict) -> Any:
+        try:
+            bound = inspect.signature(method).bind(*args, **kwargs).arguments
+        except (TypeError, ValueError):
+            bound = {}
+        return await self._wl_run(
+            method(*args, **kwargs),
+            bound.get("action"),
+            bound.get("resource"),
+            bound.get("principal"),
+        )
+
+    async def _wl_run(self, call: Any, action: Any, resource: Any, principal: Any) -> Any:
+        marker: Dict[str, bool] = {"reached": False}
+        token = _CALL_MARKER.set(marker)
+        try:
+            return await call
+        except Exception as exc:
+            if not marker["reached"] and isinstance(exc, _short_circuit_errors()):
+                self._wl_backend._wl_record_refusal(self._wl_inner, action, resource, principal)
+            raise
+        finally:
+            _CALL_MARKER.reset(token)
+
+    def _wl_guarded_tool(self, guarded_tool: Any) -> Any:
+        """A framework's tool decorator (Pydantic AI's ``guarded_tool``) calls
+        the SDK handle's own ``authorize_action``, not this wrapper's, so the
+        decorated tool is watched here instead."""
+
+        @functools.wraps(guarded_tool)
+        def factory(*args: Any, **kwargs: Any) -> Any:
+            try:
+                action = inspect.signature(guarded_tool).bind(*args, **kwargs).arguments.get(
+                    "action", "execute"
+                )
+            except (TypeError, ValueError):
+                action = None
+            inner_decorator = guarded_tool(*args, **kwargs)
+
+            def decorator(fn: Any) -> Any:
+                governed = inner_decorator(fn)
+                resource = getattr(fn, "__name__", None)
+
+                @functools.wraps(governed)
+                async def watched(*a: Any, **k: Any) -> Any:
+                    return await self._wl_run(governed(*a, **k), action, resource, None)
+
+                return watched
+
+            return decorator
+
+        return factory
+
+
+@functools.lru_cache(maxsize=None)
+def _audited_plugin_class(plugin_cls: type) -> type:
+    """``plugin_cls``, handing out run handles that record every refusal.
+
+    A subclass, not a patch: nothing in the SDK or the plugin is modified. Its
+    one override, ``start_run``, wraps the handle the plugin returns in
+    :class:`_AuditedRunHandle` when the plugin is governed by the in-process
+    backend; with any other backend the handle is returned as it is."""
+
+    class AuditedPlugin(plugin_cls):  # type: ignore[misc, valid-type]
+        async def start_run(self, *args: Any, **kwargs: Any) -> Any:
+            handle = await super().start_run(*args, **kwargs)
+            backend = getattr(self, "apdp", None)
+            if callable(getattr(backend, "_wl_record_refusal", None)):
+                return _AuditedRunHandle(handle, backend)
+            return handle
+
+    AuditedPlugin.__name__ = plugin_cls.__name__
+    AuditedPlugin.__qualname__ = plugin_cls.__qualname__
+    AuditedPlugin.__doc__ = plugin_cls.__doc__
+    return AuditedPlugin
 
 
 # Terms a ``governed_plugin`` factory cannot take, and what to do instead. A
