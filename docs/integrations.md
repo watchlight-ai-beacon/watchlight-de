@@ -31,6 +31,85 @@ against a running policy service instead of in-process.
 
 Runnable agents for all three frameworks are in [`examples/`](../examples/).
 
+### What the plugin records
+
+Every decision the plugin makes writes one decision record to the audit trail.
+It is the same record that `Watchlight.authorize` writes: the agent, the
+principal, the action (in the `intent` field), the resource, the verdict, and
+`"event": "decision"`. It never contains the values the call carried. The Cedar
+`context` and the declared intent are not recorded.
+
+A record written by a plugin has two differences from one written by the
+governor:
+
+- It carries `execution_id`, the execution id the decision was made under. That
+  is normally the run's id, which the run's `execution_started` and
+  `execution_completed` lines also carry. If you pass your own `execution_id` to
+  `authorize_action`, the record carries yours, and no lifecycle line has it.
+- It has no `decision_id`, because the plugin does not return one to join on.
+
+A decision made by a sub-agent names the sub-agent as `agent`, and carries the
+delegation chain, root first, in `actor_chain`, the same field a governor made
+with `delegate()` writes. Once a run is quarantined or severed, the plugin
+refuses every later call itself, without asking the policy engine. Each of
+those refusals is recorded as a `Deny` too. That covers the handle
+`start_run` returns, every sub-agent handle `spawn_subagent` returns, the
+Claude Agent SDK's native Task sub-agents, and the handles Pydantic AI's
+automatic instrumentation opens. One route is not covered: a handle you read
+from `watchlight_core.current_subagent_handle()` is the SDK's own handle, so a
+refusal it makes on its own is not recorded. Use the handle that
+`spawn_subagent` returned instead.
+
+The principal, action, resource, `execution_id` and agent names are recorded
+exactly as the call gave them, never shortened or rewritten, so `counters()`
+can match them exactly. The JSON encoding keeps every record on one line,
+whatever characters they contain. Agent names, including a sub-agent name
+chosen by the framework, are recorded as given; a plugin agent named
+`<unconfigured>` is recorded under that name.
+
+The run handle a governed plugin returns is a wrapper around the SDK's handle.
+It behaves the same, but `isinstance(handle, BaseRunHandle)` is `False` for it.
+
+The gate is `handle.authorize_action`. A `handle.preflight_step` call is
+advisory: it tells you what `authorize_action` would decide, but it does not
+stop anything, does not count toward the run's budget, and writes no record.
+
+The run itself still writes two lifecycle lines to the same file:
+`execution_started` when the run begins and `execution_completed` when it ends.
+These lines name their kind in an `event_type` field and have neither an
+`event` nor a `decision` field.
+
+Before this release, the plugin wrote only the two lifecycle lines, so
+`counters()` and the forensics queries saw none of its decisions. They count
+them now. See [breaking changes](breaking-changes.md) if a quota of yours counts
+decisions.
+
+To send the decision records to your own store as well, pass the same sink
+options that `Watchlight` takes. They have the same meaning there:
+
+```python
+plugin = governed_plugin(
+    "watchlight.policy.json",
+    audit_sink=insert_many,      # receives a list, because batching is on
+    audit_sink_batch=100,        # hand the sink lists from a background worker
+    audit_sink_interval=2.0,     # and hand over a partial list after 2 seconds
+)
+```
+
+The sink receives the decision records only. The lifecycle and attenuation
+lines go to the file. A sink failure never changes a decision, and it is
+reported once on stderr. A plain (synchronous) sink without batching runs
+inside the decision and adds its own time to it. On the plugin path the
+decision is made on your event loop, so a slow synchronous sink also holds up
+every other task on that loop. Use batching, as above, or an `async` sink,
+which is scheduled on the loop instead of awaited.
+
+When `WATCHLIGHT_APDP_URL` is set, the policy service records the decisions,
+and the sink options are not used. The plugin prints a warning once to say so.
+If you build a plugin yourself around `in_process_backend()` instead of using
+`governed_plugin()`, every decision the engine makes is recorded, but the
+refusals the plugin makes on its own after a quarantine or a sever are not.
+
 ### Framework-created subagents inherit framework tools
 
 Some frameworks automatically create a general-purpose subagent and give it

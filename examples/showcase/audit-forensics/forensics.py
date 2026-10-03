@@ -35,6 +35,10 @@ KINDS = ("decision", "sanitization", "egress", "attenuation", "screening")
 
 
 def kind_of(record: dict) -> str:
+    # A framework plugin's run lifecycle lines have neither `event` nor
+    # `decision`; they are named by `event_type` and are not decisions.
+    if "event" not in record and "decision" not in record:
+        return str(record.get("event_type") or "unknown")
     return record.get("event") or "decision"
 
 

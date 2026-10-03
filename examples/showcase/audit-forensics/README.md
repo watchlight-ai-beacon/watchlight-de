@@ -85,9 +85,13 @@ it, abridged:
 {"ts": "…", "agent": "ticket-agent", "principal": "User::\"alice\"", "intent": "read", "event": "egress", "resource": "ticket/T-1", "replaced": true, "decision_id": "5b096b77-…"}
 ```
 
-So `.event // "decision"` names any record's kind, and
-`select((.event // "decision") == "decision")` picks out the decisions, from
-either release. `select(.event == null)` finds none written by 0.13.0 or later. `decision_id` is what joins the three.
+So `.event // "decision"` names the kind of any record this SDK writes, and
+`select(has("decision") and ((.event // "decision") == "decision"))` picks out
+the decisions, from either release. The `has("decision")` test matters on a trail
+a Python framework plugin also writes to: its run lifecycle lines,
+`execution_started` and `execution_completed`, name their kind in `event_type`
+and have neither `event` nor `decision`. `select(.event == null and has("decision"))`
+finds no decision written by 0.13.0 or later. `decision_id` is what joins the three.
 
 Both SDKs also ship types for these five records. They are described in
 [the audit trail](../../../docs/audit-trail.md#send-records-to-your-own-store).
@@ -102,7 +106,7 @@ Two fields ride along on every kind but `attenuation`:
 | `actor_chain` | string[], optional | the ordered delegation chain, root first. Written only through a `delegate()`d governor |
 | `principal` | string | the subject. Required on `decision` and `egress`, and carried by `sanitization` and `screening` when the report names one |
 
-### `decision` — written by `authorize()`, and so by every governed tool call
+### `decision` — written by `authorize()`, by every governed tool call, and by every framework-plugin decision
 
 | Field | Type | Notes |
 |---|---|---|
@@ -114,8 +118,9 @@ Two fields ride along on every kind but `attenuation`:
 | `resource` | string | `tool/<name>` for a governed tool with no `resource` binding |
 | `decision` | string | `Allow`, `Deny` or `NeedsApproval` |
 | `actor_chain` | string[], optional | see above |
-| `decision_id` | string, optional | the join key, on every record the in-process engine produces |
+| `decision_id` | string, optional | the join key, on every decision the governor makes. A framework-plugin decision has none, because the plugin returns no id to join on; it carries `execution_id` instead |
 | `approved` | `true`, optional | only when an approval token downgraded a `NeedsApproval` |
+| `execution_id` | string, optional | only on a decision a Python framework plugin made inside a run: the run's id, which its `execution_started` and `execution_completed` lines carry too |
 
 An approved action is **two** records: the hold, then a second `Allow` with
 `approved: true` under a new `decision_id`. The deny reason is never written —

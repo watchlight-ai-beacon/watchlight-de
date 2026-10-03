@@ -65,6 +65,8 @@ from ._approval import (
     resolve_approval_keys,
     split_env_secrets,
 )
+from ._audit import UNCONFIGURED_AGENT as _UNCONFIGURED_AGENT
+from ._audit import decision_record as _decision_record
 from ._audit import (
     AttenuationRecord,
     AuditRecord,
@@ -209,7 +211,7 @@ _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 #: An unconfigured governor also asserts NO actor — it sets neither
 #: :data:`ACTOR_CONTEXT_KEY` nor :data:`ACTOR_CHAIN_CONTEXT_KEY` — so no policy
 #: naming it can match. Name the agent and both keys appear.
-UNCONFIGURED_AGENT = "<unconfigured>"
+UNCONFIGURED_AGENT = _UNCONFIGURED_AGENT
 
 #: The environment variable that names the agent when the ``agent`` argument does
 #: not. A blank value counts as unset.
@@ -3685,22 +3687,20 @@ class Watchlight:
         print(f"watchlight: {tag:6} {intent:9} {resource}{trailer}")
         # Value-free audit: argument VALUES never enter the trail — only the
         # governance decision + correlation id. Mirrors the production contract.
-        record: dict[str, Any] = {
-            "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            "agent": self.agent,
-            **self._chain_field(),
+        # The shape is built in one place, shared with the framework-plugin path
+        # (`watchlight.inprocess`), so the two cannot drift apart.
+        record = _decision_record(
+            agent=self.agent,
+            actor_chain=self._chain_field().get("actor_chain"),
             # Never the agent standing in for an unnamed subject: `_principal`
             # has already resolved it (to the typed Agent::"<name>" by default).
-            "principal": self._principal(principal),
-            "intent": intent,
-            "event": "decision",
-            "resource": resource,
-            "decision": decision,
-        }
-        if decision_id:
-            record["decision_id"] = decision_id
-        if approved:
-            record["approved"] = True
+            principal=self._principal(principal),
+            intent=intent,
+            resource=resource,
+            decision=decision,
+            decision_id=decision_id,
+            approved=approved,
+        )
         self._write_audit(record)
 
     def _audit_sanitize(self, intent: str, resource: str, result: dict) -> None:

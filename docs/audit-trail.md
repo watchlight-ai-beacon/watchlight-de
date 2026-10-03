@@ -2,6 +2,9 @@
 
 Every decision is appended to `.watchlight/audit.jsonl` as one JSON line — the
 verdict, who it was for, what was asked. It never records the argument values.
+That holds for a decision made through a framework plugin
+(`watchlight.<framework>.governed_plugin`) as well as for one made through the
+governor: both write the same record, through the same code.
 
 ## Watch decisions land
 
@@ -170,6 +173,47 @@ async def fetch_document(o): ...
 The full counting rules are in
 [`examples/patterns/quotas.md`](../examples/patterns/quotas.md).
 
+## Decisions made by a framework plugin
+
+A framework plugin built with `governed_plugin()` writes one decision record for
+every decision it makes. The record has the same fields as one written by
+`authorize()`, plus `execution_id`, the execution id the decision was made
+under. That is normally the run's id; if you pass your own `execution_id` to
+`authorize_action`, the record carries yours. A sub-agent's decision names the
+sub-agent as `agent` and carries the delegation chain in `actor_chain`. After a
+run is quarantined or severed, the plugin refuses every later call itself, and
+each of those refusals is recorded as a `Deny`. The one exception is a handle
+read from `watchlight_core.current_subagent_handle()`, which is the SDK's own
+handle; see [integrations](integrations.md#what-the-plugin-records). A
+`preflight_step` is advisory and writes no record; the gate is
+`authorize_action`. Every field is recorded exactly as given, as on the direct
+path, so `counters()` matches it exactly. The one limit is that `counters()`
+refuses a principal containing control characters with a `TypeError`, so a
+quota keyed on such a principal fails closed with that error.
+
+The plugin also writes `execution_started` and `execution_completed` lines when
+a run begins and ends. Those lines name their kind in `event_type`, and they
+have neither an `event` nor a `decision` field.
+
+`governed_plugin()` takes `audit_sink`, `audit_sink_batch` and
+`audit_sink_interval`, and they mean exactly what they mean on `Watchlight`.
+The sink receives the decision records. The lifecycle lines and the sub-agent
+`attenuation` lines are written to the file only.
+
+Writing a record works the same way on both paths. The file is written first,
+then the sink is called. Neither can raise into your code or change a decision:
+if the file cannot be written, the decision still stands, and a sink failure is
+reported once. A synchronous sink without batching does run inside the decision
+and adds its own time to it, on both paths. On the plugin path the decision is
+made on your event loop, so a slow synchronous sink also holds up every other
+task on that loop. Use batching or an `async` sink there. The decision itself
+fails closed on both paths. A request the engine cannot evaluate is recorded as
+a `Deny` and then raised.
+
+The TypeScript adapters, `governTool()` and `governedHooks()`, decide through
+the governor's own `authorize`, so they have always written one decision
+record per decision. They write no run lifecycle lines.
+
 ## Show a scope without recording it
 
 `scope()` and `attenuate()` grant authority, and every grant is recorded. To show
@@ -204,6 +248,11 @@ in TypeScript, previews a child of a live scope the same way.
 - `authorize` takes a context you have already resolved. Handing it an
   unresolved awaitable raises `UnresolvedContextError` and records no decision.
 - Malformed lines in the file are skipped and counted, never echoed.
+- A file shared with a framework plugin also holds its run lifecycle lines,
+  which have no `event` field. A query that reads a missing `event` as a
+  decision must also require a `decision` field, for example in jq:
+  `select(has("decision") and ((.event // "decision") == "decision"))`.
+  `counters()` and `watchlight dev` already do this.
 
 ## See also
 

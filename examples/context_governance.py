@@ -45,8 +45,10 @@ POLICIES = [
 
 async def main() -> None:
     # `in_process_backend` returns the real in-process engine client (the same
-    # object the framework plugins use). No server, no database.
-    engine = in_process_backend(POLICIES, audit_path=None)
+    # object the framework plugins use). No server, no database. Each decision
+    # is recorded, value-free, in .watchlight/audit.jsonl — `watchlight dev`
+    # shows them.
+    engine = in_process_backend(POLICIES)
 
     async def decide(tool: str, tool_class: str | None) -> str:
         ctx = {"tool_class": tool_class} if tool_class is not None else {}

@@ -8,6 +8,41 @@ different verdict. Only some announce themselves; the rest surface as a denial
 that looks exactly like a policy of yours doing its job. Read every entry
 between the version you are on and the one you are moving to.
 
+## Unreleased
+
+**A framework plugin now records every decision, so counts of decisions in the
+audit file go up.** This affects you if you use `watchlight.langgraph`,
+`watchlight.pydantic_ai` or `watchlight.claude_agent` through
+`governed_plugin()`. Each decision the plugin makes now appends one decision
+record to the audit file. Before, the plugin wrote only one line when a run
+started and one when it ended. So `counters()` and `count_audit_records`, which
+read that file, now count the plugin's decisions as well. A quota built on them
+that was never reached can now be reached, and an action it limits is then
+denied. This only ever moves in the closed direction: more decisions are
+counted, never fewer.
+
+A quota that counts rows in your own store, through a `counter_source`, does
+not change on upgrade. The plugin never had a sink, so nothing of the plugin's
+reached your store. It changes when you pass the new `audit_sink` option to
+`governed_plugin()`: from then on the plugin's decisions reach your store, and
+a query that filters on `coalesce(record->>'event', 'decision') = 'decision'`
+counts them.
+
+To fix it, check every quota or alert that counts decisions for an agent that
+runs through a plugin, and raise its limit if it was set while the plugin's
+decisions were missing. To count only the decisions made through the governor,
+leave out records that carry `execution_id`, which only plugin decisions have.
+
+The audit file also grows by one line per plugin decision. If you ship the file
+somewhere with a size limit, allow for that.
+
+**A governed plugin's run handle is a wrapper.** The handle that
+`governed_plugin()`'s `start_run` returns, and every sub-agent handle it
+spawns, now wraps the SDK's handle so that it can record the refusals the
+handle makes on its own. It behaves the same, but
+`isinstance(handle, BaseRunHandle)` is now `False`. If your code checks the
+handle's type, check for the method it needs instead.
+
 ## 0.13.1
 
 **The `mcp` extra now requires `watchlight-mcp` 0.4.4, which refuses a

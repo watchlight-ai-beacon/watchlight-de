@@ -11,6 +11,73 @@ upgrade is worth your afternoon.
 
 Each entry links to its release, which carries the reasoning and the measurements.
 
+## Unreleased
+
+A framework plugin built with `governed_plugin()` now writes a decision record
+for every decision it makes. Until now it wrote only a line when a run started
+and a line when it ended. Anything that counts decisions in the audit file, such
+as `counters()`, now counts the plugin's decisions too, so read
+[breaking changes](docs/breaking-changes.md) before upgrading.
+
+**Added**
+- The framework-plugin path (`watchlight.langgraph`, `watchlight.pydantic_ai`
+  and `watchlight.claude_agent`) writes one decision record per decision. It is
+  the record `Watchlight.authorize` writes, built by the same function and
+  written through the same audit trail: the agent, the principal, the action,
+  the resource, the verdict and `"event": "decision"`. It never contains the
+  values the call carried. This covers every `handle.authorize_action`, and also
+  the calls a plugin refuses on its own after a run is quarantined or severed,
+  on the root handle, on sub-agent handles, on the Claude Agent SDK's native
+  Task sub-agents and on the handles Pydantic AI's instrumentation opens. A
+  handle read from `watchlight_core.current_subagent_handle()` is the one route
+  whose self-made refusals are not recorded. Every field is stored exactly as
+  given, as on the direct path, so counting matches it.
+  A sub-agent's decision names the sub-agent and carries the delegation chain in
+  `actor_chain`. The run lifecycle lines are still written. A `preflight_step`
+  writes no record, because it is advisory and gates nothing. The run handle a
+  governed plugin returns is a wrapper, so `isinstance(handle, BaseRunHandle)`
+  is `False` for it.
+- A decision record can carry `execution_id`, the execution id a framework
+  plugin made the decision under. Both lanes' record types include the field.
+- `governed_plugin()` and `in_process_backend()` take `audit_sink`,
+  `audit_sink_batch` and `audit_sink_interval`, with the same meaning they have
+  on `Watchlight`. The sink receives the plugin's decision records. These
+  options are never passed on to the plugin. When `WATCHLIGHT_APDP_URL` is set
+  they are not used, and a warning says so once.
+- Tests in both lanes check that every adapter writes exactly one decision
+  record per decision and no call values. In TypeScript, `governTool()` and
+  `governedHooks()` already did this, because they decide through the
+  governor's own `authorize`.
+
+**Changed**
+- `count_audit_records`, `counters()` and `watchlight dev` now count the
+  decisions a framework plugin makes.
+- With `audit_path=None` and no sink, a framework plugin now prints a one-time
+  warning that its decision records are discarded.
+- `examples/context_governance.py` now records its decisions to
+  `.watchlight/audit.jsonl` like the other examples, instead of turning the
+  audit file off.
+- The `langgraph`, `pydantic-ai`, `claude-agent`, `sdk` and `all` extras now
+  require `watchlight-agent-sdk` below 0.9. The recording depends on that
+  package's client, and a new release is checked before it is allowed.
+
+**Fixed**
+- A framework plugin's run lifecycle lines (`execution_started`,
+  `execution_completed`) have neither an `event` nor a `decision` field, and
+  three readers mistook them:
+  - `watchlight dev` showed each one as a denied decision. It now shows only
+    decisions. This also takes out the other non-decision records it used to
+    list: sanitization, screening and egress records (shown as denied) and
+    attenuation records, which it still shows in its attenuation tree.
+  - `counters()` and `count_audit_records` (and `counters()` in TypeScript)
+    counted each one in `skipped`, the count of malformed lines. They now count
+    it as a well-formed record that is not a decision.
+  - The jq recipes in
+    [audit forensics](examples/showcase/audit-forensics/recipes.md) counted
+    each one as a decision. Every recipe now selects decisions with
+    `has("decision") and ((.event // "decision") == "decision")`, and
+    `forensics.py` no longer counts them as decisions.
+
 ## 0.13.1 — 2026-10-02
 
 The `mcp` and `all` extras now install `watchlight-mcp` 0.4.4 or later, which

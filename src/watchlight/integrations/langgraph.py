@@ -77,9 +77,15 @@ def governed_plugin(
 
     :param policies: local Cedar policies — a path to a JSON policy file or an
         in-memory list of ``{"name", "code"}`` objects. ``None`` → fail-closed.
-    :param audit_path: local JSONL lineage sink (value-free). ``None`` disables.
+    :param audit_path: the local audit file (value-free). ``None`` disables it.
+        Every ``handle.authorize_action`` writes one decision record to it — the
+        record ``Watchlight.authorize`` writes, plus the run's ``execution_id``
+        — next to the run's lifecycle lines.
     :param plugin_kwargs: forwarded to ``WatchlightLangGraphPlugin`` (e.g.
-        ``tenant_id``, ``log_decisions``).
+        ``tenant_id``, ``log_decisions``) — except ``audit_sink``,
+        ``audit_sink_batch`` and ``audit_sink_interval``, which configure the
+        audit trail exactly as they do on ``Watchlight`` and are never
+        forwarded.
     """
     return build_governed_plugin(
         INTEGRATION, policies, audit_path=audit_path, plugin_kwargs=plugin_kwargs
