@@ -646,6 +646,11 @@ def test_plugin_refusals_after_a_quarantine_never_record_an_oversized_name(tmp_p
     decisions = [json.loads(line) for line in lines if b'"event": "decision"' in line]
     assert [d.get("oversized") for d in decisions] == [None, True, True, True]
     assert huge[:64].encode() not in audit.read_bytes()
+    # A short refused term carries only its length — never a digest — like the
+    # small fields the audit funnel keeps; a long one also carries a digest.
+    tab = decisions[3]["resource"]
+    assert tab == {"omitted": "refused", "bytes": len('Tool::"a\nb"')}
+    assert decisions[1]["intent"]["omitted"] == "refused" and "sha256" in decisions[1]["intent"]
     # Each marked refusal counts toward every quota (fail-closed), so a refusal
     # with a refused name can never make a denied-count under-count.
     r = count_audit_records(audit, 'User::"anyone"', outcome="denied")
@@ -672,5 +677,16 @@ def test_a_plugin_agent_name_is_never_refused_and_never_written_oversized(tmp_pa
     asyncio.run(run())
     capsys.readouterr()
     [decision] = [json.loads(line) for line in trail_lines(tmp_path) if b'"event": "decision"' in line]
-    assert decision["oversized"] is True and decision["agent"]["omitted"] == "oversized"
+    assert decision["oversized"] is True and decision["agent"]["omitted"] == "refused"
+    assert decision["agent"]["bytes"] == len(long_name) and "sha256" in decision["agent"]
     assert long_name.encode() not in audit.read_bytes()
+
+
+def test_the_shortened_line_is_checked_like_the_fast_path(monkeypatch):
+    """The shortened line goes through the same length-and-depth test as the
+    fast path; one that failed it would be replaced by the minimal form."""
+    from watchlight import _audit
+
+    monkeypatch.setattr(_audit, "_fits", lambda line: False)
+    out = json.loads(_audit.bounded_line({"ts": "t", "event": "decision", "x": "y" * (600 * 1024)}))
+    assert out == {"ts": "t", "event": "decision", "oversized": True, "fields": 3}

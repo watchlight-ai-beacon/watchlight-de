@@ -414,7 +414,8 @@ export function boundedLine(record: Record<string, unknown>): string {
     entry.set(key, replaced);
   }
   const line = JSON.stringify(fields);
-  if (pythonLength(line) <= MAX_AUDIT_RECORD_BYTES) return line;
+  // The same test as the fast path — length AND depth — on what is written.
+  if (fits(line)) return line;
   // Only a record with thousands of fields gets here: keep what says what it
   // was, and how many fields it had.
   const kept: Record<string, unknown> = {};

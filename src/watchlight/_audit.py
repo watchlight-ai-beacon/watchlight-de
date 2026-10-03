@@ -467,7 +467,8 @@ def bounded_line(record: Dict[str, Any]) -> str:
         total += replaced - entry[key]
         entry[key] = replaced
     line = _dumps(fields)
-    if len(line) <= MAX_AUDIT_RECORD_BYTES:
+    # The same test as the fast path — length AND depth — on what is written.
+    if _fits(line):
         return line
     # Only a record with thousands of fields gets here: keep what says what it
     # was, and how many fields it had.

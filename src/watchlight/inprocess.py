@@ -56,7 +56,15 @@ import sys
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from . import principals
-from ._audit import UNCONFIGURED_AGENT, AuditSink, AuditTrail, _error_kind, _marker, decision_record
+from ._audit import (
+    _SMALL_FIELD_BYTES,
+    UNCONFIGURED_AGENT,
+    AuditSink,
+    AuditTrail,
+    _error_kind,
+    _marker,
+    decision_record,
+)
 
 # A local policy source: a path to a JSON policy file, or an in-memory list of
 # ``{"name", "code"}`` Cedar policy objects. ``None`` loads no policies —
@@ -121,6 +129,19 @@ def in_process_backend(
 #: — are recorded as given.
 
 @functools.lru_cache(maxsize=None)
+def _refused_marker(value: Any) -> Dict[str, Any]:
+    """The value-free stand-in for a plugin term that broke a name rule: its
+    length in bytes and, as the audit funnel does, a digest only for a value
+    longer than 256 bytes — a short name is never digested. A non-string has
+    neither."""
+    if not isinstance(value, str):
+        return {"omitted": "refused"}
+    size = len(str.encode(value, "utf-8", "surrogatepass"))
+    if size <= _SMALL_FIELD_BYTES:
+        return {"omitted": "refused", "bytes": size}
+    return _marker(value, "refused")
+
+
 def _short_circuit_errors() -> Tuple[type, ...]:
     """The refusals a plugin's handle makes WITHOUT asking the backend: a handle
     that is quarantined or severed refuses every later call itself. The handle
@@ -335,7 +356,7 @@ def _audited_client_class() -> Any:
                         return check(value)
                     except Exception:  # noqa: BLE001 — any rule broken
                         broken = True
-                        return _marker(value if isinstance(value, str) else repr(type(value)))
+                        return _refused_marker(value)
 
                 # Agent names come from `start_run` / `spawn_subagent` and are
                 # never refused (a framework's instrumentation could swallow

@@ -63,7 +63,12 @@ name you give the constructor, `as` / `as_`, `delegate`, `scope`,
 governed tool whose name breaks a rule does not run. A framework plugin's
 `handle.authorize_action` applies the same rules to its principal, action,
 resource and `execution_id`: a resource holding a tab, for example, now raises
-a `TypeError` and is not recorded. Earlier releases accepted
+a `TypeError` and is not recorded. If your resource or tool names can contain
+control characters, such as tabs or newlines, strip them or replace them with a
+space or another separator before you pass the name, on either path. A plugin
+agent name is never refused, but keep it at or under 4087 bytes: a longer one
+marks every decision record of its run oversized, and each of those records
+counts toward every quota. Earlier releases accepted
 names of any length, and passed a non-string action or resource to the engine,
 which refused it and recorded the value it was given. See
 [using the governor](using-the-governor.md#names-have-a-length-limit) for the
