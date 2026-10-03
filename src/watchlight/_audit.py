@@ -26,6 +26,7 @@ written.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import json
 import atexit
@@ -49,6 +50,8 @@ __all__ = [
     "SanitizationRecord",
     "ScreeningRecord",
     "UnknownAuditRecord",
+    "MAX_AUDIT_RECORD_BYTES",
+    "bounded_line",
 ]
 
 #: The placeholder agent name a record carries when no agent was configured.
@@ -327,6 +330,87 @@ def decision_record(
         record["execution_id"] = execution_id
     return record
 
+# ── the size backstop ────────────────────────────────────────────────────────
+#
+# The counters read lines up to 1 MiB (``MAX_COUNTERS_LINE_BYTES``), and a line
+# they cannot read counts toward every quota. Every entry point bounds the names
+# it records, so no record should come near that. This is the backstop that does
+# not depend on any entry point getting it right: every record is serialised
+# here, and one that would be longer than MAX_AUDIT_RECORD_BYTES is written as a
+# shortened replacement instead. It is never dropped.
+
+#: The longest line the audit funnel writes, in bytes. Half the counters' line
+#: limit: a record longer than this is shortened (see :func:`bounded_line`).
+MAX_AUDIT_RECORD_BYTES = 512 * 1024
+
+# A field that serialises to at most this many bytes is never shortened.
+_SMALL_FIELD_BYTES = 256
+
+
+def _dumps(value: Any) -> str:
+    # ASCII-only output (the default), so a line's length in characters is its
+    # length in bytes. NaN and Infinity are refused: they are not JSON, and the
+    # counters could not read the line.
+    return json.dumps(value, allow_nan=False)
+
+
+def _marker(value: Any) -> Dict[str, Any]:
+    """A value-free stand-in for a field too long to keep: its length in bytes
+    and a SHA-256 digest — of its UTF-8 bytes for a string, of its JSON
+    otherwise — never the value."""
+    if isinstance(value, str):
+        data = str.encode(value, "utf-8", "surrogatepass")
+    else:
+        try:
+            data = _dumps(value).encode("utf-8")
+        except (TypeError, ValueError, RecursionError):
+            return {"omitted": "unserializable"}
+    return {"omitted": "oversized", "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+
+
+def bounded_line(record: Dict[str, Any]) -> str:
+    """The JSON line the funnel writes for ``record``: the record itself when it
+    serialises to at most :data:`MAX_AUDIT_RECORD_BYTES`, else a shortened
+    replacement that fails closed.
+
+    The replacement keeps every small field as it was, replaces the largest
+    fields — one at a time, largest first, until the line fits — with a
+    value-free marker (``{"omitted": "oversized", "bytes", "sha256"}``, or
+    ``{"omitted": "unserializable"}`` for a value JSON cannot hold), and sets
+    ``"oversized": true``. The counters count a record carrying ``"oversized":
+    true`` toward every query, so a shortened field can never make a quota
+    under-count, and ``watchlight audit check`` reports it."""
+    try:
+        line = _dumps(record)
+        if len(line) <= MAX_AUDIT_RECORD_BYTES:
+            return line
+    except (TypeError, ValueError, RecursionError):
+        pass
+    fields: Dict[str, Any] = {}
+    sizes: Dict[str, int] = {}
+    for index, (key, value) in enumerate(record.items()):
+        # The SDK's own keys are short identifiers; anything else is renamed.
+        if type(key) is not str or len(key) > 64:
+            key = f"field_{index}"
+        try:
+            sizes[key] = len(_dumps(value))
+            fields[key] = value
+        except (TypeError, ValueError, RecursionError):
+            fields[key] = _marker(value)
+    fields["oversized"] = True
+    sizes.pop("oversized", None)
+    for key in sorted(sizes, key=lambda k: sizes[k], reverse=True):
+        if len(_dumps(fields)) <= MAX_AUDIT_RECORD_BYTES or sizes[key] <= _SMALL_FIELD_BYTES:
+            break
+        fields[key] = _marker(fields[key])
+    line = _dumps(fields)
+    if len(line) <= MAX_AUDIT_RECORD_BYTES:
+        return line
+    # Only a record with thousands of fields gets here: keep what says what it
+    # was, and how many fields it had.
+    kept = {k: fields[k] for k in ("ts", "event", "agent", "decision") if k in fields and sizes.get(k, 0) <= _SMALL_FIELD_BYTES}
+    return _dumps({**kept, "oversized": True, "fields": len(record)})
+
 
 def _error_kind(exc: BaseException) -> str:
     """A safe label for a sink failure: the class name of a *built-in* exception
@@ -420,12 +504,14 @@ class AuditTrail:
         if self.path is None and self._sink is None:
             self._warn_no_destination()
             return
-        # The funnel can never raise out of authorize/sanitize/attenuate —
-        # including for a record that fails to serialize.
+        # Bounded, and never dropped: a record that is too long, or that JSON
+        # cannot hold, is written as a shortened replacement marked
+        # `"oversized": true` (see bounded_line). The funnel can never raise out
+        # of authorize/sanitize/attenuate.
         try:
-            line = json.dumps(record)
-        except (TypeError, ValueError):
-            return
+            line = bounded_line(record)
+        except Exception:  # noqa: BLE001 — a record must still be written
+            line = _dumps({"oversized": True, "omitted": "unserializable"})
         # 1. The file, first — the sink can never influence what lands on disk.
         #    Skipped entirely when the file is disabled: nothing is created.
         if self.path is not None:

@@ -179,9 +179,9 @@ function auditCheck(args: string[]): number {
   }
   console.log(
     `${found.total} unreadable line(s). They count toward quotas: a line that ` +
-      "cannot be read at all toward every quota, a decision with an unreadable ts " +
-      "toward every quota it matches. They never age out of a window. Remove or " +
-      "repair them, or rotate the file."
+      "cannot be read at all, or a record the SDK shortened, toward every quota; a " +
+      "decision with an unreadable ts toward every quota it matches. They never age " +
+      "out of a window. Remove or repair them, or rotate the file."
   );
   return 1;
 }
@@ -201,6 +201,11 @@ async function main(argv: string[]): Promise<number> {
   const [cmd, sub, ...rest] = argv;
   if (cmd === "policy" && sub === "test") return policyTest(rest[0]);
   if (cmd === "audit" && sub === "check") return auditCheck(rest);
+  if (cmd === "audit" && sub === undefined) {
+    console.error("watchlight audit: missing subcommand (check)\n");
+    console.error(USAGE);
+    return 2;
+  }
   if (cmd === "--help" || cmd === "-h" || cmd === undefined) {
     console.log(USAGE);
     return 0;

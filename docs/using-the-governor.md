@@ -634,8 +634,12 @@ the long value.
 
 `counters()` also fails closed on a line it cannot read. A trail written only
 by the governor never holds one. Such a line counts toward the quota, never ages
-out of a window, and is reported in `unreadable`. To find it, run
-`watchlight audit check`. See
+out of a window, and is reported in `unreadable`. As a backstop behind these
+limits, the audit trail writes no line longer than 512 KiB
+(`MAX_AUDIT_RECORD_BYTES`). A record that would be longer is written with its
+largest fields replaced by their length and a digest, and marked
+`"oversized": true`. Such a record counts toward every quota in the same way.
+To find either kind, run `watchlight audit check`. See
 [what the counter counts](../examples/patterns/quotas.md#reading-the-local-file).
 
 ## See also

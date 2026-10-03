@@ -224,21 +224,28 @@ re-decision an approval triggers, so both see the same attributes.
   whose `ts` cannot be read counts toward every query it otherwise matches,
   whatever the window. Both are reported in `unreadable`, and `count` includes
   them, so `count - unreadable` is the number of well-formed matching
-  decisions. `skipped` counts every line that is not a well-formed record,
-  including these. A line that is well-formed but is not a decision, such as a
+  decisions. A record the SDK shortened because it was too long (it carries
+  `"oversized": true`, see below) counts toward every query in the same way.
+  `skipped` counts every line that is not a well-formed record, including
+  these. A line that is well-formed but is not a decision, such as a
   framework run's lifecycle line, is skipped and never counts.
 - **The governor never writes an unreadable line.** Every name it records has a
   limit (see
   [using the governor](../../docs/using-the-governor.md#names-have-a-length-limit)),
-  and the largest record it can write is under 400,000 bytes, about 38% of
-  1 MiB. A non-zero `unreadable` means a damaged or foreign line in the file,
-  for example one cut short by a crash or added by another tool.
+  and the largest record its entry points can produce is under 400,000 bytes,
+  about 38% of 1 MiB. Behind those checks, the audit trail itself writes no
+  line over 512 KiB: a record that would be longer is written shortened, with
+  its largest fields replaced by their length and a digest, and marked
+  `"oversized": true`. A non-zero `unreadable` means a damaged or foreign line
+  in the file, for example one cut short by a crash or added by another tool,
+  or a record the SDK had to shorten.
 - **An unreadable line never ages out.** It has no time the scan can read, so
   it counts in every window until you remove it. The remedy is to repair the
   file or rotate it. To find the lines, run `watchlight audit check` (Python or
   Node). It prints the number of each unreadable line and why it cannot be
   read, never its content, and exits 1 when there are any. It uses the
-  counters' own reader, so it lists exactly the lines that count.
+  counters' own reader and lists every line that could count this way,
+  including oversized records.
 - A missing file yields zeros; a file that exists but cannot be read raises
   `AuditTrailUnreadable`.
 

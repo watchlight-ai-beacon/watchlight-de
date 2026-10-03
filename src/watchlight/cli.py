@@ -310,6 +310,9 @@ def _cmd_audit_check(args: argparse.Namespace) -> int:
     when the file cannot be read."""
     from ._counters import UNREADABLE_REASONS, AuditTrailUnreadable, find_unreadable_lines
 
+    if args.limit < 0:
+        print("watchlight audit check: --limit takes a non-negative integer", file=sys.stderr)
+        return 2
     path = pathlib.Path(args.audit)
     try:
         found = find_unreadable_lines(path, limit=args.limit)
@@ -329,9 +332,9 @@ def _cmd_audit_check(args: argparse.Namespace) -> int:
         return 0
     print(
         f"{found['total']} unreadable line(s). They count toward quotas: a line that "
-        "cannot be read at all toward every quota, a decision with an unreadable ts "
-        "toward every quota it matches. They never age out of a window. Remove or "
-        "repair them, or rotate the file."
+        "cannot be read at all, or a record the SDK shortened, toward every quota; a "
+        "decision with an unreadable ts toward every quota it matches. They never age "
+        "out of a window. Remove or repair them, or rotate the file."
     )
     return 1
 
@@ -390,6 +393,11 @@ def main(argv: list[str] | None = None) -> int:
     acheck.set_defaults(func=_cmd_audit_check)
 
     args = parser.parse_args(argv)
+    if getattr(args, "command", None) == "audit" and not getattr(args, "audit_command", None):
+        # `watchlight audit` alone: usage on stderr and exit 2, as in the Node CLI.
+        audit.print_usage(sys.stderr)
+        print("watchlight audit: missing subcommand (check)", file=sys.stderr)
+        return 2
     if not getattr(args, "command", None) or not getattr(args, "func", None):
         parser.print_help()
         return 0

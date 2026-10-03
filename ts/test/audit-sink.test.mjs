@@ -165,7 +165,11 @@ async function main() {
     const trail = new AuditTrail(join(dir, "audit.jsonl"), (r) => seen.push(r));
     let threw = false;
     try { trail.write({ ts: "x", loop: 1n }); } catch { threw = true; }  // BigInt is not JSON-serializable
-    ok("unserializable record: funnel does not throw, nothing written or sent", !threw && !fs.existsSync(join(dir, "audit.jsonl")) && seen.length === 0);
+    // Never dropped: the field JSON cannot hold is replaced by a value-free
+    // marker and the record is marked oversized, in the file and the sink alike.
+    const expected = JSON.stringify({ ts: "x", loop: { omitted: "unserializable" }, oversized: true });
+    const written = fs.existsSync(join(dir, "audit.jsonl")) ? fs.readFileSync(join(dir, "audit.jsonl"), "utf8").trim() : "";
+    ok("unserializable record: funnel does not throw, writes a marked replacement", !threw && written === expected && seen.length === 1 && JSON.stringify(seen[0]) === expected, written);
   }
 
   // ── 9. ScopeInit still accepts the legacy `auditPath` (additive) ──

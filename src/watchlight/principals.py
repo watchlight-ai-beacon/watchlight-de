@@ -38,7 +38,7 @@ The vocabulary the SDK writes and the audit trail carries:
 from __future__ import annotations
 
 import re
-from typing import Any, Callable
+from typing import Any, Callable, List, Optional
 
 __all__ = [
     "MAX_ACTOR_CHAIN_BYTES",
@@ -98,16 +98,21 @@ NAME_TOO_LONG_MESSAGE = f"is longer than the maximum of {MAX_NAME_BYTES} bytes"
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
+# Every measurement below calls the `str` methods themselves, never the value's
+# own: a `str` subclass can override `__len__` or `encode`, but what is
+# serialised into a record is always its underlying characters.
+
+
 def _utf8_length(value: str) -> int:
     # `surrogatepass` so a lone surrogate counts 3 bytes, as the TypeScript lane
     # counts it, instead of raising here.
-    return len(value.encode("utf-8", "surrogatepass"))
+    return len(str.encode(value, "utf-8", "surrogatepass"))
 
 
 def _too_long(value: str, limit: int) -> bool:
     # Cheap first test: a string of at most limit / 4 characters cannot exceed
     # the bound, whatever it holds.
-    return len(value) * 4 > limit and _utf8_length(value) > limit
+    return str.__len__(value) * 4 > limit and _utf8_length(value) > limit
 
 
 def assert_name_length(
@@ -135,17 +140,20 @@ def assert_name(
         raise make_error(f"{field} must be a string")
     if _CONTROL_RE.search(value):
         raise make_error(f"{field} must not contain control characters")
-    return assert_name_length(value, field, make_error)
+    assert_name_length(value, field, make_error)
+    # A plain `str` from here on: a subclass's own methods never run again.
+    return str.__str__(value)
 
 
 def assert_agent_name(value: Any, where: str) -> str:
     """An agent name: a non-empty string with no control characters, of at most
     :data:`MAX_AGENT_NAME_BYTES`. Raises ``TypeError`` prefixed with ``where``."""
-    if not isinstance(value, str) or not value.strip():
+    if not isinstance(value, str) or not str.strip(value):
         raise TypeError(f"{where}: agent must be a non-empty string")
     if _CONTROL_RE.search(value):
         raise TypeError(f"{where}: agent must not contain control characters")
-    return assert_name_length(value, f"{where}: agent", TypeError, MAX_AGENT_NAME_BYTES)
+    assert_name_length(value, f"{where}: agent", TypeError, MAX_AGENT_NAME_BYTES)
+    return str.__str__(value)
 
 
 def assert_actor_chain(chain: Any, where: str) -> None:
@@ -158,10 +166,15 @@ def assert_actor_chain(chain: Any, where: str) -> None:
         )
 
 
-def assert_name_list(values: Any, field: str) -> Any:
+def assert_name_list(values: Any, field: str) -> Optional[List[str]]:
     """A scope's ``tools`` / ``resources`` / ``intents``: ``None`` (inherit), or
     at most :data:`MAX_SCOPE_ENTRIES` names (each checked by :func:`assert_name`)
-    of at most :data:`MAX_SCOPE_LIST_BYTES` in total. Returned unchanged."""
+    of at most :data:`MAX_SCOPE_LIST_BYTES` in total.
+
+    Returns the list it checked — read from ``values`` exactly once — and the
+    caller must use THAT list: iterating ``values`` again could yield something
+    else (an iterable that changes between passes), or nothing (a generator
+    already used up)."""
     if values is None:
         return None
     if isinstance(values, (str, bytes)) or not hasattr(values, "__iter__"):
@@ -170,12 +183,12 @@ def assert_name_list(values: Any, field: str) -> Any:
     if len(items) > MAX_SCOPE_ENTRIES:
         raise TypeError(f"{field} holds more than the maximum of {MAX_SCOPE_ENTRIES} entries")
     total = 0
-    for item in items:
-        assert_name(item, f"{field} entry")
-        total += _utf8_length(item)
+    for index, item in enumerate(items):
+        items[index] = assert_name(item, f"{field} entry")
+        total += _utf8_length(items[index])
     if total > MAX_SCOPE_LIST_BYTES:
         raise TypeError(f"{field} is longer than the maximum of {MAX_SCOPE_LIST_BYTES} bytes in total")
-    return values
+    return items
 
 
 _TYPE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*$")
@@ -257,12 +270,13 @@ def assert_principal(value: Any, make_error: Callable[[str], BaseException] = Ty
     ``make_error`` lets a primitive raise its own typed error; the default is the
     :class:`TypeError` the identity builders raise.
     """
-    if not isinstance(value, str) or not value.strip():
+    if not isinstance(value, str) or not str.strip(value):
         raise make_error(PRINCIPAL_EMPTY_MESSAGE)
     if _CONTROL.search(value):
         raise make_error(PRINCIPAL_CONTROL_MESSAGE)
     assert_name_length(value, "principal", make_error)
-    return value
+    # A plain `str`: what is checked is what is recorded.
+    return str.__str__(value)
 
 
 def user(subject: str) -> str:

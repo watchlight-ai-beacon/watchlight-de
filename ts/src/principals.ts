@@ -185,9 +185,14 @@ export function assertActorChain(chain: readonly string[], where: string): void 
 
 /** A scope's `tools` / `resources` / `intents`: `undefined` (inherit), or at
  *  most {@link MAX_SCOPE_ENTRIES} names (each checked by {@link assertName}) of
- *  at most {@link MAX_SCOPE_LIST_BYTES} in total. @internal */
-export function assertNameList(values: unknown, field: string): void {
-  if (values === undefined || values === null) return;
+ *  at most {@link MAX_SCOPE_LIST_BYTES} in total.
+ *
+ *  Returns the array it checked — read from `values` exactly once — and the
+ *  caller must use THAT array: iterating `values` again could yield something
+ *  else (an iterable that changes between passes), or nothing (a generator
+ *  already used up). `null` and `undefined` return `undefined`. @internal */
+export function assertNameList(values: unknown, field: string): string[] | undefined {
+  if (values === undefined || values === null) return undefined;
   if (typeof values === "string" || typeof (values as Iterable<unknown>)[Symbol.iterator] !== "function") {
     throw new TypeError(`${field} must be a list of strings`);
   }
@@ -196,12 +201,15 @@ export function assertNameList(values: unknown, field: string): void {
     throw new TypeError(`${field} holds more than the maximum of ${MAX_SCOPE_ENTRIES} entries`);
   }
   let total = 0;
+  const checked: string[] = [];
   for (const item of items) {
-    total += utf8Length(assertName(item, `${field} entry`));
+    checked.push(assertName(item, `${field} entry`));
+    total += utf8Length(checked[checked.length - 1]);
   }
   if (total > MAX_SCOPE_LIST_BYTES) {
     throw new TypeError(`${field} is longer than the maximum of ${MAX_SCOPE_LIST_BYTES} bytes in total`);
   }
+  return checked;
 }
 
 /** What a caller-supplied `principal` must satisfy at EVERY boundary that takes

@@ -34,22 +34,30 @@ line the scan cannot fully read can never LOWER a count:
   filters, outcome or window;
 * a decision (a string ``decision``, ``event`` absent or ``"decision"``) whose
   ``ts`` cannot be read counts when its principal, intent, resource and outcome
-  match, as if it were inside the window.
+  match, as if it were inside the window;
+* a record carrying ``"oversized": true`` — one the audit funnel shortened
+  because it was too long (``watchlight._audit.bounded_line``) — counts toward
+  every query, like a line that cannot be read, since a field it replaced might
+  be the one a query matches on.
 
-Both are counted in ``unreadable`` (so ``count`` minus ``unreadable`` is the
+All three are counted in ``unreadable`` (so ``count`` minus ``unreadable`` is the
 number of well-formed matching decisions) and in ``skipped``. A well-formed
 object that is not a decision — no string ``decision``, like a framework run's
 lifecycle line — is counted in ``skipped`` only and never counts. Because an
 unreadable line counts in every outcome, ``allowed + denied == all`` holds for
 well-formed decisions only.
 
-The SDK never writes such a line. Every name it records is bounded (see
-:mod:`watchlight.principals`), and the largest record it can write measures
-under 400,000 bytes, about 38% of the line limit (``tests/test_record_bounds.py``
-builds it). One therefore means a damaged or foreign trail. It never ages out
-of a window: until the file is repaired or rotated it costs the quota one call
-per line, which is the fail-closed direction. ``watchlight audit check`` lists
-such lines by number and reason, with the same reader
+The SDK never writes a line that cannot be read. Every name it records is
+bounded (see :mod:`watchlight.principals`), and the largest record its entry
+points can produce measures under 400,000 bytes, about 38% of the line limit
+(``tests/test_record_bounds.py`` builds it). Behind those checks, the audit
+funnel shortens any record over ``MAX_AUDIT_RECORD_BYTES`` (512 KiB) and marks it
+``"oversized": true``, so the trail never holds a line over the limit. An
+unreadable line therefore means a damaged or foreign trail, and an oversized
+record means an entry point let through a name it should have refused. Neither
+ages out of a window: until the file is repaired or rotated each costs the quota
+one call, which is the fail-closed direction. ``watchlight audit check`` lists
+every line that could count this way, by number and reason, with the same reader
 (:func:`find_unreadable_lines`).
 
 A missing file is zero counts; a file that exists but cannot be read raises
@@ -304,6 +312,7 @@ UNREADABLE_REASONS = {
     "not-json": "not JSON",
     "not-an-object": "not a JSON object",
     "unreadable-ts": "a decision whose ts cannot be read",
+    "oversized-record": "a record the SDK shortened because it was too long",
 }
 
 
@@ -399,9 +408,11 @@ def _tally_line(raw: Optional[bytes], f: dict, t: _Tally) -> None:
     kind, rec = _classify(raw)
     if kind == "blank":
         return
-    if rec is None:
+    if rec is None or rec.get("oversized") is True:
         # A line that cannot be read at all might be any record, including a
-        # matching Allow: it counts toward every query (fail-closed).
+        # matching Allow: it counts toward every query (fail-closed). So does a
+        # record the audit funnel shortened (`"oversized": true`): a field it
+        # replaced might have been the one a query matches on.
         t.skipped += 1
         t.unreadable += 1
         t.count += 1
@@ -676,9 +687,12 @@ def find_unreadable_lines(
                 if kind == "blank":
                     continue
                 if rec is not None:
-                    if not _is_decision(rec) or _parse_iso_millis(rec.get("ts")) is not None:
+                    if rec.get("oversized") is True:
+                        kind = "oversized-record"
+                    elif not _is_decision(rec) or _parse_iso_millis(rec.get("ts")) is not None:
                         continue
-                    kind = "unreadable-ts"
+                    else:
+                        kind = "unreadable-ts"
                 out["total"] += 1
                 if len(out["findings"]) < limit:
                     out["findings"].append({"line": number, "reason": kind})

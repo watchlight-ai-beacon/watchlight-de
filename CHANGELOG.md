@@ -79,13 +79,28 @@ as `counters()`, now counts the plugin's decisions too, so read
     `forensics.py` no longer counts them as decisions.
 
 **Added**
-- `watchlight audit check [file]`, in both lanes, lists the lines of an audit
-  file that `counters()` cannot read, by line number and reason, never content.
-  It exits 1 when there are any. The same check is available as
-  `find_unreadable_lines` / `findUnreadableLines`. Both use the counters' own
-  reader, so they list exactly the lines that count.
+- `watchlight audit check [file]`, in both lanes, lists every line of an audit
+  file that could count toward quotas without being a well-formed matching
+  decision: a line `counters()` cannot read, a decision whose `ts` cannot be
+  read, and a record the SDK shortened. It prints line numbers and reasons,
+  never content, and exits 1 when there are any. The same check is available
+  as `find_unreadable_lines` / `findUnreadableLines`. Both use the counters'
+  own reader.
+- `MAX_AUDIT_RECORD_BYTES` (512 KiB), in both lanes: the longest line the
+  audit trail writes. A record that would be longer is written as a shortened
+  replacement marked `"oversized": true`, never dropped (see Changed).
 
 **Changed**
+- The audit trail now bounds every record it writes, as a backstop behind the
+  checks at each entry point. A record that would serialise to more than
+  512 KiB, or that holds a value JSON cannot represent, is written as a
+  shortened replacement instead of being dropped. The replacement keeps every
+  small field, replaces the largest fields with a value-free marker (the
+  field's length in bytes and a SHA-256 digest), and carries
+  `"oversized": true`. The counters count such a record toward every query,
+  like a line they cannot read, and `watchlight audit check` reports it as
+  `oversized-record`. Earlier releases silently dropped a record that could
+  not be serialised.
 - Every name the governor records is now bounded, in both lanes, and a name
   over its limit is refused with a `TypeError` before anything is decided or
   recorded. The message names the field and the limit, never the value. The
@@ -105,6 +120,17 @@ as `counters()`, now counts the plugin's decisions too, so read
   `sanitize` and `screen` apply the same rules to their `intent` and
   `resource`, with `SanitizeError` and `ScreenError`. See
   [breaking changes](docs/breaking-changes.md).
+- `sanitize` refuses a `mode` other than `tag`, `mask` or `hash`, and a
+  `types` that is not a list of strings, with `SanitizeError`. Earlier releases
+  treated an unknown mode as `tag` and recorded it as given. `screen` refuses a
+  `families` that is a bare string or not a list. A scope list is read exactly
+  once, and the list that was checked is the one used.
+- In Python, a `str` subclass is measured and recorded by its characters: its
+  own `__len__`, `encode` or `__str__` cannot change what is checked or
+  written.
+- The `governedHooks` PostToolUse fallback (no PreToolUse decision for the
+  call) checks the intent and resource it records. A name that breaks a rule
+  withholds the tool output, as any other egress failure does.
 - An `on_result` / `onResult` hook now receives a copy of its `info` argument.
   The egress record is written from the original.
 - The counters apply the same rules to crafted lines in both lanes. A

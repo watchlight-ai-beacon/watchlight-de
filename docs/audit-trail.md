@@ -255,7 +255,10 @@ in TypeScript, previews a child of a live scope the same way.
 - A line in the file that `counters()` cannot read is never echoed, and it
   counts toward every quota until the file is repaired or rotated; it never
   ages out of a window. A decision whose `ts` cannot be read counts toward
-  every quota it matches. `watchlight audit check` lists both by line number.
+  every quota it matches. A record marked `"oversized": true` is one the
+  trail shortened because it would have been longer than 512 KiB: its largest
+  fields hold only their length and a digest, and it counts toward every
+  quota. `watchlight audit check` lists all three by line number.
 
 ## See also
 

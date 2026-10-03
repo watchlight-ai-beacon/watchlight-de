@@ -32,22 +32,31 @@
 //     principal, filters, outcome or window;
 //   * a decision (a string `decision`, `event` absent or "decision") whose `ts`
 //     cannot be read counts when its principal, intent, resource and outcome
-//     match, as if it were inside the window.
-// Both are counted in `unreadable` (so `count - unreadable` is the number of
+//     match, as if it were inside the window;
+//   * a record carrying `oversized: true` — one the audit funnel shortened
+//     because it was too long (`boundedLine` in audit.ts) — counts toward every
+//     query, like a line that cannot be read, since a field it replaced might
+//     be the one a query matches on.
+// All three are counted in `unreadable` (so `count - unreadable` is the number of
 // well-formed matching decisions) and in `skipped`. A well-formed object that
 // is not a decision — no string `decision`, like a framework run's lifecycle
 // line — is counted in `skipped` only and never counts. Because an unreadable
 // line counts in every outcome, `allowed + denied == all` holds for well-formed
 // decisions only.
 //
-// The SDK never writes such a line. Every name it records is bounded (see
-// `principals.ts`), and the largest record it can write measures under 400,000
-// bytes in Python and under 270,000 here, at most about 38% of the line limit
-// (`ts/test/counters.test.mjs` builds it). One therefore means a damaged or
-// foreign trail. It never ages out of a window: until the file is repaired or
-// rotated it costs the quota one call per line, which is the fail-closed
-// direction. `watchlight audit check` lists such lines by number and reason,
-// with the same reader (`findUnreadableLines`).
+// The SDK never writes a line that cannot be read. Every name it records is
+// bounded (see `principals.ts`), and the largest record its entry points can
+// produce measures under 400,000 bytes in Python and under 270,000 here, at
+// most about 38% of the line limit (`ts/test/counters.test.mjs` builds it).
+// Behind those checks, the audit funnel shortens any record over
+// `MAX_AUDIT_RECORD_BYTES` (512 KiB) and marks it `oversized: true`, so the
+// trail never holds a line over the limit. An unreadable line therefore means a
+// damaged or foreign trail, and an oversized record means an entry point let
+// through a name it should have refused. Neither ages out of a window: until
+// the file is repaired or rotated each costs the quota one call, which is the
+// fail-closed direction. `watchlight audit check` lists every line that could
+// count this way, by number and reason, with the same reader
+// (`findUnreadableLines`).
 //
 // A missing file is zero counts; a file that exists but cannot be read raises
 // `AuditTrailUnreadable`.
@@ -358,6 +367,7 @@ export const UNREADABLE_REASONS = {
   "not-json": "not JSON",
   "not-an-object": "not a JSON object",
   "unreadable-ts": "a decision whose ts cannot be read",
+  "oversized-record": "a record the SDK shortened because it was too long",
 } as const;
 
 /** A reason code from {@link UNREADABLE_REASONS}. */
@@ -365,7 +375,7 @@ export type UnreadableReason = keyof typeof UNREADABLE_REASONS;
 
 type Classified =
   | { kind: "blank" }
-  | { kind: Exclude<UnreadableReason, "unreadable-ts"> }
+  | { kind: Exclude<UnreadableReason, "unreadable-ts" | "oversized-record"> }
   | { kind: "record"; rec: Record<string, unknown> };
 
 /** What ONE line is, and its record when it is one. `bytes` is `null` for a
@@ -453,9 +463,11 @@ function* iterLines(fd: number, pos: number, dropPartial: boolean): Generator<Bu
 function tallyLine(bytes: Buffer | null, filter: Filter, t: Tally): void {
   const c = classify(bytes);
   if (c.kind === "blank") return;
-  if (c.kind !== "record") {
+  if (c.kind !== "record" || c.rec.oversized === true) {
     // A line that cannot be read at all might be any record, including a
-    // matching Allow: it counts toward every query (fail-closed).
+    // matching Allow: it counts toward every query (fail-closed). So does a
+    // record the audit funnel shortened (`oversized: true`): a field it
+    // replaced might have been the one a query matches on.
     t.skipped += 1;
     t.unreadable += 1;
     t.count += 1;
@@ -701,8 +713,9 @@ export function findUnreadableLines(auditPath: string, opts: { limit?: number } 
       if (c.kind === "blank") continue;
       let reason: UnreadableReason;
       if (c.kind === "record") {
-        if (!isDecision(c.rec) || parseIsoMillis(c.rec.ts) !== undefined) continue;
-        reason = "unreadable-ts";
+        if (c.rec.oversized === true) reason = "oversized-record";
+        else if (!isDecision(c.rec) || parseIsoMillis(c.rec.ts) !== undefined) continue;
+        else reason = "unreadable-ts";
       } else {
         reason = c.kind;
       }

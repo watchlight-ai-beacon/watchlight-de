@@ -20,6 +20,7 @@
 // rejected promise) is captured and reported once — it can never block, delay
 // or alter a governance decision, and the file keeps being written.
 
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { PiiType, RedactMode } from "./sanitize";
@@ -259,6 +260,93 @@ function sanitizeErrorKind(err: unknown): string {
   return typeof name === "string" && ERROR_KIND.test(name) && STANDARD_ERRORS.has(name) ? name : "Error";
 }
 
+// ── the size backstop ────────────────────────────────────────────────────────
+//
+// The counters read lines up to 1 MiB (`MAX_COUNTERS_LINE_BYTES`), and a line
+// they cannot read counts toward every quota. Every entry point bounds the names
+// it records, so no record should come near that. This is the backstop that does
+// not depend on any entry point getting it right: every record is serialised
+// here, and one that would be longer than MAX_AUDIT_RECORD_BYTES is written as a
+// shortened replacement instead. It is never dropped.
+
+/** The longest line the audit funnel writes, in bytes. Half the counters' line
+ *  limit: a record longer than this is shortened (see {@link boundedLine}). */
+export const MAX_AUDIT_RECORD_BYTES = 512 * 1024;
+
+// A field that serialises to at most this many bytes is never shortened.
+const SMALL_FIELD_BYTES = 256;
+
+const byteLength = (s: string): number => Buffer.byteLength(s, "utf8");
+
+/** `JSON.stringify`, or `undefined` for a value JSON cannot hold (a BigInt, a
+ *  cycle) or that it would drop (a function, `undefined`). */
+function tryStringify(value: unknown): string | undefined {
+  try {
+    const out = JSON.stringify(value);
+    return typeof out === "string" ? out : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A value-free stand-in for a field too long to keep: its length in bytes and
+ *  a SHA-256 digest — of its UTF-8 bytes for a string, of its JSON otherwise —
+ *  never the value. */
+function marker(value: unknown): Record<string, unknown> {
+  const data = typeof value === "string" ? value : tryStringify(value);
+  if (data === undefined) return { omitted: "unserializable" };
+  const bytes = Buffer.from(data, "utf8");
+  return { omitted: "oversized", bytes: bytes.length, sha256: crypto.createHash("sha256").update(bytes).digest("hex") };
+}
+
+/**
+ * The JSON line the funnel writes for `record`: the record itself when it
+ * serialises to at most {@link MAX_AUDIT_RECORD_BYTES}, else a shortened
+ * replacement that fails closed. The replacement keeps every small field as it
+ * was, replaces the largest fields — one at a time, largest first, until the
+ * line fits — with a value-free marker (`{ omitted: "oversized", bytes, sha256 }`,
+ * or `{ omitted: "unserializable" }` for a value JSON cannot hold), and sets
+ * `oversized: true`. The counters count a record carrying `oversized: true`
+ * toward every query, so a shortened field can never make a quota under-count,
+ * and `watchlight audit check` reports it. @internal
+ */
+export function boundedLine(record: Record<string, unknown>): string {
+  const whole = tryStringify(record);
+  if (whole !== undefined && byteLength(whole) <= MAX_AUDIT_RECORD_BYTES) return whole;
+  const fields: Record<string, unknown> = {};
+  const sizes = new Map<string, number>();
+  let index = 0;
+  for (const [rawKey, value] of Object.entries(record)) {
+    // The SDK's own keys are short identifiers; anything else is renamed.
+    const key = rawKey.length > 64 ? `field_${index}` : rawKey;
+    index++;
+    if (value === undefined || typeof value === "function") continue; // JSON drops these anyway
+    const json = tryStringify(value);
+    if (json === undefined) {
+      fields[key] = marker(value);
+    } else {
+      fields[key] = value;
+      sizes.set(key, byteLength(json));
+    }
+  }
+  fields.oversized = true;
+  sizes.delete("oversized");
+  const bySize = [...sizes.entries()].sort((a, b) => b[1] - a[1]);
+  for (const [key, size] of bySize) {
+    if (byteLength(JSON.stringify(fields)) <= MAX_AUDIT_RECORD_BYTES || size <= SMALL_FIELD_BYTES) break;
+    fields[key] = marker(fields[key]);
+  }
+  const line = JSON.stringify(fields);
+  if (byteLength(line) <= MAX_AUDIT_RECORD_BYTES) return line;
+  // Only a record with thousands of fields gets here: keep what says what it
+  // was, and how many fields it had.
+  const kept: Record<string, unknown> = {};
+  for (const k of ["ts", "event", "agent", "decision"]) {
+    if (k in fields && (sizes.get(k) ?? 0) <= SMALL_FIELD_BYTES) kept[k] = fields[k];
+  }
+  return JSON.stringify({ ...kept, oversized: true, fields: Object.keys(record).length });
+}
+
 function deepFreeze<T>(value: T): T {
   if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
     Object.freeze(value);
@@ -332,13 +420,15 @@ export class AuditTrail {
       this._warnNoDestination();
       return;
     }
-    // The funnel can never throw out of authorize/sanitize/attenuate — including
-    // for a record that fails to serialize (nothing to write, nothing to send).
+    // Bounded, and never dropped: a record that is too long, or that JSON
+    // cannot hold, is written as a shortened replacement marked
+    // `oversized: true` (see boundedLine). The funnel can never throw out of
+    // authorize/sanitize/attenuate.
     let line: string;
     try {
-      line = JSON.stringify(record);
+      line = boundedLine(record as unknown as Record<string, unknown>);
     } catch {
-      return;
+      line = JSON.stringify({ oversized: true, omitted: "unserializable" });
     }
     // 1. The file, first — the sink can never influence what lands on disk.
     //    Skipped entirely when the file is disabled: nothing is created.

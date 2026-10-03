@@ -97,17 +97,24 @@ def _unmatchers(resources: Sequence[Any]) -> list[str]:
 
 def _check_request(
     tools: Any, resources: Any, intents: Any, agent: Any, chain: Sequence[str], where: str
-) -> None:
+) -> tuple[Optional[list[str]], Optional[list[str]], Optional[list[str]], Any]:
     """The bounds on a child scope's request (see :mod:`watchlight.principals`):
     each list bounded in entries and bytes, the sub-agent's name a valid agent
     name, and the chain it extends within :data:`~watchlight.principals.MAX_ACTOR_CHAIN_BYTES`.
-    Value-free ``TypeError``; nothing is decided or recorded."""
-    principals.assert_name_list(tools, "tools")
-    principals.assert_name_list(resources, "resources")
-    principals.assert_name_list(intents, "intents")
-    if agent is not None and agent != "":
-        principals.assert_agent_name(agent, where)
+    Value-free ``TypeError``; nothing is decided or recorded. Returns the lists
+    it checked, each read exactly once; the caller uses those, never the
+    arguments again."""
+    checked_tools = principals.assert_name_list(tools, "tools")
+    checked_resources = principals.assert_name_list(resources, "resources")
+    checked_intents = principals.assert_name_list(intents, "intents")
+    # `str.__len__`: an empty name means "no new actor", and a str subclass
+    # cannot claim to be empty while holding characters.
+    if agent is not None and not (isinstance(agent, str) and str.__len__(agent) == 0):
+        agent = principals.assert_agent_name(agent, where)
         principals.assert_actor_chain((*chain, agent), where)
+    else:
+        agent = None
+    return checked_tools, checked_resources, checked_intents, agent
 
 
 def _scope_label(depth: int, agent: str | None) -> str:
@@ -352,7 +359,9 @@ class Scope:
         self.assert_active()  # a spent scope grants nothing further (fail-closed)
         # Bounded before the engine and before any record: the requested tools,
         # the sub-agent's name and the chain it extends are all written down.
-        _check_request(tools, resources, intents, agent, self.actor_chain, "attenuate()")
+        tools, resources, intents, agent = _check_request(
+            tools, resources, intents, agent, self.actor_chain, "attenuate()"
+        )
         # A named sub-agent's records carry the chain it would act under.
         named = (*self.actor_chain, agent) if agent else None
         out = _attenuation_outcome(
@@ -421,7 +430,9 @@ class Scope:
         the violations and reason it would be refused with. A preview is data,
         never a scope: it cannot authorize, delegate, or mint a token."""
         self.assert_active()
-        _check_request(tools, resources, intents, agent, self.actor_chain, "preview_attenuate()")
+        tools, resources, intents, agent = _check_request(
+            tools, resources, intents, agent, self.actor_chain, "preview_attenuate()"
+        )
         return _preview_child(
             self, tools=tools, resources=resources, intents=intents,
             time_budget_seconds=time_budget_seconds, agent=agent,
@@ -589,7 +600,9 @@ class ScopePreview:
         """Preview the next level down, exactly as :meth:`Scope.attenuate`
         would decide it. Below a preview that would be refused, nothing would be
         granted either."""
-        _check_request(tools, resources, intents, agent, self.actor_chain, "preview_attenuate()")
+        tools, resources, intents, agent = _check_request(
+            tools, resources, intents, agent, self.actor_chain, "preview_attenuate()"
+        )
         if not self.allowed:
             return ScopePreview(
                 engine=self._engine,

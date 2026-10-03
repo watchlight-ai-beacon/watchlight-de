@@ -99,6 +99,7 @@ export type {
   UnknownAuditRecord,
   BatchAuditSink,
 } from "./audit";
+export { MAX_AUDIT_RECORD_BYTES } from "./audit";
 export { ApprovalError, APPROVAL_KEY_LABEL, APPROVAL_PAYLOAD_VERSION, APPROVAL_MIN_SECRET_BYTES, DEFAULT_APPROVAL_STORE_TIMEOUT_MS, APPROVAL_PRUNE_INTERVAL_MS, APPROVAL_PRUNE_GRACE_MS } from "./approval";
 export type { ApprovalStore, ApprovalErrorCode } from "./approval";
 export type { ScopeTokenOptions, AttenuateOptions } from "./attenuation";
@@ -1334,10 +1335,14 @@ export class Watchlight {
   }
 
   async scope(opts: ScopeOptions = {}): Promise<Scope> {
-    // Bounded before the engine: the root's tools are recorded.
-    assertNameList(opts.tools, "tools");
-    assertNameList(opts.resources, "resources");
-    assertNameList(opts.intents, "intents");
+    // Bounded before the engine: the root's tools are recorded. The checked
+    // arrays are the ones used — each iterable is read exactly once.
+    opts = {
+      ...opts,
+      tools: assertNameList(opts.tools, "tools"),
+      resources: assertNameList(opts.resources, "resources"),
+      intents: assertNameList(opts.intents, "intents"),
+    };
     const budget = this._rootBudget(opts.maxDepth);
     const eng = this._backend.engine();
     if (!eng) {
@@ -1373,10 +1378,14 @@ export class Watchlight {
    * authorize, delegate, or mint a token.
    */
   async previewScope(opts: ScopeOptions = {}): Promise<ScopePreview> {
-    // Bounded before the engine: the root's tools are recorded.
-    assertNameList(opts.tools, "tools");
-    assertNameList(opts.resources, "resources");
-    assertNameList(opts.intents, "intents");
+    // Bounded before the engine: the root's tools are recorded. The checked
+    // arrays are the ones used — each iterable is read exactly once.
+    opts = {
+      ...opts,
+      tools: assertNameList(opts.tools, "tools"),
+      resources: assertNameList(opts.resources, "resources"),
+      intents: assertNameList(opts.intents, "intents"),
+    };
     const budget = this._rootBudget(opts.maxDepth);
     const eng = this._backend.engine();
     if (!eng) {

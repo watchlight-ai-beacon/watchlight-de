@@ -15,7 +15,10 @@ const {
   MAX_NAME_BYTES, SanitizeError, ScreenError,
   MAX_AGENT_NAME_BYTES, MAX_SCOPE_ENTRIES, MAX_SCOPE_LIST_BYTES, MAX_ACTOR_CHAIN_BYTES,
   findUnreadableLines, UNREADABLE_REASONS, principals,
+  MAX_AUDIT_RECORD_BYTES, governedHooks, DENY_REASON,
 } = require("../dist/index.js");
+const { AuditTrail } = require("../dist/audit.js");
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 
 let pass = 0, fail = 0;
@@ -357,9 +360,9 @@ console.log("every write path is bounded (shared with Python)");
   };
   const rejects = async (fn) => { try { await fn(); return null; } catch (e) { return e; } };
   const quiet = async (fn) => {
-    const orig = console.log;
-    console.log = () => {};
-    try { return await fn(); } finally { console.log = orig; }
+    const orig = console.log, origErr = console.error;
+    console.log = console.error = () => {};
+    try { return await fn(); } finally { console.log = orig; console.error = origErr; }
   };
   const allReadable = (name, auditDir) => {
     const longest = Math.max(0, ...trailLines(auditDir).map((l) => l.length)); // latin1: one char per byte
@@ -526,10 +529,135 @@ console.log("every write path is bounded (shared with Python)");
         await attempt(() => g.delegate(root, x));
         await attempt(() => g.delegate(sub, x));
         await attempt(() => g.scopeFromToken(x));
+        await attempt(() => g.sanitize("a@example.com", { mode: x }));
+        await attempt(() => g.sanitize("a@example.com", { types: x }));
+        await attempt(() => g.sanitize("a@example.com", { types: [x] }));
+        await attempt(() => g.sanitize("a@example.com", { known: x }));
+        await attempt(() => g.sanitize("a@example.com", { known: [x] }));
+        await attempt(() => g.sanitize("a@example.com", { personExclusions: x }));
+        await attempt(() => g.sanitize("a@example.com", { personExclusions: [x] }));
+        await attempt(() => g.screen("hello", { mode: x }));
+        await attempt(() => g.screen("hello", { families: x }));
+        await attempt(() => g.screen("hello", { families: [x] }));
+        // The Claude hooks' PostToolUse fallback: no PreToolUse decision on
+        // record, so its names were never checked by a decision.
+        for (const bindings of [{ intentFor: () => x }, { resourceFor: () => x }, { principal: () => x }]) {
+          const { hooks } = governedHooks({ governor: g, onResult: () => undefined, ...bindings });
+          await attempt(() => hooks.PostToolUse[0].hooks[0]({ hook_event_name: "PostToolUse", tool_name: "t", tool_input: {}, tool_response: "r" }, undefined));
+        }
+        await attempt(async () => {
+          const { hooks } = governedHooks({ governor: g, onResult: () => undefined });
+          await hooks.PostToolUse[0].hooks[0]({ hook_event_name: "PostToolUse", tool_name: x, tool_input: {}, tool_response: "r" }, undefined);
+        });
+      }
+      // Iterables that change between passes.
+      const flip = (first, later) => { let passes = 0; return { [Symbol.iterator]() { passes++; return (passes === 1 ? first : later)[Symbol.iterator](); } }; };
+      for (const make of [() => flip(["a"], [HUGE]), () => flip(["a"], Array(10000).fill("a"))]) {
+        for (const k of ["tools", "resources", "intents"]) {
+          await attempt(() => g.scope({ [k]: make() }));
+          await attempt(() => root.attenuate({ [k]: make() }));
+          await attempt(() => g.delegate(root, "f", { [k]: make() }));
+          await attempt(() => g.previewScope({ [k]: make() }));
+        }
       }
     });
     ok("the battery wrote records", trailLines(auditDir).length > 0);
     allReadable("no public write path writes an unreadable line", auditDir);
+  }
+
+  // A list is read once, and the checked list is the one used.
+  {
+    const auditDir = dirOf();
+    const g = new Watchlight({ agent: "w", auditDir });
+    g.allow("permit(principal, action, resource);", "all");
+    let passes = 0;
+    const flip = (first, later) => { passes = 0; return { [Symbol.iterator]() { passes++; return (passes === 1 ? first : later)[Symbol.iterator](); } }; };
+    const root = await g.scope({ tools: flip(["a", "b"], ["x".repeat(2 * MAX_COUNTERS_LINE_BYTES)]) });
+    eq("a list that changes between passes: the checked one is used", [root.allowedTools, passes], [["a", "b"], 1]);
+    const child = root.attenuate({ tools: flip(["a"], ["b"]) });
+    eq("... in attenuate too", [child.allowedTools, passes], [["a"], 1]);
+    eq("... and in previewScope", (await g.previewScope({ tools: flip(["a"], []) })).allowedTools, ["a"]);
+    const gen = function* (items) { yield* items; };
+    eq("a generator is read once and used", [
+      (await g.scope({ tools: gen(["a", "b"]) })).allowedTools,
+      root.attenuate({ tools: gen(["a"]) }).allowedTools,
+      g.delegate(root, "sub", { tools: gen(["b"]) }).delegatedScope.allowedTools,
+    ], [["a", "b"], ["a"], ["b"]]);
+    allReadable("... and nothing unreadable was written", auditDir);
+  }
+
+  // sanitize and screen options are checked before any record.
+  {
+    const auditDir = dirOf();
+    const g = new Watchlight({ agent: "w", auditDir });
+    for (const mode of ["x".repeat(2 * MAX_COUNTERS_LINE_BYTES), "TAG", "", 5, ["tag"]]) {
+      throws(`sanitize refuses mode ${JSON.stringify(mode).slice(0, 12)}`, () => g.sanitize("a@example.com", { mode }), SanitizeError);
+    }
+    for (const types of ["EMAIL", [5], 7]) {
+      throws(`sanitize refuses types ${JSON.stringify(types)}`, () => g.sanitize("a@example.com", { types }), SanitizeError);
+    }
+    for (const opts of [{ mode: "x".repeat(5000) }, { mode: 5 }, { families: "ROLE_SWITCH" }, { families: [5] }, { families: 7 }, { families: ["x".repeat(5000)] }]) {
+      throws(`screen refuses ${JSON.stringify(opts).slice(0, 30)}`, () => g.screen("hello", opts), ScreenError);
+    }
+    eq("... and nothing was recorded", trailLines(auditDir).length, 0);
+  }
+
+  // The Claude hooks' PostToolUse fallback checks the names it records.
+  {
+    const auditDir = dirOf();
+    const g = new Watchlight({ agent: "w", auditDir });
+    for (const [label, bindings] of [["intent", { intentFor: () => OVER }], ["resource", { resourceFor: () => ({ blob: OVER }) }]]) {
+      const { hooks } = governedHooks({ governor: g, onResult: () => "replaced", ...bindings });
+      const orig = console.error;
+      console.error = () => {};
+      let out;
+      try { out = await hooks.PostToolUse[0].hooks[0]({ hook_event_name: "PostToolUse", tool_name: "t", tool_input: {}, tool_response: "raw" }, undefined); }
+      finally { console.error = orig; }
+      eq(`PostToolUse fallback with a bad ${label}: the output is withheld`, out.hookSpecificOutput.updatedToolOutput, DENY_REASON);
+    }
+    eq("... and no record carries the raw value", trailLines(auditDir).length, 0);
+    const { hooks } = governedHooks({ governor: g, onResult: () => undefined });
+    await quiet(() => hooks.PostToolUse[0].hooks[0]({ hook_event_name: "PostToolUse", tool_name: "t", tool_input: {}, tool_response: "raw" }, undefined));
+    eq("a well-formed fallback still records its egress", trailLines(auditDir).map((l) => JSON.parse(l).event), ["egress"]);
+  }
+
+  // The funnel backstop: called directly, past every entry check.
+  {
+    const dir = dirOf();
+    const p = join(dir, "audit.jsonl");
+    const seen = [];
+    const trail = new AuditTrail(p, (r) => seen.push(r));
+    const huge = "p".repeat(2 * 1024 * 1024);
+    trail.write({ ts: "2026-01-15T11:59:00.000Z", agent: "a", principal: huge, intent: "read", event: "decision", resource: "doc/1", decision: "Allow" });
+    const [line] = trailLines(dir);
+    const rec = JSON.parse(line);
+    eq("the funnel shortens an oversized record instead of dropping it", rec, {
+      ts: "2026-01-15T11:59:00.000Z", agent: "a",
+      principal: { omitted: "oversized", bytes: huge.length, sha256: createHash("sha256").update(huge).digest("hex") },
+      intent: "read", event: "decision", resource: "doc/1", decision: "Allow", oversized: true,
+    });
+    ok("... within the bound, value-free", line.length <= MAX_AUDIT_RECORD_BYTES && !line.includes(huge.slice(0, 64)) && MAX_AUDIT_RECORD_BYTES === 512 * 1024);
+    eq("... the sink gets exactly the line", JSON.stringify(seen[0]), line);
+    for (const [principal, outcome] of [["p", "allowed"], ['User::"x"', "denied"], ["q", "all"]]) {
+      const r = countAuditRecords(p, { principal, intent: "anything", outcome, now: "2026-01-15T12:00:00Z" });
+      eq(`... and counts toward every query (${principal}, ${outcome})`, [r.count, r.unreadable], [1, 1]);
+    }
+    eq("... audit check reports it", findUnreadableLines(p).findings, [{ line: 1, reason: "oversized-record" }]);
+
+    const p2 = join(dir, "many.jsonl");
+    const record = { ts: "t", event: "attenuation", bad: 10n };
+    for (let i = 0; i < 10; i++) record[`f${i}`] = "v".repeat(100 * 1024 + i);
+    new AuditTrail(p2).write(record);
+    const r2 = JSON.parse(fs.readFileSync(p2, "utf8").trim());
+    const shortened = Object.keys(r2).filter((k) => k.startsWith("f") && typeof r2[k] === "object");
+    const kept = Object.keys(r2).filter((k) => k.startsWith("f") && typeof r2[k] === "string");
+    ok("the largest fields are shortened first", r2.oversized === true && kept.length > 0 &&
+      shortened.every((a) => kept.every((b) => Number(a.slice(1)) > Number(b.slice(1)))) &&
+      JSON.stringify(r2.bad) === JSON.stringify({ omitted: "unserializable" }), JSON.stringify(Object.keys(r2)));
+    const p3 = join(dir, "fits.jsonl");
+    const fits = { ts: "t", principal: "p".repeat(MAX_AUDIT_RECORD_BYTES - 64) };
+    new AuditTrail(p3).write(fits);
+    eq("a record within the bound is written unchanged", JSON.parse(fs.readFileSync(p3, "utf8")), fits);
   }
 
   // The two lanes classify crafted lines identically.
@@ -568,13 +696,16 @@ console.log("every write path is bounded (shared with Python)");
     ok("... and nothing else", !r.stdout.includes("line 1:") && !r.stdout.includes("line 8:"), r.stdout);
     ok("... value-free", !r.stdout.includes(secretWord) && !r.stdout.includes("ppp"), r.stdout);
     ok("... says the lines never age out", r.stdout.includes("never age out of a window"), r.stdout);
-    eq("... the reasons are the shared ones", Object.keys(UNREADABLE_REASONS), ["oversized", "not-utf8", "too-deep", "not-json", "not-an-object", "unreadable-ts"]);
+    eq("... the reasons are the shared ones", Object.keys(UNREADABLE_REASONS), ["oversized", "not-utf8", "too-deep", "not-json", "not-an-object", "unreadable-ts", "oversized-record"]);
     eq("... the counters see exactly those lines", countAuditRecords(p, { principal: "p", now: "2026-01-15T12:00:00Z" }).unreadable, 6);
     const limited = cli(p, "--limit", "2");
     ok("--limit caps the listing", limited.status === 1 && limited.stdout.includes("and 4 more"), limited.stdout);
     const clean = join(dir, "clean.jsonl");
     fs.writeFileSync(clean, '{"ts":"2026-01-15T11:59:00Z","principal":"p","decision":"Allow"}\n');
     eq("a clean file exits 0, a missing one 0, a directory 2", [cli(clean).status, cli(join(dir, "missing.jsonl")).status, cli(dir).status], [0, 0, 2]);
+    eq("--limit -1 exits 2", cli(clean, "--limit", "-1").status, 2);
+    const bare = spawnSync(process.execPath, [join(here, "..", "dist", "cli.js"), "audit"], { encoding: "utf8" });
+    ok("`watchlight audit` alone exits 2 with usage", bare.status === 2 && bare.stderr.includes("missing subcommand") && bare.stderr.includes("usage:"), bare.stderr);
   }
 }
 

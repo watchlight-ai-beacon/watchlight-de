@@ -87,6 +87,14 @@ If you pass a single tool as `tools="search"`, pass `tools=["search"]`.
 An `on_result` / `onResult` hook now receives a copy of its `info` argument. A
 hook that changed `info` to change what the egress record says no longer can.
 
+`sanitize` now refuses a `mode` other than `tag`, `mask` or `hash`, and a
+`types` that is not a list of strings, with `SanitizeError`. Earlier releases
+treated an unknown mode, such as a misspelling, as `tag`. Pass one of the three
+modes. `screen` refuses a `families` that is a single string; pass a list.
+
+A scope list (`tools`, `resources`, `intents`) is read exactly once. A
+generator is still accepted and used as before.
+
 **`counters()` counts lines it cannot read.** Earlier releases skipped a line
 they could not read, so it did not count. Now:
 
@@ -99,9 +107,23 @@ they could not read, so it did not count. Now:
 
 Both kinds are reported in a new `unreadable` field, and `count` includes
 them. This fails in the closed direction: a quota can trip earlier, never
-later. A trail written only by the SDK has no such lines, so `unreadable` is
-`0` and nothing changes. If it is not `0`, the file holds a damaged or foreign
-line, for example one cut short by a crash or added by another tool.
+later. A trail written only by the SDK has no line the counters cannot read.
+It holds an oversized record (see below) only if an entry point let through a
+name it should have refused. So on such a trail `unreadable` is `0` and
+nothing changes. If it is not `0`, the file holds a damaged or foreign line,
+for example one cut short by a crash or added by another tool, or a record the
+SDK shortened.
+
+**The audit trail shortens a record instead of writing or dropping it.** A
+record that would serialise to more than 512 KiB (`MAX_AUDIT_RECORD_BYTES`),
+or that holds a value JSON cannot represent, is written as a shortened
+replacement. Every small field is kept. The largest fields are replaced by a
+marker that holds only the field's length in bytes and a SHA-256 digest, and
+the record carries `"oversized": true`. The counters count such a record
+toward every query, like a line they cannot read. Earlier releases dropped a
+record that could not be serialised, without a word. If you read the trail or
+a sink's records yourself, treat a record with `"oversized": true` as one
+whose fields you cannot trust to match.
 
 An unreadable line never ages out of a window. It has no time the counters can
 read, so it counts toward every quota it can match until you remove it. Repair
@@ -109,8 +131,10 @@ the file or rotate it. To find the lines, run `watchlight audit check`, or
 `watchlight audit check path/to/audit.jsonl` for another file. It prints the
 number of each unreadable line and the reason, for example `line 412: not
 JSON` or `line 9: longer than 1048576 bytes`, and never the line's content. It
-exits 1 when there are any. It uses the counters' own reader, so it lists
-exactly the lines that count. `count - unreadable` is the number of
+exits 1 when there are any. It uses the counters' own reader, and it lists
+every line that could count toward a quota this way: a line that cannot be
+read, a decision whose `ts` cannot be read (which counts only toward quotas it
+matches), and an oversized record. `count - unreadable` is the number of
 well-formed matching decisions. Lines that are well-formed but are not
 decisions, such as a framework run's lifecycle lines, still never count.
 

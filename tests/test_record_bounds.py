@@ -13,10 +13,14 @@ invariant:
 * the two lanes classify crafted lines identically (the shared fixture
   ``tests/fixtures/counters-parity.jsonl``, asserted by
   ``ts/test/counters.test.mjs`` too);
-* ``watchlight audit check`` reports unreadable lines, value-free.
+* ``watchlight audit check`` reports unreadable lines, value-free;
+* behind the entry checks, the audit funnel itself never writes a line over
+  ``MAX_AUDIT_RECORD_BYTES``: it writes a shortened record marked
+  ``"oversized": true``, which counts toward every quota.
 """
 
 import asyncio
+import hashlib
 import json
 import pathlib
 
@@ -28,11 +32,14 @@ from watchlight import (
     MAX_COUNTERS_LINE_BYTES,
     MAX_NAME_BYTES,
     MAX_SCOPE_LIST_BYTES,
+    SanitizeError,
+    ScreenError,
     Watchlight,
     count_audit_records,
     find_unreadable_lines,
     parse_window_seconds,
 )
+from watchlight._audit import MAX_AUDIT_RECORD_BYTES, AuditTrail
 from watchlight.cli import main as cli_main
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
@@ -147,6 +154,44 @@ ODD = [
 ]
 
 
+class Flip:
+    """An iterable that yields one thing on its first pass and another after:
+    whatever is checked must be what is used."""
+
+    def __init__(self, first, later):
+        self.passes = 0
+        self.first, self.later = first, later
+
+    def __iter__(self):
+        self.passes += 1
+        return iter(self.first if self.passes == 1 else self.later)
+
+
+class Sneaky(str):
+    """A str subclass whose own methods lie about it."""
+
+    def __len__(self):
+        return 1
+
+    def encode(self, *a, **k):
+        return b"x"
+
+    def strip(self, *a):
+        return "x"
+
+    def __str__(self):
+        return HUGE
+
+    def __format__(self, spec):
+        return HUGE
+
+    def __eq__(self, other):
+        return True
+
+    def __hash__(self):
+        return 0
+
+
 def _attempt(fn):
     try:
         out = fn()
@@ -203,6 +248,36 @@ def test_no_public_write_path_writes_an_unreadable_line(tmp_path, capsys):
         _attempt(lambda: g.delegate(root, x))
         _attempt(lambda: g.delegate(sub, x))
         _attempt(lambda: g.scope_from_token(x))
+        _attempt(lambda: g.sanitize("a@example.com", mode=x))
+        _attempt(lambda: g.sanitize("a@example.com", types=x))
+        _attempt(lambda: g.sanitize("a@example.com", types=[x]))
+        _attempt(lambda: g.sanitize("a@example.com", known=x))
+        _attempt(lambda: g.sanitize("a@example.com", known=[x]))
+        _attempt(lambda: g.sanitize("a@example.com", person_exclusions=x))
+        _attempt(lambda: g.sanitize("a@example.com", person_exclusions=[x]))
+        _attempt(lambda: g.screen("hello", mode=x))
+        _attempt(lambda: g.screen("hello", families=x))
+        _attempt(lambda: g.screen("hello", families=[x]))
+    # Iterables that change between passes, and str subclasses that lie.
+    for flip in (lambda: Flip(["a"], [HUGE]), lambda: Flip(["a"], ["a"] * 10_000)):
+        for kw in ("tools", "resources", "intents"):
+            _attempt(lambda: g.scope(**{kw: flip()}))
+            _attempt(lambda: root.attenuate(**{kw: flip()}))
+            _attempt(lambda: g.delegate(root, "f", **{kw: flip()}))
+            _attempt(lambda: g.preview_scope(**{kw: flip()}))
+    sneaky_short = Sneaky("ok")
+    sneaky_long = Sneaky("y" * (2 * MAX_COUNTERS_LINE_BYTES))
+    for x in (sneaky_short, sneaky_long):
+        _attempt(lambda: Watchlight(agent=x, audit_dir=str(tmp_path)).authorize(action="read"))
+        _attempt(lambda: g.as_(x).authorize(action="read"))
+        _attempt(lambda: g.authorize(action=x))
+        _attempt(lambda: g.authorize(action="read", resource=x, principal=x))
+        _attempt(lambda: g.tool(intent=x, resource=x, principal=x)(lambda: "r")())
+        _attempt(lambda: g.sanitize("a@example.com", intent=x, resource=x, principal=x, decision_id=x, mode=x))
+        _attempt(lambda: g.screen("hello", intent=x, resource=x, principal=x, decision_id=x, mode=x, families=[x]))
+        _attempt(lambda: g.scope(tools=[x]))
+        _attempt(lambda: root.attenuate(tools=["a"], agent=x))
+        _attempt(lambda: g.delegate(root, x))
     capsys.readouterr()
     assert trail_lines(tmp_path)  # the battery did write records
     assert_every_line_readable(tmp_path)
@@ -283,3 +358,130 @@ def test_audit_check_lists_unreadable_lines_value_free(tmp_path, capsys):
     assert cli_main(["audit", "check", str(tmp_path / "missing.jsonl")]) == 0
     assert cli_main(["audit", "check", str(tmp_path)]) == 2
     capsys.readouterr()
+
+
+# ── checked once, used once ─────────────────────────────────────────────────
+
+def test_a_scope_list_is_read_once_and_the_checked_list_is_used(tmp_path):
+    g = Watchlight(agent="w", audit_dir=str(tmp_path))
+    g.allow("permit(principal, action, resource);")
+    flip = Flip(["a", "b"], ["x" * (2 * MAX_COUNTERS_LINE_BYTES)])
+    root = g.scope(tools=flip)
+    assert root.allowed_tools == ["a", "b"] and flip.passes == 1
+    flip = Flip(["a"], ["b"])
+    child = root.attenuate(tools=flip)
+    assert child.allowed_tools == ["a"] and flip.passes == 1
+    assert g.preview_scope(tools=Flip(["a"], [])).allowed_tools == ["a"]
+    # A generator is read once and used, as it was before these checks.
+    assert g.scope(tools=(t for t in ["a", "b"])).allowed_tools == ["a", "b"]
+    assert root.attenuate(tools=(t for t in ["a"])).allowed_tools == ["a"]
+    assert g.delegate(root, "sub", tools=(t for t in ["b"])).delegated_scope.allowed_tools == ["b"]
+    assert_every_line_readable(tmp_path)
+
+
+def test_a_str_subclass_cannot_misreport_its_length(tmp_path):
+    g = Watchlight(agent="w", audit_dir=str(tmp_path))
+    g.allow("permit(principal, action, resource);")
+    long_one = Sneaky("y" * (MAX_NAME_BYTES + 1))
+    for kw in ({"action": long_one}, {"action": "read", "resource": long_one},
+               {"action": "read", "principal": long_one}):
+        with pytest.raises(TypeError, match="longer than the maximum"):
+            g.authorize(**kw)
+    with pytest.raises(TypeError, match="longer than the maximum"):
+        Watchlight(agent=long_one, audit_dir=str(tmp_path))
+    with pytest.raises(SanitizeError):
+        g.sanitize("a@example.com", decision_id=Sneaky("d" * 200))
+    # A short one is recorded as the plain characters it holds.
+    g.authorize(action=Sneaky("read"), resource=Sneaky("doc/1"))
+    rec = json.loads(trail_lines(tmp_path)[-1])
+    assert (rec["intent"], rec["resource"]) == ("read", "doc/1")
+
+
+# ── sanitize and screen options ─────────────────────────────────────────────
+
+@pytest.mark.parametrize("mode", ["x" * (2 * MAX_COUNTERS_LINE_BYTES), "TAG", "", 5, None, ["tag"], Sneaky("tag")])
+def test_sanitize_refuses_an_unknown_mode_before_any_record(tmp_path, mode):
+    g = Watchlight(agent="w", audit_dir=str(tmp_path))
+    if isinstance(mode, Sneaky):
+        # Its underlying characters are "tag": accepted, recorded as plain "tag".
+        g.sanitize("a@example.com", mode=mode)
+        assert json.loads(trail_lines(tmp_path)[-1])["mode"] == "tag"
+        return
+    with pytest.raises(SanitizeError, match="unknown mode"):
+        g.sanitize("a@example.com", mode=mode)
+    assert trail_lines(tmp_path) == []
+
+
+@pytest.mark.parametrize("bad", ["EMAIL", [5], 7, b"EMAIL"])
+def test_sanitize_refuses_malformed_types(tmp_path, bad):
+    g = Watchlight(agent="w", audit_dir=str(tmp_path))
+    with pytest.raises(SanitizeError, match="types must be"):
+        g.sanitize("a@example.com", types=bad)
+    assert trail_lines(tmp_path) == []
+
+
+@pytest.mark.parametrize("kw", [{"mode": "x" * 5000}, {"mode": 5}, {"families": "ROLE_SWITCH"},
+                                {"families": [5]}, {"families": 7}, {"families": ["x" * 5000]}])
+def test_screen_refuses_malformed_options_before_any_record(tmp_path, kw):
+    g = Watchlight(agent="w", audit_dir=str(tmp_path))
+    with pytest.raises(ScreenError):
+        g.screen("hello", **kw)
+    assert trail_lines(tmp_path) == []
+
+
+# ── the funnel backstop ─────────────────────────────────────────────────────
+
+def test_the_funnel_shortens_an_oversized_record_and_never_drops_it(tmp_path):
+    """Calls the funnel directly, past every entry check, with a 2 MiB field."""
+    seen = []
+    trail = AuditTrail(tmp_path / "audit.jsonl", sink=seen.append)
+    huge = "p" * (2 * 1024 * 1024)
+    trail.write({"ts": "2026-01-15T11:59:00.000Z", "agent": "a", "principal": huge, "intent": "read",
+                 "event": "decision", "resource": "doc/1", "decision": "Allow"})
+    [line] = trail_lines(tmp_path)
+    assert len(line) <= MAX_AUDIT_RECORD_BYTES
+    rec = json.loads(line)
+    digest = hashlib.sha256(huge.encode()).hexdigest()
+    assert rec == {"ts": "2026-01-15T11:59:00.000Z", "agent": "a",
+                   "principal": {"omitted": "oversized", "bytes": len(huge), "sha256": digest},
+                   "intent": "read", "event": "decision", "resource": "doc/1", "decision": "Allow",
+                   "oversized": True}
+    assert seen == [rec]  # the sink gets exactly the line
+    assert huge[:64].encode() not in line  # value-free
+    # It counts toward every query, whatever the principal, filters or outcome.
+    for principal, outcome in (("p", "allowed"), ('User::"x"', "denied"), ("q", "all")):
+        r = count_audit_records(tmp_path / "audit.jsonl", principal, "anything", now="2026-01-15T12:00:00Z",
+                                outcome=outcome)
+        assert (r["count"], r["unreadable"]) == (1, 1)
+    assert find_unreadable_lines(tmp_path / "audit.jsonl")["findings"] == [{"line": 1, "reason": "oversized-record"}]
+
+
+def test_the_funnel_shortens_the_largest_fields_first(tmp_path):
+    trail = AuditTrail(tmp_path / "audit.jsonl")
+    record = {"ts": "t", "event": "attenuation"}
+    record.update({f"f{i}": "v" * (100 * 1024 + i) for i in range(10)})  # ~1 MiB in total
+    record["bad"] = float("nan")  # not JSON: replaced, never written as NaN
+    trail.write(record)
+    [line] = trail_lines(tmp_path)
+    rec = json.loads(line)
+    assert len(line) <= MAX_AUDIT_RECORD_BYTES and rec["oversized"] is True
+    assert rec["bad"] == {"omitted": "unserializable"}
+    shortened = sorted(k for k, v in rec.items() if isinstance(v, dict))
+    kept = sorted(k for k in rec if k.startswith("f") and isinstance(rec[k], str))
+    # The largest went first; the rest were kept whole.
+    assert all(int(a[1:]) > int(b[1:]) for a in shortened if a != "bad" for b in kept)
+    assert kept and (rec["ts"], rec["event"]) == ("t", "attenuation")
+
+
+def test_a_record_within_the_bound_is_written_unchanged(tmp_path):
+    trail = AuditTrail(tmp_path / "audit.jsonl")
+    record = {"ts": "t", "principal": "p" * (MAX_AUDIT_RECORD_BYTES - 64)}
+    trail.write(record)
+    assert json.loads(trail_lines(tmp_path)[0]) == record
+
+
+def test_audit_check_limit_and_missing_subcommand(tmp_path, capsys):
+    assert cli_main(["audit", "check", str(tmp_path / "x.jsonl"), "--limit", "-1"]) == 2
+    assert "non-negative" in capsys.readouterr().err
+    assert cli_main(["audit"]) == 2
+    assert "missing subcommand" in capsys.readouterr().err
