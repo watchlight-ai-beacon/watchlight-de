@@ -82,7 +82,7 @@ candidate on the call. The exclusion is case-insensitive, affects only
 ```ts
 const safe = govern.sanitize(text, {
   types: ["PERSON", "EMAIL"],
-  personExclusions: ["Bethany Christian Services"],
+  personExclusions: ["Larkspur Hollow Services"],
 }).text;
 ```
 
@@ -90,7 +90,7 @@ const safe = govern.sanitize(text, {
 safe = govern.sanitize(
     text,
     types=["PERSON", "EMAIL"],
-    person_exclusions=["Bethany Christian Services"],
+    person_exclusions=["Larkspur Hollow Services"],
 )["text"]
 ```
 

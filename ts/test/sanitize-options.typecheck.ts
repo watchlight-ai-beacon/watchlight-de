@@ -6,7 +6,7 @@ import { govern, sanitize, Watchlight, type SanitizeOptions, type SanitizeResult
 
 const opts: SanitizeOptions = {
   resource: "statement.pdf", intent: "read", decisionId: "dec-123",
-  personExclusions: ["Bethany Christian Services"],
+  personExclusions: ["Larkspur Hollow Services"],
 };
 const governed: SanitizeResult = govern.sanitize("text", opts);
 const pure: SanitizeResult = sanitize("text", { resource: "statement.pdf", intent: "read", decisionId: "dec-123" });
