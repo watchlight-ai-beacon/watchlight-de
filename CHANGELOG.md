@@ -93,11 +93,13 @@ as `counters()`, now counts the plugin's decisions too, so read
 **Changed**
 - The audit trail now bounds every record it writes, as a backstop behind the
   checks at each entry point. A record that would serialise to more than
-  512 KiB, or that holds a value JSON cannot represent, is written as a
-  shortened replacement instead of being dropped. The replacement keeps every
-  small field, replaces the largest fields with a value-free marker (the
-  field's length in bytes and a SHA-256 digest), and carries
-  `"oversized": true`. The counters count such a record toward every query,
+  512 KiB, that nests deeper than the counters read, or that holds a value JSON
+  cannot represent, is written as a shortened replacement instead of being
+  dropped. The replacement keeps every small field, replaces each field nested
+  too deeply and then the largest fields with a value-free marker (the field's
+  length in bytes and a SHA-256 digest), and carries `"oversized": true`. Both
+  lanes measure a record's length as Python writes it, so they shorten the same
+  records. The counters count such a record toward every query,
   like a line they cannot read, and `watchlight audit check` reports it as
   `oversized-record`. Earlier releases silently dropped a record that could
   not be serialised.
@@ -130,7 +132,9 @@ as `counters()`, now counts the plugin's decisions too, so read
   written.
 - The `governedHooks` PostToolUse fallback (no PreToolUse decision for the
   call) checks the intent and resource it records. A name that breaks a rule
-  withholds the tool output, as any other egress failure does.
+  withholds the tool output, as any other egress failure does, and writes a
+  value-free `egress` record marked `withheld`, with `<refused>` in place of
+  both names (`REFUSED_NAME`), so the tool run still leaves a trace.
 - An `on_result` / `onResult` hook now receives a copy of its `info` argument.
   The egress record is written from the original.
 - The counters apply the same rules to crafted lines in both lanes. A

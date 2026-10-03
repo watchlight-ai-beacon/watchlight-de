@@ -352,6 +352,9 @@ export type Governed<A extends unknown[], R> = (...args: A) => Promise<Awaited<R
 
 const norm = (x?: readonly string[] | null): string[] => (x ? [...x] : []);
 
+/** The placeholder an egress record carries for a name that was refused. */
+export const REFUSED_NAME = "<refused>";
+
 export interface WatchlightOptions {
   /** Stable agent identity for the audit trail and the reserved
    *  `context.actor` key. Falls back to the {@link AGENT_ENV}
@@ -2003,6 +2006,21 @@ export class Watchlight {
     const replaced = replacement !== undefined && replacement !== null;
     this._auditEgress(info, { replaced });
     return { value: replaced ? (replacement as R) : result, replaced };
+  }
+
+  /**
+   * The trace of an egress that was refused before its hook ran, because a name
+   * it would have recorded broke a rule (the Claude hooks' PostToolUse fallback,
+   * which has no decision to take checked names from). Value-free: the names are
+   * the fixed placeholder {@link REFUSED_NAME} and the subject is this agent, so
+   * nothing the caller supplied is written. An `egress` record never counts
+   * toward a quota, so it cannot lower a count. @internal
+   */
+  _auditEgressRefused(): void {
+    this._auditEgress(
+      { intent: REFUSED_NAME, resource: REFUSED_NAME, principal: this._principal() },
+      { replaced: false, withheld: true }
+    );
   }
 
   private _auditEgress(info: EgressInfo, outcome: { replaced: boolean; withheld?: boolean }): void {

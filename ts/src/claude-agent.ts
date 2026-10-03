@@ -292,10 +292,17 @@ export function governedHooks(options: GovernedHooksOptions = {}): GovernedHooks
         // terms are resolved the way the gate resolves them, so the record
         // names the subject and resource that decision would have carried.
         // No decision checked these names, so they are checked here, exactly
-        // as `authorize` would: a name that breaks a rule throws, and the catch
-        // below withholds the output. The raw value is never recorded.
-        const { intent, principal, resource } = callTerms(toolName, ev.tool_input);
-        egress = { intent: assertName(intent, "intent"), principal, resource: assertName(resource, "resource") };
+        // as `authorize` would. A name that breaks a rule still leaves a trace:
+        // a value-free egress record with placeholder names, marked withheld.
+        // Then the error reaches the catch below, which withholds the output.
+        // The raw value is never recorded.
+        try {
+          const { intent, principal, resource } = callTerms(toolName, ev.tool_input);
+          egress = { intent: assertName(intent, "intent"), principal, resource: assertName(resource, "resource") };
+        } catch (e) {
+          governor._auditEgressRefused();
+          throw e;
+        }
       }
       const { value, replaced } = await governor._applyOnResult(ev.tool_response, onResult, egress, {
         timeoutMs,

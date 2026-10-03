@@ -276,7 +276,10 @@ export const MAX_AUDIT_RECORD_BYTES = 512 * 1024;
 // A field that serialises to at most this many bytes is never shortened.
 const SMALL_FIELD_BYTES = 256;
 
-const byteLength = (s: string): number => Buffer.byteLength(s, "utf8");
+/** How deep the counters let a line nest objects and arrays
+ *  (`MAX_COUNTERS_NESTING` in counters.ts; kept equal by a test, and not
+ *  imported so that this module stays free of the counters). */
+const MAX_NESTING = 32;
 
 /** `JSON.stringify`, or `undefined` for a value JSON cannot hold (a BigInt, a
  *  cycle) or that it would drop (a function, `undefined`). */
@@ -289,60 +292,135 @@ function tryStringify(value: unknown): string | undefined {
   }
 }
 
-/** A value-free stand-in for a field too long to keep: its length in bytes and
- *  a SHA-256 digest — of its UTF-8 bytes for a string, of its JSON otherwise —
- *  never the value. */
-function marker(value: unknown): Record<string, unknown> {
+/**
+ * The length `text` (this lane's JSON) would have as Python writes it: every
+ * non-ASCII code unit escaped as `\uXXXX` (6), and `", "` / `": "` between
+ * items (one more byte each). Both lanes compare THIS length with
+ * {@link MAX_AUDIT_RECORD_BYTES}, so they shorten the same records. It is never
+ * less than the UTF-8 length this lane actually writes.
+ */
+function pythonLength(text: string): number {
+  let n = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    n += c > 0x7f ? 6 : 1;
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (c === 0x5c) escaped = true;
+      else if (c === 0x22) inString = false;
+    } else if (c === 0x22) inString = true;
+    else if (c === 0x2c || c === 0x3a) n += 1; // , :
+  }
+  return n;
+}
+
+/** How deep `text` (JSON) nests objects and arrays — the counters' measure. */
+function jsonDepth(text: string): number {
+  let depth = 0;
+  let deepest = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (c === 0x5c) escaped = true;
+      else if (c === 0x22) inString = false;
+    } else if (c === 0x22) inString = true;
+    else if (c === 0x7b || c === 0x5b) deepest = Math.max(deepest, ++depth);
+    else if (c === 0x7d || c === 0x5d) depth--;
+  }
+  return deepest;
+}
+
+/** A line the counters can read: short enough, and nested no deeper than they
+ *  accept. */
+function fits(line: string): boolean {
+  return pythonLength(line) <= MAX_AUDIT_RECORD_BYTES && jsonDepth(line) <= MAX_NESTING;
+}
+
+/** A value-free stand-in for a field too long, or nested too deeply, to keep:
+ *  its length in bytes and a SHA-256 digest — of its UTF-8 bytes for a string,
+ *  of its JSON otherwise — never the value. */
+function marker(value: unknown, reason: "oversized" | "too-deep" = "oversized"): Record<string, unknown> {
   const data = typeof value === "string" ? value : tryStringify(value);
   if (data === undefined) return { omitted: "unserializable" };
   const bytes = Buffer.from(data, "utf8");
-  return { omitted: "oversized", bytes: bytes.length, sha256: crypto.createHash("sha256").update(bytes).digest("hex") };
+  return { omitted: reason, bytes: bytes.length, sha256: crypto.createHash("sha256").update(bytes).digest("hex") };
 }
 
 /**
  * The JSON line the funnel writes for `record`: the record itself when it
- * serialises to at most {@link MAX_AUDIT_RECORD_BYTES}, else a shortened
- * replacement that fails closed. The replacement keeps every small field as it
- * was, replaces the largest fields — one at a time, largest first, until the
- * line fits — with a value-free marker (`{ omitted: "oversized", bytes, sha256 }`,
- * or `{ omitted: "unserializable" }` for a value JSON cannot hold), and sets
- * `oversized: true`. The counters count a record carrying `oversized: true`
- * toward every query, so a shortened field can never make a quota under-count,
- * and `watchlight audit check` reports it. @internal
+ * measures at most {@link MAX_AUDIT_RECORD_BYTES} (as Python writes it, see
+ * `pythonLength`) and nests no deeper than the counters accept, else a
+ * shortened replacement that fails closed. The replacement keeps every small
+ * field as it was, replaces any field nested too deeply and then the largest
+ * fields — one at a time, largest first, until the line fits — with a
+ * value-free marker (`{ omitted: "oversized" | "too-deep", bytes, sha256 }`, or
+ * `{ omitted: "unserializable" }` for a value JSON cannot hold), and sets
+ * `oversized: true`. The size is kept as a running total, so shortening is
+ * linear in the number of fields. The counters count a record carrying
+ * `oversized: true` toward every query, so a shortened field can never make a
+ * quota under-count, and `watchlight audit check` reports it. @internal
  */
 export function boundedLine(record: Record<string, unknown>): string {
   const whole = tryStringify(record);
-  if (whole !== undefined && byteLength(whole) <= MAX_AUDIT_RECORD_BYTES) return whole;
+  if (whole !== undefined && fits(whole)) return whole;
+  // Keys: the SDK's own are short identifiers; anything else is renamed to a
+  // `field_<n>` that no other key (original or renamed) already has.
+  const taken = new Set(Object.keys(record).filter((k) => k.length <= 64));
+  taken.add("oversized");
   const fields: Record<string, unknown> = {};
   const sizes = new Map<string, number>();
   let index = 0;
   for (const [rawKey, value] of Object.entries(record)) {
-    // The SDK's own keys are short identifiers; anything else is renamed.
-    const key = rawKey.length > 64 ? `field_${index}` : rawKey;
+    let key = rawKey;
+    if (rawKey.length > 64) {
+      let n = index;
+      while (taken.has(`field_${n}`)) n++;
+      key = `field_${n}`;
+      taken.add(key);
+    }
     index++;
-    if (value === undefined || typeof value === "function") continue; // JSON drops these anyway
+    if (key === "oversized" || value === undefined || typeof value === "function") continue; // JSON drops the last two anyway
     const json = tryStringify(value);
     if (json === undefined) {
       fields[key] = marker(value);
+    } else if (jsonDepth(json) > MAX_NESTING - 1) {
+      // Inside the record a value sits one level down.
+      fields[key] = marker(value, "too-deep");
     } else {
       fields[key] = value;
-      sizes.set(key, byteLength(json));
+      sizes.set(key, pythonLength(json));
     }
   }
   fields.oversized = true;
-  sizes.delete("oversized");
-  const bySize = [...sizes.entries()].sort((a, b) => b[1] - a[1]);
-  for (const [key, size] of bySize) {
-    if (byteLength(JSON.stringify(fields)) <= MAX_AUDIT_RECORD_BYTES || size <= SMALL_FIELD_BYTES) break;
+  // The line's length, kept as a running total: braces, then per field its
+  // key, ": " and value, and ", " between fields.
+  const entry = new Map<string, number>();
+  let total = 2 + 2 * (Object.keys(fields).length - 1);
+  for (const [k, v] of Object.entries(fields)) {
+    const size = pythonLength(JSON.stringify(k)) + 2 + (sizes.get(k) ?? pythonLength(JSON.stringify(v)));
+    entry.set(k, size);
+    total += size;
+  }
+  for (const [key, size] of [...sizes.entries()].sort((a, b) => b[1] - a[1])) {
+    if (total <= MAX_AUDIT_RECORD_BYTES || size <= SMALL_FIELD_BYTES) break;
     fields[key] = marker(fields[key]);
+    const replaced = pythonLength(JSON.stringify(key)) + 2 + pythonLength(JSON.stringify(fields[key]));
+    total += replaced - (entry.get(key) ?? 0);
+    entry.set(key, replaced);
   }
   const line = JSON.stringify(fields);
-  if (byteLength(line) <= MAX_AUDIT_RECORD_BYTES) return line;
+  if (pythonLength(line) <= MAX_AUDIT_RECORD_BYTES) return line;
   // Only a record with thousands of fields gets here: keep what says what it
   // was, and how many fields it had.
   const kept: Record<string, unknown> = {};
   for (const k of ["ts", "event", "agent", "decision"]) {
-    if (k in fields && (sizes.get(k) ?? 0) <= SMALL_FIELD_BYTES) kept[k] = fields[k];
+    const v = fields[k];
+    if (typeof v === "string" && v.length <= SMALL_FIELD_BYTES) kept[k] = v;
   }
   return JSON.stringify({ ...kept, oversized: true, fields: Object.keys(record).length });
 }

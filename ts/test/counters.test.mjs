@@ -15,7 +15,7 @@ const {
   MAX_NAME_BYTES, SanitizeError, ScreenError,
   MAX_AGENT_NAME_BYTES, MAX_SCOPE_ENTRIES, MAX_SCOPE_LIST_BYTES, MAX_ACTOR_CHAIN_BYTES,
   findUnreadableLines, UNREADABLE_REASONS, principals,
-  MAX_AUDIT_RECORD_BYTES, governedHooks, DENY_REASON,
+  MAX_AUDIT_RECORD_BYTES, governedHooks, DENY_REASON, REFUSED_NAME,
 } = require("../dist/index.js");
 const { AuditTrail } = require("../dist/audit.js");
 import { createHash } from "node:crypto";
@@ -615,10 +615,20 @@ console.log("every write path is bounded (shared with Python)");
       finally { console.error = orig; }
       eq(`PostToolUse fallback with a bad ${label}: the output is withheld`, out.hookSpecificOutput.updatedToolOutput, DENY_REASON);
     }
-    eq("... and no record carries the raw value", trailLines(auditDir).length, 0);
+    // Each refusal leaves a value-free trace: placeholder names, this agent as
+    // the subject, withheld.
+    const traces = trailLines(auditDir).map((l) => JSON.parse(l));
+    eq("... and leaves a value-free trace, withheld", traces.map(({ ts, ...r }) => r), [1, 2].map(() => ({
+      agent: "w", principal: 'Agent::"w"', intent: REFUSED_NAME, event: "egress", resource: REFUSED_NAME, replaced: false, withheld: true,
+    })));
+    ok("... that carries no raw value", trailLines(auditDir).every((l) => !l.includes("xxxx") && l.length < 400));
+    for (const outcome of ["allowed", "denied", "all"]) {
+      const c = g.counters({ principal: 'Agent::"w"', outcome });
+      eq(`... and counts toward no quota (${outcome})`, [c.count, c.unreadable, c.records], [0, 0, 2]);
+    }
     const { hooks } = governedHooks({ governor: g, onResult: () => undefined });
     await quiet(() => hooks.PostToolUse[0].hooks[0]({ hook_event_name: "PostToolUse", tool_name: "t", tool_input: {}, tool_response: "raw" }, undefined));
-    eq("a well-formed fallback still records its egress", trailLines(auditDir).map((l) => JSON.parse(l).event), ["egress"]);
+    eq("a well-formed fallback still records its egress", JSON.parse(trailLines(auditDir).at(-1)).intent, "t");
   }
 
   // The funnel backstop: called directly, past every entry check.
@@ -658,6 +668,40 @@ console.log("every write path is bounded (shared with Python)");
     const fits = { ts: "t", principal: "p".repeat(MAX_AUDIT_RECORD_BYTES - 64) };
     new AuditTrail(p3).write(fits);
     eq("a record within the bound is written unchanged", JSON.parse(fs.readFileSync(p3, "utf8")), fits);
+  }
+
+  // The backstop: linear, depth-bounded, collision-free, same threshold as Python.
+  {
+    const { boundedLine } = require("../dist/audit.js");
+    const record = {};
+    for (let i = 0; i < 6000; i++) record[`k${i}`] = "v".repeat(300);
+    const t0 = process.hrtime.bigint();
+    const line = boundedLine(record);
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    ok("shortening 6000 fields is linear (well under a second)", ms < 500 && Buffer.byteLength(line) <= MAX_AUDIT_RECORD_BYTES && JSON.parse(line).oversized === true, `${ms}ms`);
+
+    const nested = (depth) => { let v = []; for (let i = 1; i < depth; i++) v = [v]; return v; };
+    const dir = dirOf();
+    const p = join(dir, "audit.jsonl");
+    const trail = new AuditTrail(p);
+    trail.write({ ts: "t", x: nested(31) });
+    trail.write({ ts: "t", x: nested(32), y: "kept" });
+    trail.write({ ts: "t", x: nested(5000) });
+    const [first, second, third] = trailLines(dir).map((l) => JSON.parse(l));
+    eq("a value 31 deep is kept (32 in the record: the counters' limit)", first, { ts: "t", x: nested(31) });
+    eq("one level deeper is replaced, the rest kept", [second.x.omitted, second.y, second.oversized], ["too-deep", "kept", true]);
+    ok("a very deep value is replaced", ["too-deep", "unserializable"].includes(third.x.omitted) && third.oversized === true, JSON.stringify(third).slice(0, 100));
+    eq("the backstop never writes a line the counters call too deep", findUnreadableLines(p).findings,
+      [{ line: 2, reason: "oversized-record" }, { line: 3, reason: "oversized-record" }]);
+
+    const collide = JSON.parse(boundedLine({ ["k".repeat(65)]: "long key", field_0: "kept", big: "x".repeat(600 * 1024) }));
+    eq("a renamed key never overwrites another", [collide.field_0, Object.values(collide).filter((v) => typeof v === "string").sort(), Object.keys(collide).length],
+      ["kept", ["kept", "long key"], 4]);
+
+    for (const [count, shortened] of [[87000, false], [88000, true]]) {
+      const out = JSON.parse(boundedLine({ ts: "t", principal: "é".repeat(count) }));
+      eq(`the threshold is measured as Python writes it (${count} x é)`, "oversized" in out, shortened);
+    }
   }
 
   // The two lanes classify crafted lines identically.

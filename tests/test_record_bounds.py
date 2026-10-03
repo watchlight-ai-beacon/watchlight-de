@@ -485,3 +485,63 @@ def test_audit_check_limit_and_missing_subcommand(tmp_path, capsys):
     assert "non-negative" in capsys.readouterr().err
     assert cli_main(["audit"]) == 2
     assert "missing subcommand" in capsys.readouterr().err
+
+
+# ── the backstop: linear, depth-bounded, collision-free, same threshold ─────
+
+def test_shortening_is_linear_in_the_number_of_fields():
+    import time
+
+    from watchlight._audit import bounded_line
+
+    record = {f"k{i}": "v" * 300 for i in range(6000)}
+    started = time.perf_counter()
+    line = bounded_line(record)
+    elapsed = time.perf_counter() - started
+    assert elapsed < 0.5, elapsed
+    assert len(line) <= MAX_AUDIT_RECORD_BYTES and json.loads(line)["oversized"] is True
+
+
+def _nested(depth):
+    value = []
+    for _ in range(depth - 1):
+        value = [value]
+    return value
+
+
+def test_the_backstop_never_writes_a_line_nested_too_deep(tmp_path):
+    from watchlight import _audit, _counters
+
+    assert _audit._MAX_NESTING == _counters.MAX_COUNTERS_NESTING
+    trail = AuditTrail(tmp_path / "audit.jsonl")
+    # A value 31 deep sits at depth 32 in the record: the deepest the counters accept.
+    trail.write({"ts": "t", "x": _nested(31)})
+    trail.write({"ts": "t", "x": _nested(32), "y": "kept"})
+    trail.write({"ts": "t", "x": _nested(5000)})
+    first, second, third = (json.loads(line) for line in trail_lines(tmp_path))
+    assert first == {"ts": "t", "x": _nested(31)}
+    assert second["x"]["omitted"] == "too-deep" and second["y"] == "kept" and second["oversized"] is True
+    assert third["x"]["omitted"] in ("too-deep", "unserializable") and third["oversized"] is True
+    found = find_unreadable_lines(tmp_path / "audit.jsonl")
+    assert found["findings"] == [{"line": 2, "reason": "oversized-record"}, {"line": 3, "reason": "oversized-record"}]
+
+
+def test_a_renamed_key_never_overwrites_another():
+    from watchlight._audit import bounded_line
+
+    record = {1: "one", "field_0": "kept", 2: "x" * (600 * 1024), "k" * 65: "long key"}
+    out = json.loads(bounded_line(record))
+    assert out["field_0"] == "kept"
+    values = sorted(str(v) for k, v in out.items() if k != "oversized" and not isinstance(v, dict))
+    assert values == ["kept", "long key", "one"]
+    assert len(out) == 5  # four fields, none lost, plus "oversized"
+
+
+@pytest.mark.parametrize("count,shortened", [(87_000, False), (88_000, True)])
+def test_the_threshold_is_measured_as_written_and_matches_typescript(count, shortened):
+    """é is written as \\u00e9 (6 bytes): 87,000 of them fit 512 KiB, 88,000 do
+    not. The TypeScript lane measures the same way (ts/test/counters.test.mjs)."""
+    from watchlight._audit import bounded_line
+
+    out = json.loads(bounded_line({"ts": "t", "principal": "é" * count}))
+    assert ("oversized" in out) is shortened

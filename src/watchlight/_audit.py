@@ -346,6 +346,11 @@ MAX_AUDIT_RECORD_BYTES = 512 * 1024
 # A field that serialises to at most this many bytes is never shortened.
 _SMALL_FIELD_BYTES = 256
 
+#: How deep the counters let a line nest objects and arrays
+#: (``_counters.MAX_COUNTERS_NESTING``; kept equal by a test, and not imported
+#: so that this module stays free of the counters).
+_MAX_NESTING = 32
+
 
 def _dumps(value: Any) -> str:
     # ASCII-only output (the default), so a line's length in characters is its
@@ -354,10 +359,35 @@ def _dumps(value: Any) -> str:
     return json.dumps(value, allow_nan=False)
 
 
-def _marker(value: Any) -> Dict[str, Any]:
-    """A value-free stand-in for a field too long to keep: its length in bytes
-    and a SHA-256 digest — of its UTF-8 bytes for a string, of its JSON
-    otherwise — never the value."""
+def _json_depth(text: str) -> int:
+    """How deep ``text`` (JSON) nests objects and arrays — the counters' own
+    measure: one linear pass that tracks only string boundaries."""
+    if text.count("{") + text.count("[") <= 1:
+        return 1 if ("{" in text or "[" in text) else 0
+    depth = deepest = 0
+    in_string = escaped = False
+    for c in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif c == "\\":
+                escaped = True
+            elif c == '"':
+                in_string = False
+        elif c == '"':
+            in_string = True
+        elif c in "{[":
+            depth += 1
+            deepest = max(deepest, depth)
+        elif c in "}]":
+            depth -= 1
+    return deepest
+
+
+def _marker(value: Any, reason: str = "oversized") -> Dict[str, Any]:
+    """A value-free stand-in for a field too long, or nested too deeply, to
+    keep: its length in bytes and a SHA-256 digest — of its UTF-8 bytes for a
+    string, of its JSON otherwise — never the value."""
     if isinstance(value, str):
         data = str.encode(value, "utf-8", "surrogatepass")
     else:
@@ -365,50 +395,87 @@ def _marker(value: Any) -> Dict[str, Any]:
             data = _dumps(value).encode("utf-8")
         except (TypeError, ValueError, RecursionError):
             return {"omitted": "unserializable"}
-    return {"omitted": "oversized", "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+    return {"omitted": reason, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+
+
+def _fits(line: str) -> bool:
+    """A line the counters can read: short enough, and nested no deeper than
+    they accept. The nesting scan runs only when the line could nest that deep."""
+    if len(line) > MAX_AUDIT_RECORD_BYTES:
+        return False
+    if line.count("{") + line.count("[") <= _MAX_NESTING:
+        return True
+    return _json_depth(line) <= _MAX_NESTING
 
 
 def bounded_line(record: Dict[str, Any]) -> str:
     """The JSON line the funnel writes for ``record``: the record itself when it
-    serialises to at most :data:`MAX_AUDIT_RECORD_BYTES`, else a shortened
-    replacement that fails closed.
+    serialises to at most :data:`MAX_AUDIT_RECORD_BYTES` and nests no deeper
+    than the counters accept, else a shortened replacement that fails closed.
 
-    The replacement keeps every small field as it was, replaces the largest
-    fields — one at a time, largest first, until the line fits — with a
-    value-free marker (``{"omitted": "oversized", "bytes", "sha256"}``, or
-    ``{"omitted": "unserializable"}`` for a value JSON cannot hold), and sets
-    ``"oversized": true``. The counters count a record carrying ``"oversized":
-    true`` toward every query, so a shortened field can never make a quota
+    The replacement keeps every small field as it was, replaces any field
+    nested too deeply and then the largest fields — one at a time, largest
+    first, until the line fits — with a value-free marker
+    (``{"omitted": "oversized" | "too-deep", "bytes", "sha256"}``, or
+    ``{"omitted": "unserializable"}`` for a value JSON cannot hold), and sets ``"oversized":
+    true``. The size is kept as a running total, so shortening is linear in the
+    number of fields. The counters count a record carrying ``"oversized": true``
+    toward every query, so a shortened field can never make a quota
     under-count, and ``watchlight audit check`` reports it."""
     try:
         line = _dumps(record)
-        if len(line) <= MAX_AUDIT_RECORD_BYTES:
+        if _fits(line):
             return line
     except (TypeError, ValueError, RecursionError):
         pass
+    # Keys: the SDK's own are short identifiers; anything else is renamed to a
+    # `field_<n>` that no other key (original or renamed) already has.
+    taken = {k for k in record if type(k) is str and len(k) <= 64}
+    taken.add("oversized")
     fields: Dict[str, Any] = {}
     sizes: Dict[str, int] = {}
     for index, (key, value) in enumerate(record.items()):
-        # The SDK's own keys are short identifiers; anything else is renamed.
         if type(key) is not str or len(key) > 64:
-            key = f"field_{index}"
+            n = index
+            while f"field_{n}" in taken:
+                n += 1
+            key = f"field_{n}"
+            taken.add(key)
+        if key == "oversized":
+            continue
         try:
-            sizes[key] = len(_dumps(value))
-            fields[key] = value
+            text = _dumps(value)
         except (TypeError, ValueError, RecursionError):
             fields[key] = _marker(value)
+            continue
+        # Inside the record a value sits one level down.
+        if _json_depth(text) > _MAX_NESTING - 1:
+            fields[key] = _marker(value, "too-deep")
+            continue
+        fields[key] = value
+        sizes[key] = len(text)
     fields["oversized"] = True
-    sizes.pop("oversized", None)
+    # The line's length, kept as a running total: braces, then per field its
+    # key, ": " and value, and ", " between fields (json.dumps' separators).
+    entry = {k: len(_dumps(k)) + 2 + (sizes[k] if k in sizes else len(_dumps(v))) for k, v in fields.items()}
+    total = 2 + sum(entry.values()) + 2 * (len(fields) - 1)
     for key in sorted(sizes, key=lambda k: sizes[k], reverse=True):
-        if len(_dumps(fields)) <= MAX_AUDIT_RECORD_BYTES or sizes[key] <= _SMALL_FIELD_BYTES:
+        if total <= MAX_AUDIT_RECORD_BYTES or sizes[key] <= _SMALL_FIELD_BYTES:
             break
         fields[key] = _marker(fields[key])
+        replaced = len(_dumps(key)) + 2 + len(_dumps(fields[key]))
+        total += replaced - entry[key]
+        entry[key] = replaced
     line = _dumps(fields)
     if len(line) <= MAX_AUDIT_RECORD_BYTES:
         return line
     # Only a record with thousands of fields gets here: keep what says what it
     # was, and how many fields it had.
-    kept = {k: fields[k] for k in ("ts", "event", "agent", "decision") if k in fields and sizes.get(k, 0) <= _SMALL_FIELD_BYTES}
+    kept = {
+        k: fields[k]
+        for k in ("ts", "event", "agent", "decision")
+        if k in fields and type(fields[k]) is str and len(fields[k]) <= _SMALL_FIELD_BYTES
+    }
     return _dumps({**kept, "oversized": True, "fields": len(record)})
 
 

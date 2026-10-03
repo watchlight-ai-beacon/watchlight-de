@@ -116,10 +116,11 @@ SDK shortened.
 
 **The audit trail shortens a record instead of writing or dropping it.** A
 record that would serialise to more than 512 KiB (`MAX_AUDIT_RECORD_BYTES`),
-or that holds a value JSON cannot represent, is written as a shortened
-replacement. Every small field is kept. The largest fields are replaced by a
-marker that holds only the field's length in bytes and a SHA-256 digest, and
-the record carries `"oversized": true`. The counters count such a record
+that nests objects and arrays deeper than the counters read (32 levels), or
+that holds a value JSON cannot represent, is written as a shortened
+replacement. Every small field is kept. A field nested too deeply, and then the
+largest fields, are replaced by a marker that holds only the field's length in
+bytes and a SHA-256 digest, and the record carries `"oversized": true`. The counters count such a record
 toward every query, like a line they cannot read. Earlier releases dropped a
 record that could not be serialised, without a word. If you read the trail or
 a sink's records yourself, treat a record with `"oversized": true` as one
