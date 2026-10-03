@@ -182,8 +182,12 @@ under. That is normally the run's id; if you pass your own `execution_id` to
 `authorize_action`, the record carries yours. A sub-agent's decision names the
 sub-agent as `agent` and carries the delegation chain in `actor_chain`. After a
 run is quarantined or severed, the plugin refuses every later call itself, and
-each of those refusals is recorded as a `Deny`. A `preflight_step` is advisory
-and writes no record; the gate is `authorize_action`.
+each of those refusals is recorded as a `Deny`. The one exception is a handle
+read from `watchlight_core.current_subagent_handle()`, which is the SDK's own
+handle; see [integrations](integrations.md#what-the-plugin-records). A
+`preflight_step` is advisory and writes no record; the gate is
+`authorize_action`. Every field is recorded exactly as given, as on the direct
+path, so `counters()` matches it exactly.
 
 The plugin also writes `execution_started` and `execution_completed` lines when
 a run begins and ends. Those lines name their kind in `event_type`, and they

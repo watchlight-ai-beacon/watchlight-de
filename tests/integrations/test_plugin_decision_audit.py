@@ -432,30 +432,65 @@ def test_a_sub_agent_decision_names_the_sub_agent_and_its_chain(name, tmp_path):
 # ── record hygiene ─────────────────────────────────────────────────────────
 
 
+LONG_RESOURCE = 'Tool::"' + "r" * 1100 + '"'
+TAB_RESOURCE = 'Tool::"web\tsearch"'
+
+
 @pytest.mark.parametrize("name", NAMES)
-def test_control_characters_and_overlong_terms_are_stored_cleaned(name, tmp_path):
+def test_terms_are_stored_in_full_so_counting_matches_them(name, tmp_path):
+    # A quota matches principal, action and resource EXACTLY. A term cut or
+    # rewritten in the record is a decision no count can find — a quota that
+    # fails open. They are stored as given; JSON escapes what needs escaping.
     module = _plugin_module(name)
     audit = tmp_path / "audit.jsonl"
     plugin = module.governed_plugin(POLICIES, audit_path=str(audit))
+    twin = LONG_RESOURCE[:-2] + 'x"'  # differs only near the end
 
     async def run():
-        async with await plugin.start_run("hygiene-agent") as handle:
-            await handle.authorize_action('Action::"read"', "tool/a\nforged line")
-            await handle.authorize_action('Action::"read"', "r" * 5000)
+        async with await plugin.start_run("quota-agent") as handle:
+            for _ in range(3):
+                assert await handle.authorize_action('Action::"read"', LONG_RESOURCE, principal='User::"u1"')
+            for _ in range(2):
+                assert await handle.authorize_action('Action::"read"', TAB_RESOURCE, principal='User::"u1"')
+            assert await handle.authorize_action('Action::"read"', twin, principal='User::"u1"')
 
     asyncio.run(run())
-    first, second = _decisions(_lines(audit))
-    assert first["resource"] == "tool/a�forged�line"
-    assert len(second["resource"]) == 1025 and second["resource"].endswith("…")
+
+    def count(resource):
+        return count_audit_records(audit, principal='User::"u1"', resource=resource, window="1h")["count"]
+
+    assert count(LONG_RESOURCE) == 3
+    assert count(TAB_RESOURCE) == 2
+    assert count(twin) == 1
+    # Every record is still exactly one line of valid JSON.
+    raw = audit.read_text(encoding="utf-8")
+    assert "\t" not in raw
+    assert len(raw.splitlines()) == len(_lines(audit))
 
 
 @pytest.mark.parametrize("name", NAMES)
-@pytest.mark.parametrize("slug", ["", "bad\nname", "x" * 300, "<unconfigured>"])
-def test_an_unusable_agent_name_is_refused_at_start_run(name, slug, tmp_path):
+def test_unusual_agent_names_are_recorded_as_given_and_never_refused(name, tmp_path):
+    # A refusal raised inside a framework's own hook can leave the framework
+    # running the call ungoverned (Pydantic AI's auto-instrumentation does), so
+    # agent names are never refused here. They are recorded exactly, and the
+    # record stays one valid JSON line.
     module = _plugin_module(name)
-    plugin = module.governed_plugin(POLICIES, audit_path=str(tmp_path / "audit.jsonl"))
-    with pytest.raises(TypeError):
-        asyncio.run(plugin.start_run(slug))
+    audit = tmp_path / "audit.jsonl"
+    plugin = module.governed_plugin(POLICIES, audit_path=str(audit))
+    root, child = "lead\nagent\u2028x", "sub\tagent"
+
+    async def run():
+        async with await plugin.start_run(root) as handle:
+            assert await handle.authorize_action(*ALLOWED)
+            sub = await _spawn(plugin, handle, child, allowed_tools=["web_search"])
+            assert await sub.authorize_action(*ALLOWED)
+
+    asyncio.run(run())
+    raw = audit.read_text(encoding="utf-8")
+    assert "\u2028" not in raw and "\t" not in raw
+    first, second = _decisions(_lines(audit))
+    assert first["agent"] == root
+    assert second["agent"] == child and second["actor_chain"] == [root, child]
 
 
 def test_verdicts_are_read_the_way_the_sdk_reads_them(monkeypatch, tmp_path):
@@ -573,3 +608,178 @@ def test_lifecycle_lines_are_neither_decisions_nor_malformed(name, tmp_path):
     assert counted["count"] == 2
     events = _read_events(audit)
     assert [e["decision"] for e in events] == ["Allow", "Deny"]
+
+
+# ── handles a framework opens on its own ───────────────────────────────────
+
+
+def test_a_native_task_sub_agent_refusal_is_recorded(tmp_path):
+    # The Claude Agent SDK plugin opens a native Task sub-agent through the
+    # run's SubagentRegistry. Its child handle must be the recording wrapper,
+    # so a refusal it makes on its own after a quarantine is recorded too.
+    from watchlight_core import AgentQuarantinedError
+
+    module = _plugin_module("claude_agent")
+    audit = tmp_path / "audit.jsonl"
+    plugin = module.governed_plugin(ENFORCING, audit_path=str(audit))
+
+    async def run():
+        async with await plugin.start_run("claude-root") as handle:
+            capture = {"subagent_id": "task-1", "agent_type": "task-researcher", "allowed_tools": ["web_search"]}
+            child = await plugin.on_subagent_start(handle, capture)
+            assert child is not None
+            assert plugin.resolve_subagent(handle, "task-1") is child
+            assert await child.authorize_action('Action::"read"', 'Tool::"web_search"') is True
+            with pytest.raises(AgentQuarantinedError):
+                await child.authorize_action('Action::"exfiltrate"', 'Tool::"web_search"')
+            with pytest.raises(AgentQuarantinedError):
+                await plugin.resolve_subagent(handle, "task-1").authorize_action(
+                    'Action::"read"', 'Tool::"web_search"'
+                )
+
+    asyncio.run(run())
+    decisions = _decisions(_lines(audit))
+    assert [(r["agent"], r.get("actor_chain"), r["intent"], r["decision"]) for r in decisions] == [
+        ("task-researcher", ["claude-root", "task-researcher"], 'Action::"read"', "Allow"),
+        ("task-researcher", ["claude-root", "task-researcher"], 'Action::"exfiltrate"', "Deny"),
+        ("task-researcher", ["claude-root", "task-researcher"], 'Action::"read"', "Deny"),
+    ]
+
+
+def test_pydantic_ai_auto_instrumented_handles_are_wrapped(tmp_path):
+    # Pydantic AI's auto-instrumentation opens the root with plugin.start_run
+    # and a nested agent with parent.spawn_subagent on the handle it keeps in a
+    # context variable. Both must be the recording wrapper.
+    from watchlight_core import AgentQuarantinedError
+    from watchlight_pydantic_ai import instrumentation
+
+    module = _plugin_module("pydantic_ai")
+    audit = tmp_path / "audit.jsonl"
+    plugin = module.governed_plugin(ENFORCING, audit_path=str(audit))
+
+    async def run():
+        root, root_token = await instrumentation._open_handle_for_call(plugin, types.SimpleNamespace(name="planner"))
+        try:
+            assert type(root).__name__ == "_AuditedRunHandle"
+            assert instrumentation.current_handle() is root
+            child, child_token = await instrumentation._open_handle_for_call(
+                plugin, types.SimpleNamespace(name="worker")
+            )
+            try:
+                assert type(child).__name__ == "_AuditedRunHandle"
+                with pytest.raises(AgentQuarantinedError):
+                    await child.authorize_action('Action::"exfiltrate"', 'Tool::"x"')
+                with pytest.raises(AgentQuarantinedError):
+                    await instrumentation.current_handle().authorize_action('Action::"read"', 'Tool::"x"')
+            finally:
+                instrumentation._current_handle.reset(child_token)
+        finally:
+            instrumentation._current_handle.reset(root_token)
+
+    asyncio.run(run())
+    decisions = _decisions(_lines(audit))
+    assert [(r["agent"], r["decision"]) for r in decisions] == [("worker", "Deny"), ("worker", "Deny")]
+    assert decisions[0]["actor_chain"] == ["planner", "worker"]
+
+
+@pytest.mark.parametrize("name", NAMES)
+def test_a_wrapped_handle_supports_weak_references(name, tmp_path):
+    import weakref
+
+    module = _plugin_module(name)
+    plugin = module.governed_plugin(POLICIES, audit_path=str(tmp_path / "audit.jsonl"))
+
+    async def run():
+        async with await plugin.start_run("weak-agent") as handle:
+            ref = weakref.ref(handle)
+            assert ref() is handle
+
+    asyncio.run(run())
+
+
+# ── the SDK handle surface the wrapper depends on ──────────────────────────
+
+#: Every public method of the SDK's run handles (the base class and each
+#: plugin's subclass), and how the wrapper treats it. A method added in a later
+#: release fails here until it is classified: one that can make or refuse a
+#: decision must be intercepted, so its refusals are recorded.
+HANDLE_METHODS = {
+    "authorize_action": "intercepted: a refusal the handle makes itself is recorded",
+    "authorize_action_detailed": "intercepted: a refusal the handle makes itself is recorded",
+    "spawn_subagent": "intercepted: the child is wrapped",
+    "guarded_tool": "intercepted: the decorated tool is watched",
+    "preflight_step": "not recorded: advisory, gates nothing",
+    "submit_plan": "not a decision in-process: raises NotImplementedError",
+    "complete": "lifecycle",
+    "terminate": "lifecycle",
+    "publish_observation": "telemetry, not a decision",
+    "publish_observation_for_execution": "telemetry, not a decision",
+}
+
+
+def _handle_classes():
+    from watchlight_core.run_handle import BaseRunHandle
+
+    classes = [BaseRunHandle]
+    for name in NAMES:
+        integration = INTEGRATIONS[name]
+        module = importlib.import_module(integration.plugin_module)
+        classes.append(getattr(module, "RunHandle"))
+    return classes
+
+
+def test_every_public_handle_method_is_classified():
+    import inspect as _inspect
+
+    found = set()
+    for cls in _handle_classes():
+        for attr, member in _inspect.getmembers(cls):
+            if attr.startswith("_") or isinstance(_inspect.getattr_static(cls, attr), property):
+                continue
+            if _inspect.iscoroutinefunction(member) or attr == "guarded_tool":
+                found.add(attr)
+    assert found == set(HANDLE_METHODS), (
+        "the SDK's run handle changed: classify "
+        f"{sorted(found - set(HANDLE_METHODS))} / drop {sorted(set(HANDLE_METHODS) - found)}"
+    )
+
+
+def test_the_handle_short_circuits_only_on_quarantine_and_sever():
+    # Before it asks the backend, the SDK's handle may refuse a call itself.
+    # The wrapper records exactly the refusals named here; a new one added in a
+    # later release fails this test until the wrapper records it too.
+    import inspect as _inspect
+    import re as _re
+
+    from watchlight_core.run_handle import BaseRunHandle
+
+    import ast
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(_inspect.getsource(BaseRunHandle.authorize_action_detailed)))
+    calls = [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "authorize"
+        and ast.unparse(node.func.value) == "self._plugin.apdp"
+    ]
+    assert len(calls) == 1, "the handle's single backend call moved"
+    backend_line = calls[0]
+
+    def raised_name(node):
+        exc = node.exc
+        while isinstance(exc, ast.Call):
+            exc = exc.func
+        while isinstance(exc, ast.Attribute):
+            exc = exc.value
+        return exc.id if isinstance(exc, ast.Name) else ast.unparse(node.exc)
+
+    early = [n for n in ast.walk(tree) if getattr(n, "lineno", backend_line) < backend_line]
+    raised = {raised_name(n) for n in early if isinstance(n, ast.Raise)}
+    returns = [n for n in early if isinstance(n, ast.Return)]
+    # WatchlightContractError is a caller bug (authorize outside `async with`),
+    # raised as itself and not a decision, exactly as on the direct path.
+    assert raised == {"AgentQuarantinedError", "SubtreeSeveredError", "WatchlightContractError"}, raised
+    assert returns == [], "a new path returns a verdict before asking the backend"

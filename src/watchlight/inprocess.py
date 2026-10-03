@@ -29,9 +29,11 @@ gate is ``authorize_action``.
 Once a run is quarantined or severed, the plugin's handle refuses every later
 call itself, without asking the backend. A plugin built by ``governed_plugin``
 hands out run handles that record those refusals too (:class:`_AuditedRunHandle`),
-so every refusal is in the trail. A plugin you construct yourself around
-:func:`in_process_backend` records every decision the backend makes, but not
-those refusals.
+including the children it spawns and the Claude Agent SDK's native Task
+sub-agents. Two routes do not record those self-made refusals: a handle read
+from ``watchlight_core.current_subagent_handle()`` (the SDK's own handle), and a
+plugin you construct yourself around :func:`in_process_backend`. Both still
+record every decision the backend makes.
 
     from watchlight.inprocess import in_process_backend
     from watchlight_langgraph import WatchlightLangGraphPlugin
@@ -50,7 +52,6 @@ import contextvars
 import functools
 import inspect
 import os
-import re
 import sys
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -111,15 +112,13 @@ def in_process_backend(
     return _audited_client_class()(policies, audit_path=audit_path, trail=trail)
 
 
-#: Characters no record field may carry: C0 and C1 controls, DEL, and the two
-#: Unicode line separators. A record is one line of JSON read by people and by
-#: line-oriented tools, so a term carrying one is stored with it replaced.
-_CONTROL = re.compile("[\x00-\x1f\x7f-\x9f  ]")
-#: Bounds on what a record stores of a caller-supplied string. A term longer
-#: than this is stored cut, with a trailing ``…``: the decision used the whole
-#: term, the record keeps enough of it to read.
-_MAX_NAME = 256  # the run's agent name, an execution id
-_MAX_TERM = 1024  # a principal, an action, a resource
+#: Record fields are stored exactly as given, as the direct path stores them:
+#: ``json.dumps`` escapes every control character, and U+2028 / U+2029, so no
+#: value can break or forge a line, and a field stored in full is one
+#: ``counters()`` can match exactly. Agent names — the root's, passed to
+#: ``start_run``, and a sub-agent's, often chosen by the framework or the model
+#: — are recorded as given and never refused here: a refusal raised inside a
+#: framework's own hook can leave that framework running the call ungoverned.
 
 @functools.lru_cache(maxsize=None)
 def _short_circuit_errors() -> Tuple[type, ...]:
@@ -135,29 +134,6 @@ def _short_circuit_errors() -> Tuple[type, ...]:
 _CALL_MARKER: "contextvars.ContextVar[Optional[Dict[str, bool]]]" = contextvars.ContextVar(
     "watchlight_plugin_call", default=None
 )
-
-
-def _clean(value: Any, limit: int) -> str:
-    text = _CONTROL.sub("�", str(value))
-    return text if len(text) <= limit else text[:limit] + "…"
-
-
-def _check_agent_slug(slug: Any) -> str:
-    """The run's agent name is what every record of the run carries as
-    ``agent``. Rejected here, at the name, on the same terms the governor
-    rejects an agent name — rather than stored mangled."""
-    if not isinstance(slug, str) or not slug.strip():
-        raise TypeError("start_run: the agent name must be a non-empty string")
-    if _CONTROL.search(slug):
-        raise TypeError("start_run: the agent name must not contain control characters")
-    if len(slug) > _MAX_NAME:
-        raise TypeError(f"start_run: the agent name must be at most {_MAX_NAME} characters")
-    if slug == UNCONFIGURED_AGENT:
-        raise TypeError(
-            f"start_run: {UNCONFIGURED_AGENT!r} is reserved for an agent that was never "
-            "named — it must not name a real agent"
-        )
-    return slug
 
 
 @functools.lru_cache(maxsize=None)
@@ -205,7 +181,6 @@ def _audited_client_class() -> Any:
         # ── observation: who is acting ───────────────────────────────
 
         async def resolve_agent(self, slug: str) -> Optional[Dict[str, Any]]:
-            _check_agent_slug(slug)
             agent = await super().resolve_agent(slug)
             if isinstance(agent, dict) and agent.get("id"):
                 self._wl_agent_names[str(agent["id"])] = slug
@@ -333,15 +308,18 @@ def _audited_client_class() -> Any:
                 chain = self._wl_sessions.get(session_id or "") or (
                     (agent_id,) if agent_id else ()
                 )
-                names = [_clean(self._wl_agent_names.get(a, a), _MAX_NAME) for a in chain]
+                # Stored IN FULL, as the direct path stores them: a quota
+                # matches these fields exactly, so a cut or rewritten term
+                # would be a decision no count could find.
+                names = [str(self._wl_agent_names.get(a, a)) for a in chain]
                 record = decision_record(
                     agent=names[-1] if names else UNCONFIGURED_AGENT,
                     actor_chain=names if len(names) > 1 else None,
-                    principal=_clean(principal, _MAX_TERM),
-                    intent=_clean(action, _MAX_TERM),
-                    resource=_clean(resource, _MAX_TERM),
+                    principal=str(principal),
+                    intent=str(action),
+                    resource=str(resource),
                     decision=decision,
-                    execution_id=_clean(execution_id, _MAX_NAME) if execution_id else None,
+                    execution_id=str(execution_id) if execution_id else None,
                 )
             except Exception as exc:  # noqa: BLE001 — never let auditing alter a decision
                 self._wl_report_record_failure(exc)
@@ -373,9 +351,19 @@ class _AuditedRunHandle:
     attribute and method is delegated, and the decision is always the handle's.
 
     A refusal is recorded here only when the backend did NOT answer the call —
-    one it answered is already recorded — so each decision is recorded once."""
+    one it answered is already recorded — so each decision is recorded once.
 
-    __slots__ = ("_wl_inner", "_wl_backend")
+    It is a wrapper, not a subclass: ``isinstance(handle, BaseRunHandle)`` is
+    ``False`` for a handle a governed plugin hands out. The SDK's own handle is
+    never exposed by name, and code that needs the handle's type should use the
+    handle's methods instead.
+
+    One route is not covered. ``watchlight_core.current_subagent_handle()``
+    returns the SDK's own child handle, set inside the SDK, not this wrapper. A
+    refusal that handle makes on its own after a quarantine or a sever is not
+    recorded; use the handle ``spawn_subagent`` returned instead."""
+
+    __slots__ = ("_wl_inner", "_wl_backend", "__weakref__")
 
     def __init__(self, inner: Any, backend: Any) -> None:
         object.__setattr__(self, "_wl_inner", inner)
@@ -466,6 +454,30 @@ class _AuditedRunHandle:
         return factory
 
 
+def _rebind_subagent_registry(inner: Any, wrapped: "_AuditedRunHandle") -> None:
+    """Point a run's native sub-agent registry at the wrapped handle.
+
+    The Claude Agent SDK plugin attaches a ``SubagentRegistry`` to the root
+    handle inside ``start_run``, so it spawns every native Task sub-agent from
+    the SDK's own handle and hands back unwrapped children. Rebuilt here with
+    the wrapped handle as its root, it spawns through the wrapper, and every
+    child it returns — from ``on_subagent_start`` and ``resolve_subagent`` — is
+    wrapped too. ``start_run`` returns the registry before anything has been
+    spawned through it, so nothing is lost by rebuilding it."""
+    registry = getattr(inner, "subagent_registry", None)
+    if registry is None:
+        return
+    from watchlight_core import SubagentRegistry
+
+    if type(registry) is not SubagentRegistry:
+        # A registry type this code does not know: leave it as the plugin
+        # built it rather than replace it with something it is not.
+        return
+    wrapped.subagent_registry = SubagentRegistry(
+        wrapped, default_subagent_scope=registry.default_subagent_scope
+    )
+
+
 @functools.lru_cache(maxsize=None)
 def _audited_plugin_class(plugin_cls: type) -> type:
     """``plugin_cls``, handing out run handles that record every refusal.
@@ -479,9 +491,11 @@ def _audited_plugin_class(plugin_cls: type) -> type:
         async def start_run(self, *args: Any, **kwargs: Any) -> Any:
             handle = await super().start_run(*args, **kwargs)
             backend = getattr(self, "apdp", None)
-            if callable(getattr(backend, "_wl_record_refusal", None)):
-                return _AuditedRunHandle(handle, backend)
-            return handle
+            if not callable(getattr(backend, "_wl_record_refusal", None)):
+                return handle
+            wrapped = _AuditedRunHandle(handle, backend)
+            _rebind_subagent_registry(handle, wrapped)
+            return wrapped
 
     AuditedPlugin.__name__ = plugin_cls.__name__
     AuditedPlugin.__qualname__ = plugin_cls.__qualname__

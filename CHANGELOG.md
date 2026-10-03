@@ -26,10 +26,17 @@ as `counters()`, now counts the plugin's decisions too, so read
   written through the same audit trail: the agent, the principal, the action,
   the resource, the verdict and `"event": "decision"`. It never contains the
   values the call carried. This covers every `handle.authorize_action`, and also
-  the calls a plugin refuses on its own after a run is quarantined or severed.
+  the calls a plugin refuses on its own after a run is quarantined or severed,
+  on the root handle, on sub-agent handles, on the Claude Agent SDK's native
+  Task sub-agents and on the handles Pydantic AI's instrumentation opens. A
+  handle read from `watchlight_core.current_subagent_handle()` is the one route
+  whose self-made refusals are not recorded. Every field is stored exactly as
+  given, as on the direct path, so counting matches it.
   A sub-agent's decision names the sub-agent and carries the delegation chain in
   `actor_chain`. The run lifecycle lines are still written. A `preflight_step`
-  writes no record, because it is advisory and gates nothing.
+  writes no record, because it is advisory and gates nothing. The run handle a
+  governed plugin returns is a wrapper, so `isinstance(handle, BaseRunHandle)`
+  is `False` for it.
 - A decision record can carry `execution_id`, the execution id a framework
   plugin made the decision under. Both lanes' record types include the field.
 - `governed_plugin()` and `in_process_backend()` take `audit_sink`,
@@ -45,11 +52,6 @@ as `counters()`, now counts the plugin's decisions too, so read
 **Changed**
 - `count_audit_records`, `counters()` and `watchlight dev` now count the
   decisions a framework plugin makes.
-- A framework plugin refuses to start a run whose agent name is empty, contains
-  control characters, is longer than 256 characters, or is the reserved
-  `<unconfigured>`, the same names a governor refuses. A principal, action,
-  resource or execution id is stored in the record with control characters
-  replaced and cut to a bounded length; the decision still uses the full value.
 - With `audit_path=None` and no sink, a framework plugin now prints a one-time
   warning that its decision records are discarded.
 - `examples/context_governance.py` now records its decisions to

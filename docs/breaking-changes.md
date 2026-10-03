@@ -36,10 +36,12 @@ leave out records that carry `execution_id`, which only plugin decisions have.
 The audit file also grows by one line per plugin decision. If you ship the file
 somewhere with a size limit, allow for that.
 
-**A framework plugin refuses some agent names.** `start_run` now raises
-`TypeError` for an agent name that is empty, contains control characters, is
-longer than 256 characters, or is the reserved `<unconfigured>`. These are the
-names a governor already refuses. Rename the agent.
+**A governed plugin's run handle is a wrapper.** The handle that
+`governed_plugin()`'s `start_run` returns, and every sub-agent handle it
+spawns, now wraps the SDK's handle so that it can record the refusals the
+handle makes on its own. It behaves the same, but
+`isinstance(handle, BaseRunHandle)` is now `False`. If your code checks the
+handle's type, check for the method it needs instead.
 
 ## 0.13.1
 

@@ -52,7 +52,24 @@ A decision made by a sub-agent names the sub-agent as `agent`, and carries the
 delegation chain, root first, in `actor_chain`, the same field a governor made
 with `delegate()` writes. Once a run is quarantined or severed, the plugin
 refuses every later call itself, without asking the policy engine. Each of
-those refusals is recorded as a `Deny` too.
+those refusals is recorded as a `Deny` too. That covers the handle
+`start_run` returns, every sub-agent handle `spawn_subagent` returns, the
+Claude Agent SDK's native Task sub-agents, and the handles Pydantic AI's
+automatic instrumentation opens. One route is not covered: a handle you read
+from `watchlight_core.current_subagent_handle()` is the SDK's own handle, so a
+refusal it makes on its own is not recorded. Use the handle that
+`spawn_subagent` returned instead.
+
+The principal, action, resource, `execution_id` and agent names are recorded
+exactly as the call gave them, never shortened or rewritten, so `counters()`
+can match them exactly. The JSON encoding keeps every record on one line,
+whatever characters they contain. Agent names are not checked, because a
+refusal raised inside a framework's own hook can leave that framework running
+the call without governance. A plugin agent named `<unconfigured>` is
+therefore recorded under that name.
+
+The run handle a governed plugin returns is a wrapper around the SDK's handle.
+It behaves the same, but `isinstance(handle, BaseRunHandle)` is `False` for it.
 
 The gate is `handle.authorize_action`. A `handle.preflight_step` call is
 advisory: it tells you what `authorize_action` would decide, but it does not
