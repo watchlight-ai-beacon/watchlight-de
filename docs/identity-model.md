@@ -162,7 +162,7 @@ data.
 
 ### What every `principal` must satisfy
 
-Two rules apply everywhere a `principal` is accepted: `authorize`, `tool`,
+Three rules apply everywhere a `principal` is accepted: `authorize`, `tool`,
 `mint_approval` / `mintApproval`, `counters`, `sanitize`, `screen`, and the
 `principal` option on every framework adapter.
 
@@ -173,6 +173,11 @@ Two rules apply everywhere a `principal` is accepted: `authorize`, `tool`,
 * **It must contain no control characters.** The audit trail is JSONL, one
   record per line, so a newline inside a principal would split one record into
   two. A principal containing a control character raises an error.
+* **It must be at most 4096 bytes of UTF-8** (`MAX_NAME_BYTES`). Every record
+  that names the principal must stay short enough for `counters()` to read it
+  back, so a longer principal raises an error before anything is decided or
+  recorded. The same limit applies to the action, the resource and the agent
+  name. See [using the governor](using-the-governor.md#names-have-a-length-limit).
 
 To name no subject at all, omit `principal` (or pass `None` / `undefined`). That
 records the agent as its own subject.

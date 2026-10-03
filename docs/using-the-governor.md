@@ -595,6 +595,33 @@ Worth knowing:
   cannot be refused. A name close to `enforcement_effect` prints a warning; a
   name further away is accepted silently.
 
+## Names have a length limit
+
+A principal, an action, a resource and an agent name can each be at most 4096
+bytes of UTF-8. The limit is exported as `MAX_NAME_BYTES` in both lanes. It is
+measured in bytes rather than characters so that the Python and TypeScript
+packages refuse exactly the same names. A character outside ASCII takes two to
+four bytes.
+
+A name over the limit raises a `TypeError` before the engine sees it. Nothing is
+decided and nothing is recorded. A governed tool whose name is over the limit
+does not run. The limit is checked by `authorize`, `tool`, `counters`, the
+constructor's agent name, `as` / `as_`, `delegate` and the `WATCHLIGHT_AGENT`
+variable. `sanitize` and `screen` check their `intent` and `resource`, and raise
+`SanitizeError` and `ScreenError`. The error names the field and the limit, and
+never contains the value.
+
+The limit exists so that every audit record the governor writes can be read
+back. `counters()` reads lines up to 1 MiB long. With every name at the limit, a
+record stays far below that. A long value is usually data rather than a name.
+Use a short, stable identifier instead, such as a document id, a path without
+its query string, or a hash of the long value.
+
+`counters()` also fails closed on a line it cannot read, which a trail written
+only by the governor never holds. Such a line counts toward the quota and is
+reported in `unreadable`. See
+[what the counter counts](../examples/patterns/quotas.md#reading-the-local-file).
+
 ## See also
 
 - [The identity model](identity-model.md) — the subject you pass, the actor a

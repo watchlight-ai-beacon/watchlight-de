@@ -25,9 +25,29 @@ What counts (identical in the TypeScript package):
   the record's own ``ts`` (ISO-8601 with a zone), never on file order. ``end``
   defaults to now. Records timestamped after ``end`` do not count.
 
-Fail-closed and value-free: a line that is not a well-formed decision record is
-skipped and counted in ``skipped`` — nothing about it is echoed or logged. A
-missing file is zero counts; a file that exists but cannot be read raises
+Fail-closed and value-free: nothing about a line is ever echoed or logged. A
+line the scan cannot fully read can never LOWER a count:
+
+* a line that cannot be read at all — longer than ``MAX_COUNTERS_LINE_BYTES``,
+  not UTF-8, nested too deeply, not JSON, or not a JSON object — might be any
+  record, so it counts toward ``count`` in every query, whatever the principal,
+  filters, outcome or window;
+* a decision (a string ``decision``, ``event`` absent or ``"decision"``) whose
+  ``ts`` cannot be read counts when its principal, intent, resource and outcome
+  match, as if it were inside the window.
+
+Both are counted in ``unreadable`` (so ``count`` minus ``unreadable`` is the
+number of well-formed matching decisions) and in ``skipped``. A well-formed
+object that is not a decision — no string ``decision``, like a framework run's
+lifecycle line — is counted in ``skipped`` only and never counts. Because an
+unreadable line counts in every outcome, ``allowed + denied == all`` holds for
+well-formed decisions only. The SDK never writes such a line: names are bounded
+by :data:`~watchlight.principals.MAX_NAME_BYTES`, so every record it writes is
+far below the line limit. One therefore means a damaged or foreign trail; find
+it with ``unreadable`` and repair the file. Until then it costs the quota one
+call per line, which is the fail-closed direction.
+
+A missing file is zero counts; a file that exists but cannot be read raises
 :class:`AuditTrailUnreadable`.
 
 Bounded read: the file is streamed in 64 KiB chunks, never loaded whole. At most
@@ -35,8 +55,10 @@ Bounded read: the file is streamed in 64 KiB chunks, never loaded whole. At most
 newest records — the ones inside any recent window). When the file is larger,
 ``truncated`` is ``True`` and ``count`` is a lower bound; a fail-closed caller
 treats that as the quota being exceeded, or raises ``max_bytes``. A single line
-longer than 1 MiB, or nested deeper than 32 levels, is skipped without being
-buffered or parsed — one oversized line cannot cost more than the cap.
+longer than 1 MiB, or nested deeper than 32 levels, is counted as unreadable
+without being buffered or parsed — one oversized line cannot cost more than the
+cap. When the scan starts inside the file, the partial first line it cuts into
+is dropped and not counted; ``truncated`` already says the count is partial.
 """
 
 from __future__ import annotations
@@ -110,11 +132,12 @@ class CounterSourceError(RuntimeError):
 
 
 DEFAULT_COUNTERS_MAX_BYTES = 64 * 1024 * 1024
-#: A line longer than this is skipped (and counted in ``skipped``) without being
-#: buffered or parsed. Audit records are a few hundred bytes.
+#: A line longer than this is not buffered or parsed: it is counted as unreadable
+#: (fail-closed, see the module docstring). Audit records are a few hundred bytes,
+#: and names are bounded by ``principals.MAX_NAME_BYTES``.
 MAX_COUNTERS_LINE_BYTES = 1024 * 1024
-#: A line nested deeper than this (objects/arrays) is skipped without being
-#: parsed. Audit records nest two levels at most.
+#: A line nested deeper than this (objects/arrays) is counted as unreadable
+#: without being parsed. Audit records nest two levels at most.
 MAX_COUNTERS_NESTING = 32
 #: Longest accepted window, in seconds (366 days).
 MAX_COUNTERS_WINDOW_SECONDS = 366 * 86_400
@@ -250,36 +273,44 @@ def _nested_too_deep(text: str) -> bool:
 
 
 class _Tally:
-    __slots__ = ("count", "records", "skipped")
+    __slots__ = ("count", "records", "skipped", "unreadable")
 
     def __init__(self) -> None:
         self.count = 0
         self.records = 0
         self.skipped = 0
+        self.unreadable = 0
+
+    def unreadable_line(self) -> None:
+        """A line that cannot be read at all might be any record, including a
+        matching Allow: it counts toward every query (fail-closed)."""
+        self.skipped += 1
+        self.unreadable += 1
+        self.count += 1
 
 
 def _tally_line(raw: bytes, f: dict, t: _Tally) -> None:
     """Classify and tally ONE line. Blank lines are ignored entirely."""
     if len(raw) > MAX_COUNTERS_LINE_BYTES:
-        t.skipped += 1
+        t.unreadable_line()
         return
     try:
         text = raw.decode("utf-8").strip(" \t\r\n\f\v")  # ASCII whitespace only, as in TS
     except UnicodeDecodeError:
-        t.skipped += 1
+        t.unreadable_line()
         return
     if not text:
         return
     if _nested_too_deep(text):
-        t.skipped += 1
+        t.unreadable_line()
         return
     try:
         rec = json.loads(text, parse_constant=_reject_constant)
     except (ValueError, RecursionError):
-        t.skipped += 1
+        t.unreadable_line()
         return
     if not isinstance(rec, dict):
-        t.skipped += 1
+        t.unreadable_line()
         return
     # Records whose `event` names another kind (sanitization, egress,
     # attenuation) are well-formed but are not decisions. A decision's `event` is
@@ -295,22 +326,30 @@ def _tally_line(raw: bytes, f: dict, t: _Tally) -> None:
         t.records += 1
         return
     decision = rec.get("decision")
-    ts = _parse_iso_millis(rec.get("ts"))
-    if not isinstance(decision, str) or ts is None:
+    if not isinstance(decision, str):
+        # Not a decision: no verdict to count (a framework run's lifecycle line,
+        # say). Never counts.
         t.skipped += 1
         return
-    t.records += 1
-    if ts <= f["start"] or ts > f["end"]:
-        return
-    if rec.get("principal") != f["principal"]:
-        return
-    if f["intent"] is not None and rec.get("intent") != f["intent"]:
-        return
-    if f["resource"] is not None and rec.get("resource") != f["resource"]:
-        return
-    allowed = decision == "Allow"
     outcome = f["outcome"]
-    if (outcome == "allowed" and allowed) or (outcome == "denied" and not allowed) or outcome == "all":
+    allowed = decision == "Allow"
+    matches = (
+        rec.get("principal") == f["principal"]
+        and (f["intent"] is None or rec.get("intent") == f["intent"])
+        and (f["resource"] is None or rec.get("resource") == f["resource"])
+        and ((outcome == "allowed" and allowed) or (outcome == "denied" and not allowed) or outcome == "all")
+    )
+    ts = _parse_iso_millis(rec.get("ts"))
+    if ts is None:
+        # A decision whose time cannot be read cannot be shown to be outside the
+        # window, so a matching one counts (fail-closed).
+        t.skipped += 1
+        if matches:
+            t.unreadable += 1
+            t.count += 1
+        return
+    t.records += 1
+    if matches and f["start"] < ts <= f["end"]:
         t.count += 1
 
 
@@ -334,6 +373,9 @@ def _prepare_counters(
         raise TypeError("intent must be a string")
     if resource is not None and not isinstance(resource, str):
         raise TypeError("resource must be a string")
+    # A filter longer than any name a record can carry could never match.
+    principals.assert_name_length(intent, "intent")
+    principals.assert_name_length(resource, "resource")
     if outcome not in _OUTCOMES:
         raise ValueError('outcome must be "allowed", "denied" or "all"')
     seconds = parse_window_seconds(window)
@@ -358,6 +400,7 @@ def _prepare_counters(
         "window": {"seconds": seconds, "start": _format_millis(start), "end": _format_millis(end)},
         "records": 0,
         "skipped": 0,
+        "unreadable": 0,
         "truncated": False,
         "source": "local",
     }
@@ -463,8 +506,9 @@ def count_audit_records(
         processes that wrote the trail are the caller's concern.
     :param max_bytes: scan at most this many bytes from the end of the file.
     :returns: ``{"count", "principal", "intent", "resource", "outcome",
-        "window": {"seconds", "start", "end"}, "records", "skipped", "truncated",
-        "source"}``.
+        "window": {"seconds", "start", "end"}, "records", "skipped",
+        "unreadable", "truncated", "source"}``. ``count`` includes the
+        ``unreadable`` lines (fail-closed; see the module docstring).
     """
     f, result = _prepare_counters(
         principal, intent, resource, window, outcome=outcome, now=now, max_bytes=max_bytes
@@ -495,7 +539,7 @@ def count_audit_records(
             # chunks, joined once at the newline. Never more than
             # MAX_COUNTERS_LINE_BYTES are held — past that the line is
             # `oversized`, its bytes are discarded as they arrive, and it is
-            # counted once in `skipped` when its newline is found.
+            # counted once as unreadable when its newline is found.
             carry: list[bytes] = []
             carry_bytes = 0
             oversized = False
@@ -512,7 +556,7 @@ def count_audit_records(
                     if drop_partial:
                         drop_partial = False
                     elif oversized or carry_bytes + len(tail) > MAX_COUNTERS_LINE_BYTES:
-                        t.skipped += 1
+                        t.unreadable_line()
                     else:
                         carry.append(tail)
                         _tally_line(carry[0] if len(carry) == 1 else b"".join(carry), f, t)
@@ -530,7 +574,7 @@ def count_audit_records(
                         carry.append(chunk[at:])
             if not drop_partial:
                 if oversized:
-                    t.skipped += 1
+                    t.unreadable_line()
                 elif carry:
                     _tally_line(b"".join(carry), f, t)
     except OSError:
@@ -538,4 +582,5 @@ def count_audit_records(
     result["count"] = t.count
     result["records"] = t.records
     result["skipped"] = t.skipped
+    result["unreadable"] = t.unreadable
     return result

@@ -24,9 +24,27 @@
 //     on the record's own `ts` (ISO-8601 with a zone), never on file order.
 //     `end` defaults to now. Records timestamped after `end` do not count.
 //
-// Fail-closed and value-free: a line that is not a well-formed decision record
-// is skipped and counted in `skipped` — nothing about it is echoed or logged. A
-// missing file is zero counts; a file that exists but cannot be read raises
+// Fail-closed and value-free: nothing about a line is ever echoed or logged. A
+// line the scan cannot fully read can never LOWER a count:
+//   * a line that cannot be read at all — longer than `MAX_COUNTERS_LINE_BYTES`,
+//     not UTF-8, nested too deeply, not JSON, or not a JSON object — might be
+//     any record, so it counts toward `count` in every query, whatever the
+//     principal, filters, outcome or window;
+//   * a decision (a string `decision`, `event` absent or "decision") whose `ts`
+//     cannot be read counts when its principal, intent, resource and outcome
+//     match, as if it were inside the window.
+// Both are counted in `unreadable` (so `count - unreadable` is the number of
+// well-formed matching decisions) and in `skipped`. A well-formed object that
+// is not a decision — no string `decision`, like a framework run's lifecycle
+// line — is counted in `skipped` only and never counts. Because an unreadable
+// line counts in every outcome, `allowed + denied == all` holds for well-formed
+// decisions only. The SDK never writes such a line: names are bounded by
+// `MAX_NAME_BYTES`, so every record it writes is far below the line limit. One
+// therefore means a damaged or foreign trail; find it with `unreadable` and
+// repair the file. Until then it costs the quota one call per line, which is
+// the fail-closed direction.
+//
+// A missing file is zero counts; a file that exists but cannot be read raises
 // `AuditTrailUnreadable`.
 //
 // Bounded read: the file is streamed in 64 KiB chunks, never loaded whole. At
@@ -34,11 +52,14 @@
 // (the newest records — the ones inside any recent window). When the file is
 // larger, `truncated` is `true` and `count` is a lower bound; a fail-closed
 // caller treats that as the quota being exceeded, or raises `maxBytes`. A single
-// line longer than 1 MiB, or nested deeper than 32 levels, is skipped without
-// being buffered or parsed — one oversized line cannot cost more than the cap.
+// line longer than 1 MiB, or nested deeper than 32 levels, is counted as
+// unreadable without being buffered or parsed — one oversized line cannot cost
+// more than the cap. When the scan starts inside the file, the partial first
+// line it cuts into is dropped and not counted; `truncated` already says the
+// count is partial.
 
 import * as fs from "node:fs";
-import { assertPrincipal } from "./principals";
+import { assertNameLength, assertPrincipal } from "./principals";
 
 export type CounterOutcome = "allowed" | "denied" | "all";
 
@@ -81,14 +102,20 @@ export interface Counters {
   window: CounterWindow;
   /** Well-formed records read, of every kind (decisions and `event` records). */
   records: number;
-  /** Lines that were not a well-formed record and were ignored. Never echoed. */
+  /** Lines that were not a well-formed record. Never echoed. Includes the
+   *  `unreadable` ones. */
   skipped: number;
+  /** Lines counted in `count` although they could not be read (fail-closed):
+   *  every line that cannot be read at all, and every matching decision whose
+   *  `ts` cannot be read. `count - unreadable` is the number of well-formed
+   *  matching decisions. A non-zero value means a damaged trail. */
+  unreadable: number;
   /** True when the file was larger than `maxBytes` and only its tail was
    *  scanned — `count` is then a lower bound. */
   truncated: boolean;
   /** Where `count` came from: `"local"` (the audit file) or `"external"` (a
-   *  configured {@link CounterSource}). On `"external"`, `records` and
-   *  `skipped` describe the local scan that did not happen and are `0`. */
+   *  configured {@link CounterSource}). On `"external"`, `records`, `skipped`
+   *  and `unreadable` describe the local scan that did not happen and are `0`. */
   source: CounterSourceKind;
 }
 
@@ -146,11 +173,12 @@ export class AuditTrailUnreadable extends Error {
 }
 
 export const DEFAULT_COUNTERS_MAX_BYTES = 64 * 1024 * 1024;
-/** A line longer than this is skipped (and counted in `skipped`) without being
- *  buffered or parsed. Audit records are a few hundred bytes. */
+/** A line longer than this is not buffered or parsed: it is counted as
+ *  unreadable (fail-closed, see the module header). Audit records are a few
+ *  hundred bytes, and names are bounded by `MAX_NAME_BYTES`. */
 export const MAX_COUNTERS_LINE_BYTES = 1024 * 1024;
-/** A line nested deeper than this (objects/arrays) is skipped without being
- *  parsed. Audit records nest two levels at most. */
+/** A line nested deeper than this (objects/arrays) is counted as unreadable
+ *  without being parsed. Audit records nest two levels at most. */
 export const MAX_COUNTERS_NESTING = 32;
 /** Longest accepted window, in seconds (366 days). */
 export const MAX_COUNTERS_WINDOW_SECONDS = 366 * 86_400;
@@ -239,11 +267,19 @@ function resolveNow(now: CountersOptions["now"]): number {
 const CHUNK = 64 * 1024;
 const NEWLINE = 0x0a;
 // `ignoreBOM` keeps a leading U+FEFF in the text (so the line then fails to parse
-// and is skipped, as in Python) instead of silently swallowing it.
+// and is counted as unreadable, as in Python) instead of silently swallowing it.
 const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const ASCII_WS = /^[ \t\r\n\f\v]+|[ \t\r\n\f\v]+$/g;
 
-type Tally = { count: number; records: number; skipped: number };
+type Tally = { count: number; records: number; skipped: number; unreadable: number };
+
+/** A line that cannot be read at all might be any record, including a matching
+ *  Allow: it counts toward every query (fail-closed). */
+function unreadableLine(t: Tally): void {
+  t.skipped += 1;
+  t.unreadable += 1;
+  t.count += 1;
+}
 
 /** True when `text` nests objects/arrays deeper than `MAX_COUNTERS_NESTING`.
  *  A single linear pass that only tracks string boundaries — no parsing. */
@@ -274,7 +310,7 @@ function tallyLine(
   t: Tally
 ): void {
   if (bytes.length > MAX_COUNTERS_LINE_BYTES) {
-    t.skipped += 1;
+    unreadableLine(t);
     return;
   }
   let text: string;
@@ -283,23 +319,23 @@ function tallyLine(
     // spaces) so both language packages classify exactly the same lines.
     text = utf8.decode(bytes).replace(ASCII_WS, "");
   } catch {
-    t.skipped += 1;
+    unreadableLine(t);
     return;
   }
   if (text.length === 0) return;
   if (nestedTooDeep(text)) {
-    t.skipped += 1;
+    unreadableLine(t);
     return;
   }
   let rec: unknown;
   try {
     rec = JSON.parse(text);
   } catch {
-    t.skipped += 1;
+    unreadableLine(t);
     return;
   }
   if (typeof rec !== "object" || rec === null || Array.isArray(rec)) {
-    t.skipped += 1;
+    unreadableLine(t);
     return;
   }
   const r = rec as Record<string, unknown>;
@@ -319,20 +355,31 @@ function tallyLine(
     return;
   }
   const decision = r.decision;
-  const ts = parseIsoMillis(r.ts);
-  if (typeof decision !== "string" || ts === undefined) {
+  if (typeof decision !== "string") {
+    // Not a decision: no verdict to count (a framework run's lifecycle line,
+    // say). Never counts.
     t.skipped += 1;
     return;
   }
-  t.records += 1;
-  if (ts <= filter.start || ts > filter.end) return;
-  if (r.principal !== filter.principal) return;
-  if (filter.intent !== undefined && r.intent !== filter.intent) return;
-  if (filter.resource !== undefined && r.resource !== filter.resource) return;
   const allowed = decision === "Allow";
-  if (filter.outcome === "allowed" ? allowed : filter.outcome === "denied" ? !allowed : true) {
-    t.count += 1;
+  const matches =
+    r.principal === filter.principal &&
+    (filter.intent === undefined || r.intent === filter.intent) &&
+    (filter.resource === undefined || r.resource === filter.resource) &&
+    (filter.outcome === "allowed" ? allowed : filter.outcome === "denied" ? !allowed : true);
+  const ts = parseIsoMillis(r.ts);
+  if (ts === undefined) {
+    // A decision whose time cannot be read cannot be shown to be outside the
+    // window, so a matching one counts (fail-closed).
+    t.skipped += 1;
+    if (matches) {
+      t.unreadable += 1;
+      t.count += 1;
+    }
+    return;
   }
+  t.records += 1;
+  if (matches && ts > filter.start && ts <= filter.end) t.count += 1;
 }
 
 type Filter = {
@@ -355,6 +402,9 @@ function prepareCounters(opts: CountersOptions): { filter: Filter; result: Count
   if (opts.resource !== undefined && typeof opts.resource !== "string") {
     throw new TypeError("resource must be a string");
   }
+  // A filter longer than any name a record can carry could never match.
+  assertNameLength(opts.intent, "intent");
+  assertNameLength(opts.resource, "resource");
   const outcome = opts.outcome ?? "allowed";
   if (outcome !== "allowed" && outcome !== "denied" && outcome !== "all") {
     throw new RangeError('outcome must be "allowed", "denied" or "all"');
@@ -373,6 +423,7 @@ function prepareCounters(opts: CountersOptions): { filter: Filter; result: Count
     window: { seconds, start: new Date(start).toISOString(), end: new Date(end).toISOString() },
     records: 0,
     skipped: 0,
+    unreadable: 0,
     truncated: false,
     source: "local",
   };
@@ -459,7 +510,7 @@ export function countAuditRecords(auditPath: string, opts: CountersOptions): Cou
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return result; // no trail yet → zero
     throw new AuditTrailUnreadable(auditPath);
   }
-  const tally: Tally = { count: 0, records: 0, skipped: 0 };
+  const tally: Tally = { count: 0, records: 0, skipped: 0, unreadable: 0 };
   try {
     const size = fs.fstatSync(fd).size;
     let pos = 0;
@@ -477,7 +528,7 @@ export function countAuditRecords(auditPath: string, opts: CountersOptions): Cou
     // Pending bytes of the current (unterminated) line: a list of copies,
     // joined once at the newline. Never more than MAX_COUNTERS_LINE_BYTES are
     // held — past that the line is `oversized`, its bytes are discarded as they
-    // arrive, and it is counted once in `skipped` when its newline is found.
+    // arrive, and it is counted once as unreadable when its newline is found.
     const carry: Buffer[] = [];
     let carryBytes = 0;
     let oversized = false;
@@ -485,7 +536,7 @@ export function countAuditRecords(auditPath: string, opts: CountersOptions): Cou
       if (dropPartial) {
         dropPartial = false;
       } else if (oversized || carryBytes + tail.length > MAX_COUNTERS_LINE_BYTES) {
-        tally.skipped += 1;
+        unreadableLine(tally);
       } else {
         carry.push(tail);
         tallyLine(carry.length === 1 ? carry[0] : Buffer.concat(carry), filter, tally);
@@ -517,7 +568,7 @@ export function countAuditRecords(auditPath: string, opts: CountersOptions): Cou
       }
     }
     if (!dropPartial) {
-      if (oversized) tally.skipped += 1;
+      if (oversized) unreadableLine(tally);
       else if (carry.length > 0) tallyLine(Buffer.concat(carry), filter, tally);
     }
   } catch {
@@ -528,5 +579,6 @@ export function countAuditRecords(auditPath: string, opts: CountersOptions): Cou
   result.count = tally.count;
   result.records = tally.records;
   result.skipped = tally.skipped;
+  result.unreadable = tally.unreadable;
   return result;
 }

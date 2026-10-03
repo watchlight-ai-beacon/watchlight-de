@@ -88,6 +88,40 @@ export function policyEntityRef(type: string, id: string): string {
   return `${type}::"${escapeCedarString(id)}"`;
 }
 
+/** The longest name the SDK decides on or records, in bytes of UTF-8: a
+ *  principal, an action (intent), a resource, an agent name. Real names are a
+ *  few dozen bytes; 4 KiB leaves room for a long URL or path as a resource. The
+ *  bound keeps every audit record far below the line limit the counters read
+ *  (`MAX_COUNTERS_LINE_BYTES`, 1 MiB), so no record the SDK writes is too long
+ *  to be counted. A longer name is refused before anything is decided or
+ *  recorded. Measured in UTF-8 bytes so both language packages draw the line at
+ *  exactly the same place. */
+export const MAX_NAME_BYTES = 4096;
+
+/** The fixed, value-free message a name over {@link MAX_NAME_BYTES} is refused with. */
+export const NAME_TOO_LONG_MESSAGE = `is longer than the maximum of ${MAX_NAME_BYTES} bytes`;
+
+/** Refuse a string `value` longer than {@link MAX_NAME_BYTES} (UTF-8 bytes) and
+ *  return it unchanged otherwise. A non-string passes through: the type is each
+ *  caller's own rule. The message names the field and the bound, never the
+ *  value. A lone surrogate counts 3 bytes, as in Python. @internal */
+export function assertNameLength<T>(
+  value: T,
+  field: string,
+  makeError: (message: string) => Error = (m) => new TypeError(m)
+): T {
+  // Cheap first test: at most 3 UTF-8 bytes per UTF-16 code unit, so a string
+  // of at most MAX_NAME_BYTES / 3 code units cannot exceed the bound.
+  if (
+    typeof value === "string" &&
+    value.length * 3 > MAX_NAME_BYTES &&
+    Buffer.byteLength(value, "utf8") > MAX_NAME_BYTES
+  ) {
+    throw makeError(`${field} ${NAME_TOO_LONG_MESSAGE}`);
+  }
+  return value;
+}
+
 /** What a caller-supplied `principal` must satisfy at EVERY boundary that takes
  *  one — the same two rules `entityRef` already applies to an id, applied to the
  *  whole reference. The message is fixed and never echoes the value. */
@@ -99,14 +133,16 @@ export const PRINCIPAL_CONTROL_MESSAGE = "principal must not contain control cha
  *
  * The principal is recorded verbatim and is the subject of every audit row, so
  * a value that cannot be a subject is refused at the boundary rather than
- * written. Two rules, the ones `principals.user()` has always applied:
+ * written. Three rules:
  *
  *   * it must be a non-empty string — blank (or whitespace-only) is a mistake,
  *     never a request for the default. `user?.id ?? ""` reaching a governed call
  *     used to be recorded as the AGENT, attributing a person's action to the
  *     runtime;
  *   * it must carry no control characters, which no reference can represent
- *     unambiguously.
+ *     unambiguously;
+ *   * it must be at most {@link MAX_NAME_BYTES} bytes of UTF-8, so the record
+ *     that carries it stays short enough to be read back and counted.
  *
  * It is deliberately NOT parsed: a bare identifier is a valid, opaque principal
  * (see `docs/identity-model.md`), and only a typed `Type::"id"` reference
@@ -121,6 +157,7 @@ export function assertPrincipal(
 ): string {
   if (typeof value !== "string" || !value.trim()) throw makeError(PRINCIPAL_EMPTY_MESSAGE);
   if (CONTROL_CHARS.test(value)) throw makeError(PRINCIPAL_CONTROL_MESSAGE);
+  assertNameLength(value, "principal", makeError);
   return value;
 }
 

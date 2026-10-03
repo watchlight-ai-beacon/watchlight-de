@@ -68,7 +68,7 @@ import {
   type SanitizeResult,
 } from "./sanitize";
 import { screen as screenText, ScreenError, type ScreenOptions, type ScreenResult } from "./screen";
-import { assertPrincipal, principals } from "./principals";
+import { assertNameLength, assertPrincipal, principals } from "./principals";
 import { checkPolicyAnnotations } from "./annotations";
 import { policyEntries, readPolicyFile, type PolicyEntry } from "./policy-file";
 import { DEFAULT_ON_RESULT_TIMEOUT_MS, EgressTimeout, resolveEgressTimeoutMs } from "./egress";
@@ -150,7 +150,7 @@ export type {
   SanitizeReport,
   SanitizeResult,
 } from "./sanitize";
-export { principals, entityRef, policyEntityRef, escapeCedarString } from "./principals";
+export { principals, entityRef, policyEntityRef, escapeCedarString, MAX_NAME_BYTES } from "./principals";
 export { PolicyError, ENFORCEMENT_EFFECTS, ENFORCEMENT_EFFECT_ANNOTATION } from "./annotations";
 export type { EnforcementEffect } from "./annotations";
 export {
@@ -602,6 +602,7 @@ function assertAgentName(agent: unknown, where: string): asserts agent is string
   if (/[\u0000-\u001f\u007f]/.test(agent)) {
     throw new TypeError(`${where}: agent must not contain control characters`);
   }
+  assertNameLength(agent, `${where}: agent`);
   if (agent === UNCONFIGURED_AGENT) {
     throw new TypeError(
       `${where}: '${UNCONFIGURED_AGENT}' is reserved for a governor whose agent name was ` +
@@ -1602,6 +1603,11 @@ export class Watchlight {
     // ReservedContextError is raised, and for the same reason: it is the
     // caller's own input, not a verdict.
     if (req.principal !== undefined) assertPrincipal(req.principal);
+    // Names longer than MAX_NAME_BYTES are refused here, before the engine and
+    // before the trail: nothing is decided and nothing is recorded, so no record
+    // is ever too long for the counters to read back.
+    assertNameLength(req.action, "action");
+    assertNameLength(req.resource, "resource");
     let decided;
     try {
       decided = await this._decide(req);
@@ -1787,6 +1793,9 @@ export class Watchlight {
       return this.as(agent).sanitize(content, rest);
     }
     const { intent = "read", resource = "document", mode, types, decisionId, known, personExclusions } = opts;
+    // Refused before anything is recorded, as on `authorize`.
+    assertNameLength(intent, "intent", (m) => new SanitizeError(m));
+    assertNameLength(resource, "resource", (m) => new SanitizeError(m));
     // The subject the redaction was performed FOR. A call that names none has
     // this agent as its subject — recorded as the TYPED `Agent::"<name>"`, the
     // same reference the decision line carries, never a bare name.
@@ -1822,6 +1831,8 @@ export class Watchlight {
       return this.as(agent).screen(content, rest);
     }
     const { intent = "read", resource = "content", mode, families, decisionId } = opts;
+    assertNameLength(intent, "intent", (m) => new ScreenError(m));
+    assertNameLength(resource, "resource", (m) => new ScreenError(m));
     // As in `sanitize`: the subject the screening was performed for, typed when
     // the call names none.
     // As above: the primitive's own error type.
@@ -1844,8 +1855,9 @@ export class Watchlight {
    * `denied` (Deny + NeedsApproval holds) or `all`. Reads only the local file
    * (an `auditSink` mirrors records elsewhere but is never read back), streams
    * it, and scans at most `maxBytes` from its end — `truncated` flags a lower
-   * bound. Malformed lines are skipped and counted in `skipped`, never echoed.
-   * A missing file is zero counts; an unreadable one throws
+   * bound. A line it cannot read never lowers the count: it counts toward the
+   * limit and is reported in `unreadable` (see {@link countAuditRecords});
+   * nothing about it is echoed. A missing file is zero counts; an unreadable one throws
    * {@link AuditTrailUnreadable}. Synchronous, so it can run inside a `context`
    * binding right before the decision it feeds.
    *

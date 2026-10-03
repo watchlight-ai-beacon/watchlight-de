@@ -43,6 +43,43 @@ handle makes on its own. It behaves the same, but
 `isinstance(handle, BaseRunHandle)` is now `False`. If your code checks the
 handle's type, check for the method it needs instead.
 
+**Names longer than 4096 bytes are refused.** A principal, action, resource or
+agent name longer than 4096 bytes of UTF-8 (`MAX_NAME_BYTES`) now raises a
+`TypeError` before the engine sees it, and nothing is recorded. The bound
+applies to `authorize`, `tool`, `counters`, the agent name you give the
+constructor, `as` / `as_`, `delegate` and the `WATCHLIGHT_AGENT` variable.
+`sanitize` and `screen` refuse an `intent` or `resource` over the limit with
+`SanitizeError` and `ScreenError`. A governed tool whose name is over the limit
+does not run. Earlier releases accepted a name of any length.
+
+This fails loudly, in the closed direction: a call that worked becomes an
+error, never an Allow. Real names are far shorter. If you pass a long value as
+a resource, such as a full URL with a query string or a document body, pass a
+short, stable identifier instead: a document id, a path without its query, or a
+hash of the long value. The limit is in bytes, so a name in a script that uses
+two or more bytes per character reaches it with fewer characters.
+
+**`counters()` counts lines it cannot read.** Earlier releases skipped a line
+they could not read, so it did not count. Now:
+
+- A line that cannot be read at all counts toward every query, whatever its
+  principal, filters, outcome or window. That covers a line longer than 1 MiB
+  and a line that is not UTF-8, is nested too deeply, is not JSON, or is not a
+  JSON object.
+- A decision whose `ts` cannot be read counts toward every query whose
+  principal, intent, resource and outcome it matches, whatever the window.
+
+Both kinds are reported in a new `unreadable` field, and `count` includes
+them. This fails in the closed direction: a quota can trip earlier, never
+later. A trail written only by the SDK has no such lines, so `unreadable` is
+`0` and nothing changes. If it is not `0`, the file holds a damaged or foreign
+line, for example one cut short by a crash or added by another tool. Find it,
+for example with `jq -c . audit.jsonl > /dev/null`, which stops at the first
+line that is not JSON. Then remove or repair it. Until you do, the line costs
+every quota one call. `count - unreadable` is the number of well-formed
+matching decisions. Lines that are well-formed but are not decisions, such as
+a framework run's lifecycle lines, still never count.
+
 ## 0.13.1
 
 **The `mcp` extra now requires `watchlight-mcp` 0.4.4, which refuses a

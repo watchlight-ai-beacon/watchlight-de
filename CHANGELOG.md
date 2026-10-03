@@ -78,6 +78,32 @@ as `counters()`, now counts the plugin's decisions too, so read
     `has("decision") and ((.event // "decision") == "decision")`, and
     `forensics.py` no longer counts them as decisions.
 
+**Changed**
+- Names are now bounded. A principal, action, resource or agent name longer
+  than 4096 bytes of UTF-8 (`MAX_NAME_BYTES`, in both lanes) is refused with a
+  `TypeError` before anything is decided or recorded. This applies to
+  `authorize`, `tool`, `counters`, the agent name given to the constructor,
+  `as` / `as_`, `delegate` and the `WATCHLIGHT_AGENT` variable. `sanitize` and
+  `screen` refuse an `intent` or `resource` over the limit with `SanitizeError`
+  and `ScreenError`. The message names the field and the limit, never the
+  value. See [breaking changes](docs/breaking-changes.md).
+- `counters()` and `count_audit_records` / `countAuditRecords` now fail closed
+  on lines they cannot read. Such a line counts toward the quota instead of
+  being ignored. A line that cannot be read at all (longer than 1 MiB, not
+  UTF-8, nested too deeply, not JSON, or not a JSON object) counts toward every
+  query. A decision whose timestamp cannot be read counts toward every query it
+  otherwise matches. The result has a new field, `unreadable`, that says how
+  many lines were counted this way. `skipped` still counts every line that is
+  not a well-formed record.
+
+**Fixed**
+- Hardening: a decision with a very long resource or action name produced an
+  audit record longer than the line limit the counters read. The counters
+  ignored that line, so a quota built on `counters()` did not count the
+  decision. Both changes above close this, in both lanes: such names are now
+  refused before a record is written, and a line that is too long to read now
+  counts toward the quota.
+
 ## 0.13.1 — 2026-10-02
 
 The `mcp` and `all` extras now install `watchlight-mcp` 0.4.4 or later, which

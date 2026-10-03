@@ -40,7 +40,49 @@ from __future__ import annotations
 import re
 from typing import Any, Callable
 
-__all__ = ["escape_cedar_string", "entity", "for_policy", "user", "agent"]
+__all__ = [
+    "MAX_NAME_BYTES",
+    "NAME_TOO_LONG_MESSAGE",
+    "assert_name_length",
+    "escape_cedar_string",
+    "entity",
+    "for_policy",
+    "user",
+    "agent",
+]
+
+#: The longest name the SDK decides on or records, in bytes of UTF-8: a
+#: principal, an action (intent), a resource, an agent name. Real names are a
+#: few dozen bytes; 4 KiB leaves room for a long URL or path as a resource. The
+#: bound keeps every audit record far below the line limit the counters read
+#: (``MAX_COUNTERS_LINE_BYTES``, 1 MiB), so no record the SDK writes is too long
+#: to be counted. A longer name is refused before anything is decided or
+#: recorded. Measured in UTF-8 bytes so both language packages draw the line at
+#: exactly the same place.
+MAX_NAME_BYTES = 4096
+
+#: The fixed, value-free message a name over :data:`MAX_NAME_BYTES` is refused with.
+NAME_TOO_LONG_MESSAGE = f"is longer than the maximum of {MAX_NAME_BYTES} bytes"
+
+
+def _utf8_length(value: str) -> int:
+    # `surrogatepass` so a lone surrogate counts 3 bytes, as the TypeScript lane
+    # counts it, instead of raising here.
+    return len(value.encode("utf-8", "surrogatepass"))
+
+
+def assert_name_length(
+    value: Any, field: str, make_error: Callable[[str], BaseException] = TypeError
+) -> Any:
+    """Refuse a string ``value`` longer than :data:`MAX_NAME_BYTES` (UTF-8 bytes)
+    and return it unchanged otherwise. A non-string passes through: the type is
+    each caller's own rule. The message names the field and the bound, never the
+    value."""
+    # Cheap first test: a string of at most MAX_NAME_BYTES / 4 characters cannot
+    # exceed the bound, whatever it holds.
+    if isinstance(value, str) and len(value) * 4 > MAX_NAME_BYTES and _utf8_length(value) > MAX_NAME_BYTES:
+        raise make_error(f"{field} {NAME_TOO_LONG_MESSAGE}")
+    return value
 
 _TYPE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*$")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
@@ -103,14 +145,16 @@ def assert_principal(value: Any, make_error: Callable[[str], BaseException] = Ty
 
     The principal is recorded verbatim and is the subject of every audit row, so
     a value that cannot be a subject is refused at the boundary rather than
-    written. Two rules, the ones :func:`user` has always applied:
+    written. Three rules:
 
     * it must be a non-empty string — blank (or whitespace-only) is a mistake,
       never a request for the default. ``user.id or ""`` reaching a governed call
       used to be recorded as the AGENT, attributing a person's action to the
       runtime;
     * it must carry no control characters, which no reference can represent
-      unambiguously.
+      unambiguously;
+    * it must be at most :data:`MAX_NAME_BYTES` bytes of UTF-8, so the record
+      that carries it stays short enough to be read back and counted.
 
     It is deliberately NOT parsed: a bare identifier is a valid, opaque principal
     (see ``docs/identity-model.md``), and only a typed ``Type::"id"`` reference
@@ -123,6 +167,7 @@ def assert_principal(value: Any, make_error: Callable[[str], BaseException] = Ty
         raise make_error(PRINCIPAL_EMPTY_MESSAGE)
     if _CONTROL.search(value):
         raise make_error(PRINCIPAL_CONTROL_MESSAGE)
+    assert_name_length(value, "principal", make_error)
     return value
 
 

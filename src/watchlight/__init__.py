@@ -46,6 +46,7 @@ from typing import Any, Awaitable, Callable, Optional, Sequence, TypeVar, Union
 import watchlight_engine as _engine
 
 from . import principals
+from .principals import MAX_NAME_BYTES, assert_name_length as _assert_name_length
 from ._annotations import (
     ENFORCEMENT_EFFECT_ANNOTATION,
     ENFORCEMENT_EFFECTS,
@@ -171,6 +172,7 @@ __all__ = [
     "ENFORCEMENT_EFFECTS",
     "ENFORCEMENT_EFFECT_ANNOTATION",
     "OBLIGATIONS_INVALID_MESSAGE",
+    "MAX_NAME_BYTES",
     "MAX_REDACT_ENTRIES",
     "sanitize",
     "SanitizeError",
@@ -241,6 +243,7 @@ def _assert_agent_name(agent: Any, where: str) -> str:
         raise TypeError(f"{where}: agent must be a non-empty string")
     if _CONTROL_CHARS.search(agent):
         raise TypeError(f"{where}: agent must not contain control characters")
+    _assert_name_length(agent, f"{where}: agent")
     if agent == UNCONFIGURED_AGENT:
         raise TypeError(
             f"{where}: {UNCONFIGURED_AGENT!r} is reserved for a governor whose agent name "
@@ -3121,6 +3124,11 @@ class Watchlight:
         # caller's own input, not a verdict.
         if principal is not None:
             principals.assert_principal(principal)
+        # Names longer than MAX_NAME_BYTES are refused here, before the engine
+        # and before the trail: nothing is decided and nothing is recorded, so
+        # no record is ever too long for the counters to read back.
+        _assert_name_length(action, "action")
+        _assert_name_length(resource, "resource")
         try:
             result, prin, res, decision_id = self._decide(
                 action=action, principal=principal, resource=resource, context=context,
@@ -3309,6 +3317,9 @@ class Watchlight:
                 known=known,
                 person_exclusions=person_exclusions,
             )
+        # Refused before anything is recorded, as on authorize().
+        _assert_name_length(intent, "intent", SanitizeError)
+        _assert_name_length(resource, "resource", SanitizeError)
         # The subject the redaction was performed FOR. A call that names none has
         # this agent as its subject — recorded as the TYPED Agent::"<name>", the
         # same reference the decision line carries, never a bare name.
@@ -3357,6 +3368,8 @@ class Watchlight:
                 decision_id=decision_id,
                 principal=principal,
             )
+        _assert_name_length(intent, "intent", ScreenError)
+        _assert_name_length(resource, "resource", ScreenError)
         # As in sanitize(): the subject the screening was performed for, typed
         # when the call names none. decision_id and principal are validated
         # (bounded, no control chars) inside screen().
@@ -3395,8 +3408,10 @@ class Watchlight:
         NeedsApproval holds) or ``"all"``. Reads only the local file (an
         ``audit_sink`` mirrors records elsewhere but is never read back), streams
         it, and scans at most ``max_bytes`` from its end — ``truncated`` flags a
-        lower bound. Malformed lines are skipped and counted in ``skipped``,
-        never echoed. A missing file is zero counts; an unreadable one raises
+        lower bound. A line it cannot read never lowers the count: it counts
+        toward the limit and is reported in ``unreadable`` (see
+        :func:`watchlight.count_audit_records`); nothing about it is echoed.
+        A missing file is zero counts; an unreadable one raises
         :class:`AuditTrailUnreadable`. Counters are folded from the LOCAL file;
         with ``audit_file=False`` there is nothing to fold and this raises,
         rather than reading as zero and silently widening a quota. See
