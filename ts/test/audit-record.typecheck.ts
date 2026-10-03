@@ -130,6 +130,7 @@ const badEvent = screening.event === "screen";
 const decisionFields: Record<keyof DecisionRecord, true> = {
   ts: true, agent: true, actor_chain: true, event: true, principal: true,
   intent: true, resource: true, decision: true, decision_id: true, approved: true,
+  execution_id: true,
 };
 const sanitizationFields: Record<keyof SanitizationRecord, true> = {
   ts: true, agent: true, actor_chain: true, intent: true, event: true, resource: true,

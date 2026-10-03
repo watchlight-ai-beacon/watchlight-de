@@ -31,6 +31,45 @@ against a running policy service instead of in-process.
 
 Runnable agents for all three frameworks are in [`examples/`](../examples/).
 
+### What the plugin records
+
+Every call to `handle.authorize_action` writes one decision record to the audit
+trail. It is the same record that `Watchlight.authorize` writes: the agent, the
+principal, the action (in the `intent` field), the resource, the verdict, and
+`"event": "decision"`. It never contains the values the call carried. The Cedar
+`context` and the declared intent are not recorded. A record written by a
+plugin also carries `execution_id`, the id of the run the decision was made in.
+It has no `decision_id`, because the plugin does not return one to join on.
+
+The run itself still writes two lifecycle lines to the same file:
+`execution_started` when the run begins and `execution_completed` when it ends.
+These lines name their kind in an `event_type` field and have no `decision`
+field. A `handle.preflight_step` call is a read-only check that does not count
+toward the run's budget, so it writes no record.
+
+Before this release, the plugin wrote only the two lifecycle lines, so
+`counters()` and the quota and forensics queries saw none of its decisions.
+They count them now. See [breaking changes](breaking-changes.md) if a quota of
+yours counts decisions.
+
+To send the decision records to your own store as well, pass the same sink
+options that `Watchlight` takes. They have the same meaning there:
+
+```python
+plugin = governed_plugin(
+    "watchlight.policy.json",
+    audit_sink=insert_many,      # a function, or an async function
+    audit_sink_batch=100,        # optional: hand the sink lists from a background worker
+    audit_sink_interval=2.0,     # optional: and hand over a partial list after 2 seconds
+)
+```
+
+The sink receives the decision records only. The lifecycle and attenuation
+lines go to the file. A sink can never block or change a decision, and a
+failure is reported once on stderr. When `WATCHLIGHT_APDP_URL` is set, the
+policy service records the decisions, and the sink options are not used. The
+plugin prints a warning once to say so.
+
 ### Framework-created subagents inherit framework tools
 
 Some frameworks automatically create a general-purpose subagent and give it

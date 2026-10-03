@@ -74,10 +74,17 @@ export type DecisionRecord = AuditRecordBase &
     /** The acting principal, e.g. `User::"alice"`; defaults to `Agent::"<agent>"`. */
     readonly principal: string;
     readonly decision: "Allow" | "Deny" | "NeedsApproval";
-    /** The engine's per-decision correlation id — the join key. */
+    /** The engine's per-decision correlation id — the join key. Absent on a
+     *  decision a Python framework plugin made, which returns no id to join on. */
     readonly decision_id?: string;
     /** Present only when a valid approval token downgraded a `NeedsApproval`. */
     readonly approved?: true;
+    /** Present only on a decision a Python framework plugin made inside a run:
+     *  the run's execution id, which its `execution_started` and
+     *  `execution_completed` lifecycle lines also carry. The TypeScript lane
+     *  has no run lifecycle and never writes it; the field is here so one type
+     *  reads a trail written by either lane. */
+    readonly execution_id?: string;
   };
 
 /** A PII redaction pass — written by `sanitize()`. Value-free: counts per type

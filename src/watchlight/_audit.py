@@ -1,6 +1,7 @@
 """The value-free audit trail — the ONE funnel every audit record passes through.
 
-All five record kinds end up here — decisions (:meth:`Watchlight.authorize`),
+All five record kinds end up here — decisions (:meth:`Watchlight.authorize`,
+and every decision a framework plugin makes through the in-process backend),
 sanitizations (:meth:`Watchlight.sanitize`), screenings (:meth:`Watchlight.screen`),
 egress dispositions (a governed tool's ``on_result`` hook) and attenuations
 (:meth:`Scope.attenuate`). Their shapes are the ``TypedDict`` classes
@@ -32,10 +33,12 @@ import pathlib
 import queue
 import sys
 import threading
+import datetime
 import time
 from typing import Any, Callable, Dict, List, Literal, Optional, TypedDict, Union
 
 __all__ = [
+    "UNCONFIGURED_AGENT",
     "AttenuationRecord",
     "AuditRecord",
     "AuditRecordBase",
@@ -48,6 +51,10 @@ __all__ = [
     "UnknownAuditRecord",
 ]
 
+#: The placeholder agent name a record carries when no agent was configured.
+#: Re-exported, and documented, as :data:`watchlight.UNCONFIGURED_AGENT`.
+UNCONFIGURED_AGENT = "<unconfigured>"
+
 # ── the record kinds ─────────────────────────────────────────────────────────
 #
 # Five kinds go through this funnel, and a sink sees exactly the fields the
@@ -59,7 +66,10 @@ __all__ = [
 #
 # Each kind is written by exactly one function, and this is the whole list:
 #
-#   decision      ``Watchlight.authorize`` (and so every governed tool call)
+#   decision      ``Watchlight.authorize`` (and so every governed tool call), and
+#                 the in-process backend a framework plugin is wired to
+#                 (``watchlight.inprocess``) — both through
+#                 :func:`decision_record`, so the two cannot drift apart
 #   sanitization  ``Watchlight.sanitize``
 #   screening     ``Watchlight.screen``
 #   egress        the ``on_result`` hook of a governed tool
@@ -113,11 +123,17 @@ class DecisionRecord(_DecisionRequired, total=False):
     #: The ordered delegation chain, root first. Present ONLY on a record written
     #: through a ``delegate()``d governor, whose chain is longer than one name.
     actor_chain: List[str]
-    #: The engine's per-decision correlation id — the join key.
+    #: The engine's per-decision correlation id — the join key. Absent on a
+    #: decision a framework plugin made: the plugin returns no id to join on.
     decision_id: str
     #: Present, and always ``True``, only when a valid approval token downgraded
     #: a ``NeedsApproval``.
     approved: Literal[True]
+    #: Present only on a decision a framework plugin made inside a run: the
+    #: run's execution id, the same value its ``execution_started`` and
+    #: ``execution_completed`` lifecycle lines carry, so the decision joins the
+    #: run it belongs to.
+    execution_id: str
 
 
 class _SanitizationRequired(AuditRecordBase):
@@ -265,6 +281,51 @@ UnknownAuditRecord = Dict[str, Any]
 #: checker, so both are spelled out here rather than one standing in for the
 #: other.
 AuditSink = Union[Callable[[AuditRecord], Any], Callable[[UnknownAuditRecord], Any]]
+
+
+def decision_record(
+    *,
+    agent: str,
+    principal: str,
+    intent: str,
+    resource: str,
+    decision: str,
+    actor_chain: Optional[List[str]] = None,
+    decision_id: Optional[str] = None,
+    approved: bool = False,
+    execution_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build one value-free :class:`DecisionRecord` — the ONE place its shape is
+    written. ``Watchlight.authorize`` and the in-process backend a framework
+    plugin is wired to both call it, so a decision reads the same whichever path
+    made it.
+
+    It takes names, never values: the caller passes the principal, the action
+    (``intent``), the resource label and the verdict. Nothing else about the
+    call — its arguments, its Cedar ``context``, the engine's reason — has a
+    parameter here, so nothing else can reach the trail."""
+    record: Dict[str, Any] = {
+        "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "agent": agent,
+    }
+    if actor_chain:
+        record["actor_chain"] = list(actor_chain)
+    record.update(
+        {
+            "principal": principal,
+            "intent": intent,
+            "event": "decision",
+            "resource": resource,
+            "decision": decision,
+        }
+    )
+    if decision_id:
+        record["decision_id"] = decision_id
+    if approved:
+        record["approved"] = True
+    if execution_id:
+        record["execution_id"] = execution_id
+    return record
 
 
 def _error_kind(exc: BaseException) -> str:

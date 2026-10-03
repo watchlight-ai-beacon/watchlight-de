@@ -81,7 +81,8 @@ LAYERS: Dict[str, str] = {
 
 ALLOWED: Dict[str, Set[str]] = {
     "foundation": {"foundation"},
-    "seam": set(),
+    # The seam writes its decision records through the one audit funnel.
+    "seam": {"foundation"},
     "governor": {"foundation"},
     "integration": {"seam", "integration"},
     "cli": {"foundation", "seam", "governor", "integration"},

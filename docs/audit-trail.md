@@ -2,6 +2,9 @@
 
 Every decision is appended to `.watchlight/audit.jsonl` as one JSON line — the
 verdict, who it was for, what was asked. It never records the argument values.
+That holds for a decision made through a framework plugin
+(`watchlight.<framework>.governed_plugin`) as well as for one made through the
+governor: both write the same record, through the same code.
 
 ## Watch decisions land
 
@@ -170,6 +173,31 @@ async def fetch_document(o): ...
 The full counting rules are in
 [`examples/patterns/quotas.md`](../examples/patterns/quotas.md).
 
+## Decisions made by a framework plugin
+
+A framework plugin built with `governed_plugin()` writes one decision record for
+every `handle.authorize_action` call. The record has the same fields as one
+written by `authorize()`, plus `execution_id`, the id of the run it was made in.
+The plugin also writes `execution_started` and `execution_completed` lines when
+a run begins and ends. Those lines name their kind in `event_type`, not
+`event`, and they have no `decision` field.
+
+`governed_plugin()` takes `audit_sink`, `audit_sink_batch` and
+`audit_sink_interval`, and they mean exactly what they mean on `Watchlight`.
+The sink receives the decision records. The lifecycle lines and the sub-agent
+`attenuation` lines are written to the file only.
+
+Writing a record works the same way on both paths. The file is written first,
+then the sink is called. Neither can raise into your code, and neither can
+change or delay a decision: if the file cannot be written, the decision still
+stands, and a sink failure is reported once. The decision itself fails closed
+on both paths. A request the engine cannot evaluate is recorded as a `Deny`
+and then raised.
+
+The TypeScript adapters, `governTool()` and `governedHooks()`, decide through
+the governor's own `authorize`, so they have always written one decision
+record per decision. They write no run lifecycle lines.
+
 ## Show a scope without recording it
 
 `scope()` and `attenuate()` grant authority, and every grant is recorded. To show
@@ -204,6 +232,11 @@ in TypeScript, previews a child of a live scope the same way.
 - `authorize` takes a context you have already resolved. Handing it an
   unresolved awaitable raises `UnresolvedContextError` and records no decision.
 - Malformed lines in the file are skipped and counted, never echoed.
+- A file shared with a framework plugin also holds its run lifecycle lines,
+  which have no `event` field. A query that reads a missing `event` as a
+  decision should also require a `decision` field, for example in jq:
+  `select((.event // "decision") == "decision" and .decision != null)`.
+  `counters()` already does this.
 
 ## See also
 

@@ -12,6 +12,12 @@ Every record names its kind in `event` — `decision` on a decision (one written
 by an earlier release has no `event`). `decision_id` joins them. Field names are in
 [README.md](./README.md#record-kinds).
 
+A trail that a Python framework plugin also writes to holds that plugin's run
+lifecycle lines, `execution_started` and `execution_completed`. They name their
+kind in `event_type` and have no `event` or `decision` field, so the recipes
+below would read them as decisions. On such a trail, add `and .decision != null`
+to each `select` that tests for a decision.
+
 ## Records by kind
 
 ```bash

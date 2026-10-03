@@ -11,6 +11,45 @@ upgrade is worth your afternoon.
 
 Each entry links to its release, which carries the reasoning and the measurements.
 
+## Unreleased
+
+A framework plugin built with `governed_plugin()` now writes a decision record
+for every decision it makes. Until now it wrote only a line when a run started
+and a line when it ended. Anything that counts decisions, such as a quota, now
+counts the plugin's decisions too, so read
+[breaking changes](docs/breaking-changes.md) before upgrading.
+
+**Added**
+- The framework-plugin path (`watchlight.langgraph`, `watchlight.pydantic_ai`
+  and `watchlight.claude_agent`) writes one decision record per
+  `handle.authorize_action` call. It is the record `Watchlight.authorize`
+  writes, built by the same function and written through the same audit trail:
+  the agent, the principal, the action, the resource, the verdict and
+  `"event": "decision"`. It never contains the values the call carried. The run
+  lifecycle lines are still written. A `preflight_step` writes no record,
+  because it is a read-only check.
+- A decision record can carry `execution_id`, the id of the run a framework
+  plugin made the decision in. The same id is on the run's lifecycle lines, so
+  the two join. Both lanes' record types include the field.
+- `governed_plugin()` and `in_process_backend()` take `audit_sink`,
+  `audit_sink_batch` and `audit_sink_interval`, with the same meaning they have
+  on `Watchlight`. The sink receives the plugin's decision records. These
+  options are never passed on to the plugin. When `WATCHLIGHT_APDP_URL` is set
+  they are not used, and a warning says so once.
+- Tests in both lanes check that every adapter writes exactly one decision
+  record per decision and no call values. In TypeScript, `governTool()` and
+  `governedHooks()` already did this, because they decide through the
+  governor's own `authorize`.
+
+**Changed**
+- `count_audit_records`, `counters()` and the quota and forensics queries in
+  the examples now count the decisions a framework plugin makes.
+- With `audit_path=None` and no sink, a framework plugin now prints the same
+  one-time warning the governor prints when its records have nowhere to go.
+- The jq recipes in [audit forensics](examples/showcase/audit-forensics/recipes.md)
+  explain how to exclude a plugin's lifecycle lines, which have no `event`
+  field.
+
 ## 0.13.1 — 2026-10-02
 
 The `mcp` and `all` extras now install `watchlight-mcp` 0.4.4 or later, which
