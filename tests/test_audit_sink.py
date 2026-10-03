@@ -229,12 +229,17 @@ def test_no_loop_warning_does_not_silence_a_later_real_failure(tmp_path, capsys)
 
 
 def test_funnel_never_raises_on_an_unserializable_record(tmp_path):
+    """The funnel neither raises nor drops: a field JSON cannot hold is replaced
+    by a value-free marker, the record is marked oversized (so it counts toward
+    every quota), and the file and the sink get the same replacement."""
     from watchlight._audit import AuditTrail
 
     seen = []
     trail = AuditTrail(tmp_path / "audit.jsonl", sink=seen.append)
-    trail.write({"ts": "x", "bad": object()})  # must not raise; nothing to write or send
-    assert not (tmp_path / "audit.jsonl").exists() and seen == []
+    trail.write({"ts": "x", "bad": object()})  # must not raise
+    written = [json.loads(line) for line in (tmp_path / "audit.jsonl").read_text().splitlines()]
+    expected = {"ts": "x", "bad": {"omitted": "unserializable"}, "oversized": True}
+    assert written == [expected] and seen == [expected]
 
 
 def test_inflight_async_sink_task_is_held_strongly(tmp_path):

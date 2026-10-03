@@ -46,6 +46,14 @@ from typing import Any, Awaitable, Callable, Optional, Sequence, TypeVar, Union
 import watchlight_engine as _engine
 
 from . import principals
+from .principals import (
+    MAX_ACTOR_CHAIN_BYTES,
+    MAX_AGENT_NAME_BYTES,
+    MAX_NAME_BYTES,
+    MAX_SCOPE_ENTRIES,
+    MAX_SCOPE_LIST_BYTES,
+)
+from ._audit import MAX_AUDIT_RECORD_BYTES
 from ._annotations import (
     ENFORCEMENT_EFFECT_ANNOTATION,
     ENFORCEMENT_EFFECTS,
@@ -89,6 +97,7 @@ from ._counters import (
     CounterSource,
     CounterSourceError,
     count_audit_records,
+    find_unreadable_lines,
     count_from_source,
     count_from_source_async,
     parse_window_seconds,
@@ -154,6 +163,7 @@ __all__ = [
     "SIGNING_SECRET_CONFLICT_MESSAGE",
     "MAX_COUNTER_VALUE",
     "count_audit_records",
+    "find_unreadable_lines",
     "parse_window_seconds",
     "DEFAULT_COUNTERS_MAX_BYTES",
     "MAX_COUNTERS_LINE_BYTES",
@@ -171,6 +181,12 @@ __all__ = [
     "ENFORCEMENT_EFFECTS",
     "ENFORCEMENT_EFFECT_ANNOTATION",
     "OBLIGATIONS_INVALID_MESSAGE",
+    "MAX_ACTOR_CHAIN_BYTES",
+    "MAX_AGENT_NAME_BYTES",
+    "MAX_AUDIT_RECORD_BYTES",
+    "MAX_NAME_BYTES",
+    "MAX_SCOPE_ENTRIES",
+    "MAX_SCOPE_LIST_BYTES",
     "MAX_REDACT_ENTRIES",
     "sanitize",
     "SanitizeError",
@@ -199,7 +215,6 @@ __all__ = [
 
 _F = TypeVar("_F", bound=Callable[..., Any])
 
-_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 
 
 #: The name a governor carries when NO agent name was configured — neither the
@@ -237,10 +252,9 @@ def _assert_agent_name(agent: Any, where: str) -> str:
     :meth:`Watchlight.delegate` alike, so it fails at the name rather than later,
     inside the engine. ``None`` is a value, not an absent argument: a caller who
     passed one meant to pass a name."""
-    if not isinstance(agent, str) or not agent.strip():
-        raise TypeError(f"{where}: agent must be a non-empty string")
-    if _CONTROL_CHARS.search(agent):
-        raise TypeError(f"{where}: agent must not contain control characters")
+    # Non-empty, no control characters, and at most MAX_AGENT_NAME_BYTES, so the
+    # principal derived from it (Agent::"<name>") is itself a bounded name.
+    agent = principals.assert_agent_name(agent, where)
     if agent == UNCONFIGURED_AGENT:
         raise TypeError(
             f"{where}: {UNCONFIGURED_AGENT!r} is reserved for a governor whose agent name "
@@ -1065,7 +1079,8 @@ def _validate_opaque_id(
     apply exactly the same bounds to both fields."""
     if value is None:
         return None
-    if not isinstance(value, str) or not 1 <= len(value) <= DECISION_ID_MAX_LENGTH:
+    # `str.__len__`, not `len`: a str subclass cannot under-report its length.
+    if not isinstance(value, str) or not 1 <= str.__len__(value) <= DECISION_ID_MAX_LENGTH:
         raise error(f"{field} must be a string of 1-{DECISION_ID_MAX_LENGTH} characters")
     if _DECISION_ID_CONTROL_CHARS.search(value):
         raise error(f"{field} must not contain control characters")
@@ -1601,6 +1616,20 @@ def sanitize(
     characters) and echoed onto ``report["decision_id"]``."""
     if not isinstance(text, str):
         raise SanitizeError("input must be a string (extract document text first)")
+    # `mode` is written to the audit record: only a known mode, as a plain str.
+    if not isinstance(mode, str) or str.__str__(mode) not in ("tag", "mask", "hash"):
+        raise SanitizeError("unknown mode (expected 'tag', 'mask' or 'hash')")
+    mode = str.__str__(mode)
+    if types is not None:
+        if isinstance(types, (str, bytes)):
+            raise SanitizeError("types must be a sequence of strings")
+        try:
+            types = list(types)
+        except TypeError:
+            raise SanitizeError("types must be a sequence of strings") from None
+        if not all(isinstance(t, str) for t in types):
+            raise SanitizeError("types must be a sequence of strings")
+        types = [str.__str__(t) for t in types]
     decision_id = _validate_decision_id(decision_id)
     # Length-bounded first (an audit field), then the ONE principal rule every
     # boundary applies — non-empty, no control characters.
@@ -2147,18 +2176,26 @@ def screen(
     echoed onto ``report["decision_id"]``."""
     if not isinstance(text, str):
         raise ScreenError("input must be a string")
-    if mode not in ("report", "redact"):
+    # `mode` is written to the audit record: only a known mode, as a plain str.
+    if not isinstance(mode, str) or str.__str__(mode) not in ("report", "redact"):
         raise ScreenError("unknown mode (expected 'report' or 'redact')")
+    mode = str.__str__(mode)
+    if families is not None and isinstance(families, (str, bytes)):
+        raise ScreenError("families must be a sequence of family names")
     custom_labels = registered_screen_families()
     # A registered family is on by default the way a built-in is — registering
     # it IS the opt-in — and is selectable through `families` like any other.
-    requested = tuple(families) if families is not None else SCREEN_FAMILIES + custom_labels
+    try:
+        requested = tuple(families) if families is not None else SCREEN_FAMILIES + custom_labels
+    except TypeError:
+        raise ScreenError("families must be a sequence of family names") from None
     if not requested:
         raise ScreenError("families must name at least one family")
     known_families = set(SCREEN_FAMILIES) | set(custom_labels)
     for fam in requested:
-        if fam not in known_families:
+        if not isinstance(fam, str) or str.__str__(fam) not in known_families:
             raise ScreenError("unknown family")
+    requested = tuple(str.__str__(fam) for fam in requested)
     enabled = set(requested)
     decision_id = _validate_decision_id(decision_id, error=ScreenError)
     # Length-bounded first (an audit field), then the ONE principal rule every
@@ -2487,7 +2524,7 @@ class Watchlight:
         (``as`` is a Python keyword, hence the trailing underscore; the
         TypeScript SDK spells it ``govern.as("name")``.)
         """
-        _assert_agent_name(agent, "as_(agent)")
+        agent = _assert_agent_name(agent, "as_(agent)")
         # A delegate's name is what the delegation granted. Renaming it —
         # directly, or through a per-call ``agent`` override, which lands here —
         # would drop the actor chain from the context and the record, so it is
@@ -2545,7 +2582,7 @@ class Watchlight:
         :class:`DelegationDepthExceeded` past ``max_delegation_depth`` — which also
         bounds the chain at ``max_delegation_depth + 1`` entries.
         """
-        _assert_agent_name(agent, "delegate(parent, agent)")
+        agent = _assert_agent_name(agent, "delegate(parent, agent)")
         scope = parent.delegated_scope if isinstance(parent, Watchlight) else parent
         # A ScopePreview is data, never authority: only a real scope can delegate.
         if not isinstance(scope, Scope):
@@ -2822,6 +2859,11 @@ class Watchlight:
         it. A hop past the limit raises :class:`DelegationDepthExceeded`. See
         :class:`~watchlight.attenuation.Scope`.
         """
+        # Bounded before the engine: the root's tools are recorded. The checked
+        # lists are the ones used — each iterable is read exactly once.
+        tools = principals.assert_name_list(tools, "tools")
+        resources = principals.assert_name_list(resources, "resources")
+        intents = principals.assert_name_list(intents, "intents")
         budget = self._root_budget(max_depth)
         root = Scope(
             engine=self._engine,
@@ -2855,6 +2897,11 @@ class Watchlight:
         result to preview each sub-agent's scope, decided by the same engine
         check as :meth:`~watchlight.attenuation.Scope.attenuate`. A preview is
         data, never a scope: it cannot authorize, delegate, or mint a token."""
+        # Bounded before the engine: the root's tools are recorded. The checked
+        # lists are the ones used — each iterable is read exactly once.
+        tools = principals.assert_name_list(tools, "tools")
+        resources = principals.assert_name_list(resources, "resources")
+        intents = principals.assert_name_list(intents, "intents")
         budget = self._root_budget(max_depth)
         return ScopePreview(
             engine=self._engine,
@@ -3121,6 +3168,16 @@ class Watchlight:
         # caller's own input, not a verdict.
         if principal is not None:
             principals.assert_principal(principal)
+        # Names longer than MAX_NAME_BYTES are refused here, before the engine
+        # and before the trail: nothing is decided and nothing is recorded, so
+        # no record is ever too long for the counters to read back.
+        # A non-string or control character is refused too: the engine would
+        # refuse it, and that refusal is recorded with the value it was given.
+        action = principals.assert_name(action, "action")
+        if resource is not None:
+            resource = principals.assert_name(resource, "resource")
+        if principal is not None:
+            principal = principals.assert_principal(principal)
         try:
             result, prin, res, decision_id = self._decide(
                 action=action, principal=principal, resource=resource, context=context,
@@ -3309,6 +3366,9 @@ class Watchlight:
                 known=known,
                 person_exclusions=person_exclusions,
             )
+        # Refused before anything is recorded, as on authorize().
+        intent = principals.assert_name(intent, "intent", SanitizeError)
+        resource = principals.assert_name(resource, "resource", SanitizeError)
         # The subject the redaction was performed FOR. A call that names none has
         # this agent as its subject — recorded as the TYPED Agent::"<name>", the
         # same reference the decision line carries, never a bare name.
@@ -3357,6 +3417,8 @@ class Watchlight:
                 decision_id=decision_id,
                 principal=principal,
             )
+        intent = principals.assert_name(intent, "intent", ScreenError)
+        resource = principals.assert_name(resource, "resource", ScreenError)
         # As in sanitize(): the subject the screening was performed for, typed
         # when the call names none. decision_id and principal are validated
         # (bounded, no control chars) inside screen().
@@ -3395,8 +3457,10 @@ class Watchlight:
         NeedsApproval holds) or ``"all"``. Reads only the local file (an
         ``audit_sink`` mirrors records elsewhere but is never read back), streams
         it, and scans at most ``max_bytes`` from its end — ``truncated`` flags a
-        lower bound. Malformed lines are skipped and counted in ``skipped``,
-        never echoed. A missing file is zero counts; an unreadable one raises
+        lower bound. A line it cannot read never lowers the count: it counts
+        toward the limit and is reported in ``unreadable`` (see
+        :func:`watchlight.count_audit_records`); nothing about it is echoed.
+        A missing file is zero counts; an unreadable one raises
         :class:`AuditTrailUnreadable`. Counters are folded from the LOCAL file;
         with ``audit_file=False`` there is nothing to fold and this raises,
         rather than reading as zero and silently widening a quota. See
@@ -3518,7 +3582,9 @@ class Watchlight:
 
         def runner() -> None:
             try:
-                box["value"] = on_result(result, info)
+                # A copy: the record is written from `info`, which the hook
+                # must not be able to change.
+                box["value"] = on_result(result, dict(info))
             except BaseException as exc:  # noqa: BLE001 — re-raised on this thread
                 box["error"] = exc
             finally:
@@ -3565,7 +3631,9 @@ class Watchlight:
         payload as withheld. Value-free: never the result, nor anything derived
         from it. Internal — not part of the public API."""
         try:
-            replacement = on_result(result, info)
+            # A copy: the record is written from `info`, which the hook must not
+            # be able to change.
+            replacement = on_result(result, dict(info))
         except BaseException:
             self._audit_egress(info, replaced=False, withheld=True)
             raise
@@ -3598,7 +3666,9 @@ class Watchlight:
         deadline = _resolve_timeout_ms(timeout_ms)
 
         async def _run_hook() -> Any:
-            replacement = on_result(result, info)
+            # A copy: the record is written from `info`, which the hook must not
+            # be able to change.
+            replacement = on_result(result, dict(info))
             if inspect.isawaitable(replacement):
                 replacement = await replacement
             return replacement

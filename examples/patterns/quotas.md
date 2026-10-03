@@ -78,8 +78,8 @@ Proved by [`suites/quotas.suite.json`](./suites/quotas.suite.json).
 ## What the counter counts
 
 `govern.counters({ principal, intent?, resource?, window, outcome? })` returns
-`{ count, window: { seconds, start, end }, records, skipped, truncated }` plus the
-filter it applied. Both lanes behave identically.
+`{ count, window: { seconds, start, end }, records, skipped, unreadable, truncated }`
+plus the filter it applied. Both lanes behave identically.
 
 - **Only decision records** — a line whose `event` is `decision` (or absent, on
   a line written by an earlier release).
@@ -187,7 +187,7 @@ the count stays at zero and the quota never trips.
 Your source is handed the validated, resolved query — the same filters the local
 scan would apply. `intent` and `resource` are omitted when the caller did not
 filter on them. It must return a non-negative integer. On an external result
-`records` and `skipped` are `0` and `truncated` is `false`, because bounding your
+`records`, `skipped` and `unreadable` are `0` and `truncated` is `false`, because bounding your
 own store is your job.
 
 **Fail-closed.** A source that raises, or returns anything that is not a count,
@@ -212,14 +212,42 @@ re-decision an approval triggers, so both see the same attributes.
 - **Bounded and streamed.** 64 KiB chunks, at most `maxBytes` / `max_bytes`
   (default 64 MiB) taken from the **end** of the file. Past that, `truncated` is
   `true` and `count` is a lower bound. A line over 1 MiB, or nested deeper than
-  32 levels, is skipped without being parsed.
+  32 levels, is not parsed. It counts as unreadable, as described below.
 - **Every call rescans the tail.** There is no index or cache. Rotate
   `.watchlight/audit.jsonl` on a schedule longer than your widest window, or
   lower `maxBytes` to a size that holds one window and treat `truncated` as over
   quota.
-- **Value-free and fail-closed.** A malformed line is skipped and counted in
-  `skipped`, never echoed. A missing file yields zeros; a file that exists but
-  cannot be read raises `AuditTrailUnreadable`.
+- **Value-free and fail-closed.** Nothing about a line is ever echoed. A line
+  the scan cannot read never lowers the count. A line that cannot be read at
+  all (over 1 MiB, not UTF-8, nested too deeply, not JSON, or not a JSON
+  object) might be any record, so it counts toward every query. A decision
+  whose `ts` cannot be read counts toward every query it otherwise matches,
+  whatever the window. Both are reported in `unreadable`, and `count` includes
+  them, so `count - unreadable` is the number of well-formed matching
+  decisions. A record the SDK shortened because it was too long (it carries
+  `"oversized": true`, see below) counts toward every query in the same way.
+  `skipped` counts every line that is not a well-formed record, including
+  these. A line that is well-formed but is not a decision, such as a
+  framework run's lifecycle line, is counted in `records` and never counts.
+- **The governor never writes an unreadable line.** Every name it records has a
+  limit (see
+  [using the governor](../../docs/using-the-governor.md#names-have-a-length-limit)),
+  and the largest record its entry points can produce is under 400,000 bytes,
+  about 38% of 1 MiB. Behind those checks, the audit trail itself writes no
+  line over 512 KiB: a record that would be longer is written shortened, with
+  its largest fields replaced by their length and a digest, and marked
+  `"oversized": true`. A non-zero `unreadable` means a damaged or foreign line
+  in the file, for example one cut short by a crash or added by another tool,
+  or a record the SDK had to shorten.
+- **An unreadable line never ages out.** It has no time the scan can read, so
+  it counts in every window until you remove it. The remedy is to repair the
+  file or rotate it. To find the lines, run `watchlight audit check` (Python or
+  Node). It prints the number of each unreadable line and why it cannot be
+  read, never its content, and exits 1 when there are any. It uses the
+  counters' own reader and lists every line that could count this way,
+  including oversized records.
+- A missing file yields zeros; a file that exists but cannot be read raises
+  `AuditTrailUnreadable`.
 
 ## Trust boundary
 

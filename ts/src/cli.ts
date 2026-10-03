@@ -2,6 +2,7 @@
 // The `watchlight` command for the Node/TypeScript lane.
 //
 //   npx watchlight policy test <suite.json>
+//   npx watchlight audit check [audit.jsonl] [--limit N]
 //
 // Runs a policy test suite (golden fixtures → expected Allow/Deny/NeedsApproval)
 // against the DE engine and exits non-zero if any fixture fails — drop it into
@@ -12,11 +13,15 @@
 //                  "context": { "amount": 200, "limit": 500 },
 //                  "expect": "Allow" } ] }
 //
-// The dashboard lives in the Python package (`watchlight dev`); this Node CLI is
-// scoped to policy testing.
+// `audit check` lists the lines of an audit file that `counters()` cannot read,
+// by line number and reason, never content — each counts toward quotas until
+// the file is repaired.
+//
+// The dashboard lives in the Python package (`watchlight dev`).
 
 import * as path from "node:path";
-import { Watchlight } from "./index";
+import * as fs from "node:fs";
+import { AuditTrailUnreadable, findUnreadableLines, UNREADABLE_REASONS, Watchlight } from "./index";
 import { policyEntries } from "./policy-file";
 import { loadTestSuite, type PolicyTestReport } from "./policytest";
 
@@ -24,6 +29,11 @@ const USAGE = `watchlight — Watchlight Developer Edition (Node)
 
 usage:
   watchlight policy test <suite.json>   run policy fixtures, exit 1 on failure
+  watchlight audit check [audit.jsonl] [--limit N]
+                                        list the lines counters() cannot read,
+                                        exit 1 if there are any (default file:
+                                        $WATCHLIGHT_AUDIT_DIR/audit.jsonl, else
+                                        .watchlight/audit.jsonl)
 
 suite.json:
   { "policyFile": "watchlight.policy.json",
@@ -120,6 +130,62 @@ async function policyTest(file: string | undefined): Promise<number> {
   return report.failed > 0 ? 1 : 0;
 }
 
+function defaultAuditPath(): string {
+  const dir = process.env.WATCHLIGHT_AUDIT_DIR?.trim();
+  return path.join(dir ? dir : ".watchlight", "audit.jsonl");
+}
+
+function auditCheck(args: string[]): number {
+  let file: string | undefined;
+  let limit = 100;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--limit") {
+      const n = Number(args[++i]);
+      if (!Number.isSafeInteger(n) || n < 0) {
+        console.error("watchlight audit check: --limit takes a non-negative integer");
+        return 2;
+      }
+      limit = n;
+    } else if (file === undefined) {
+      file = args[i];
+    } else {
+      console.error(USAGE);
+      return 2;
+    }
+  }
+  file ??= defaultAuditPath();
+  let found;
+  try {
+    found = findUnreadableLines(file, { limit });
+  } catch (e) {
+    if (e instanceof AuditTrailUnreadable) {
+      console.error(`watchlight: audit trail '${file}' is not readable`);
+      return 2;
+    }
+    throw e;
+  }
+  if (!fs.existsSync(file)) {
+    console.log(`watchlight audit check — ${file}: no such file, nothing to check`);
+    return 0;
+  }
+  console.log(`watchlight audit check — ${file} (${found.lines} lines)`);
+  for (const f of found.findings) console.log(`  line ${f.line}: ${UNREADABLE_REASONS[f.reason]}`);
+  if (found.truncated) {
+    console.log(`  … and ${found.total - found.findings.length} more (raise --limit to list them)`);
+  }
+  if (found.total === 0) {
+    console.log("no unreadable lines: every line counts as what it is");
+    return 0;
+  }
+  console.log(
+    `${found.total} unreadable line(s). They count toward quotas: a line that ` +
+      "cannot be read at all, or a record the SDK shortened, toward every quota; a " +
+      "decision with an unreadable ts toward every quota it matches. They never age " +
+      "out of a window. Remove or repair them, or rotate the file."
+  );
+  return 1;
+}
+
 /** A thrown value as text: an Error's message, or the value itself — never
  *  `undefined` for a throw that is not an Error. */
 function errorText(e: unknown): string {
@@ -134,6 +200,12 @@ function errorText(e: unknown): string {
 async function main(argv: string[]): Promise<number> {
   const [cmd, sub, ...rest] = argv;
   if (cmd === "policy" && sub === "test") return policyTest(rest[0]);
+  if (cmd === "audit" && sub === "check") return auditCheck(rest);
+  if (cmd === "audit" && sub === undefined) {
+    console.error("watchlight audit: missing subcommand (check)\n");
+    console.error(USAGE);
+    return 2;
+  }
   if (cmd === "--help" || cmd === "-h" || cmd === undefined) {
     console.log(USAGE);
     return 0;

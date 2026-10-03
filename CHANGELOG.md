@@ -31,7 +31,14 @@ as `counters()`, now counts the plugin's decisions too, so read
   Task sub-agents and on the handles Pydantic AI's instrumentation opens. A
   handle read from `watchlight_core.current_subagent_handle()` is the one route
   whose self-made refusals are not recorded. Every field is stored exactly as
-  given, as on the direct path, so counting matches it.
+  given, as on the direct path, so counting matches it. The plugin applies the
+  direct path's name limits at the decision (see Changed): a principal,
+  action, resource or `execution_id` that breaks one is refused with a
+  `TypeError` from `authorize_action` before the engine, and nothing is
+  recorded. `start_run` and `spawn_subagent` never raise for an agent name; one
+  over its limit, or a term over a limit in a refusal the handle makes on its
+  own, is recorded as a value-free marker in a record marked
+  `"oversized": true`, which the counters count toward every quota.
   A sub-agent's decision names the sub-agent and carries the delegation chain in
   `actor_chain`. The run lifecycle lines are still written. A `preflight_step`
   writes no record, because it is advisory and gates nothing. The run handle a
@@ -48,6 +55,16 @@ as `counters()`, now counts the plugin's decisions too, so read
   record per decision and no call values. In TypeScript, `governTool()` and
   `governedHooks()` already did this, because they decide through the
   governor's own `authorize`.
+- `watchlight audit check [file]`, in both lanes, lists every line of an audit
+  file that could count toward quotas without being a well-formed matching
+  decision: a line `counters()` cannot read, a decision whose `ts` cannot be
+  read, and a record the SDK shortened. It prints line numbers and reasons,
+  never content, and exits 1 when there are any. The same check is available
+  as `find_unreadable_lines` / `findUnreadableLines`. Both use the counters'
+  own reader.
+- `MAX_AUDIT_RECORD_BYTES` (512 KiB), in both lanes: the longest line the
+  audit trail writes. A record that would be longer is written as a shortened
+  replacement marked `"oversized": true`, never dropped (see Changed).
 
 **Changed**
 - `count_audit_records`, `counters()` and `watchlight dev` now count the
@@ -60,6 +77,64 @@ as `counters()`, now counts the plugin's decisions too, so read
 - The `langgraph`, `pydantic-ai`, `claude-agent`, `sdk` and `all` extras now
   require `watchlight-agent-sdk` below 0.9. The recording depends on that
   package's client, and a new release is checked before it is allowed.
+- The audit trail now bounds every record it writes, as a backstop behind the
+  checks at each entry point. A record that would serialise to more than
+  512 KiB, that nests deeper than the counters read, or that holds a value JSON
+  cannot represent, is written as a shortened replacement instead of being
+  dropped. The replacement keeps every small field, replaces each field nested
+  too deeply and then the largest fields with a value-free marker (the field's
+  length in bytes and a SHA-256 digest), and carries `"oversized": true`. Both
+  lanes measure a record's length as Python writes it, so they shorten the same
+  records. The counters count such a record toward every query,
+  like a line they cannot read, and `watchlight audit check` reports it as
+  `oversized-record`. Earlier releases silently dropped a record that could
+  not be serialised.
+- Every name the governor records is now bounded, in both lanes, and a name
+  over its limit is refused with a `TypeError` before anything is decided or
+  recorded. The message names the field and the limit, never the value. The
+  limits are measured in bytes of UTF-8:
+  - a principal, an action, a resource, and each entry of a scope's `tools`,
+    `resources` or `intents`: 4096 bytes (`MAX_NAME_BYTES`);
+  - an agent name: 4087 bytes (`MAX_AGENT_NAME_BYTES`), so that
+    `Agent::"<name>"` fits within 4096;
+  - a scope list: 256 entries (`MAX_SCOPE_ENTRIES`) and 65536 bytes in total
+    (`MAX_SCOPE_LIST_BYTES`);
+  - a delegation chain: 65536 bytes of agent names in total
+    (`MAX_ACTOR_CHAIN_BYTES`).
+- An action or resource must be a string with no control characters, as a
+  principal already had to be. A non-string used to reach the engine and be
+  recorded as given. A scope list must be a list, not a single string.
+  `attenuate()` now checks the sub-agent's name as `delegate()` does.
+  `sanitize` and `screen` apply the same rules to their `intent` and
+  `resource`, with `SanitizeError` and `ScreenError`. See
+  [breaking changes](docs/breaking-changes.md).
+- `sanitize` refuses a `mode` other than `tag`, `mask` or `hash`, and a
+  `types` that is not a list of strings, with `SanitizeError`. Earlier releases
+  treated an unknown mode as `tag` and recorded it as given. `screen` refuses a
+  `families` that is a bare string or not a list. A scope list is read exactly
+  once, and the list that was checked is the one used.
+- In Python, a `str` subclass is measured and recorded by its characters: its
+  own `__len__`, `encode` or `__str__` cannot change what is checked or
+  written.
+- The `governedHooks` PostToolUse fallback (no PreToolUse decision for the
+  call) checks the intent and resource it records. A name that breaks a rule
+  withholds the tool output, as any other egress failure does, and writes a
+  value-free `egress` record marked `withheld`, with `<refused>` in place of
+  both names (`REFUSED_NAME`), so the tool run still leaves a trace.
+- An `on_result` / `onResult` hook now receives a copy of its `info` argument.
+  The egress record is written from the original.
+- The counters apply the same rules to crafted lines in both lanes. A
+  timestamp or window with non-ASCII digits or a trailing newline is not
+  readable in Python either, and an integer of more than 4300 digits makes a
+  line unreadable in TypeScript too, whatever the interpreter's own setting.
+- `counters()` and `count_audit_records` / `countAuditRecords` now fail closed
+  on lines they cannot read. Such a line counts toward the quota instead of
+  being ignored. A line that cannot be read at all (longer than 1 MiB, not
+  UTF-8, nested too deeply, not JSON, or not a JSON object) counts toward every
+  query. A decision whose timestamp cannot be read counts toward every query it
+  otherwise matches. The result has a new field, `unreadable`, that says how
+  many lines were counted this way. `skipped` still counts every line that is
+  not a well-formed record.
 
 **Fixed**
 - A framework plugin's run lifecycle lines (`execution_started`,
@@ -77,6 +152,17 @@ as `counters()`, now counts the plugin's decisions too, so read
     each one as a decision. Every recipe now selects decisions with
     `has("decision") and ((.event // "decision") == "decision")`, and
     `forensics.py` no longer counts them as decisions.
+- Hardening: a decision with a very long resource or action name produced an
+  audit record longer than the line limit the counters read. The counters
+  ignored that line, so a quota built on `counters()` did not count the
+  decision. Both changes above close this, in both lanes: such names are now
+  refused before a record is written, and a line that is too long to read now
+  counts toward the quota. A later review found further ways to write such a
+  line: a non-string action or resource, an unchecked sub-agent name in
+  `attenuate()`, unbounded scope lists, and an `on_result` hook rewriting the
+  names in its `info`. Each is now closed, and a test drives every public write
+  path with oversized and odd input and checks that no line the counters
+  cannot read is ever written.
 
 ## 0.13.1 — 2026-10-02
 

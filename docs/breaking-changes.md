@@ -43,6 +43,106 @@ handle makes on its own. It behaves the same, but
 `isinstance(handle, BaseRunHandle)` is now `False`. If your code checks the
 handle's type, check for the method it needs instead.
 
+**Names that are too long, or are not strings, are refused.** Every name the
+governor records now has a limit in bytes of UTF-8. A principal, an action, a
+resource and each entry of a scope's `tools`, `resources` or `intents` can be
+at most 4096 bytes (`MAX_NAME_BYTES`). An agent name can be at most 4087 bytes
+(`MAX_AGENT_NAME_BYTES`). A scope list can hold at most 256 entries and 65536
+bytes in total, and the agent names of one delegation chain at most 65536
+bytes in total. An action, a resource and a scope entry must also be strings
+with no control characters, and a scope list must be a list rather than a
+single string. `attenuate()` now checks the sub-agent's name as `delegate()`
+does.
+
+A name that breaks a rule raises a `TypeError` before the engine sees it, and
+nothing is recorded. This covers `authorize`, `tool`, `counters`, the agent
+name you give the constructor, `as` / `as_`, `delegate`, `scope`,
+`preview_scope` / `previewScope`, `attenuate` and its preview, and the
+`WATCHLIGHT_AGENT` variable. `sanitize` and `screen` refuse an `intent` or
+`resource` that breaks a rule with `SanitizeError` and `ScreenError`. A
+governed tool whose name breaks a rule does not run. A framework plugin's
+`handle.authorize_action` applies the same rules to its principal, action,
+resource and `execution_id`: a resource holding a tab, for example, now raises
+a `TypeError` and is not recorded. If your resource or tool names can contain
+control characters, such as tabs or newlines, strip them or replace them with a
+space or another separator before you pass the name, on either path. A plugin
+agent name is never refused, but keep it at or under 4087 bytes: a longer one
+marks every decision record of its run oversized, and each of those records
+counts toward every quota. Earlier releases accepted
+names of any length, and passed a non-string action or resource to the engine,
+which refused it and recorded the value it was given. See
+[using the governor](using-the-governor.md#names-have-a-length-limit) for the
+table of limits.
+
+This fails loudly, in the closed direction: a call that worked becomes an
+error, never an Allow. Real names are far shorter. If you pass a long value as
+a resource, such as a full URL with a query string or a document body, pass a
+short, stable identifier instead: a document id, a path without its query, or a
+hash of the long value. The limit is in bytes, so a name in a script that uses
+two or more bytes per character reaches it with fewer characters. If a scope
+lists more than 256 tools, split the agent into sub-agents with smaller scopes.
+If you pass a single tool as `tools="search"`, pass `tools=["search"]`.
+
+An `on_result` / `onResult` hook now receives a copy of its `info` argument. A
+hook that changed `info` to change what the egress record says no longer can.
+
+`sanitize` now refuses a `mode` other than `tag`, `mask` or `hash`, and a
+`types` that is not a list of strings, with `SanitizeError`. Earlier releases
+treated an unknown mode, such as a misspelling, as `tag`. Pass one of the three
+modes. `screen` refuses a `families` that is a single string; pass a list.
+
+A scope list (`tools`, `resources`, `intents`) is read exactly once. A
+generator is still accepted and used as before.
+
+**`counters()` counts lines it cannot read.** Earlier releases skipped a line
+they could not read, so it did not count. Now:
+
+- A line that cannot be read at all counts toward every query, whatever its
+  principal, filters, outcome or window. That covers a line longer than 1 MiB
+  and a line that is not UTF-8, is nested too deeply, is not JSON, or is not a
+  JSON object.
+- A decision whose `ts` cannot be read counts toward every query whose
+  principal, intent, resource and outcome it matches, whatever the window.
+
+Both kinds are reported in a new `unreadable` field, and `count` includes
+them. This fails in the closed direction: a quota can trip earlier, never
+later. A trail written only by the SDK has no line the counters cannot read.
+It holds an oversized record (see below) only if an entry point let through a
+name it should have refused. So on such a trail `unreadable` is `0` and
+nothing changes. If it is not `0`, the file holds a damaged or foreign line,
+for example one cut short by a crash or added by another tool, or a record the
+SDK shortened.
+
+**The audit trail shortens a record instead of writing or dropping it.** A
+record that would serialise to more than 512 KiB (`MAX_AUDIT_RECORD_BYTES`),
+that nests objects and arrays deeper than the counters read (32 levels), or
+that holds a value JSON cannot represent, is written as a shortened
+replacement. Every small field is kept. A field nested too deeply, and then the
+largest fields, are replaced by a marker that holds only the field's length in
+bytes and a SHA-256 digest, and the record carries `"oversized": true`. The counters count such a record
+toward every query, like a line they cannot read. Earlier releases dropped a
+record that could not be serialised, without a word. If you read the trail or
+a sink's records yourself, treat a record with `"oversized": true` as one
+whose fields you cannot trust to match.
+
+An unreadable line never ages out of a window. It has no time the counters can
+read, so it counts toward every quota it can match until you remove it. Repair
+the file or rotate it. To find the lines, run `watchlight audit check`, or
+`watchlight audit check path/to/audit.jsonl` for another file. It prints the
+number of each unreadable line and the reason, for example `line 412: not
+JSON` or `line 9: longer than 1048576 bytes`, and never the line's content. It
+exits 1 when there are any. It uses the counters' own reader, and it lists
+every line that could count toward a quota this way: a line that cannot be
+read, a decision whose `ts` cannot be read (which counts only toward quotas it
+matches), and an oversized record. `count - unreadable` is the number of
+well-formed matching decisions. Lines that are well-formed but are not
+decisions, such as a framework run's lifecycle lines, still never count.
+
+The counters now apply the same rules in both lanes. In Python, a timestamp or
+window with non-ASCII digits, or with a trailing newline, is no longer
+accepted. In TypeScript, a line holding an integer of more than 4300 digits is
+now unreadable, as it already was in Python.
+
 ## 0.13.1
 
 **The `mcp` extra now requires `watchlight-mcp` 0.4.4, which refuses a

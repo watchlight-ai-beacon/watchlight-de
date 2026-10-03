@@ -25,9 +25,43 @@ What counts (identical in the TypeScript package):
   the record's own ``ts`` (ISO-8601 with a zone), never on file order. ``end``
   defaults to now. Records timestamped after ``end`` do not count.
 
-Fail-closed and value-free: a line that is not a well-formed decision record is
-skipped and counted in ``skipped`` — nothing about it is echoed or logged. A
-missing file is zero counts; a file that exists but cannot be read raises
+Fail-closed and value-free: nothing about a line is ever echoed or logged. A
+line the scan cannot fully read can never LOWER a count:
+
+* a line that cannot be read at all — longer than ``MAX_COUNTERS_LINE_BYTES``,
+  not UTF-8, nested too deeply, not JSON, or not a JSON object — might be any
+  record, so it counts toward ``count`` in every query, whatever the principal,
+  filters, outcome or window;
+* a decision (a string ``decision``, ``event`` absent or ``"decision"``) whose
+  ``ts`` cannot be read counts when its principal, intent, resource and outcome
+  match, as if it were inside the window;
+* a record carrying ``"oversized": true`` — one the audit funnel shortened
+  because it was too long (``watchlight._audit.bounded_line``) — counts toward
+  every query, like a line that cannot be read, since a field it replaced might
+  be the one a query matches on.
+
+All three are counted in ``unreadable`` (so ``count`` minus ``unreadable`` is the
+number of well-formed matching decisions) and in ``skipped``. A well-formed
+object that is not a decision — a framework run's lifecycle line, or another
+record kind — is counted in ``records`` and never counts; one that has a
+``decision`` that is not a string is counted in ``skipped`` and never counts. Because an
+unreadable line counts in every outcome, ``allowed + denied == all`` holds for
+well-formed decisions only.
+
+The SDK never writes a line that cannot be read. Every name it records is
+bounded (see :mod:`watchlight.principals`), and the largest record its entry
+points can produce measures under 400,000 bytes, about 38% of the line limit
+(``tests/test_record_bounds.py`` builds it). Behind those checks, the audit
+funnel shortens any record over ``MAX_AUDIT_RECORD_BYTES`` (512 KiB) and marks it
+``"oversized": true``, so the trail never holds a line over the limit. An
+unreadable line therefore means a damaged or foreign trail, and an oversized
+record means an entry point let through a name it should have refused. Neither
+ages out of a window: until the file is repaired or rotated each costs the quota
+one call, which is the fail-closed direction. ``watchlight audit check`` lists
+every line that could count this way, by number and reason, with the same reader
+(:func:`find_unreadable_lines`).
+
+A missing file is zero counts; a file that exists but cannot be read raises
 :class:`AuditTrailUnreadable`.
 
 Bounded read: the file is streamed in 64 KiB chunks, never loaded whole. At most
@@ -35,8 +69,10 @@ Bounded read: the file is streamed in 64 KiB chunks, never loaded whole. At most
 newest records — the ones inside any recent window). When the file is larger,
 ``truncated`` is ``True`` and ``count`` is a lower bound; a fail-closed caller
 treats that as the quota being exceeded, or raises ``max_bytes``. A single line
-longer than 1 MiB, or nested deeper than 32 levels, is skipped without being
-buffered or parsed — one oversized line cannot cost more than the cap.
+longer than 1 MiB, or nested deeper than 32 levels, is counted as unreadable
+without being buffered or parsed — one oversized line cannot cost more than the
+cap. When the scan starts inside the file, the partial first line it cuts into
+is dropped and not counted; ``truncated`` already says the count is partial.
 """
 
 from __future__ import annotations
@@ -49,7 +85,7 @@ import os
 import pathlib
 import re
 import time
-from typing import Any, Callable, Optional, Union
+from typing import Any, Callable, Iterator, Optional, Union
 
 from . import principals
 
@@ -65,7 +101,9 @@ __all__ = [
     "MAX_COUNTERS_NESTING",
     "MAX_COUNTERS_WINDOW_SECONDS",
     "count_audit_records",
+    "find_unreadable_lines",
     "parse_window_seconds",
+    "UNREADABLE_REASONS",
 ]
 
 
@@ -110,17 +148,18 @@ class CounterSourceError(RuntimeError):
 
 
 DEFAULT_COUNTERS_MAX_BYTES = 64 * 1024 * 1024
-#: A line longer than this is skipped (and counted in ``skipped``) without being
-#: buffered or parsed. Audit records are a few hundred bytes.
+#: A line longer than this is not buffered or parsed: it is counted as unreadable
+#: (fail-closed, see the module docstring). A typical audit record is a few
+#: hundred bytes; the largest the SDK can write is under 400,000.
 MAX_COUNTERS_LINE_BYTES = 1024 * 1024
-#: A line nested deeper than this (objects/arrays) is skipped without being
-#: parsed. Audit records nest two levels at most.
+#: A line nested deeper than this (objects/arrays) is counted as unreadable
+#: without being parsed. Audit records nest two levels at most.
 MAX_COUNTERS_NESTING = 32
 #: Longest accepted window, in seconds (366 days).
 MAX_COUNTERS_WINDOW_SECONDS = 366 * 86_400
 
 _OUTCOMES = ("allowed", "denied", "all")
-_WINDOW_RE = re.compile(r"^(\d{1,12})([smhd])?$")
+_WINDOW_RE = re.compile(r"(\d{1,12})([smhd])?", re.ASCII)
 _UNIT_SECONDS = {"s": 1, "m": 60, "h": 3_600, "d": 86_400}
 _WINDOW_HELP = (
     'window must be a positive duration such as "15m", "1h", "24h", "7d", '
@@ -135,7 +174,7 @@ def parse_window_seconds(window: Union[str, int]) -> int:
     if isinstance(window, int):
         seconds = window
     elif isinstance(window, str):
-        m = _WINDOW_RE.match(window)
+        m = _WINDOW_RE.fullmatch(window)
         if not m:
             raise ValueError(_WINDOW_HELP)
         seconds = int(m.group(1)) * _UNIT_SECONDS[m.group(2) or "s"]
@@ -153,7 +192,8 @@ def parse_window_seconds(window: Union[str, int]) -> int:
 # The fraction is truncated to milliseconds. Anything else — a missing zone, a
 # space separator, a lowercase `z`, an out-of-range field — is rejected.
 _TS_RE = re.compile(
-    r"^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$"
+    r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})",
+    re.ASCII,
 )
 
 
@@ -168,7 +208,7 @@ def _parse_iso_millis(value: Any) -> Optional[int]:
     """Epoch milliseconds for a strict ISO-8601 timestamp, or ``None``."""
     if not isinstance(value, str):
         return None
-    m = _TS_RE.match(value)
+    m = _TS_RE.fullmatch(value)
     if not m:
         return None
     year, month, day, hour, minute, second = (int(m.group(i)) for i in range(1, 7))
@@ -223,6 +263,21 @@ def _reject_constant(_name: str) -> Any:
     raise ValueError("not JSON")
 
 
+#: The longest integer literal a line may carry, in digits: Python's default
+#: ``int`` conversion limit. Checked here rather than left to the interpreter,
+#: whose limit an environment variable can change, so both lanes classify
+#: exactly the same lines.
+MAX_COUNTERS_INT_DIGITS = 4300
+
+
+def _bounded_int(literal: str) -> int:
+    if len(literal.lstrip("-")) > MAX_COUNTERS_INT_DIGITS:
+        raise ValueError("not JSON")
+    # The counter never reads a number — every field it matches is a string —
+    # so the value is not converted.
+    return 0
+
+
 def _nested_too_deep(text: str) -> bool:
     """True when ``text`` nests objects/arrays deeper than ``MAX_COUNTERS_NESTING``.
     A single linear pass that only tracks string boundaries — no parsing."""
@@ -249,37 +304,119 @@ def _nested_too_deep(text: str) -> bool:
     return False
 
 
+#: Why a line cannot be read — the reasons :func:`find_unreadable_lines` reports.
+#: Value-free: a reason says what is wrong with a line, never what it holds.
+UNREADABLE_REASONS = {
+    "oversized": f"longer than {MAX_COUNTERS_LINE_BYTES} bytes",
+    "not-utf8": "not valid UTF-8",
+    "too-deep": f"nested deeper than {MAX_COUNTERS_NESTING} levels",
+    "not-json": "not JSON",
+    "not-an-object": "not a JSON object",
+    "unreadable-ts": "a decision whose ts cannot be read",
+    "oversized-record": "a record the SDK shortened because it was too long",
+}
+
+
+def _classify(raw: Optional[bytes]) -> tuple[str, Optional[dict]]:
+    """What ONE line is, and its record when it is one. ``raw`` is ``None`` for a
+    line the reader already found to be over the line limit. Returns
+    ``("blank", None)``, ``(<reason>, None)`` for a line that cannot be read at
+    all (a key of :data:`UNREADABLE_REASONS`), or ``("record", rec)``. The ONE
+    classification both the counters and ``watchlight audit check`` use."""
+    if raw is None or len(raw) > MAX_COUNTERS_LINE_BYTES:
+        return "oversized", None
+    try:
+        text = raw.decode("utf-8").strip(" \t\r\n\f\v")  # ASCII whitespace only, as in TS
+    except UnicodeDecodeError:
+        return "not-utf8", None
+    if not text:
+        return "blank", None
+    if _nested_too_deep(text):
+        return "too-deep", None
+    try:
+        rec = json.loads(text, parse_constant=_reject_constant, parse_int=_bounded_int)
+    except (ValueError, RecursionError):
+        return "not-json", None
+    if not isinstance(rec, dict):
+        return "not-an-object", None
+    return "record", rec
+
+
+def _is_decision(rec: dict) -> bool:
+    """A decision record: ``event`` absent or ``"decision"``, and a string
+    ``decision``."""
+    return rec.get("event", "decision") == "decision" and isinstance(rec.get("decision"), str)
+
+
+def _iter_lines(fh: Any, drop_partial: bool = False) -> Iterator[Optional[bytes]]:
+    """Every line from ``fh``'s current position, without its newline: ``bytes``,
+    or ``None`` for a line longer than ``MAX_COUNTERS_LINE_BYTES``. Streamed in
+    64 KiB chunks; never more than the line limit is held — past it the line's
+    bytes are discarded as they arrive. ``drop_partial`` drops the first line
+    unread (the reader started inside it). A final line without a newline is
+    yielded too."""
+    carry: list[bytes] = []
+    carry_bytes = 0
+    oversized = False
+    while True:
+        chunk = fh.read(_CHUNK)
+        if not chunk:
+            break
+        at = 0
+        while True:
+            nl = chunk.find(b"\n", at)
+            if nl == -1:
+                break
+            tail = chunk[at:nl]
+            if drop_partial:
+                drop_partial = False
+            elif oversized or carry_bytes + len(tail) > MAX_COUNTERS_LINE_BYTES:
+                yield None
+            else:
+                carry.append(tail)
+                yield carry[0] if len(carry) == 1 else b"".join(carry)
+            carry = []
+            carry_bytes = 0
+            oversized = False
+            at = nl + 1
+        if at < len(chunk) and not drop_partial and not oversized:
+            carry_bytes += len(chunk) - at
+            if carry_bytes > MAX_COUNTERS_LINE_BYTES:
+                oversized = True
+                carry = []
+                carry_bytes = 0
+            else:
+                carry.append(chunk[at:])
+    if not drop_partial:
+        if oversized:
+            yield None
+        elif carry:
+            yield b"".join(carry)
+
+
 class _Tally:
-    __slots__ = ("count", "records", "skipped")
+    __slots__ = ("count", "records", "skipped", "unreadable")
 
     def __init__(self) -> None:
         self.count = 0
         self.records = 0
         self.skipped = 0
+        self.unreadable = 0
 
 
-def _tally_line(raw: bytes, f: dict, t: _Tally) -> None:
+def _tally_line(raw: Optional[bytes], f: dict, t: _Tally) -> None:
     """Classify and tally ONE line. Blank lines are ignored entirely."""
-    if len(raw) > MAX_COUNTERS_LINE_BYTES:
-        t.skipped += 1
+    kind, rec = _classify(raw)
+    if kind == "blank":
         return
-    try:
-        text = raw.decode("utf-8").strip(" \t\r\n\f\v")  # ASCII whitespace only, as in TS
-    except UnicodeDecodeError:
+    if rec is None or rec.get("oversized") is True:
+        # A line that cannot be read at all might be any record, including a
+        # matching Allow: it counts toward every query (fail-closed). So does a
+        # record the audit funnel shortened (`"oversized": true`): a field it
+        # replaced might have been the one a query matches on.
         t.skipped += 1
-        return
-    if not text:
-        return
-    if _nested_too_deep(text):
-        t.skipped += 1
-        return
-    try:
-        rec = json.loads(text, parse_constant=_reject_constant)
-    except (ValueError, RecursionError):
-        t.skipped += 1
-        return
-    if not isinstance(rec, dict):
-        t.skipped += 1
+        t.unreadable += 1
+        t.count += 1
         return
     # Records whose `event` names another kind (sanitization, egress,
     # attenuation) are well-formed but are not decisions. A decision's `event` is
@@ -295,22 +432,30 @@ def _tally_line(raw: bytes, f: dict, t: _Tally) -> None:
         t.records += 1
         return
     decision = rec.get("decision")
-    ts = _parse_iso_millis(rec.get("ts"))
-    if not isinstance(decision, str) or ts is None:
+    if not isinstance(decision, str):
+        # Decision-shaped but with no verdict to count: not a well-formed
+        # record. Never counts.
         t.skipped += 1
         return
-    t.records += 1
-    if ts <= f["start"] or ts > f["end"]:
-        return
-    if rec.get("principal") != f["principal"]:
-        return
-    if f["intent"] is not None and rec.get("intent") != f["intent"]:
-        return
-    if f["resource"] is not None and rec.get("resource") != f["resource"]:
-        return
-    allowed = decision == "Allow"
     outcome = f["outcome"]
-    if (outcome == "allowed" and allowed) or (outcome == "denied" and not allowed) or outcome == "all":
+    allowed = decision == "Allow"
+    matches = (
+        rec.get("principal") == f["principal"]
+        and (f["intent"] is None or rec.get("intent") == f["intent"])
+        and (f["resource"] is None or rec.get("resource") == f["resource"])
+        and ((outcome == "allowed" and allowed) or (outcome == "denied" and not allowed) or outcome == "all")
+    )
+    ts = _parse_iso_millis(rec.get("ts"))
+    if ts is None:
+        # A decision whose time cannot be read cannot be shown to be outside the
+        # window, so a matching one counts (fail-closed).
+        t.skipped += 1
+        if matches:
+            t.unreadable += 1
+            t.count += 1
+        return
+    t.records += 1
+    if matches and f["start"] < ts <= f["end"]:
         t.count += 1
 
 
@@ -334,6 +479,9 @@ def _prepare_counters(
         raise TypeError("intent must be a string")
     if resource is not None and not isinstance(resource, str):
         raise TypeError("resource must be a string")
+    # A filter longer than any name a record can carry could never match.
+    principals.assert_name_length(intent, "intent")
+    principals.assert_name_length(resource, "resource")
     if outcome not in _OUTCOMES:
         raise ValueError('outcome must be "allowed", "denied" or "all"')
     seconds = parse_window_seconds(window)
@@ -358,6 +506,7 @@ def _prepare_counters(
         "window": {"seconds": seconds, "start": _format_millis(start), "end": _format_millis(end)},
         "records": 0,
         "skipped": 0,
+        "unreadable": 0,
         "truncated": False,
         "source": "local",
     }
@@ -463,8 +612,9 @@ def count_audit_records(
         processes that wrote the trail are the caller's concern.
     :param max_bytes: scan at most this many bytes from the end of the file.
     :returns: ``{"count", "principal", "intent", "resource", "outcome",
-        "window": {"seconds", "start", "end"}, "records", "skipped", "truncated",
-        "source"}``.
+        "window": {"seconds", "start", "end"}, "records", "skipped",
+        "unreadable", "truncated", "source"}``. ``count`` includes the
+        ``unreadable`` lines (fail-closed; see the module docstring).
     """
     f, result = _prepare_counters(
         principal, intent, resource, window, outcome=outcome, now=now, max_bytes=max_bytes
@@ -491,51 +641,63 @@ def count_audit_records(
                 fh.seek(pos - 1)
                 drop_partial = fh.read(1) != b"\n"
             fh.seek(pos)
-            # Pending bytes of the current (unterminated) line: a list of
-            # chunks, joined once at the newline. Never more than
-            # MAX_COUNTERS_LINE_BYTES are held — past that the line is
-            # `oversized`, its bytes are discarded as they arrive, and it is
-            # counted once in `skipped` when its newline is found.
-            carry: list[bytes] = []
-            carry_bytes = 0
-            oversized = False
-            while True:
-                chunk = fh.read(_CHUNK)
-                if not chunk:
-                    break
-                at = 0
-                while True:
-                    nl = chunk.find(b"\n", at)
-                    if nl == -1:
-                        break
-                    tail = chunk[at:nl]
-                    if drop_partial:
-                        drop_partial = False
-                    elif oversized or carry_bytes + len(tail) > MAX_COUNTERS_LINE_BYTES:
-                        t.skipped += 1
-                    else:
-                        carry.append(tail)
-                        _tally_line(carry[0] if len(carry) == 1 else b"".join(carry), f, t)
-                    carry = []
-                    carry_bytes = 0
-                    oversized = False
-                    at = nl + 1
-                if at < len(chunk) and not drop_partial and not oversized:
-                    carry_bytes += len(chunk) - at
-                    if carry_bytes > MAX_COUNTERS_LINE_BYTES:
-                        oversized = True
-                        carry = []
-                        carry_bytes = 0
-                    else:
-                        carry.append(chunk[at:])
-            if not drop_partial:
-                if oversized:
-                    t.skipped += 1
-                elif carry:
-                    _tally_line(b"".join(carry), f, t)
+            for raw in _iter_lines(fh, drop_partial):
+                _tally_line(raw, f, t)
     except OSError:
         raise AuditTrailUnreadable(path) from None
     result["count"] = t.count
     result["records"] = t.records
     result["skipped"] = t.skipped
+    result["unreadable"] = t.unreadable
     return result
+
+
+def find_unreadable_lines(
+    audit_path: Union[str, os.PathLike], *, limit: int = 100
+) -> dict:
+    """Find the lines of an audit file that the counters cannot read — the lines
+    that count toward every quota (see the module docstring) — using exactly the
+    counters' own reader and classification, so the two never disagree. Behind
+    ``watchlight audit check``.
+
+    Value-free: each finding is a 1-based line number and a reason code from
+    :data:`UNREADABLE_REASONS`, never the line's content. The whole file is
+    streamed; at most ``limit`` findings are returned, and ``total`` counts them
+    all. A missing file has no findings; a file that cannot be read raises
+    :class:`AuditTrailUnreadable`.
+
+    :returns: ``{"lines": int, "total": int, "findings": [{"line", "reason"}],
+        "truncated": bool}`` — ``truncated`` is ``True`` when ``total`` exceeds
+        ``limit``.
+    """
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
+        raise ValueError("limit must be a non-negative integer")
+    path = pathlib.Path(audit_path)
+    out: dict[str, Any] = {"lines": 0, "total": 0, "findings": [], "truncated": False}
+    try:
+        fh = path.open("rb")
+    except FileNotFoundError:
+        return out
+    except OSError:
+        raise AuditTrailUnreadable(path) from None
+    try:
+        with fh:
+            for number, raw in enumerate(_iter_lines(fh), start=1):
+                out["lines"] = number
+                kind, rec = _classify(raw)
+                if kind == "blank":
+                    continue
+                if rec is not None:
+                    if rec.get("oversized") is True:
+                        kind = "oversized-record"
+                    elif not _is_decision(rec) or _parse_iso_millis(rec.get("ts")) is not None:
+                        continue
+                    else:
+                        kind = "unreadable-ts"
+                out["total"] += 1
+                if len(out["findings"]) < limit:
+                    out["findings"].append({"line": number, "reason": kind})
+    except OSError:
+        raise AuditTrailUnreadable(path) from None
+    out["truncated"] = out["total"] > len(out["findings"])
+    return out

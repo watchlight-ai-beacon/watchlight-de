@@ -242,9 +242,11 @@ def test_an_engine_refusal_is_recorded_as_a_deny(name, tmp_path):
 
     async def run():
         async with await plugin.start_run("research-agent") as handle:
-            # An empty action is a request the engine cannot evaluate.
+            # An empty action is a request the engine cannot evaluate. (An
+            # empty principal is refused before the engine, unrecorded, as on
+            # the direct path: see the name-bounds tests below.)
             await plugin.apdp.authorize(
-                principal="", action="", resource="", context={"v": CANARIES[0]},
+                principal='Agent::"a"', action="", resource="", context={"v": CANARIES[0]},
                 session_id=handle.session_id,
             )
 
@@ -434,6 +436,7 @@ def test_a_sub_agent_decision_names_the_sub_agent_and_its_chain(name, tmp_path):
 
 LONG_RESOURCE = 'Tool::"' + "r" * 1100 + '"'
 TAB_RESOURCE = 'Tool::"web\tsearch"'
+TWIN_RESOURCE = 'Tool::"web search \\"quoted\\""'
 
 
 @pytest.mark.parametrize("name", NAMES)
@@ -451,8 +454,12 @@ def test_terms_are_stored_in_full_so_counting_matches_them(name, tmp_path):
             for _ in range(3):
                 assert await handle.authorize_action('Action::"read"', LONG_RESOURCE, principal='User::"u1"')
             for _ in range(2):
-                assert await handle.authorize_action('Action::"read"', TAB_RESOURCE, principal='User::"u1"')
+                assert await handle.authorize_action('Action::"read"', TWIN_RESOURCE, principal='User::"u1"')
             assert await handle.authorize_action('Action::"read"', twin, principal='User::"u1"')
+            # A control character is refused before the engine, as on the
+            # direct path: nothing is decided or recorded.
+            with pytest.raises(TypeError, match="resource must not contain control characters"):
+                await handle.authorize_action('Action::"read"', TAB_RESOURCE, principal='User::"u1"')
 
     asyncio.run(run())
 
@@ -460,11 +467,12 @@ def test_terms_are_stored_in_full_so_counting_matches_them(name, tmp_path):
         return count_audit_records(audit, principal='User::"u1"', resource=resource, window="1h")["count"]
 
     assert count(LONG_RESOURCE) == 3
-    assert count(TAB_RESOURCE) == 2
+    assert count(TWIN_RESOURCE) == 2
     assert count(twin) == 1
+    assert count(TAB_RESOURCE) == 0
     # Every record is still exactly one line of valid JSON.
     raw = audit.read_text(encoding="utf-8")
-    assert "\t" not in raw
+    assert "web\tsearch" not in raw and "web\\tsearch" not in raw
     assert len(raw.splitlines()) == len(_lines(audit))
 
 
@@ -519,11 +527,11 @@ def test_a_record_that_cannot_be_built_never_changes_the_decision(monkeypatch, t
 
     async def run():
         if engine_raises:
-            # An empty principal is a request the engine cannot evaluate.
+            # An empty action is a request the engine cannot evaluate.
             with pytest.raises(Exception):
-                await backend.authorize("", "", "")
+                await backend.authorize('Agent::"a"', "", "")
             with pytest.raises(Exception):
-                await backend.authorize("", "", "")
+                await backend.authorize('Agent::"a"', "", "")
         else:
             first = await backend.authorize('Agent::"a"', 'Action::"read"', 'Tool::"x"')
             second = await backend.authorize('Agent::"a"', 'Action::"read"', 'Tool::"x"')

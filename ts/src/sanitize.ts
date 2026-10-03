@@ -750,6 +750,13 @@ export function sanitize(text: string, opts: SanitizeOptions = {}): SanitizeResu
   if (typeof text !== "string") {
     throw new SanitizeError("input must be a string (extract document text first)");
   }
+  // `mode` is written to the audit record: only a known mode.
+  if (mode !== "tag" && mode !== "mask" && mode !== "hash") {
+    throw new SanitizeError("unknown mode (expected 'tag', 'mask' or 'hash')");
+  }
+  if (opts.types !== undefined && (!Array.isArray(opts.types) || opts.types.some((t) => typeof t !== "string"))) {
+    throw new SanitizeError("types must be an array of strings");
+  }
   const decisionId = validateOpaqueId(opts.decisionId, "decisionId", sanitizeError);
   // Length-bounded first (an audit field), then the ONE principal rule every
   // boundary applies — non-empty, no control characters.

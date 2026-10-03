@@ -55,7 +55,16 @@ import os
 import sys
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from ._audit import UNCONFIGURED_AGENT, AuditSink, AuditTrail, _error_kind, decision_record
+from . import principals
+from ._audit import (
+    _SMALL_FIELD_BYTES,
+    UNCONFIGURED_AGENT,
+    AuditSink,
+    AuditTrail,
+    _error_kind,
+    _marker,
+    decision_record,
+)
 
 # A local policy source: a path to a JSON policy file, or an in-memory list of
 # ``{"name", "code"}`` Cedar policy objects. ``None`` loads no policies —
@@ -120,6 +129,19 @@ def in_process_backend(
 #: — are recorded as given.
 
 @functools.lru_cache(maxsize=None)
+def _refused_marker(value: Any) -> Dict[str, Any]:
+    """The value-free stand-in for a plugin term that broke a name rule: its
+    length in bytes and, as the audit funnel does, a digest only for a value
+    longer than 256 bytes — a short name is never digested. A non-string has
+    neither."""
+    if not isinstance(value, str):
+        return {"omitted": "refused"}
+    size = len(str.encode(value, "utf-8", "surrogatepass"))
+    if size <= _SMALL_FIELD_BYTES:
+        return {"omitted": "refused", "bytes": size}
+    return _marker(value, "refused")
+
+
 def _short_circuit_errors() -> Tuple[type, ...]:
     """The refusals a plugin's handle makes WITHOUT asking the backend: a handle
     that is quarantined or severed refuses every later call itself. The handle
@@ -242,6 +264,17 @@ def _audited_client_class() -> Any:
             marker = _CALL_MARKER.get()
             if marker is not None:
                 marker["reached"] = True
+            # The direct path's bounds (see watchlight.principals), applied
+            # before the engine and before the trail: a term that breaks a rule
+            # raises TypeError (value-free) and nothing is decided or recorded,
+            # exactly as Watchlight.authorize does. Only here, at the decision —
+            # never in start_run or resolve_agent, where a framework's
+            # instrumentation could swallow the error.
+            principal = principals.assert_principal(principal)
+            action = principals.assert_name(action, "action")
+            resource = principals.assert_name(resource, "resource")
+            if execution_id is not None:
+                execution_id = principals.assert_name(execution_id, "execution_id")
             try:
                 result = await super().authorize(
                     principal,
@@ -309,17 +342,50 @@ def _audited_client_class() -> Any:
                 )
                 # Stored IN FULL, as the direct path stores them: a quota
                 # matches these fields exactly, so a cut or rewritten term
-                # would be a decision no count could find.
-                names = [str(self._wl_agent_names.get(a, a)) for a in chain]
+                # would be a decision no count could find. A term that breaks
+                # the direct path's bounds is never written: it is replaced by
+                # a value-free marker and the record is marked oversized, which
+                # the counters count toward every query — so it can never make
+                # a quota under-count. (`authorize` refuses such terms before
+                # deciding; this covers the refusals the handle makes itself.)
+                broken = False
+
+                def bounded(value: Any, check: Any) -> Any:
+                    nonlocal broken
+                    try:
+                        return check(value)
+                    except Exception:  # noqa: BLE001 — any rule broken
+                        broken = True
+                        return _refused_marker(value)
+
+                # Agent names come from `start_run` / `spawn_subagent` and are
+                # never refused (a framework's instrumentation could swallow
+                # the error); they are recorded as given, JSON escaping what
+                # needs escaping, and only bounded in length.
+                names = [
+                    bounded(
+                        str(self._wl_agent_names.get(a, a)),
+                        lambda v: principals.assert_name_length(
+                            v, "agent", TypeError, principals.MAX_AGENT_NAME_BYTES
+                        ),
+                    )
+                    for a in chain
+                ]
                 record = decision_record(
                     agent=names[-1] if names else UNCONFIGURED_AGENT,
                     actor_chain=names if len(names) > 1 else None,
-                    principal=str(principal),
-                    intent=str(action),
-                    resource=str(resource),
+                    principal=bounded(principal, principals.assert_principal),
+                    intent=bounded(action, lambda v: principals.assert_name(v, "action")),
+                    resource=bounded(resource, lambda v: principals.assert_name(v, "resource")),
                     decision=decision,
-                    execution_id=str(execution_id) if execution_id else None,
+                    execution_id=(
+                        bounded(execution_id, lambda v: principals.assert_name(v, "execution_id"))
+                        if execution_id
+                        else None
+                    ),
                 )
+                if broken:
+                    record["oversized"] = True
             except Exception as exc:  # noqa: BLE001 — never let auditing alter a decision
                 self._wl_report_record_failure(exc)
                 return

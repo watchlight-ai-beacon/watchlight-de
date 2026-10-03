@@ -68,7 +68,7 @@ import {
   type SanitizeResult,
 } from "./sanitize";
 import { screen as screenText, ScreenError, type ScreenOptions, type ScreenResult } from "./screen";
-import { assertPrincipal, principals } from "./principals";
+import { assertAgentNameRules, assertName, assertNameList, assertPrincipal, principals } from "./principals";
 import { checkPolicyAnnotations } from "./annotations";
 import { policyEntries, readPolicyFile, type PolicyEntry } from "./policy-file";
 import { DEFAULT_ON_RESULT_TIMEOUT_MS, EgressTimeout, resolveEgressTimeoutMs } from "./egress";
@@ -99,6 +99,7 @@ export type {
   UnknownAuditRecord,
   BatchAuditSink,
 } from "./audit";
+export { MAX_AUDIT_RECORD_BYTES } from "./audit";
 export { ApprovalError, APPROVAL_KEY_LABEL, APPROVAL_PAYLOAD_VERSION, APPROVAL_MIN_SECRET_BYTES, DEFAULT_APPROVAL_STORE_TIMEOUT_MS, APPROVAL_PRUNE_INTERVAL_MS, APPROVAL_PRUNE_GRACE_MS } from "./approval";
 export type { ApprovalStore, ApprovalErrorCode } from "./approval";
 export type { ScopeTokenOptions, AttenuateOptions } from "./attenuation";
@@ -112,9 +113,11 @@ export {
   MAX_COUNTERS_WINDOW_SECONDS,
   MAX_COUNTERS_LINE_BYTES,
   MAX_COUNTERS_NESTING,
+  findUnreadableLines,
+  UNREADABLE_REASONS,
 } from "./counters";
 export { CounterSourceError } from "./counters";
-export type { Counters, CountersOptions, CounterOutcome, CounterWindow } from "./counters";
+export type { Counters, CountersOptions, CounterOutcome, CounterWindow, UnreadableLines, UnreadableReason } from "./counters";
 export type { CounterQuery, CounterSource, CounterSourceKind } from "./counters";
 export { PolicyCompileError } from "./backend";
 export { governedHooks } from "./claude-agent";
@@ -150,7 +153,17 @@ export type {
   SanitizeReport,
   SanitizeResult,
 } from "./sanitize";
-export { principals, entityRef, policyEntityRef, escapeCedarString } from "./principals";
+export {
+  principals,
+  entityRef,
+  policyEntityRef,
+  escapeCedarString,
+  MAX_NAME_BYTES,
+  MAX_AGENT_NAME_BYTES,
+  MAX_SCOPE_ENTRIES,
+  MAX_SCOPE_LIST_BYTES,
+  MAX_ACTOR_CHAIN_BYTES,
+} from "./principals";
 export { PolicyError, ENFORCEMENT_EFFECTS, ENFORCEMENT_EFFECT_ANNOTATION } from "./annotations";
 export type { EnforcementEffect } from "./annotations";
 export {
@@ -338,6 +351,9 @@ async function resolveContext<A extends unknown[]>(
 export type Governed<A extends unknown[], R> = (...args: A) => Promise<Awaited<R>>;
 
 const norm = (x?: readonly string[] | null): string[] => (x ? [...x] : []);
+
+/** The placeholder an egress record carries for a name that was refused. */
+export const REFUSED_NAME = "<refused>";
 
 export interface WatchlightOptions {
   /** Stable agent identity for the audit trail and the reserved
@@ -595,13 +611,9 @@ export const AGENT_ENV = "WATCHLIGHT_AGENT";
  *  later, inside the engine. `null` is a value, not an absent option: a caller
  *  who passed one meant to pass a name. */
 function assertAgentName(agent: unknown, where: string): asserts agent is string {
-  if (typeof agent !== "string" || !agent.trim()) {
-    throw new TypeError(`${where}: agent must be a non-empty string`);
-  }
-  // eslint-disable-next-line no-control-regex
-  if (/[\u0000-\u001f\u007f]/.test(agent)) {
-    throw new TypeError(`${where}: agent must not contain control characters`);
-  }
+  // Non-empty, no control characters, and at most MAX_AGENT_NAME_BYTES, so the
+  // principal derived from it (Agent::"<name>") is itself a bounded name.
+  assertAgentNameRules(agent, where);
   if (agent === UNCONFIGURED_AGENT) {
     throw new TypeError(
       `${where}: '${UNCONFIGURED_AGENT}' is reserved for a governor whose agent name was ` +
@@ -1326,6 +1338,14 @@ export class Watchlight {
   }
 
   async scope(opts: ScopeOptions = {}): Promise<Scope> {
+    // Bounded before the engine: the root's tools are recorded. The checked
+    // arrays are the ones used — each iterable is read exactly once.
+    opts = {
+      ...opts,
+      tools: assertNameList(opts.tools, "tools"),
+      resources: assertNameList(opts.resources, "resources"),
+      intents: assertNameList(opts.intents, "intents"),
+    };
     const budget = this._rootBudget(opts.maxDepth);
     const eng = this._backend.engine();
     if (!eng) {
@@ -1361,6 +1381,14 @@ export class Watchlight {
    * authorize, delegate, or mint a token.
    */
   async previewScope(opts: ScopeOptions = {}): Promise<ScopePreview> {
+    // Bounded before the engine: the root's tools are recorded. The checked
+    // arrays are the ones used — each iterable is read exactly once.
+    opts = {
+      ...opts,
+      tools: assertNameList(opts.tools, "tools"),
+      resources: assertNameList(opts.resources, "resources"),
+      intents: assertNameList(opts.intents, "intents"),
+    };
     const budget = this._rootBudget(opts.maxDepth);
     const eng = this._backend.engine();
     if (!eng) {
@@ -1602,6 +1630,13 @@ export class Watchlight {
     // ReservedContextError is raised, and for the same reason: it is the
     // caller's own input, not a verdict.
     if (req.principal !== undefined) assertPrincipal(req.principal);
+    // Names longer than MAX_NAME_BYTES are refused here, before the engine and
+    // before the trail: nothing is decided and nothing is recorded, so no record
+    // is ever too long for the counters to read back.
+    // A non-string or control character is refused too: the engine would
+    // refuse it, and that refusal is recorded with the value it was given.
+    assertName(req.action, "action");
+    if (req.resource !== undefined) assertName(req.resource, "resource");
     let decided;
     try {
       decided = await this._decide(req);
@@ -1787,6 +1822,9 @@ export class Watchlight {
       return this.as(agent).sanitize(content, rest);
     }
     const { intent = "read", resource = "document", mode, types, decisionId, known, personExclusions } = opts;
+    // Refused before anything is recorded, as on `authorize`.
+    assertName(intent, "intent", (m) => new SanitizeError(m));
+    assertName(resource, "resource", (m) => new SanitizeError(m));
     // The subject the redaction was performed FOR. A call that names none has
     // this agent as its subject — recorded as the TYPED `Agent::"<name>"`, the
     // same reference the decision line carries, never a bare name.
@@ -1822,6 +1860,8 @@ export class Watchlight {
       return this.as(agent).screen(content, rest);
     }
     const { intent = "read", resource = "content", mode, families, decisionId } = opts;
+    assertName(intent, "intent", (m) => new ScreenError(m));
+    assertName(resource, "resource", (m) => new ScreenError(m));
     // As in `sanitize`: the subject the screening was performed for, typed when
     // the call names none.
     // As above: the primitive's own error type.
@@ -1844,8 +1884,9 @@ export class Watchlight {
    * `denied` (Deny + NeedsApproval holds) or `all`. Reads only the local file
    * (an `auditSink` mirrors records elsewhere but is never read back), streams
    * it, and scans at most `maxBytes` from its end — `truncated` flags a lower
-   * bound. Malformed lines are skipped and counted in `skipped`, never echoed.
-   * A missing file is zero counts; an unreadable one throws
+   * bound. A line it cannot read never lowers the count: it counts toward the
+   * limit and is reported in `unreadable` (see {@link countAuditRecords});
+   * nothing about it is echoed. A missing file is zero counts; an unreadable one throws
    * {@link AuditTrailUnreadable}. Synchronous, so it can run inside a `context`
    * binding right before the decision it feeds.
    *
@@ -1944,7 +1985,9 @@ export class Watchlight {
     opts: { timeoutMs?: number } = {}
   ): Promise<{ value: R; replaced: boolean }> {
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const attempt = Promise.resolve().then(() => hook(result, info));
+    // A copy: the record is written from `info`, which the hook must not be
+    // able to change.
+    const attempt = Promise.resolve().then(() => hook(result, { ...info }));
     // A late rejection after the deadline must not surface as an unhandled one.
     attempt.catch(() => {});
     const deadline = new Promise<never>((_, reject) => {
@@ -1963,6 +2006,21 @@ export class Watchlight {
     const replaced = replacement !== undefined && replacement !== null;
     this._auditEgress(info, { replaced });
     return { value: replaced ? (replacement as R) : result, replaced };
+  }
+
+  /**
+   * The trace of an egress that was refused before its hook ran, because a name
+   * it would have recorded broke a rule (the Claude hooks' PostToolUse fallback,
+   * which has no decision to take checked names from). Value-free: the names are
+   * the fixed placeholder {@link REFUSED_NAME} and the subject is this agent, so
+   * nothing the caller supplied is written. An `egress` record never counts
+   * toward a quota, so it cannot lower a count. @internal
+   */
+  _auditEgressRefused(): void {
+    this._auditEgress(
+      { intent: REFUSED_NAME, resource: REFUSED_NAME, principal: this._principal() },
+      { replaced: false, withheld: true }
+    );
   }
 
   private _auditEgress(info: EgressInfo, outcome: { replaced: boolean; withheld?: boolean }): void {

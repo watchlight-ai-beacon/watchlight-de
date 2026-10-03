@@ -33,6 +33,30 @@ def at(**kw):
     return count_audit_records(FIXTURE, **kw)
 
 
+def well_formed(r):
+    """The matching well-formed decisions: ``count`` without the lines counted
+    fail-closed because they could not be read."""
+    return r["count"] - r["unreadable"]
+
+
+# The fixture holds three lines that cannot be read at all ("not json at all",
+# "[1,2,3]", "42"), which count toward EVERY query, and one decision whose `ts`
+# cannot be read (alice, read, doc/1, Allow), which counts toward every query it
+# matches whatever the window.
+FIXTURE_UNREADABLE_LINES = 3
+
+
+def expected_unreadable(kw):
+    principal = kw.get("principal", ALICE)
+    bad_ts_matches = (
+        principal == ALICE
+        and kw.get("intent") in (None, "read")
+        and kw.get("resource") in (None, "doc/1")
+        and kw.get("outcome", "allowed") in ("allowed", "all")
+    )
+    return FIXTURE_UNREADABLE_LINES + (1 if bad_ts_matches else 0)
+
+
 # ── window grammar ──────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize(
@@ -56,7 +80,9 @@ def test_window_rejects(bad):
 
 def test_alice_read_allowed_1h():
     r = at(intent="read", window="1h")
-    assert r["count"] == 6
+    assert well_formed(r) == 6
+    assert r["unreadable"] == 4
+    assert r["count"] == 10  # fail-closed: what could not be read counts
     assert r["window"] == {"seconds": 3600, "start": "2026-01-15T11:00:00.000Z", "end": NOW}
     assert (r["principal"], r["intent"], r["resource"], r["outcome"]) == (ALICE, "read", None, "allowed")
     assert r["records"] == 19
@@ -88,18 +114,21 @@ def test_alice_read_allowed_1h():
     ],
 )
 def test_counts(kw, count):
-    assert at(**kw)["count"] == count
+    r = at(**kw)
+    assert well_formed(r) == count
+    assert r["unreadable"] == expected_unreadable(kw)
+    assert r["count"] == count + expected_unreadable(kw)
 
 
 def test_default_window_is_1h():
-    assert at(intent="read")["count"] == 6
+    assert well_formed(at(intent="read")) == 6
 
 
 def test_now_as_aware_datetime():
     now = datetime.datetime(2026, 1, 15, 12, 0, 0, tzinfo=datetime.timezone.utc)
-    assert at(intent="read", now=now)["count"] == 6
+    assert well_formed(at(intent="read", now=now)) == 6
     plus2 = datetime.timezone(datetime.timedelta(hours=2))
-    assert at(intent="read", now=datetime.datetime(2026, 1, 15, 14, 0, 0, tzinfo=plus2))["count"] == 6
+    assert well_formed(at(intent="read", now=datetime.datetime(2026, 1, 15, 14, 0, 0, tzinfo=plus2))) == 6
 
 
 @pytest.mark.parametrize("bad", [datetime.datetime(2026, 1, 15, 12), "2026-01-15T12:00:00", "yesterday", 5])
@@ -137,13 +166,14 @@ def test_bounded_read():
     assert DEFAULT_COUNTERS_MAX_BYTES == 64 * 1024 * 1024
     assert at(intent="read", max_bytes=size) == at(intent="read")
     cut = at(intent="read", max_bytes=size - 10)
-    assert (cut["count"], cut["records"], cut["skipped"], cut["truncated"]) == (5, 18, 6, True)
+    # The partial first line the cut lands in is dropped, never counted as unreadable.
+    assert (well_formed(cut), cut["unreadable"], cut["records"], cut["skipped"], cut["truncated"]) == (5, 4, 18, 6, True)
     edge = at(intent="read", max_bytes=size - first_line)
-    assert (edge["count"], edge["records"], edge["skipped"], edge["truncated"]) == (5, 18, 6, True)
+    assert (well_formed(edge), edge["unreadable"], edge["records"], edge["skipped"], edge["truncated"]) == (5, 4, 18, 6, True)
     one = at(intent="read", max_bytes=size - 1)
-    assert (one["count"], one["records"], one["truncated"]) == (5, 18, True)
+    assert (well_formed(one), one["records"], one["truncated"]) == (5, 18, True)
     tiny = at(intent="read", max_bytes=5)
-    assert (tiny["count"], tiny["records"], tiny["skipped"], tiny["truncated"]) == (0, 0, 0, True)
+    assert (tiny["count"], tiny["records"], tiny["skipped"], tiny["unreadable"], tiny["truncated"]) == (0, 0, 0, 0, True)
 
 
 def test_multi_chunk_stream(tmp_path):
@@ -160,7 +190,8 @@ def test_multi_chunk_stream(tmp_path):
     r = count_audit_records(p, ALICE, now=NOW)
     assert (r["records"], r["skipped"]) == (0, 0)
     p.write_bytes(b'{"ts":"2026-01-15T11:59:00.000Z","principal":"' + b"\xff\xfe" + b'","decision":"Allow"}\n')
-    assert count_audit_records(p, ALICE, now=NOW)["skipped"] == 1
+    r = count_audit_records(p, ALICE, now=NOW)
+    assert (r["count"], r["skipped"], r["unreadable"]) == (1, 1, 1)  # not UTF-8: counts, fail-closed
 
 
 # ── hostile lines are bounded ───────────────────────────────────────────────
@@ -175,10 +206,10 @@ def _cs(p, **kw):
     return r["count"], r["skipped"]
 
 
-def test_bom_line_is_skipped(tmp_path):
+def test_bom_line_is_unreadable(tmp_path):
     p = tmp_path / "audit.jsonl"
     p.write_text("\ufeff" + _rec() + "\n" + _rec() + "\n", encoding="utf-8")
-    assert _cs(p) == (1, 1)
+    assert _cs(p) == (2, 1)  # the BOM line cannot be parsed: it counts, fail-closed
 
 
 def test_line_and_nesting_caps(tmp_path):
@@ -187,17 +218,17 @@ def test_line_and_nesting_caps(tmp_path):
     p.write_text(_rec(',"pad":"' + "p" * (900 * 1024) + '"') + "\n" + _rec() + "\n")
     assert _cs(p) == (2, 0)  # large but legitimate
     p.write_text("x" * (MAX_COUNTERS_LINE_BYTES + 1) + "\n" + _rec() + "\n" + _rec() + "\n")
-    assert _cs(p) == (2, 1)  # over the cap: skipped once, the rest counts
+    assert _cs(p) == (3, 1)  # over the cap: unreadable once, counted, and the rest counts
     deep = lambda d: "[" * d + "]" * d
     p.write_text(_rec(',"x":' + deep(5)) + "\n" + _rec(',"x":' + deep(MAX_COUNTERS_NESTING + 1)) + "\n"
                  + _rec(',"x":"' + "[" * 200 + '"') + "\n")
-    assert _cs(p) == (2, 1)  # brackets inside strings are not nesting
+    assert _cs(p) == (3, 1)  # too deep: unreadable, counted; brackets inside strings are not nesting
     p.write_text("{" * 100_000 + "\n" + _rec() + "\n")
-    assert _cs(p) == (1, 1)  # skipped without parsing (no RecursionError)
+    assert _cs(p) == (2, 1)  # unreadable without parsing (no RecursionError)
 
 
 def test_newline_free_tail_is_bounded(tmp_path):
-    """A newline-free tail as large as the scan bound: one skipped line, finished
+    """A newline-free tail as large as the scan bound: one unreadable line, finished
     quickly, and at most the line cap held in memory (not the whole tail)."""
     big = 24 * 1024 * 1024
     p = tmp_path / "audit.jsonl"
@@ -207,18 +238,87 @@ def test_newline_free_tail_is_bounded(tmp_path):
     r = count_audit_records(p, ALICE, "read", now=NOW, max_bytes=big)
     elapsed = time.monotonic() - t0
     rss_after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    assert (r["count"], r["records"], r["skipped"], r["truncated"]) == (0, 0, 1, False)
+    assert (r["count"], r["records"], r["skipped"], r["unreadable"], r["truncated"]) == (1, 0, 1, 1, False)
     assert elapsed < 5.0, elapsed
     # ru_maxrss is bytes on macOS and KiB on Linux; either way far below the tail size.
     growth = rss_after - rss_before
     assert growth < 16 * 1024 * 1024, growth
 
 
+# ── fail-closed: a line that cannot be read never lowers a count ───────────
+
+def test_over_limit_decisions_still_count(tmp_path):
+    """Three Allows whose lines exceed the line limit count as three, for any
+    principal: a quota cannot be under-counted by records too long to read."""
+    p = tmp_path / "audit.jsonl"
+    huge = _rec(',"pad":"' + "r" * (MAX_COUNTERS_LINE_BYTES + 10) + '"')
+    p.write_text("\n".join([huge] * 3) + "\n")
+    for principal in (ALICE, 'User::"someone-else"'):
+        for outcome in ("allowed", "denied", "all"):
+            r = count_audit_records(p, principal, "read", now=NOW, outcome=outcome)
+            assert (r["count"], r["unreadable"], r["skipped"], r["records"]) == (3, 3, 3, 0)
+    # Mixed with well-formed records, the two add up.
+    p.write_text(_rec() + "\n" + huge + "\n" + _rec() + "\n")
+    r = count_audit_records(p, ALICE, "read", now=NOW)
+    assert (r["count"], r["unreadable"], r["records"]) == (3, 1, 2)
+    # Without a trailing newline the last over-limit line counts too.
+    p.write_text(_rec() + "\n" + huge)
+    assert count_audit_records(p, ALICE, "read", now=NOW)["count"] == 2
+
+
+def test_unparseable_lines_count_toward_every_query(tmp_path):
+    p = tmp_path / "audit.jsonl"
+    p.write_text('{"ts":"2026-01-15T11:59:00.000Z","decision":"Allow"\n[1]\n7\nnull\n')
+    r = count_audit_records(p, 'User::"anyone"', "anything", now=NOW, outcome="denied")
+    assert (r["count"], r["unreadable"], r["skipped"]) == (4, 4, 4)
+
+
+def test_a_decision_with_an_unreadable_time_counts_when_it_matches(tmp_path):
+    p = tmp_path / "audit.jsonl"
+    bad_ts = _rec().replace("2026-01-15T11:59:00.000Z", "yesterday")
+    p.write_text(bad_ts + "\n")
+    r = count_audit_records(p, ALICE, "read", now=NOW, window="15m")
+    assert (r["count"], r["unreadable"], r["records"], r["skipped"]) == (1, 1, 0, 1)
+    # It does not match another principal, intent or outcome: not counted.
+    assert count_audit_records(p, 'User::"bob"', now=NOW)["count"] == 0
+    assert count_audit_records(p, ALICE, "write", now=NOW)["count"] == 0
+    r = count_audit_records(p, ALICE, now=NOW, outcome="denied")
+    assert (r["count"], r["unreadable"], r["skipped"]) == (0, 0, 1)
+
+
+def test_a_well_formed_non_decision_never_counts(tmp_path):
+    """A framework run's lifecycle line is a well-formed record that is not a
+    decision; an object with a non-string `decision` is not a well-formed
+    record (skipped). Neither ever counts."""
+    p = tmp_path / "audit.jsonl"
+    p.write_text(
+        json.dumps({"ts": "2026-01-15T11:59:00.000Z", "event_type": "execution_started",
+                    "principal": ALICE, "execution_id": "e1"}) + "\n"
+        + json.dumps({"ts": "2026-01-15T11:59:00.000Z", "principal": ALICE, "decision": True}) + "\n"
+    )
+    for outcome in ("allowed", "denied", "all"):
+        r = count_audit_records(p, ALICE, now=NOW, outcome=outcome)
+        assert (r["count"], r["unreadable"], r["records"], r["skipped"]) == (0, 0, 1, 1)
+
+
+def test_a_filter_longer_than_any_name_is_refused():
+    from watchlight import MAX_NAME_BYTES
+
+    with pytest.raises(TypeError, match="intent is longer than the maximum of 4096 bytes"):
+        at(intent="i" * (MAX_NAME_BYTES + 1))
+    with pytest.raises(TypeError, match="resource is longer"):
+        at(resource="r" * (MAX_NAME_BYTES + 1))
+    with pytest.raises(TypeError, match="principal is longer"):
+        count_audit_records(FIXTURE, "p" * (MAX_NAME_BYTES + 1), now=NOW)
+    assert at(intent="i" * MAX_NAME_BYTES)["count"] == expected_unreadable({"intent": "x"})
+
+
 # ── missing vs unreadable ───────────────────────────────────────────────────
 
 def test_missing_file_is_zero(tmp_path):
     r = count_audit_records(tmp_path / "nope" / "audit.jsonl", ALICE, "read", now=NOW)
-    assert (r["count"], r["records"], r["skipped"], r["truncated"], r["window"]["seconds"]) == (0, 0, 0, False, 3600)
+    assert (r["count"], r["records"], r["skipped"], r["unreadable"], r["truncated"], r["window"]["seconds"]) == (
+        0, 0, 0, 0, False, 3600)
 
 
 def test_directory_is_unreadable(tmp_path):

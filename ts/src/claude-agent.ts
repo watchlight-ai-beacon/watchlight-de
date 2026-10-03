@@ -41,6 +41,7 @@ import {
   type EgressInfo,
 } from "./index";
 import { DEFAULT_ON_RESULT_TIMEOUT_MS } from "./egress";
+import { assertName } from "./principals";
 import type {
   HooksOption,
   HookCallback,
@@ -290,8 +291,18 @@ export function governedHooks(options: GovernedHooksOptions = {}): GovernedHooks
         // and the egress record is written honestly without a decision_id. The
         // terms are resolved the way the gate resolves them, so the record
         // names the subject and resource that decision would have carried.
-        const { intent, principal, resource } = callTerms(toolName, ev.tool_input);
-        egress = { intent, principal, resource };
+        // No decision checked these names, so they are checked here, exactly
+        // as `authorize` would. A name that breaks a rule still leaves a trace:
+        // a value-free egress record with placeholder names, marked withheld.
+        // Then the error reaches the catch below, which withholds the output.
+        // The raw value is never recorded.
+        try {
+          const { intent, principal, resource } = callTerms(toolName, ev.tool_input);
+          egress = { intent: assertName(intent, "intent"), principal, resource: assertName(resource, "resource") };
+        } catch (e) {
+          governor._auditEgressRefused();
+          throw e;
+        }
       }
       const { value, replaced } = await governor._applyOnResult(ev.tool_response, onResult, egress, {
         timeoutMs,

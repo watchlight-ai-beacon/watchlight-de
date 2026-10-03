@@ -38,9 +38,158 @@ The vocabulary the SDK writes and the audit trail carries:
 from __future__ import annotations
 
 import re
-from typing import Any, Callable
+from typing import Any, Callable, List, Optional
 
-__all__ = ["escape_cedar_string", "entity", "for_policy", "user", "agent"]
+__all__ = [
+    "MAX_ACTOR_CHAIN_BYTES",
+    "MAX_AGENT_NAME_BYTES",
+    "MAX_NAME_BYTES",
+    "MAX_SCOPE_ENTRIES",
+    "MAX_SCOPE_LIST_BYTES",
+    "NAME_TOO_LONG_MESSAGE",
+    "assert_agent_name",
+    "assert_actor_chain",
+    "assert_name",
+    "assert_name_length",
+    "assert_name_list",
+    "escape_cedar_string",
+    "entity",
+    "for_policy",
+    "user",
+    "agent",
+]
+
+# ── bounds on what the SDK records ──────────────────────────────────────────
+#
+# Every audit record the SDK writes must stay below the line limit the counters
+# read (``MAX_COUNTERS_LINE_BYTES``, 1 MiB): a line over it counts toward every
+# quota (fail-closed), so a record that could exceed it would let a caller
+# exhaust every quota. These bounds are what guarantee it. The worst case each
+# record kind can reach is built and measured by ``tests/test_record_bounds.py``
+# (and ``ts/test/counters.test.mjs`` in TypeScript): under 400,000 bytes with
+# Python's escaping and under 270,000 with TypeScript's, at most about 38% of the
+# limit. All bounds are measured in UTF-8 bytes, so both language packages draw
+# every line in exactly the same place.
+
+#: The longest name the SDK decides on or records: a principal, an action
+#: (intent), a resource, and each entry of a scope's tool, resource and intent
+#: lists. Real names are a few dozen bytes; 4 KiB leaves room for a long URL or
+#: path as a resource. A longer name is refused before anything is decided or
+#: recorded.
+MAX_NAME_BYTES = 4096
+
+#: The longest agent name: short enough that the principal derived from it,
+#: ``Agent::"<name>"``, is itself within :data:`MAX_NAME_BYTES`.
+MAX_AGENT_NAME_BYTES = MAX_NAME_BYTES - len('Agent::""')
+
+#: The most entries a scope's ``tools``, ``resources`` or ``intents`` list may hold.
+MAX_SCOPE_ENTRIES = 256
+
+#: The most UTF-8 bytes the entries of one scope list may hold in total.
+MAX_SCOPE_LIST_BYTES = 64 * 1024
+
+#: The most UTF-8 bytes the agent names of one delegation chain may hold in
+#: total. The chain is written on every record a delegated governor produces.
+MAX_ACTOR_CHAIN_BYTES = 64 * 1024
+
+#: The fixed, value-free message a name over :data:`MAX_NAME_BYTES` is refused with.
+NAME_TOO_LONG_MESSAGE = f"is longer than the maximum of {MAX_NAME_BYTES} bytes"
+
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+# Every measurement below calls the `str` methods themselves, never the value's
+# own: a `str` subclass can override `__len__` or `encode`, but what is
+# serialised into a record is always its underlying characters.
+
+
+def _utf8_length(value: str) -> int:
+    # `surrogatepass` so a lone surrogate counts 3 bytes, as the TypeScript lane
+    # counts it, instead of raising here.
+    return len(str.encode(value, "utf-8", "surrogatepass"))
+
+
+def _too_long(value: str, limit: int) -> bool:
+    # Cheap first test: a string of at most limit / 4 characters cannot exceed
+    # the bound, whatever it holds.
+    return str.__len__(value) * 4 > limit and _utf8_length(value) > limit
+
+
+def assert_name_length(
+    value: Any,
+    field: str,
+    make_error: Callable[[str], BaseException] = TypeError,
+    limit: int = MAX_NAME_BYTES,
+) -> Any:
+    """Refuse a string ``value`` longer than ``limit`` (default
+    :data:`MAX_NAME_BYTES`) UTF-8 bytes and return it unchanged otherwise. A
+    non-string passes through: the type is each caller's own rule. The message
+    names the field and the bound, never the value."""
+    if isinstance(value, str) and _too_long(value, limit):
+        raise make_error(f"{field} is longer than the maximum of {limit} bytes")
+    return value
+
+
+def assert_name(
+    value: Any, field: str, make_error: Callable[[str], BaseException] = TypeError
+) -> str:
+    """A name the SDK decides on and records — an action, a resource, a scope
+    entry: a string, with no control characters, of at most
+    :data:`MAX_NAME_BYTES`. Refused value-free otherwise; returned unchanged."""
+    if not isinstance(value, str):
+        raise make_error(f"{field} must be a string")
+    if _CONTROL_RE.search(value):
+        raise make_error(f"{field} must not contain control characters")
+    assert_name_length(value, field, make_error)
+    # A plain `str` from here on: a subclass's own methods never run again.
+    return str.__str__(value)
+
+
+def assert_agent_name(value: Any, where: str) -> str:
+    """An agent name: a non-empty string with no control characters, of at most
+    :data:`MAX_AGENT_NAME_BYTES`. Raises ``TypeError`` prefixed with ``where``."""
+    if not isinstance(value, str) or not str.strip(value):
+        raise TypeError(f"{where}: agent must be a non-empty string")
+    if _CONTROL_RE.search(value):
+        raise TypeError(f"{where}: agent must not contain control characters")
+    assert_name_length(value, f"{where}: agent", TypeError, MAX_AGENT_NAME_BYTES)
+    return str.__str__(value)
+
+
+def assert_actor_chain(chain: Any, where: str) -> None:
+    """Refuse a delegation chain whose agent names hold more than
+    :data:`MAX_ACTOR_CHAIN_BYTES` in total."""
+    if sum(_utf8_length(name) for name in chain) > MAX_ACTOR_CHAIN_BYTES:
+        raise TypeError(
+            f"{where}: the delegation chain is longer than the maximum of "
+            f"{MAX_ACTOR_CHAIN_BYTES} bytes"
+        )
+
+
+def assert_name_list(values: Any, field: str) -> Optional[List[str]]:
+    """A scope's ``tools`` / ``resources`` / ``intents``: ``None`` (inherit), or
+    at most :data:`MAX_SCOPE_ENTRIES` names (each checked by :func:`assert_name`)
+    of at most :data:`MAX_SCOPE_LIST_BYTES` in total.
+
+    Returns the list it checked — read from ``values`` exactly once — and the
+    caller must use THAT list: iterating ``values`` again could yield something
+    else (an iterable that changes between passes), or nothing (a generator
+    already used up)."""
+    if values is None:
+        return None
+    if isinstance(values, (str, bytes)) or not hasattr(values, "__iter__"):
+        raise TypeError(f"{field} must be a list of strings")
+    items = list(values)
+    if len(items) > MAX_SCOPE_ENTRIES:
+        raise TypeError(f"{field} holds more than the maximum of {MAX_SCOPE_ENTRIES} entries")
+    total = 0
+    for index, item in enumerate(items):
+        items[index] = assert_name(item, f"{field} entry")
+        total += _utf8_length(items[index])
+    if total > MAX_SCOPE_LIST_BYTES:
+        raise TypeError(f"{field} is longer than the maximum of {MAX_SCOPE_LIST_BYTES} bytes in total")
+    return items
+
 
 _TYPE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*$")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
@@ -103,14 +252,16 @@ def assert_principal(value: Any, make_error: Callable[[str], BaseException] = Ty
 
     The principal is recorded verbatim and is the subject of every audit row, so
     a value that cannot be a subject is refused at the boundary rather than
-    written. Two rules, the ones :func:`user` has always applied:
+    written. Three rules:
 
     * it must be a non-empty string — blank (or whitespace-only) is a mistake,
       never a request for the default. ``user.id or ""`` reaching a governed call
       used to be recorded as the AGENT, attributing a person's action to the
       runtime;
     * it must carry no control characters, which no reference can represent
-      unambiguously.
+      unambiguously;
+    * it must be at most :data:`MAX_NAME_BYTES` bytes of UTF-8, so the record
+      that carries it stays short enough to be read back and counted.
 
     It is deliberately NOT parsed: a bare identifier is a valid, opaque principal
     (see ``docs/identity-model.md``), and only a typed ``Type::"id"`` reference
@@ -119,11 +270,13 @@ def assert_principal(value: Any, make_error: Callable[[str], BaseException] = Ty
     ``make_error`` lets a primitive raise its own typed error; the default is the
     :class:`TypeError` the identity builders raise.
     """
-    if not isinstance(value, str) or not value.strip():
+    if not isinstance(value, str) or not str.strip(value):
         raise make_error(PRINCIPAL_EMPTY_MESSAGE)
     if _CONTROL.search(value):
         raise make_error(PRINCIPAL_CONTROL_MESSAGE)
-    return value
+    assert_name_length(value, "principal", make_error)
+    # A plain `str`: what is checked is what is recorded.
+    return str.__str__(value)
 
 
 def user(subject: str) -> str:
