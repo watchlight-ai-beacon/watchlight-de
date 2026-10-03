@@ -63,10 +63,9 @@ refusal it makes on its own is not recorded. Use the handle that
 The principal, action, resource, `execution_id` and agent names are recorded
 exactly as the call gave them, never shortened or rewritten, so `counters()`
 can match them exactly. The JSON encoding keeps every record on one line,
-whatever characters they contain. Agent names are not checked, because a
-refusal raised inside a framework's own hook can leave that framework running
-the call without governance. A plugin agent named `<unconfigured>` is
-therefore recorded under that name.
+whatever characters they contain. Agent names, including a sub-agent name
+chosen by the framework, are recorded as given; a plugin agent named
+`<unconfigured>` is recorded under that name.
 
 The run handle a governed plugin returns is a wrapper around the SDK's handle.
 It behaves the same, but `isinstance(handle, BaseRunHandle)` is `False` for it.

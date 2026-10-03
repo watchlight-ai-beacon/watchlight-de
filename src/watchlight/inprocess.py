@@ -117,8 +117,7 @@ def in_process_backend(
 #: value can break or forge a line, and a field stored in full is one
 #: ``counters()`` can match exactly. Agent names — the root's, passed to
 #: ``start_run``, and a sub-agent's, often chosen by the framework or the model
-#: — are recorded as given and never refused here: a refusal raised inside a
-#: framework's own hook can leave that framework running the call ungoverned.
+#: — are recorded as given.
 
 @functools.lru_cache(maxsize=None)
 def _short_circuit_errors() -> Tuple[type, ...]:

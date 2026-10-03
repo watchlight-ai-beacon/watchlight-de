@@ -470,10 +470,8 @@ def test_terms_are_stored_in_full_so_counting_matches_them(name, tmp_path):
 
 @pytest.mark.parametrize("name", NAMES)
 def test_unusual_agent_names_are_recorded_as_given_and_never_refused(name, tmp_path):
-    # A refusal raised inside a framework's own hook can leave the framework
-    # running the call ungoverned (Pydantic AI's auto-instrumentation does), so
-    # agent names are never refused here. They are recorded exactly, and the
-    # record stays one valid JSON line.
+    # Agent names — the root's and a sub-agent's — are recorded exactly as
+    # given, and the record stays one valid JSON line.
     module = _plugin_module(name)
     audit = tmp_path / "audit.jsonl"
     plugin = module.governed_plugin(POLICIES, audit_path=str(audit))
@@ -714,6 +712,26 @@ HANDLE_METHODS = {
     "terminate": "lifecycle",
     "publish_observation": "telemetry, not a decision",
     "publish_observation_for_execution": "telemetry, not a decision",
+    # Synchronous methods: none of them makes or refuses a decision.
+    "activate_lineage": "lineage context, not a decision",
+    "lineage_snapshot": "lineage context, not a decision",
+    "get_attenuations": "reads recorded effects",
+    "get_escalations": "reads recorded effects",
+    "get_observations": "reads recorded effects",
+    "has_attenuations": "reads recorded effects",
+    "has_escalations": "reads recorded effects",
+    "has_observations": "reads recorded effects",
+    "was_scope_attenuated": "reads recorded effects",
+    "mark_execution_started_emitted": "lifecycle bookkeeping",
+    "mark_execution_completed_emitted": "lifecycle bookkeeping",
+    "mark_execution_failed_emitted": "lifecycle bookkeeping",
+    "parse_proxy_token_fields": "parses a session response",
+    "parse_root_run_handle_id": "parses a session response",
+    "record_declared_intent": "stores the declared intent; the next authorize reads it",
+    "synthetic_tools": "tool descriptors, not a decision",
+    "synthetic_langchain_tools": "tool descriptors, not a decision (LangGraph)",
+    "bind_tools": "binds tool descriptors to a model, not a decision (LangGraph)",
+    "callback_handler": "builds a lineage callback handler, not a decision (LangGraph)",
 }
 
 
@@ -736,7 +754,9 @@ def test_every_public_handle_method_is_classified():
         for attr, member in _inspect.getmembers(cls):
             if attr.startswith("_") or isinstance(_inspect.getattr_static(cls, attr), property):
                 continue
-            if _inspect.iscoroutinefunction(member) or attr == "guarded_tool":
+            # Coroutine AND synchronous methods: a synchronous decorator in the
+            # style of `guarded_tool` can gate a call just as well.
+            if callable(member):
                 found.add(attr)
     assert found == set(HANDLE_METHODS), (
         "the SDK's run handle changed: classify "
@@ -755,6 +775,19 @@ def test_the_handle_short_circuits_only_on_quarantine_and_sever():
 
     import ast
     import textwrap
+
+    # Every plugin's handle uses the base class's authorize methods unchanged,
+    # so the checks below on the base class cover all of them.
+    for cls in _handle_classes()[1:]:
+        assert cls.authorize_action is BaseRunHandle.authorize_action, cls
+        assert cls.authorize_action_detailed is BaseRunHandle.authorize_action_detailed, cls
+
+    # `authorize_action` only awaits `authorize_action_detailed`, so it has no
+    # refusal path of its own.
+    outer = ast.parse(textwrap.dedent(_inspect.getsource(BaseRunHandle.authorize_action)))
+    awaited = [ast.unparse(n.value.func) for n in ast.walk(outer) if isinstance(n, ast.Await)]
+    assert awaited == ["self.authorize_action_detailed"], awaited
+    assert not [n for n in ast.walk(outer) if isinstance(n, ast.Raise)]
 
     tree = ast.parse(textwrap.dedent(_inspect.getsource(BaseRunHandle.authorize_action_detailed)))
     calls = [
