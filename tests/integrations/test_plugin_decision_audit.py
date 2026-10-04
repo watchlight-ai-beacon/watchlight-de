@@ -570,8 +570,8 @@ SDK_METHODS = {
     "spawn_subagent": "observed for the child's name; the SDK writes the attenuation line",
     "submit_plan": "not a decision: raises NotImplementedError in-process",
     "resolve_agent": "observed for the agent's name",
-    "create_session": "observed for the session's agent",
-    "complete_session": "bookkeeping",
+    "create_session": "observed for the session's agent; refuses application_id and subject_token in-process (SDK 0.9.0)",
+    "complete_session": "bookkeeping (takes the SDK's session_token since 0.9.0)",
     "terminate_session": "bookkeeping",
     "get_manifest": "not a decision",
     "check_agent_trust": "not a decision",
@@ -596,6 +596,73 @@ def test_every_public_sdk_client_method_is_classified():
         "the SDK's InProcessClient changed: classify "
         f"{sorted(public - set(SDK_METHODS))} / drop {sorted(set(SDK_METHODS) - public)}"
     )
+
+
+def _audited_client(tmp_path):
+    from watchlight._audit import AuditTrail
+    from watchlight.inprocess import _audited_client_class
+
+    trail = AuditTrail(str(tmp_path / "audit.jsonl"))
+    return _audited_client_class()(POLICIES, audit_path=str(tmp_path / "sdk.jsonl"), trail=trail)
+
+
+def test_every_override_accepts_what_the_sdk_method_accepts():
+    """An override must take every argument the SDK's own method takes.
+
+    The SDK's handles call the backend with keyword arguments that a release can
+    add (0.9.0 passes ``session_token`` to ``complete_session``). An override
+    with the older signature raises ``TypeError`` there, and the run cannot
+    complete — so a new SDK parameter fails here, by name, instead."""
+    import inspect as _inspect
+
+    from watchlight.inprocess import _audited_client_class
+    from watchlight_core import InProcessClient
+
+    audited = _audited_client_class()
+    checked = []
+    for name, member in vars(audited).items():
+        if name.startswith("_") or not _inspect.iscoroutinefunction(member):
+            continue
+        base = getattr(InProcessClient, name, None)
+        assert base is not None, f"{name} overrides nothing on the SDK client"
+        ours = _inspect.signature(member).parameters
+        has_var_kw = any(p.kind is p.VAR_KEYWORD for p in ours.values())
+        missing = [
+            p
+            for p in _inspect.signature(base).parameters
+            if p not in ours and not has_var_kw
+        ]
+        assert not missing, f"AuditedInProcessClient.{name} does not accept {missing}"
+        checked.append(name)
+    assert {"authorize", "complete_session", "create_session", "spawn_subagent"} <= set(checked)
+
+
+def test_complete_session_forwards_the_session_token(tmp_path, monkeypatch):
+    from watchlight_core import InProcessClient
+
+    seen = {}
+
+    async def spy(self, session_id, session_token=None):
+        seen["args"] = (session_id, session_token)
+        return True
+
+    monkeypatch.setattr(InProcessClient, "complete_session", spy)
+    client = _audited_client(tmp_path)
+    assert asyncio.run(client.complete_session("ses_1", session_token="tok")) is True
+    assert seen["args"] == ("ses_1", "tok")
+
+
+@pytest.mark.parametrize("kwarg", ["application_id", "subject_token"])
+def test_enterprise_only_session_arguments_are_still_refused(tmp_path, kwarg):
+    """The SDK's in-process client refuses a run it cannot verify (an AI
+    application, an end-user subject); the recording override forwards every
+    argument, so it refuses exactly the same way and records no session."""
+    from watchlight_core.errors import WatchlightContractError
+
+    client = _audited_client(tmp_path)
+    with pytest.raises(WatchlightContractError):
+        asyncio.run(client.create_session("agent-1", **{kwarg: "x"}))
+    assert client._wl_sessions == {}
 
 
 # ── lifecycle lines are not decisions ──────────────────────────────────────
