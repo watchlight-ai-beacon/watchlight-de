@@ -8,7 +8,18 @@ different verdict. Only some announce themselves; the rest surface as a denial
 that looks exactly like a policy of yours doing its job. Read every entry
 between the version you are on and the one you are moving to.
 
-## Unreleased
+## 0.13.2
+
+**The framework extras now require `watchlight-agent-sdk` 0.9 and
+`watchlight-pydantic-ai` 0.3.1.** The `langgraph`, `pydantic-ai`,
+`claude-agent`, `sdk` and `all` extras require `watchlight-agent-sdk>=0.9,<0.10`;
+the `pydantic-ai` and `all` extras require `watchlight-pydantic-ai>=0.3.1`. With
+`watchlight-pydantic-ai` 0.3.0, an agent still ran when its governed run could
+not be opened; 0.3.1 refuses that run, so an agent that used to run ungoverned
+now raises `GovernanceUnavailable` instead. This only moves in the closed direction. To fix it, make
+the run's governance openable (the backend reachable, the agent resolvable)
+rather than catching the error. If you pinned `watchlight-agent-sdk` below 0.9
+yourself, raise the pin; pip reports the conflict at install time.
 
 **A framework plugin now records every decision, so counts of decisions in the
 audit file go up.** This affects you if you use `watchlight.langgraph`,

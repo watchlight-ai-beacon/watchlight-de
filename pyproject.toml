@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "watchlight"
-version = "0.13.1"
+version = "0.13.2"
 description = "Watchlight Developer Edition — govern AI agents in-process, with zero infrastructure."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -41,9 +41,9 @@ dependencies = [
 # every decision by overriding the SDK client's public methods, and a release
 # that adds a decision method must be classified before it is installed (see
 # tests/integrations/test_plugin_decision_audit.py).
-langgraph = ["watchlight-langgraph>=0.4", "watchlight-agent-sdk>=0.7,<0.9"]
-pydantic-ai = ["watchlight-pydantic-ai>=0.3", "watchlight-agent-sdk>=0.7,<0.9"]
-claude-agent = ["watchlight-claude-agent>=0.2", "watchlight-agent-sdk>=0.7,<0.9"]
+langgraph = ["watchlight-langgraph>=0.4", "watchlight-agent-sdk>=0.9,<0.10"]
+pydantic-ai = ["watchlight-pydantic-ai>=0.3.1", "watchlight-agent-sdk>=0.9,<0.10"]
+claude-agent = ["watchlight-claude-agent>=0.2", "watchlight-agent-sdk>=0.9,<0.10"]
 # Govern an MCP server: the Watchlight MCP Runtime PEP — a policy enforcement
 # point in front of any MCP (2026-07-28) server. See examples/governed_mcp_server.py.
 mcp = ["watchlight-mcp>=0.4.4"]
@@ -54,14 +54,14 @@ deepagents = ["deepagents>=0.7"]
 # The lower-level lifecycle SDK — InProcessClient, sessions, preflight, local
 # lineage. NOTE: it installs as the module `watchlight_core` (there is no
 # `watchlight-core` distribution). See docs/developer-edition/governed-agents.
-sdk = ["watchlight-agent-sdk>=0.6,<0.9"]
+sdk = ["watchlight-agent-sdk>=0.9,<0.10"]
 # Everything the DE docs use, in one install: `pip install "watchlight[all]"`.
 # Pulls the SDK, every framework plugin, and the MCP PEP so every example on
 # docs.watchlight.ai/de runs without hunting for the right package.
 all = [
-    "watchlight-agent-sdk>=0.6,<0.9",
+    "watchlight-agent-sdk>=0.9,<0.10",
     "watchlight-langgraph>=0.4",
-    "watchlight-pydantic-ai>=0.3",
+    "watchlight-pydantic-ai>=0.3.1",
     "watchlight-claude-agent>=0.2",
     "watchlight-mcp>=0.4.4",
     "deepagents>=0.7",

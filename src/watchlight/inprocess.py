@@ -235,9 +235,9 @@ def _audited_client_class() -> Any:
                 self._wl_report_record_failure(exc)
             return response
 
-        async def complete_session(self, session_id: str) -> bool:
+        async def complete_session(self, session_id: str, session_token: Optional[str] = None) -> bool:
             self._wl_forget(session_id)
-            return await super().complete_session(session_id)
+            return await super().complete_session(session_id, session_token=session_token)
 
         async def terminate_session(self, session_id: str, reason: str = "manual") -> bool:
             self._wl_forget(session_id)

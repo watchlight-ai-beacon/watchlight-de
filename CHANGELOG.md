@@ -11,13 +11,20 @@ upgrade is worth your afternoon.
 
 Each entry links to its release, which carries the reasoning and the measurements.
 
-## Unreleased
+## 0.13.2 — 2026-10-03
 
-A framework plugin built with `governed_plugin()` now writes a decision record
-for every decision it makes. Until now it wrote only a line when a run started
-and a line when it ended. Anything that counts decisions in the audit file, such
-as `counters()`, now counts the plugin's decisions too, so read
-[breaking changes](docs/breaking-changes.md) before upgrading.
+The framework extras now require `watchlight-agent-sdk` 0.9 and
+`watchlight-pydantic-ai` 0.3.1. With these versions, a run whose governance
+cannot be opened no longer runs: `watchlight-pydantic-ai` 0.3.0 still ran the
+agent when it could not open the governed run, and 0.3.1 refuses it. A
+framework plugin built with `governed_plugin()` now also writes a decision
+record for every decision it makes; until now it wrote only a line when a run
+started and a line when it ended. The audit trail bounds every record it
+writes, the counters count a line they cannot read toward the quota instead of
+ignoring it, and `watchlight audit check` lists such lines. Anything that
+counts decisions in the audit file, such as `counters()`, now counts the
+plugin's decisions too, so read [breaking changes](docs/breaking-changes.md)
+before upgrading.
 
 **Added**
 - The framework-plugin path (`watchlight.langgraph`, `watchlight.pydantic_ai`
@@ -75,8 +82,18 @@ as `counters()`, now counts the plugin's decisions too, so read
   `.watchlight/audit.jsonl` like the other examples, instead of turning the
   audit file off.
 - The `langgraph`, `pydantic-ai`, `claude-agent`, `sdk` and `all` extras now
-  require `watchlight-agent-sdk` below 0.9. The recording depends on that
-  package's client, and a new release is checked before it is allowed.
+  require `watchlight-agent-sdk` 0.9 (`>=0.9,<0.10`), and the `pydantic-ai`
+  and `all` extras require `watchlight-pydantic-ai` 0.3.1 or later. The
+  recording depends on the SDK's client, so the range stops below the next
+  minor release, which is checked before it is allowed.
+- Hardening: `watchlight-pydantic-ai` 0.3.0 ran the agent when its governed
+  run could not be opened. Version 0.3.1 refuses the run instead, and
+  `pip install "watchlight[pydantic-ai]"` can no longer resolve 0.3.0.
+- The recording backend passes the SDK 0.9 `session_token` argument through
+  on `complete_session`, and forwards `application_id` and `subject_token` on
+  `create_session` unchanged, so the in-process engine still refuses them
+  (both need Watchlight Enterprise). A test now checks that every method the
+  backend overrides accepts every argument the SDK's own method takes.
 - The audit trail now bounds every record it writes, as a backstop behind the
   checks at each entry point. A record that would serialise to more than
   512 KiB, that nests deeper than the counters read, or that holds a value JSON
@@ -163,6 +180,8 @@ as `counters()`, now counts the plugin's decisions too, so read
   names in its `info`. Each is now closed, and a test drives every public write
   path with oversized and odd input and checks that no line the counters
   cannot read is ever written.
+
+Engine unchanged at `0.2`. [Release](https://github.com/watchlight-ai-beacon/watchlight-de/releases/tag/v0.13.2)
 
 ## 0.13.1 — 2026-10-02
 
