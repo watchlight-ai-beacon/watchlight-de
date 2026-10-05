@@ -1,0 +1,52 @@
+# Developer Certificate of Origin: every commit in a pull request must carry a
+# `Signed-off-by:` line for its author (`git commit -s`). See CONTRIBUTING.md.
+#
+# Runs on `pull_request`, never `pull_request_target`, so code from a fork runs
+# with a read-only token and no secrets. The check reads commit metadata only.
+
+name: DCO
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  dco:
+    name: DCO sign-off
+    runs-on: ${{ vars.DE_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Check every commit is signed off by its author
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for sha in $(git rev-list --no-merges "$BASE_SHA..$HEAD_SHA"); do
+            author_email="$(git log -1 --format='%ae' "$sha")"
+            # Dependabot cannot sign off; its commits only bump dependency pins.
+            if [ "$author_email" = "49699333+dependabot[bot]@users.noreply.github.com" ]; then
+              continue
+            fi
+            if git log -1 --format='%(trailers:key=Signed-off-by,valueonly)' "$sha" \
+                | grep -qiF "<${author_email}>"; then
+              continue
+            fi
+            echo "::error::commit $(git log -1 --format='%h %s' "$sha") has no Signed-off-by line for its author <${author_email}>"
+            missing=1
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "Sign off each commit with 'git commit -s' (see CONTRIBUTING.md)."
+            echo "To fix existing commits: git rebase --signoff origin/main && git push --force-with-lease"
+            exit 1
+          fi
+          echo "Every commit is signed off."

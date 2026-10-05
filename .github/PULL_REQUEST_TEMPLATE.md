@@ -14,6 +14,7 @@
 - [ ] No secrets, credentials, or private/internal notes added (this repo is public).
 - [ ] Docs/examples updated if behavior or the public API changed.
 - [ ] `pip install -e .` still works and the affected examples run.
+- [ ] Every commit is signed off (`git commit -s`); see CONTRIBUTING.md.
 
 <!--
 Security issue? Please do NOT open a public PR — open a private security
