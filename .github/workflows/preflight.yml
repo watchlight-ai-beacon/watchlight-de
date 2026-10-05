@@ -37,7 +37,10 @@ concurrency:
 jobs:
   preflight:
     name: preflight (python ${{ matrix.python }})
-    runs-on: ubuntu-latest
+    # GitHub-hosted runners in this public repository. The private security
+    # mirror sets the DE_RUNNER variable to run the same checks on its own
+    # runners; this repository never sets it.
+    runs-on: ${{ vars.DE_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 20
     strategy:
       fail-fast: false

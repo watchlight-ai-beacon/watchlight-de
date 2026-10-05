@@ -30,6 +30,27 @@ python examples/governed_research_agent.py
 watchlight dev
 ```
 
+## Sign off your commits
+
+Every commit must be signed off under the
+[Developer Certificate of Origin](https://developercertificate.org/). The
+sign-off certifies that you wrote the change, or otherwise have the right to
+submit it under this repository's license. Add it with `-s`:
+
+```bash
+git commit -s -m "fix: ..."
+```
+
+That appends a line such as `Signed-off-by: Your Name <you@example.com>`, which
+must match the commit's author. A required check, **DCO sign-off**, rejects a
+pull request with an unsigned commit. To sign off commits you have already
+made, run:
+
+```bash
+git rebase --signoff origin/main
+git push --force-with-lease
+```
+
 ## Before you open a pull request
 
 Run the preflight. It is one command, it runs everything, and it is exactly what
@@ -168,8 +189,10 @@ and the rule; move the code rather than the rule.
 
 ## Reporting a security issue
 
-Please do **not** open a public issue for security reports — see
-[SECURITY.md](SECURITY.md).
+Please do **not** open a public issue or pull request for a security report,
+and do not push a fix for one to a public branch: a public fix discloses the
+issue before users can upgrade. Report it privately as described in
+[SECURITY.md](SECURITY.md), and we will fix it with you.
 
 ## Enterprise / production
 

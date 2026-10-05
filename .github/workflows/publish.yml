@@ -8,25 +8,22 @@
 # Manual trigger, dry-run by default. Trusted publishing (OIDC) — no stored token.
 #
 # ─── OPERATOR PREREQUISITES (one-time) ───
-#   1. Reserve `watchlight` on TestPyPI + PyPI under the `watchlight-ai` PyPI org.
+#   1. Reserve `watchlight` on PyPI under the `watchlight-ai` PyPI org.
 #   2. Configure a PyPI Trusted Publisher (OIDC) with the GitHub identifiers:
 #        PyPI project name: watchlight
 #        Owner (GitHub):    watchlight-ai-beacon
 #        Repository:        watchlight-de
 #        Workflow name:     publish.yml
-#        Environment:       pypi        (repeat on TestPyPI with environment: testpypi)
-#   3. Create the `pypi` and `testpypi` GitHub Environments (optional reviewer).
+#        Environment:       pypi
+#   3. The `pypi` GitHub Environment accepts deployments only from `main` and
+#      `v*` tags. We publish to PyPI only: run a dry run first, then the real
+#      publish.
 
 name: Publish watchlight (PyPI)
 
 on:
   workflow_dispatch:
     inputs:
-      repository:
-        description: "Target index"
-        type: choice
-        options: [testpypi, pypi]
-        default: testpypi
       dry_run:
         description: "Build + check dists but SKIP the upload"
         type: boolean
@@ -40,8 +37,10 @@ jobs:
     name: Build sdist + wheel
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
       - name: Build
@@ -50,31 +49,27 @@ jobs:
           python -m build --outdir dist
       - name: Check metadata
         run: python -m twine check dist/*
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: dist
           path: dist/*
           if-no-files-found: error
 
   publish:
-    name: "Publish to ${{ inputs.repository }}"
+    name: "Publish to PyPI"
     needs: [build]
     if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
-    environment: ${{ inputs.repository }}
+    environment: pypi
     permissions:
       id-token: write # OIDC — trusted publishing mints a short-lived token
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: dist
           path: dist
       - name: Publish (trusted publishing / OIDC)
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
           packages-dir: dist
-          repository-url: >-
-            ${{ inputs.repository == 'pypi'
-                && 'https://upload.pypi.org/legacy/'
-                || 'https://test.pypi.org/legacy/' }}
           print-hash: true
