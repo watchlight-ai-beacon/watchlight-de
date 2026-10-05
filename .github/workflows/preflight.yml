@@ -56,8 +56,20 @@ jobs:
           persist-credentials: false
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        if: ${{ vars.DE_RUNNER == '' }}
         with:
           python-version: ${{ matrix.python }}
+
+      # On a self-hosted runner, setup-python's prebuilt macOS interpreters
+      # need paths and installers only GitHub-hosted machines provide, so the
+      # same interpreter version comes from uv's standalone builds instead.
+      - name: Set up Python with uv (self-hosted runner)
+        if: ${{ vars.DE_RUNNER != '' }}
+        env:
+          PYTHON_VERSION: ${{ matrix.python }}
+        run: |
+          "$HOME/.local/bin/uv" venv --seed --python "$PYTHON_VERSION" .venv
+          .venv/bin/python --version
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -69,7 +81,7 @@ jobs:
       # by the script.
       - name: Install the package under test
         run: |
-          python -m venv .venv
+          [ -x .venv/bin/python ] || python -m venv .venv
           .venv/bin/python -m pip install --upgrade pip
           .venv/bin/python -m pip install -e . pytest
 
