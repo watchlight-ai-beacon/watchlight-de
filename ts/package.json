@@ -34,7 +34,7 @@
     "@watchlight/engine": "^0.2.0"
   },
   "devDependencies": {
-    "typescript": "^5.5.0",
+    "typescript": "^7.0.2",
     "@types/node": "^20.0.0"
   },
   "license": "Apache-2.0",
