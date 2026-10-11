@@ -28,9 +28,10 @@
 #
 # From a fresh clone:
 #
-#   * The Node side is set up for you — `npm install` and `npm run build` in ts/.
+#   * The Node side is set up for you — `npm ci` and `npm run build` in ts/.
 #     Both write only inside the clone, to git-ignored build output, so there is
-#     nothing to surprise you.
+#     nothing to surprise you. `npm ci` installs exactly what ts/package-lock.json
+#     pins, so the compiler that builds here is the one CI builds with.
 #
 #   * The Python side is never installed for you. Which interpreter this repo
 #     should be installed into is your choice — a venv, uv, conda, the system
@@ -82,11 +83,11 @@ echo "  node     $(node -v)"
 # Node dependencies and build: set up in place, because both are git-ignored
 # build output inside this clone.
 if [ ! -d "$repo/ts/node_modules" ]; then
-  echo "  ts/node_modules missing — running 'npm install' in ts/"
-  (cd "$repo/ts" && npm install) >/dev/null 2>&1 \
-    || die "'npm install' failed in ts/. Run it by hand to see why:
+  echo "  ts/node_modules missing — running 'npm ci' in ts/"
+  (cd "$repo/ts" && npm ci) >/dev/null 2>&1 \
+    || die "'npm ci' failed in ts/. Run it by hand to see why:
 
-    cd ts && npm install"
+    cd ts && npm ci"
 fi
 echo "  building the TypeScript SDK"
 (cd "$repo/ts" && npm run build) >/dev/null 2>&1 \

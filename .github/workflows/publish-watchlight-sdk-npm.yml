@@ -61,8 +61,8 @@ jobs:
       - name: Pin npm (Trusted Publishing needs >= 11.5.1)
         run: npm install -g npm@11.21.0 && npm --version
 
-      - name: Install deps (pulls the published @watchlight/engine)
-        run: npm install
+      - name: Install deps from the lockfile (pulls the published @watchlight/engine)
+        run: npm ci
 
       - name: Build (tsc)
         run: npm run build
