@@ -16,7 +16,7 @@
 #      tokens) — patterns are generic problem shapes, never customer stories.
 #
 # Requires the DE installed:  npm i -g @watchlight/sdk   (or: pip install watchlight
-# for the suites, plus Node >= 18 with the SDK for the scripts). Without a
+# for the suites, plus Node >= 22 with the SDK for the scripts). Without a
 # `watchlight` on PATH the suites run via `npx -p @watchlight/sdk watchlight`. Scripts resolve
 # the SDK from the global npm root or from an in-repo build (`cd ts && npm run build`).
 # Run from the repo root or anywhere:  examples/patterns/check.sh
@@ -62,7 +62,7 @@ done
 echo
 echo "== running pattern scripts =="
 if ! command -v node >/dev/null 2>&1; then
-  echo "error: pattern scripts need Node >= 18 — install it (and 'npm i -g @watchlight/sdk')" >&2
+  echo "error: pattern scripts need Node >= 22 — install it (and 'npm i -g @watchlight/sdk')" >&2
   fail=1
 else
   # Let a globally installed @watchlight/sdk resolve from the scripts.

@@ -77,7 +77,7 @@ PYVER
     $PY -m pip install pytest"
 
 wl_require_node || exit 3
-command -v npm >/dev/null 2>&1 || die "no 'npm' on PATH. Install Node >= 18 (npm ships with it)."
+command -v npm >/dev/null 2>&1 || die "no 'npm' on PATH. Install Node >= 22 (npm ships with it)."
 echo "  node     $(node -v)"
 
 # Node dependencies and build: set up in place, because both are git-ignored

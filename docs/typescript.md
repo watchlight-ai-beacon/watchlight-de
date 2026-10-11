@@ -5,7 +5,7 @@ You get the same governance in your Node app, with no Python sidecar.
 compiled engine in-process, as WebAssembly.
 
 ```bash
-npm install @watchlight/sdk     # Node >= 18, no native toolchain
+npm install @watchlight/sdk     # Node >= 22, no native toolchain
 ```
 
 The five-minute `DENY` is in the [repository README](../README.md#quickstart),
