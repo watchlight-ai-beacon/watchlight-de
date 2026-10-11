@@ -2,6 +2,7 @@
 PASSPORT / DOB structured detectors, the application-supplied KNOWN dictionary,
 the opt-in PERSON / ADDRESS heuristics, value-free reports, and regex safety."""
 import json
+import pathlib
 import re
 import time
 
@@ -405,3 +406,81 @@ def test_phone_does_not_swallow_other_shapes(text, expected):
     assert "PHONE" not in counts, f"{text} became a phone number: {counts}"
     if expected:
         assert expected in counts, f"{text} lost its own detector: {counts}"
+
+
+# ── KNOWN: case variants collapse to one value; the dictionary is bounded ──
+# tests/fixtures/sanitize_known_parity.json is shared with ts/test/sanitize.test.mjs,
+# so both lanes give the same text and accept or refuse the same dictionaries.
+KNOWN_PARITY = json.loads(
+    (pathlib.Path(__file__).parent / "fixtures" / "sanitize_known_parity.json").read_text(encoding="utf-8")
+)
+
+
+def _fixture_known(entries):
+    return [e["value"] * e["repeat"] for e in entries for _ in range(e["count"])]
+
+
+def test_known_limits_are_exported_and_match_the_shared_fixture():
+    assert {
+        "KNOWN_MAX_VALUES": watchlight.KNOWN_MAX_VALUES,
+        "KNOWN_VALUE_MAX_LENGTH": watchlight.KNOWN_VALUE_MAX_LENGTH,
+        "KNOWN_MAX_TOTAL_LENGTH": watchlight.KNOWN_MAX_TOTAL_LENGTH,
+    } == KNOWN_PARITY["limits"] == {
+        "KNOWN_MAX_VALUES": 50_000,
+        "KNOWN_VALUE_MAX_LENGTH": 512,
+        "KNOWN_MAX_TOTAL_LENGTH": 500_000,
+    }
+
+
+@pytest.mark.parametrize("case", KNOWN_PARITY["cases"], ids=lambda c: c["name"])
+def test_known_parity_cases(case):
+    assert sanitize(case["text"], known=case["known"], mode=case["mode"])["text"] == case["expect"]
+
+
+@pytest.mark.parametrize("case", KNOWN_PARITY["limit_cases"], ids=lambda c: c["name"])
+def test_known_parity_limits(case):
+    known = _fixture_known(case["entries"])
+    if case["error"] is None:
+        assert sanitize("x", known=known)["text"] == "x"
+    else:
+        with pytest.raises(SanitizeError) as exc:
+            sanitize("x", known=known)
+        assert case["error"] in str(exc.value)
+
+
+def test_known_case_variants_match_the_single_word():
+    word = "lovelacelovela"
+    variants = [
+        "".join(ch.upper() if mask & (1 << i) else ch for i, ch in enumerate(word))
+        for mask in range(1 << len(word))
+    ]
+    doc = "Ada LOVELACElovela met lovelaceLOVELA; lovelacelovela-x, and Lovelacelovelas. " * 500
+    single = sanitize(doc, known=[word], mode="mask")
+    many = sanitize(doc, known=variants, mode="mask")
+    assert many["text"] == single["text"] and single["report"]["total"] == many["report"]["total"] == 1500
+    assert sanitize("ADA ada", known=["Ada", "ADA", "ada"])["text"] == "<KNOWN_1> <KNOWN_1>"
+    # Generous bound: a slow CI runner must not fail it.
+    t = time.perf_counter()
+    sanitize(doc, known=variants, mode="mask")
+    assert time.perf_counter() - t < 10
+
+
+def test_known_fold_keeps_values_the_regex_does_not_merge():
+    # U+0130 lowercases to two characters, so it is never merged with "i".
+    assert sanitize("İ i", known=["İ", "i"], mode="mask")["text"] == "[KNOWN] [KNOWN]"
+
+
+def test_known_limit_errors_are_value_free():
+    secretish = "z" * watchlight.KNOWN_VALUE_MAX_LENGTH + "SECRETVALUE"
+    with pytest.raises(SanitizeError) as exc:
+        sanitize("x", known=[secretish])
+    assert "SECRETVALUE" not in str(exc.value)
+
+
+def test_known_oversized_iterable_is_refused_without_reading_it_all():
+    def endless():
+        while True:
+            yield "a"
+
+    with pytest.raises(SanitizeError, match="more than 50000 entries"):
+        sanitize("x", known=endless())

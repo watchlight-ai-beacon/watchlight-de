@@ -34,6 +34,7 @@ import functools
 import hashlib
 import hmac
 import inspect
+import itertools
 import json
 import os
 import pathlib
@@ -191,6 +192,9 @@ __all__ = [
     "sanitize",
     "SanitizeError",
     "DECISION_ID_MAX_LENGTH",
+    "KNOWN_MAX_VALUES",
+    "KNOWN_VALUE_MAX_LENGTH",
+    "KNOWN_MAX_TOTAL_LENGTH",
     "DETECTOR_VERSION",
     "DEFAULT_PII_TYPES",
     "register_detector",
@@ -1062,6 +1066,15 @@ class SanitizeError(RuntimeError):
 # interpreted. Length-capped and free of control characters so it can be written
 # to the audit line without letting the caller inject or bloat it.
 DECISION_ID_MAX_LENGTH = 128
+
+# Bounds on the ``known`` dictionary, so the matcher built from it has a
+# predictable size. Generous for an application dictionary (tens of thousands of
+# names and ids); a dictionary over any of them raises SanitizeError. Lengths are
+# in code points (UTF-16 code units in the TypeScript lane). Same names and
+# values as the TypeScript lane.
+KNOWN_MAX_VALUES = 50_000
+KNOWN_VALUE_MAX_LENGTH = 512
+KNOWN_MAX_TOTAL_LENGTH = 500_000
 # U+2028/U+2029 included for parity with the TypeScript lane, whose JSON
 # serializer emits them raw (line-oriented readers would split the record).
 _DECISION_ID_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
@@ -1558,13 +1571,47 @@ def _trie_regex(values: Sequence[str]) -> str:
     return render(root)
 
 
+def _fold_char(ch: str) -> str:
+    # The regex's IGNORECASE compares characters by their simple lowercase.
+    # str.lower() agrees with it whenever it yields one character; a character
+    # whose full lowercase is longer (U+0130) is kept as itself, so it is never
+    # merged with a value it might not match.
+    lower = ch.lower()
+    return lower if len(lower) == 1 else ch
+
+
+def _fold_key(value: str) -> str:
+    """The case-folded key of a known value. Two values with the same key match
+    exactly the same text under ``re.IGNORECASE``."""
+    if value.isascii():
+        return value.lower()
+    return "".join(_fold_char(ch) for ch in value)
+
+
+def _dedupe_known(known: Sequence[str]) -> list[str]:
+    """One value per case-folded key, the first occurrence kept. Matching is
+    case-insensitive, so the dropped values match nothing the kept one does not,
+    and the trie stays one branch per distinct value."""
+    seen: set = set()
+    values: list[str] = []
+    for v in known:
+        if not v.strip():
+            continue
+        key = _fold_key(v)
+        if key in seen:
+            continue
+        seen.add(key)
+        values.append(v)
+    return values
+
+
 def _detect_known(text: str, known: Sequence[str]) -> list[tuple[int, int, str, str]]:
     """Every occurrence of every known value, case-insensitive and matched as a
     whole word; overlapping occurrences merge into one span. One escaped trie alternation compiled once
     per call; at each position the longest value wins and the scan resumes one
     character later, so every occurrence of every value is covered. Values are
     never logged or raised."""
-    values = list(dict.fromkeys(v for v in known if v.strip()))
+    values = _dedupe_known(known)
     if not values:
         return []
     # Bounded so a value that is also an ordinary word does not rewrite prose:
@@ -1607,6 +1654,10 @@ def sanitize(
     ``KNOWN``; the values never appear in the output, report, or audit trail.
     Dictionary matching is simple (ASCII-style) case-insensitive; Unicode case
     folding differs between the Python and TypeScript lanes.
+    ``known`` holds at most :data:`KNOWN_MAX_VALUES` entries of at most
+    :data:`KNOWN_VALUE_MAX_LENGTH` characters each, and at most
+    :data:`KNOWN_MAX_TOTAL_LENGTH` characters in all; more raises
+    :class:`SanitizeError`. Case variants of one value count as one value.
     ``person_exclusions`` lists exact, case-insensitive values that the optional
     ``PERSON`` heuristic must leave untouched. It applies only to a complete
     ``PERSON`` candidate; other enabled detectors still run over the same text.
@@ -1639,10 +1690,23 @@ def sanitize(
     if known is not None and isinstance(known, (str, bytes)):
         # A bare string is a Sequence[str] of characters — never what was meant.
         raise SanitizeError("known must be a sequence of strings")
-    known_values = list(known) if known is not None else []
+    # Read at most one entry past the limit, so an oversized iterable is
+    # refused without being materialised.
+    known_values = list(itertools.islice(known, KNOWN_MAX_VALUES + 1)) if known is not None else []
     if not all(isinstance(v, str) for v in known_values):
         # Value-free by design: the message never echoes the offending entry.
         raise SanitizeError("known must be a sequence of strings")
+    # Bounded so the dictionary's cost is predictable. Value-free: the messages
+    # name the limit, never an entry.
+    if len(known_values) > KNOWN_MAX_VALUES:
+        raise SanitizeError(f"known holds more than {KNOWN_MAX_VALUES} entries")
+    known_total = 0
+    for v in known_values:
+        if str.__len__(v) > KNOWN_VALUE_MAX_LENGTH:
+            raise SanitizeError(f"known has an entry longer than {KNOWN_VALUE_MAX_LENGTH} characters")
+        known_total += str.__len__(v)
+    if known_total > KNOWN_MAX_TOTAL_LENGTH:
+        raise SanitizeError(f"known holds more than {KNOWN_MAX_TOTAL_LENGTH} characters in all")
     if person_exclusions is not None and isinstance(person_exclusions, (str, bytes)):
         raise SanitizeError("person_exclusions must be a sequence of strings")
     try:

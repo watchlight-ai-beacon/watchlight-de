@@ -66,6 +66,18 @@ export class SanitizeError extends Error {
  *  interpreted. Length-capped and free of control characters so it can be
  *  written to the audit line without letting the caller inject or bloat it. */
 export const DECISION_ID_MAX_LENGTH = 128;
+/** Bounds on the `known` dictionary, so the matcher built from it has a
+ *  predictable size. Generous for an application dictionary (tens of thousands
+ *  of names and ids); a dictionary over any of them throws
+ *  {@link SanitizeError}. Lengths are in UTF-16 code units.
+ *
+ *  The most entries `known` may hold. */
+export const KNOWN_MAX_VALUES = 50_000;
+/** The longest a single `known` entry may be. */
+export const KNOWN_VALUE_MAX_LENGTH = 512;
+/** The most characters all `known` entries may hold together. */
+export const KNOWN_MAX_TOTAL_LENGTH = 500_000;
+
 // eslint-disable-next-line no-control-regex
 // Also U+2028/U+2029: JSON.stringify emits them raw, and a line-oriented
 // reader would split the audit record in two.
@@ -104,7 +116,11 @@ export interface SanitizeOptions {
    *  (ASCII-style) case-insensitivity — Unicode case folding differs between
    *  the TypeScript and Python lanes; every occurrence is covered — overlapping
    *  or nested occurrences merge into one span. Counted under `KNOWN`. The
-   *  values never appear in the output, the report, or the audit trail. */
+   *  values never appear in the output, the report, or the audit trail. At
+   *  most {@link KNOWN_MAX_VALUES} entries of at most
+   *  {@link KNOWN_VALUE_MAX_LENGTH} characters each, and at most
+   *  {@link KNOWN_MAX_TOTAL_LENGTH} characters in all; more throws
+   *  {@link SanitizeError}. Case variants of one value count as one value. */
   known?: string[];
   /** Exact values the optional `PERSON` heuristic must leave untouched.
    *  Matching is case-insensitive and covers only a complete `PERSON`
@@ -385,13 +401,50 @@ function trieRegex(values: string[]): string {
   return render(root);
 }
 
+/** One UTF-16 code unit folded the way a non-`u` regex with the `i` flag folds
+ *  it (ECMA-262 Canonicalize): upper-cased when that yields a single unit, and
+ *  never mapped from non-ASCII to ASCII. Two values with the same folded key
+ *  therefore match exactly the same text under `/i`. */
+function canonicalizeUnit(unit: string): string {
+  const upper = unit.toUpperCase();
+  if (upper.length !== 1) return unit;
+  if (unit.charCodeAt(0) >= 128 && upper.charCodeAt(0) < 128) return unit;
+  return upper;
+}
+
+/** The case-folded key of a known value, matching the regex's own folding. */
+function foldKey(value: string): string {
+  // ASCII folds the same way unit by unit and as a whole string.
+  if (/^[\x00-\x7f]*$/.test(value)) return value.toUpperCase();
+  const units: string[] = [];
+  for (let i = 0; i < value.length; i++) units.push(canonicalizeUnit(value[i]));
+  return units.join("");
+}
+
+/** One value per case-folded key, the first occurrence kept. Matching is
+ *  case-insensitive, so the dropped values match nothing the kept one does
+ *  not, and the trie stays one branch per distinct value. */
+function dedupeKnown(known: string[]): string[] {
+  const seen = new Set<string>();
+  const values: string[] = [];
+  for (const v of known) {
+    // A hole in a sparse array is skipped, as `filter` skipped it before.
+    if (typeof v !== "string" || v.trim().length === 0) continue;
+    const key = foldKey(v);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    values.push(v);
+  }
+  return values;
+}
+
 /** Every occurrence of every known value, case-insensitive and matched as a
  *  whole word, overlapping occurrences merged into one span. One escaped trie alternation compiled once
  *  per call; at each position the longest value wins and the scan resumes one
  *  character later, so every occurrence of every value is covered. Values are
  *  never logged or thrown. */
 function detectKnown(text: string, known: string[]): Span[] {
-  const values = Array.from(new Set(known.filter((v) => v.trim().length > 0)));
+  const values = dedupeKnown(known);
   if (values.length === 0) return [];
   // Bounded so a value that is also an ordinary word does not rewrite prose,
   // and a name is not an occurrence inside a longer name. `\w` boundaries
@@ -767,6 +820,22 @@ export function sanitize(text: string, opts: SanitizeOptions = {}): SanitizeResu
   if (!Array.isArray(known) || known.some((v) => typeof v !== "string")) {
     // Value-free by design: the message never echoes the offending entry.
     throw new SanitizeError("known must be an array of strings");
+  }
+  // Bounded so the dictionary's cost is predictable. Value-free: the messages
+  // name the limit, never an entry.
+  if (known.length > KNOWN_MAX_VALUES) {
+    throw new SanitizeError(`known holds more than ${KNOWN_MAX_VALUES} entries`);
+  }
+  let knownTotal = 0;
+  for (const v of known) {
+    if (typeof v !== "string") continue; // a hole in a sparse array
+    if (v.length > KNOWN_VALUE_MAX_LENGTH) {
+      throw new SanitizeError(`known has an entry longer than ${KNOWN_VALUE_MAX_LENGTH} characters`);
+    }
+    knownTotal += v.length;
+  }
+  if (knownTotal > KNOWN_MAX_TOTAL_LENGTH) {
+    throw new SanitizeError(`known holds more than ${KNOWN_MAX_TOTAL_LENGTH} characters in all`);
   }
   const personExclusions = opts.personExclusions ?? [];
   if (!Array.isArray(personExclusions) || personExclusions.some((v) => typeof v !== "string")) {

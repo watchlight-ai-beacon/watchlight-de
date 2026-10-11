@@ -183,6 +183,13 @@ Proved by [`suites/pii-before-read.suite.json`](./suites/pii-before-read.suite.j
   honoured even when `types` narrows the detectors.
 - `known` matching is simple case-insensitive. Unicode case folding differs
   between the TypeScript and Python lanes.
+- `known` is bounded in both lanes, so the matcher built from it has a
+  predictable size: at most 50,000 entries (`KNOWN_MAX_VALUES`), each at most
+  512 characters (`KNOWN_VALUE_MAX_LENGTH`), and at most 500,000 characters in
+  all (`KNOWN_MAX_TOTAL_LENGTH`). A dictionary over a limit raises or throws
+  `SanitizeError`, and the message never includes an entry. Characters are
+  code points in Python and UTF-16 code units in TypeScript. Case variants of
+  one value are matched as that one value.
 - `PERSON` and `ADDRESS` are heuristics and off by default. Turn them on with
   `types: [...DEFAULT_PII_TYPES, "PERSON", "ADDRESS"]` — and see
   [`known` covers your subjects](#known-covers-your-subjects-person-covers-everyone-else)

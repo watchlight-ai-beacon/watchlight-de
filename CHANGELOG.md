@@ -11,6 +11,27 @@ upgrade is worth your afternoon.
 
 Each entry links to its release, which carries the reasoning and the measurements.
 
+## Unreleased
+
+**Changed**
+- Bounded and de-duplicated the known-values list in `sanitize`, in both the
+  Python and TypeScript lanes. Before the matcher is built, `known` keeps one
+  value per case-folded key (the first occurrence), folded the way each lane's
+  case-insensitive regex folds, so the output and spans for any input are
+  unchanged. `known` is now limited to `KNOWN_MAX_VALUES` (50,000) entries,
+  `KNOWN_VALUE_MAX_LENGTH` (512) characters per entry and
+  `KNOWN_MAX_TOTAL_LENGTH` (500,000) characters in all; a dictionary over any
+  limit raises `SanitizeError` with a message that names the limit and never
+  an entry. The three limits are exported from `watchlight` and
+  `@watchlight/sdk`. Python reads at most one entry past the entry limit from
+  an iterable. A shared fixture holds both lanes to the same results.
+- `FrameworkIntegration` checks its `name`, `extra`, `plugin_module` and
+  `plugin_class` with `re.fullmatch`, so a value with a trailing newline is
+  refused with the same `ValueError` as any other malformed value.
+- `examples/governed_mcp_server.py` passes a 10-second timeout to `urlopen`,
+  and notes that its plain-HTTP URLs are loopback-only and that a real
+  upstream should use `https://` with certificate verification.
+
 ## 0.13.2 — 2026-10-03
 
 The framework extras now require `watchlight-agent-sdk` 0.9 and

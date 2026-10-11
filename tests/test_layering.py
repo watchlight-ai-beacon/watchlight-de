@@ -96,7 +96,7 @@ EXTERNAL_OWNERS: Dict[str, Set[str]] = {
 }
 # Kept independent of the contract's own pattern on purpose: a weakened check
 # there does not weaken this one.
-PLUGIN_MODULE = re.compile(r"^watchlight_[a-z0-9_]+$")
+PLUGIN_MODULE = re.compile(r"watchlight_[a-z0-9_]+")
 
 
 def is_framework_package(top: str) -> bool:
@@ -112,7 +112,7 @@ def plugin_module_violations(modules: Iterable[Tuple[str, str]]) -> List[str]:
     return [
         f"integration {name}: plugin_module {mod!r} is not a watchlight_* framework plugin"
         for name, mod in modules
-        if not (isinstance(mod, str) and PLUGIN_MODULE.match(mod) and mod not in EXTERNAL_OWNERS)
+        if not (isinstance(mod, str) and PLUGIN_MODULE.fullmatch(mod) and mod not in EXTERNAL_OWNERS)
     ]
 
 

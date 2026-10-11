@@ -262,6 +262,11 @@ def test_a_declaration_is_frozen():
         ("plugin_module", "watchlight_example.sub"),
         ("plugin_module", "watchlight_"),
         ("plugin_class", "a.B"),
+        # A trailing newline is not part of a name.
+        ("name", "example\n"),
+        ("extra", "example\n"),
+        ("plugin_module", "watchlight_x\n"),
+        ("plugin_class", "WatchlightExamplePlugin\n"),
     ],
 )
 def test_a_malformed_declaration_is_refused_where_it_is_written(field, value):
@@ -288,3 +293,20 @@ def test_every_extra_is_declared_in_pyproject():
     extras = tomllib.loads(pyproject.read_text())["project"]["optional-dependencies"]
     for integration in INTEGRATIONS.values():
         assert integration.extra in extras, integration.name
+
+
+def test_a_plugin_module_with_a_trailing_newline_gets_the_bad_name_error():
+    good = dict(
+        name="example",
+        extra="example",
+        display_name="Example",
+        plugin_module="watchlight_example",
+        plugin_class="WatchlightExamplePlugin",
+    )
+    with pytest.raises(ValueError) as bad_name:
+        FrameworkIntegration(**{**good, "plugin_module": "watchlight langgraph"})
+    with pytest.raises(ValueError) as trailing_newline:
+        FrameworkIntegration(**{**good, "plugin_module": "watchlight_x\n"})
+    expected = "integration plugin_module must be a top-level watchlight_* plugin package"
+    assert str(bad_name.value).startswith(expected)
+    assert str(trailing_newline.value).startswith(expected)
