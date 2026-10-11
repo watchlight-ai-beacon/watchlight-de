@@ -1,0 +1,147 @@
+{
+  "_comment": "Shared by tests/test_sanitize.py and ts/test/sanitize.test.mjs: both lanes must give the same text for every case and accept or refuse every limit case the same way. ASCII only; Unicode case folding differs between the lanes by design.",
+  "limits": {
+    "KNOWN_MAX_VALUES": 50000,
+    "KNOWN_VALUE_MAX_LENGTH": 512,
+    "KNOWN_MAX_TOTAL_LENGTH": 500000
+  },
+  "cases": [
+    {
+      "name": "case variants collapse to one value",
+      "text": "Ada met ADA and ada; adam stays.",
+      "known": [
+        "Ada",
+        "ADA",
+        "ada",
+        "aDa"
+      ],
+      "mode": "tag",
+      "expect": "<KNOWN_1> met <KNOWN_1> and <KNOWN_1>; adam stays."
+    },
+    {
+      "name": "first occurrence kept, same spans",
+      "text": "Grace Hopper and GRACE HOPPER",
+      "known": [
+        "GRACE HOPPER",
+        "Grace Hopper"
+      ],
+      "mode": "mask",
+      "expect": "[KNOWN] and [KNOWN]"
+    },
+    {
+      "name": "overlapping values merge",
+      "text": "Ann Lee Smith and ANN LEE",
+      "known": [
+        "ann lee",
+        "Ann Lee",
+        "Lee Smith",
+        "LEE SMITH"
+      ],
+      "mode": "tag",
+      "expect": "<KNOWN_1> and <KNOWN_2>"
+    },
+    {
+      "name": "whole word only",
+      "text": "Smithfield Road, Smith's file, SMITH.",
+      "known": [
+        "Smith",
+        "smith"
+      ],
+      "mode": "mask",
+      "expect": "Smithfield Road, [KNOWN]'s file, [KNOWN]."
+    },
+    {
+      "name": "blank entries ignored",
+      "text": "nothing here",
+      "known": [
+        "",
+        "   "
+      ],
+      "mode": "tag",
+      "expect": "nothing here"
+    },
+    {
+      "name": "metacharacters are literal",
+      "text": "see (a.b)*c$ and (A.B)*C$",
+      "known": [
+        "(a.b)*c$",
+        "(A.B)*C$"
+      ],
+      "mode": "mask",
+      "expect": "see [KNOWN] and [KNOWN]"
+    }
+  ],
+  "limit_cases": [
+    {
+      "name": "at the entry limit",
+      "entries": [
+        {
+          "value": "a",
+          "count": 50000,
+          "repeat": 1
+        }
+      ],
+      "error": null
+    },
+    {
+      "name": "one entry over the entry limit",
+      "entries": [
+        {
+          "value": "a",
+          "count": 50001,
+          "repeat": 1
+        }
+      ],
+      "error": "known holds more than 50000 entries"
+    },
+    {
+      "name": "an entry at the length limit",
+      "entries": [
+        {
+          "value": "q",
+          "repeat": 512,
+          "count": 1
+        }
+      ],
+      "error": null
+    },
+    {
+      "name": "an entry one over the length limit",
+      "entries": [
+        {
+          "value": "q",
+          "repeat": 513,
+          "count": 1
+        }
+      ],
+      "error": "known has an entry longer than 512 characters"
+    },
+    {
+      "name": "at the total-length limit",
+      "entries": [
+        {
+          "value": "w",
+          "repeat": 500,
+          "count": 1000
+        }
+      ],
+      "error": null
+    },
+    {
+      "name": "one character over the total-length limit",
+      "entries": [
+        {
+          "value": "w",
+          "repeat": 500,
+          "count": 1000
+        },
+        {
+          "value": "w",
+          "repeat": 1,
+          "count": 1
+        }
+      ],
+      "error": "known holds more than 500000 characters in all"
+    }
+  ]
+}

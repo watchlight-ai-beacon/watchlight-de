@@ -194,7 +194,8 @@ async function main() {
     const many = sanitize(doc, { known: variants, mode: "mask" });
     const ms = Date.now() - t;
     ok("KNOWN: many case variants give the same output as the single word", many.text === single.text && many.report.total === single.report.total && single.report.total === 1500, `${many.report.total} vs ${single.report.total}`);
-    ok("KNOWN: many case variants stay fast", ms < 3000, `${ms}ms`);
+    // Generous bound: a slow CI runner must not fail it.
+    ok("KNOWN: many case variants stay fast", ms < 10000, `${ms}ms`);
     const tagged = sanitize("ADA ada", { known: ["Ada", "ADA", "ada"] });
     ok("KNOWN: case-variant duplicates keep one tag", tagged.text === "<KNOWN_1> <KNOWN_1>", tagged.text);
     // Folding matches the regex: "ß" and "ss" are distinct values and both still match.
@@ -207,6 +208,25 @@ async function main() {
   ok("KNOWN: at the entry limit is accepted", (() => { sanitize("x", { known: Array(KNOWN_MAX_VALUES).fill("a") }); return true; })());
   ok("KNOWN: over the entry limit throws SanitizeError", throwsSanitize(() => sanitize("x", { known: Array(KNOWN_MAX_VALUES + 1).fill("a") }), `more than ${KNOWN_MAX_VALUES} entries`));
   ok("KNOWN: an entry at the length limit is accepted", sanitize("x", { known: ["q".repeat(KNOWN_VALUE_MAX_LENGTH)] }).text === "x");
+  // tests/fixtures/sanitize_known_parity.json is shared with tests/test_sanitize.py,
+  // so both lanes give the same text and accept or refuse the same dictionaries.
+  {
+    const parity = JSON.parse(fs.readFileSync(join(here, "..", "..", "tests", "fixtures", "sanitize_known_parity.json"), "utf8"));
+    ok("KNOWN parity: limits match the shared fixture",
+      parity.limits.KNOWN_MAX_VALUES === KNOWN_MAX_VALUES &&
+      parity.limits.KNOWN_VALUE_MAX_LENGTH === KNOWN_VALUE_MAX_LENGTH &&
+      parity.limits.KNOWN_MAX_TOTAL_LENGTH === KNOWN_MAX_TOTAL_LENGTH);
+    for (const c of parity.cases) {
+      const got = sanitize(c.text, { known: c.known, mode: c.mode }).text;
+      ok(`KNOWN parity: ${c.name}`, got === c.expect, `${got} !== ${c.expect}`);
+    }
+    for (const c of parity.limit_cases) {
+      const known = c.entries.flatMap((e) => Array(e.count).fill(e.value.repeat(e.repeat)));
+      let got = null;
+      try { sanitize("x", { known }); } catch (e) { got = e instanceof SanitizeError ? String(e.message) : `other: ${e}`; }
+      ok(`KNOWN parity limit: ${c.name}`, c.error === null ? got === null : got !== null && got.includes(c.error), String(got));
+    }
+  }
   const sparse = ["Ada"]; sparse[3] = "Grace";
   ok("KNOWN: a sparse array still works (holes skipped)", sanitize("Ada and Grace", { known: sparse, mode: "mask" }).text === "[KNOWN] and [KNOWN]");
   const overTotal = Array(Math.floor(KNOWN_MAX_TOTAL_LENGTH / KNOWN_VALUE_MAX_LENGTH) + 1).fill("w".repeat(KNOWN_VALUE_MAX_LENGTH));

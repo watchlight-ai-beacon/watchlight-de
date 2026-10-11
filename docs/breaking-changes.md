@@ -10,11 +10,12 @@ between the version you are on and the one you are moving to.
 
 ## Unreleased
 
-**`sanitize` (TypeScript) bounds the `known` dictionary.** `known` may hold
-at most `KNOWN_MAX_VALUES` (50,000) entries, each at most
+**`sanitize` bounds the `known` dictionary, in Python and TypeScript.**
+`known` may hold at most `KNOWN_MAX_VALUES` (50,000) entries, each at most
 `KNOWN_VALUE_MAX_LENGTH` (512) characters, and at most
-`KNOWN_MAX_TOTAL_LENGTH` (500,000) characters in all. A dictionary over any
-limit now throws `SanitizeError` instead of being used. This fails closed: no
+`KNOWN_MAX_TOTAL_LENGTH` (500,000) characters in all. Characters are code
+points in Python and UTF-16 code units in TypeScript. A dictionary over any
+limit now raises or throws `SanitizeError` instead of being used. This fails closed: no
 text is returned. To fix it, split a larger dictionary across calls, or drop
 entries that are not exact values you need redacted. Case variants of one
 value (`Ada`, `ADA`) count as one value when the matcher is built, but every

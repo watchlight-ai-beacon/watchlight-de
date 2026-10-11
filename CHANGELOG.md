@@ -14,14 +14,17 @@ Each entry links to its release, which carries the reasoning and the measurement
 ## Unreleased
 
 **Changed**
-- Bounded and de-duplicated the known-values list in `sanitize` (TypeScript).
-  Before the matcher is built, `known` keeps one value per case-folded key
-  (the first occurrence), since matching is case-insensitive; the output and
-  spans for any input are unchanged. `known` is now limited to
-  `KNOWN_MAX_VALUES` (50,000) entries, `KNOWN_VALUE_MAX_LENGTH` (512)
-  characters per entry and `KNOWN_MAX_TOTAL_LENGTH` (500,000) characters in
-  all; a dictionary over any limit throws `SanitizeError` with a message that
-  names the limit and never an entry. The three limits are exported.
+- Bounded and de-duplicated the known-values list in `sanitize`, in both the
+  Python and TypeScript lanes. Before the matcher is built, `known` keeps one
+  value per case-folded key (the first occurrence), folded the way each lane's
+  case-insensitive regex folds, so the output and spans for any input are
+  unchanged. `known` is now limited to `KNOWN_MAX_VALUES` (50,000) entries,
+  `KNOWN_VALUE_MAX_LENGTH` (512) characters per entry and
+  `KNOWN_MAX_TOTAL_LENGTH` (500,000) characters in all; a dictionary over any
+  limit raises `SanitizeError` with a message that names the limit and never
+  an entry. The three limits are exported from `watchlight` and
+  `@watchlight/sdk`. Python reads at most one entry past the entry limit from
+  an iterable. A shared fixture holds both lanes to the same results.
 - `FrameworkIntegration` checks its `name`, `extra`, `plugin_module` and
   `plugin_class` with `re.fullmatch`, so a value with a trailing newline is
   refused with the same `ValueError` as any other malformed value.
