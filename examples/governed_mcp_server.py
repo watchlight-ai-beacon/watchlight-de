@@ -75,6 +75,9 @@ def _call(tool: str) -> dict:
     body = json.dumps(
         {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": {}}}
     ).encode()
+    # This demo talks only to a server on the local loopback interface, so plain
+    # HTTP is fine here. A real upstream should use https:// with certificate
+    # verification.
     req = urllib.request.Request(
         f"http://127.0.0.1:{PEP_PORT}/mcp",
         data=body,
@@ -87,7 +90,7 @@ def _call(tool: str) -> dict:
             "Watchlight-Execution-Id": f"exec_{tool}",
         },
     )
-    return json.loads(urllib.request.urlopen(req).read())
+    return json.loads(urllib.request.urlopen(req, timeout=10).read())
 
 
 def main() -> None:
@@ -103,6 +106,8 @@ def main() -> None:
     threading.Thread(
         target=lambda: watchlight_mcp.serve(
             listen_addr=f"127.0.0.1:{PEP_PORT}",
+            # Loopback demo server only; a real upstream should be an
+            # https:// URL with certificate verification.
             upstream_url=f"http://127.0.0.1:{UPSTREAM_PORT}/mcp",
             upstream_server="github",
             policy_files=[os.path.join(HERE, "mcp.policy.json")],
