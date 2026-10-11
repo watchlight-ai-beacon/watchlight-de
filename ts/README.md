@@ -14,7 +14,7 @@ everything here has a Python equivalent under a `snake_case` name.
 ## Install
 
 ```bash
-npm install @watchlight/sdk    # Node >= 18, no native toolchain
+npm install @watchlight/sdk    # Node >= 22, no native toolchain
 ```
 
 ## Deny a tool call before it runs

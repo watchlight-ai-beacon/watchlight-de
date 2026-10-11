@@ -109,7 +109,7 @@ async function main() {
   try {
     execFileSync(process.execPath, [
       join(here, "..", "node_modules", "typescript", "bin", "tsc"),
-      "--noEmit", "--strict", "--target", "ES2020", "--module", "commonjs", "--moduleResolution", "node",
+      "--ignoreConfig", "--noEmit", "--strict", "--target", "ES2020", "--module", "node16", "--moduleResolution", "node16",
       "--esModuleInterop", "--skipLibCheck", "--types", "node", join(here, "sanitize-options.typecheck.ts"),
     ], { stdio: "pipe" });
   } catch (e) { typesOk = false; typesErr = String(e.stdout || e.message).slice(0, 400); }

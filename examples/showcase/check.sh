@@ -27,7 +27,7 @@
 #      synthetic personal data on purpose, because redaction and screening are
 #      what they demonstrate.)
 #
-# Requires: Python 3.9+ with `pip install watchlight`, and Node >= 18 with
+# Requires: Python 3.9+ with `pip install watchlight`, and Node >= 22 with
 # @watchlight/sdk — installed globally, or built in this clone with
 # `cd ts && npm install && npm run build`.
 #

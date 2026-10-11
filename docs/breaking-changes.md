@@ -8,6 +8,14 @@ different verdict. Only some announce themselves; the rest surface as a denial
 that looks exactly like a policy of yours doing its job. Read every entry
 between the version you are on and the one you are moving to.
 
+## Unreleased
+
+**The TypeScript SDK requires Node 22 or later (Node 18 and 20 are end of life); it relies on the Web Crypto global.** `@watchlight/sdk` now declares `engines.node >=22`. The engine
+(`@watchlight/engine`) reads randomness from `globalThis.crypto`, which Node 18
+does not define by default, so on Node 18 the first decision fails instead of
+returning a verdict. On an older Node, npm warns at install time (or refuses
+with `engine-strict`). To fix it, run your agent on Node 22 or later.
+
 ## 0.13.2
 
 **The framework extras now require `watchlight-agent-sdk` 0.9 and

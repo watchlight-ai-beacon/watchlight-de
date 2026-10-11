@@ -11,6 +11,11 @@ upgrade is worth your afternoon.
 
 Each entry links to its release, which carries the reasoning and the measurements.
 
+## Unreleased
+
+**Changed**
+- The TypeScript SDK requires Node 22 or later (Node 18 and 20 are end of life); it relies on the Web Crypto global. `engines.node` in `@watchlight/sdk` is now `>=22`.
+
 ## 0.13.2 — 2026-10-03
 
 The framework extras now require `watchlight-agent-sdk` 0.9 and
