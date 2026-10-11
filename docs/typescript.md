@@ -182,6 +182,13 @@ ordinarily, so a single-token name that is also a common word (`Will`, `May`,
 `Grace`) redacts every use of that word. Pass the full name, and treat a bare
 first name as a deliberate choice.
 
+`known` is bounded so the matcher built from it has a predictable size. It may
+hold at most 50,000 entries (`KNOWN_MAX_VALUES`), each at most 512 characters
+long (`KNOWN_VALUE_MAX_LENGTH`), and at most 500,000 characters in all
+(`KNOWN_MAX_TOTAL_LENGTH`). A dictionary over any of these limits throws
+`SanitizeError`, and the message never includes an entry. Because matching is
+case-insensitive, case variants of one value are matched as that one value.
+
 `decisionId` links the audit line to an authorization decision. `principal`
 records *whose* data it was. If you omit `principal`, the line names this agent
 instead, as `Agent::"<name>"`, so pass it whenever an audit of data minimisation

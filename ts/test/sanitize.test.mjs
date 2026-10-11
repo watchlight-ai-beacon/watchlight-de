@@ -9,7 +9,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 
 const require = createRequire(import.meta.url);
-const { sanitize, SanitizeError, Watchlight, DECISION_ID_MAX_LENGTH, DETECTOR_VERSION, DEFAULT_PII_TYPES, HEURISTIC_PII_TYPES, registerDetector, registeredDetectors, _clearCustomDetectors } = require("../dist/index.js");
+const { sanitize, SanitizeError, Watchlight, DECISION_ID_MAX_LENGTH, KNOWN_MAX_VALUES, KNOWN_VALUE_MAX_LENGTH, KNOWN_MAX_TOTAL_LENGTH, DETECTOR_VERSION, DEFAULT_PII_TYPES, HEURISTIC_PII_TYPES, registerDetector, registeredDetectors, _clearCustomDetectors } = require("../dist/index.js");
 const here = dirname(fileURLToPath(import.meta.url));
 
 let pass = 0, fail = 0;
@@ -180,6 +180,39 @@ async function main() {
   let badKnown = false;
   try { sanitize("x", { known: ["ok", 42] }); } catch (e) { badKnown = e instanceof SanitizeError && !String(e.message).includes("42"); }
   ok("KNOWN: non-string entry is fail-closed and value-free", badKnown);
+
+  // ── KNOWN: case variants collapse to one value; the dictionary is bounded ──
+  ok("KNOWN: limits are exported", KNOWN_MAX_VALUES === 50000 && KNOWN_VALUE_MAX_LENGTH === 512 && KNOWN_MAX_TOTAL_LENGTH === 500000);
+  {
+    // Every case variant of one word: 2^14 spellings of "lovelacelovel".
+    const word = "lovelacelovela";
+    const variants = Array.from({ length: 1 << word.length }, (_, mask) =>
+      Array.from(word, (ch, i) => (mask & (1 << i) ? ch.toUpperCase() : ch)).join(""));
+    const doc = "Ada LOVELACElovela met lovelaceLOVELA; lovelacelovela-x, and Lovelacelovelas. ".repeat(500);
+    const single = sanitize(doc, { known: [word], mode: "mask" });
+    const t = Date.now();
+    const many = sanitize(doc, { known: variants, mode: "mask" });
+    const ms = Date.now() - t;
+    ok("KNOWN: many case variants give the same output as the single word", many.text === single.text && many.report.total === single.report.total && single.report.total === 1500, `${many.report.total} vs ${single.report.total}`);
+    ok("KNOWN: many case variants stay fast", ms < 3000, `${ms}ms`);
+    const tagged = sanitize("ADA ada", { known: ["Ada", "ADA", "ada"] });
+    ok("KNOWN: case-variant duplicates keep one tag", tagged.text === "<KNOWN_1> <KNOWN_1>", tagged.text);
+    // Folding matches the regex: "ß" and "ss" are distinct values and both still match.
+    const fold = sanitize("ß ss SS", { known: ["ß", "ss"], mode: "mask" });
+    ok("KNOWN: values that the regex does not fold together are both kept", fold.text === "[KNOWN] [KNOWN] [KNOWN]", fold.text);
+  }
+  const throwsSanitize = (fn, needle) => {
+    try { fn(); return false; } catch (e) { return e instanceof SanitizeError && String(e.message).includes(needle); }
+  };
+  ok("KNOWN: at the entry limit is accepted", (() => { sanitize("x", { known: Array(KNOWN_MAX_VALUES).fill("a") }); return true; })());
+  ok("KNOWN: over the entry limit throws SanitizeError", throwsSanitize(() => sanitize("x", { known: Array(KNOWN_MAX_VALUES + 1).fill("a") }), `more than ${KNOWN_MAX_VALUES} entries`));
+  ok("KNOWN: an entry at the length limit is accepted", sanitize("x", { known: ["q".repeat(KNOWN_VALUE_MAX_LENGTH)] }).text === "x");
+  const sparse = ["Ada"]; sparse[3] = "Grace";
+  ok("KNOWN: a sparse array still works (holes skipped)", sanitize("Ada and Grace", { known: sparse, mode: "mask" }).text === "[KNOWN] and [KNOWN]");
+  const overTotal = Array(Math.floor(KNOWN_MAX_TOTAL_LENGTH / KNOWN_VALUE_MAX_LENGTH) + 1).fill("w".repeat(KNOWN_VALUE_MAX_LENGTH));
+  ok("KNOWN: over the total-length limit throws SanitizeError", throwsSanitize(() => sanitize("x", { known: overTotal }), `more than ${KNOWN_MAX_TOTAL_LENGTH} characters in all`));
+  const secretish = "z".repeat(KNOWN_VALUE_MAX_LENGTH) + "SECRETVALUE";
+  ok("KNOWN: an over-long entry throws SanitizeError, value-free", throwsSanitize(() => sanitize("x", { known: [secretish] }), `longer than ${KNOWN_VALUE_MAX_LENGTH} characters`) && (() => { try { sanitize("x", { known: [secretish] }); } catch (e) { return !String(e.message).includes("SECRETVALUE"); } return false; })());
 
   // ── PERSON / ADDRESS: opt-in heuristics, OFF by default ──
   const people = "Dr. Ada Lovelace met Patient: Grace Hopper and ATTN: Alan M. Turing. Alan Turing wrote it. The Cedar is neat.";
