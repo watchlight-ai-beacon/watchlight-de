@@ -86,8 +86,10 @@ npx --package @watchlight/sdk watchlight policy test suite.json   # Node
 - **An unrecognised `@enforcement_effect` value fails at load time.** Any value
   other than `attenuate`, `escalate`, `observe`, `quarantine`,
   `require_approval`, `revoke`, `sever_subtree` or `terminate` raises
-  `PolicyError`, and `load` adds nothing from that file. A typo in the
-  annotation *name* itself only produces a warning.
+  `PolicyError` (`code` `UNRECOGNISED_ENFORCEMENT_EFFECT`), and `load` adds
+  nothing from that file. A typo in the annotation *name* itself, such as
+  `@enforcment_effect`, is refused the same way
+  (`ENFORCEMENT_EFFECT_NAME_NEAR_MISS`).
 - `govern.load(path)` loads each source only once, so loading the same file
   twice cannot double the policy set. It remembers files by their resolved path,
   not by their content. If you edit a file that is already loaded, pass

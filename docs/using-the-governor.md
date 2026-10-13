@@ -567,14 +567,16 @@ when { context.amount > 1000 };
 That one is the human-in-the-loop gate: the verdict is `NeedsApproval` rather
 than `Allow`, and a person has to release it. The engine implements eight
 effects: `attenuate`, `escalate`, `observe`, `quarantine`, `require_approval`,
-`revoke`, `sever_subtree` and `terminate`. In both lanes, `allow` and `load`
-refuse any other value before the policy reaches the engine:
+`revoke`, `sever_subtree` and `terminate`. The engine refuses any other value,
+and an annotation name that is a near miss for `enforcement_effect`, and the SDK
+raises `PolicyError` (in TypeScript, at `ready()` or the next decision):
 
 ```python
 govern.allow('@enforcement_effect("needs_approval")\npermit(principal, action, resource);')
 # PolicyError: policy "policy-0": @enforcement_effect("needs_approval") is not an
-# effect this engine implements. Accepted: attenuate, escalate, observe,
-# quarantine, require_approval, revoke, sever_subtree, terminate. …
+# effect this engine implements (accepted: attenuate, escalate, observe,
+# quarantine, require_approval, revoke, sever_subtree, terminate); on a permit an
+# unimplemented effect would leave a plain allow, so the policy is refused
 ```
 
 The Developer Edition acts on `require_approval`. The containment effects load

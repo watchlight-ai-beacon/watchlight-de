@@ -10,6 +10,24 @@ between the version you are on and the one you are moving to.
 
 ## Unreleased
 
+**A near-miss `@enforcement_effect` annotation name is refused, and `PolicyError`
+changes shape.** The engine (`watchlight-engine` 0.2.3, which the SDKs now
+require) refuses a policy whose annotation name is within two edits of
+`enforcement_effect` but is not that name, such as `@enforcment_effect` or
+`@Enforcement_Effect`. Before, the SDK printed a warning and loaded the policy,
+which then decided as if no effect were declared: an approval gate became a
+plain allow. To fix it, correct the spelling, or rename your own annotation so
+it is not a near miss. An unknown effect value is refused as before.
+`PolicyError` now carries `code` (`UNRECOGNISED_ENFORCEMENT_EFFECT` or
+`ENFORCEMENT_EFFECT_NAME_NEAR_MISS`), `policy` and `source`; `value` and
+`accepted` are gone, and so is `ENFORCEMENT_EFFECTS`. Read the code instead of
+the value, and refer to the documented list of effects. In TypeScript the
+refusal now surfaces at `ready()` or the next decision instead of being thrown
+by `allow()`, `load()` or `reload()`: the engine compiles asynchronously. A set
+holding a refused policy never decides; every decision throws `PolicyError`
+until a `reload` with a set that loads. Python still raises at once and adds
+nothing. This only moves in the closed direction.
+
 **The TypeScript SDK requires Node 22 or later (Node 18 and 20 are end of life); it relies on the Web Crypto global.** `@watchlight/sdk` now declares `engines.node >=22`. The engine
 (`@watchlight/engine`) reads randomness from `globalThis.crypto`, which Node 18
 does not define by default, so on Node 18 the first decision fails instead of

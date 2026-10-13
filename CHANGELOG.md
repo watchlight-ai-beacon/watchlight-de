@@ -13,7 +13,12 @@ Each entry links to its release, which carries the reasoning and the measurement
 
 ## Unreleased
 
+**Security**
+- Hardening: a policy whose `@enforcement_effect` cannot be honoured is refused by the engine (`watchlight-engine` 0.2.3), in both lanes. That covers a value the engine does not implement, and now also an annotation name that is a near miss for `enforcement_effect` (for example `@enforcment_effect`), which used to only warn while the policy loaded as a plain allow. The SDK raises `PolicyError` with a `code` (`UNRECOGNISED_ENFORCEMENT_EFFECT` or `ENFORCEMENT_EFFECT_NAME_NEAR_MISS`), mapped from the engine's typed error, and keeps no list of effects of its own.
+
 **Changed**
+- The SDKs require `watchlight-engine>=0.2.3` / `@watchlight/engine>=0.2.3`.
+- `ENFORCEMENT_EFFECTS` is removed from both SDKs; the engine owns the list. `PolicyError` carries `code`, `policy` and `source` instead of `value` and `accepted`.
 - The TypeScript SDK requires Node 22 or later (Node 18 and 20 are end of life); it relies on the Web Crypto global. `engines.node` in `@watchlight/sdk` is now `>=22`.
 
 ## 0.13.2 — 2026-10-03
