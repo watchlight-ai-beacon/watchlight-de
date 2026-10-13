@@ -412,10 +412,18 @@ def test_a_sub_agent_decision_names_the_sub_agent_and_its_chain(name, tmp_path):
 
     async def run():
         async with await plugin.start_run("lead-agent") as handle:
-            child = await _spawn(plugin, handle, "research-sub", allowed_tools=["web_search"], max_depth=1)
+            # Each delegation names a time budget: the engine refuses a child
+            # whose resolved budget is zero (it could make no call at all), so
+            # a grandchild needs one at or under its parent's.
+            child = await _spawn(
+                plugin, handle, "research-sub",
+                allowed_tools=["web_search"], max_depth=1, time_budget_seconds=300,
+            )
             assert await child.authorize_action(*ALLOWED) is True
             assert await child.authorize_action(*DENIED) is False
-            grandchild = await _spawn(plugin, child, "fetch-sub", allowed_tools=["web_search"])
+            grandchild = await _spawn(
+                plugin, child, "fetch-sub", allowed_tools=["web_search"], time_budget_seconds=60
+            )
             assert await grandchild.authorize_action(*ALLOWED) is True
             assert await handle.authorize_action(*ALLOWED) is True
 
@@ -571,8 +579,9 @@ SDK_METHODS = {
     "submit_plan": "not a decision: raises NotImplementedError in-process",
     "resolve_agent": "observed for the agent's name",
     "create_session": "observed for the session's agent; refuses application_id and subject_token in-process (SDK 0.9.0)",
-    "complete_session": "bookkeeping (takes the SDK's session_token since 0.9.0)",
-    "terminate_session": "bookkeeping",
+    "complete_session": "bookkeeping (names the run by its reference since SDK 0.10.0)",
+    "terminate_session": "bookkeeping (names the run by its reference since SDK 0.10.0)",
+    "drain": "not a decision: lineage is written synchronously in-process",
     "get_manifest": "not a decision",
     "check_agent_trust": "not a decision",
     "publish_events": "lifecycle lines, written by the SDK",
@@ -609,8 +618,8 @@ def _audited_client(tmp_path):
 def test_every_override_accepts_what_the_sdk_method_accepts():
     """An override must take every argument the SDK's own method takes.
 
-    The SDK's handles call the backend with keyword arguments that a release can
-    add (0.9.0 passes ``session_token`` to ``complete_session``). An override
+    The SDK's handles call the backend with arguments that a release can add or
+    rename (0.10.0 names the run by its reference, ``run``). An override
     with the older signature raises ``TypeError`` there, and the run cannot
     complete — so a new SDK parameter fails here, by name, instead."""
     import inspect as _inspect
@@ -637,19 +646,37 @@ def test_every_override_accepts_what_the_sdk_method_accepts():
     assert {"authorize", "complete_session", "create_session", "spawn_subagent"} <= set(checked)
 
 
-def test_complete_session_forwards_the_session_token(tmp_path, monkeypatch):
+def test_complete_session_forwards_the_run(tmp_path, monkeypatch):
     from watchlight_core import InProcessClient
 
     seen = {}
 
-    async def spy(self, session_id, session_token=None):
-        seen["args"] = (session_id, session_token)
+    async def spy(self, run):
+        seen["args"] = (run,)
         return True
 
     monkeypatch.setattr(InProcessClient, "complete_session", spy)
     client = _audited_client(tmp_path)
-    assert asyncio.run(client.complete_session("ses_1", session_token="tok")) is True
-    assert seen["args"] == ("ses_1", "tok")
+    assert asyncio.run(client.complete_session("run_1")) is True
+    assert seen["args"] == ("run_1",)
+
+
+def test_ending_a_run_forgets_its_session(tmp_path):
+    """The SDK ends a run by its reference; the recording backend maps it back
+    to the session and drops that session's chain, so its bookkeeping does not
+    grow with every run."""
+    client = _audited_client(tmp_path)
+
+    async def run():
+        info = await client.create_session("agent-1")
+        assert client._wl_sessions[info.session_id] == ("agent-1",)
+        assert await client.complete_session(info.run) is True
+        assert info.session_id not in client._wl_sessions
+        assert info.run not in client._wl_runs
+        # An ended run is ended once; a second close is refused by the SDK.
+        assert await client.complete_session(info.run) is False
+
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize("kwarg", ["application_id", "subject_token"])
@@ -800,13 +827,13 @@ HANDLE_METHODS = {
     "mark_execution_started_emitted": "lifecycle bookkeeping",
     "mark_execution_completed_emitted": "lifecycle bookkeeping",
     "mark_execution_failed_emitted": "lifecycle bookkeeping",
-    "parse_proxy_token_fields": "parses a session response",
     "parse_root_run_handle_id": "parses a session response",
     "record_declared_intent": "stores the declared intent; the next authorize reads it",
     "synthetic_tools": "tool descriptors, not a decision",
     "synthetic_langchain_tools": "tool descriptors, not a decision (LangGraph)",
     "bind_tools": "binds tool descriptors to a model, not a decision (LangGraph)",
     "callback_handler": "builds a lineage callback handler, not a decision (LangGraph)",
+    "detach_callbacks": "releases the callback handler's context, not a decision (LangGraph)",
 }
 
 
