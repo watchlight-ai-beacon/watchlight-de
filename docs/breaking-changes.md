@@ -26,14 +26,16 @@ session id or `session_token`. Old calls fail with `TypeError` or
 pinned `watchlight-agent-sdk` below 0.10 yourself, raise the pin; pip reports
 the conflict at install time.
 
-**A sub-agent spawned from a sub-agent needs a time budget.** With
-`watchlight-engine` 0.2.2 (which 0.13.2 already allows), a spawn whose resolved time budget is zero is
-refused with `ScopeAttenuationDenied` ("unsatisfiable scope"), because such a
-child could not make a single call. A first-level sub-agent with no
-`time_budget_seconds` keeps working, but any child it spawns gets a budget of
-at most its parent's, which is zero. To fix it, pass `time_budget_seconds` on
-each spawn, no larger than the parent's. This only moves in the closed
-direction.
+**Every sub-agent needs a time budget.** A spawn whose resolved time budget is
+zero is refused with `ScopeAttenuationDenied` ("unsatisfiable scope"), because
+such a sub-agent could not make a single call. The resolved budget is the
+smaller of what the spawn asks for and what its parent has left, so a spawn
+without `time_budget_seconds` asks for zero and is refused, at every level,
+including a sub-agent spawned directly from the run. Before, the in-process
+backend granted a first-level sub-agent without a budget; it now refuses it, as
+the networked service always has. Once a sub-agent's budget has run out, every
+call it makes is denied. To fix it, pass `time_budget_seconds` on each spawn,
+no larger than the parent's. This only moves in the closed direction.
 
 **The TypeScript SDK requires Node 22 or later (Node 18 and 20 are end of life); it relies on the Web Crypto global.** `@watchlight/sdk` now declares `engines.node >=22`. The engine
 (`@watchlight/engine`) reads randomness from `globalThis.crypto`, which Node 18

@@ -496,7 +496,7 @@ def test_unusual_agent_names_are_recorded_as_given_and_never_refused(name, tmp_p
     async def run():
         async with await plugin.start_run(root) as handle:
             assert await handle.authorize_action(*ALLOWED)
-            sub = await _spawn(plugin, handle, child, allowed_tools=["web_search"])
+            sub = await _spawn(plugin, handle, child, allowed_tools=["web_search"], time_budget_seconds=60)
             assert await sub.authorize_action(*ALLOWED)
 
     asyncio.run(run())
@@ -677,6 +677,102 @@ def test_ending_a_run_forgets_its_session(tmp_path):
         assert await client.complete_session(info.run) is False
 
     asyncio.run(run())
+
+
+async def _named_run(client, slug):
+    agent = await client.resolve_agent(slug)
+    return await client.create_session(agent["id"])
+
+
+def test_a_decision_is_filed_under_its_run_not_the_session_id_it_names(tmp_path):
+    """The SDK names the run by its reference; a `session_id` that names a
+    different run must not move the record to that run's agent."""
+    client = _audited_client(tmp_path)
+
+    async def run():
+        alpha = await _named_run(client, "alpha-agent")
+        beta = await _named_run(client, "beta-agent")
+        await client.authorize(
+            'Agent::"x"', *ALLOWED, {}, session_id=alpha.session_id, run=beta.run
+        )
+        # A call that names no run is filed under the session it names.
+        await client.authorize('Agent::"x"', *ALLOWED, {}, session_id=alpha.session_id)
+
+    asyncio.run(run())
+    agents = [r["agent"] for r in _decisions(_lines(tmp_path / "audit.jsonl"))]
+    assert agents == ["beta-agent", "alpha-agent"]
+
+
+def test_a_sub_agent_chain_comes_from_the_parent_run_not_the_request(tmp_path):
+    """The chain a sub-agent's records carry is its parent RUN's chain. The
+    agent and handle ids in the spawn request are the caller's words and are
+    never used for it."""
+    from uuid import UUID, uuid4
+
+    from watchlight_core.scope import (
+        RequestedScope,
+        SpawnSubagentRequest,
+        spawn_subagent_request_to_dict,
+    )
+
+    client = _audited_client(tmp_path)
+
+    async def run():
+        lead = await _named_run(client, "lead-agent")
+        decoy = await client.resolve_agent("decoy-agent")
+        child = await client.resolve_agent("child-agent")
+        request = spawn_subagent_request_to_dict(
+            SpawnSubagentRequest(
+                # Names another agent as the parent: ignored for the chain.
+                parent_agent_id=UUID(decoy["id"]),
+                child_agent_id=UUID(child["id"]),
+                parent_run_handle_id=UUID(lead.root_run_handle_id or str(uuid4())),
+                requested_scope=RequestedScope(
+                    allowed_tools=["web_search"], time_budget_seconds=60
+                ),
+            )
+        )
+        response = await client.spawn_subagent(lead.run, request)
+        await client.authorize('Agent::"x"', *ALLOWED, {}, run=response["child_run"])
+
+    asyncio.run(run())
+    decisions = _decisions(_lines(tmp_path / "audit.jsonl"))
+    assert [(r["agent"], r.get("actor_chain")) for r in decisions] == [
+        ("child-agent", ["lead-agent", "child-agent"])
+    ]
+
+
+def test_a_decision_after_the_run_ended_still_names_its_agent(tmp_path):
+    client = _audited_client(tmp_path)
+
+    async def run():
+        info = await _named_run(client, "ended-agent")
+        assert await client.complete_session(info.run) is True
+        # The SDK refuses a call for an ended run; the refusal is recorded
+        # under the run's agent, not as unconfigured.
+        result = await client.authorize('Agent::"x"', *ALLOWED, {}, run=info.run)
+        assert result["decision"] == "Deny"
+
+    asyncio.run(run())
+    decisions = _decisions(_lines(tmp_path / "audit.jsonl"))
+    assert [(r["agent"], r["decision"]) for r in decisions] == [("ended-agent", "Deny")]
+
+
+def test_the_ended_run_memory_is_bounded(tmp_path, monkeypatch):
+    import watchlight.inprocess as inprocess
+
+    monkeypatch.setattr(inprocess, "_MAX_ENDED_RUNS", 3)
+    client = _audited_client(tmp_path)
+
+    async def run():
+        for i in range(5):
+            info = await _named_run(client, f"agent-{i}")
+            await client.complete_session(info.run)
+
+    asyncio.run(run())
+    assert len(client._wl_ended_runs) == 3
+    assert len(client._wl_ended_sessions) == 3
+    assert not client._wl_runs and not client._wl_sessions
 
 
 @pytest.mark.parametrize("kwarg", ["application_id", "subject_token"])

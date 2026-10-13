@@ -30,6 +30,10 @@ the SDK's backend directly.
   SDK's `SessionInfo` from `create_session`, and names a run by its run
   reference (`run`) when it authorizes, spawns, completes or terminates it.
   Every decision is still recorded exactly once, with the same fields.
+- A plugin decision record is filed under the run the SDK names, never under a
+  session id passed alongside it, and a sub-agent's actor chain comes from the
+  parent run it was spawned under, never from ids in the spawn request. A
+  decision recorded after its run ended still names the run's agent.
 - The TypeScript SDK requires Node 22 or later (Node 18 and 20 are end of life); it relies on the Web Crypto global. `engines.node` in `@watchlight/sdk` is now `>=22`.
 
 ## 0.13.2 — 2026-10-03
