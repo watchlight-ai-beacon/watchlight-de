@@ -31,7 +31,7 @@
     "ai-agents"
   ],
   "dependencies": {
-    "@watchlight/engine": "^0.2.0"
+    "@watchlight/engine": "^0.2.3"
   },
   "devDependencies": {
     "typescript": "^7.0.2",

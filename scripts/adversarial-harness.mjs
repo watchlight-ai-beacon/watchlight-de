@@ -250,20 +250,21 @@ for (const [label, annot] of [
   const loaded = await attempt(() => { g.allow(annot + 'permit(principal, action == Action::"z", resource);', "z"); return g.policyCount; });
   if (loaded.err) { P("annotation " + label, "PASS", "rejected at load: " + loaded.err); continue; }
   const v = await attempt(() => g.authorize({ action: "z", principal: principals.user("u"), resource: "r" }).then((x) => x.decision));
+  // The engine compiles asynchronously: a refused annotation surfaces as a
+  // PolicyError at the first decision, and the set never decides.
+  if (v.err && String(v.err).startsWith("PolicyError")) { P("annotation " + label, "PASS", "refused: " + v.err); continue; }
   P("annotation " + label, v.ok === "NeedsApproval" ? "PASS" : "GAP", "loaded silently, decision=" + v.ok);
 }
 {
-  // A misspelled annotation NAME is deliberately only a warning: an unknown
-  // annotation is legal Cedar and may legitimately belong to the application.
-  // The contract we hold them to is that it is not SILENT.
+  // A misspelled annotation NAME (a near miss for `enforcement_effect`) is
+  // refused by the engine: as written it would be inert, so an approval gate
+  // would be a plain allow.
   const g = mk();
-  const warns = [];
-  const orig = console.warn;
-  console.warn = (...a) => warns.push(a.join(" "));
   g.allow('@enforcment_effect("require_approval")\npermit(principal, action == Action::"n", resource);', "n");
-  console.warn = orig;
-  P("misspelled annotation name warns", warns.length > 0 ? "PASS" : "GAP",
-    warns.length ? "warned" : "SILENT -- a typo'd guard would not be noticed");
+  const v = await attempt(() => g.authorize({ action: "n", principal: principals.user("u"), resource: "r" }).then((x) => x.decision));
+  const refused = v.err && String(v.err).startsWith("PolicyError");
+  P("misspelled annotation name is refused", refused ? "PASS" : "GAP",
+    refused ? "refused: " + v.err : "decision=" + v.ok + " -- a typo'd guard would not be noticed");
 }
 {
   const g = mk();

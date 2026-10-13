@@ -69,7 +69,7 @@ import {
 } from "./sanitize";
 import { screen as screenText, ScreenError, type ScreenOptions, type ScreenResult } from "./screen";
 import { assertAgentNameRules, assertName, assertNameList, assertPrincipal, principals } from "./principals";
-import { checkPolicyAnnotations } from "./annotations";
+import { PolicyError } from "./annotations";
 import { policyEntries, readPolicyFile, type PolicyEntry } from "./policy-file";
 import { DEFAULT_ON_RESULT_TIMEOUT_MS, EgressTimeout, resolveEgressTimeoutMs } from "./egress";
 import {
@@ -164,8 +164,14 @@ export {
   MAX_SCOPE_LIST_BYTES,
   MAX_ACTOR_CHAIN_BYTES,
 } from "./principals";
-export { PolicyError, ENFORCEMENT_EFFECTS, ENFORCEMENT_EFFECT_ANNOTATION } from "./annotations";
-export type { EnforcementEffect } from "./annotations";
+export {
+  PolicyError,
+  ENFORCEMENT_EFFECT_ANNOTATION,
+  ENFORCEMENT_EFFECT_NAME_NEAR_MISS,
+  POLICY_ERROR_CODES,
+  UNRECOGNISED_ENFORCEMENT_EFFECT,
+} from "./annotations";
+export type { PolicyErrorCode } from "./annotations";
 export {
   screen,
   ScreenError,
@@ -1139,14 +1145,14 @@ export class Watchlight {
    *  more than once). (In networked mode policies are managed by the control
    *  plane and this is ignored, with a one-time warning.)
    *
-   *  CHECKED BEFORE IT LOADS: a policy carrying an `@enforcement_effect` value
-   *  the engine does not implement throws {@link PolicyError} naming the value
-   *  and the accepted set ({@link ENFORCEMENT_EFFECTS}), rather than loading and
-   *  quietly deciding without the effect — which on a `permit` would turn an
-   *  approval hold into a plain allow. An annotation NAME that is a near miss
-   *  for `@enforcement_effect` warns on the console; any other annotation is
-   *  your own and passes without comment. Every policy entry point goes through
-   *  here, {@link load} and the CLI included.
+   *  REFUSED IF THE EFFECT CANNOT BE HONOURED: the engine refuses a policy whose
+   *  `@enforcement_effect` value it does not implement, or whose annotation
+   *  name is a near miss for `enforcement_effect`. That surfaces as
+   *  {@link PolicyError} (its `code` names which), the same way a compile error
+   *  does, below: the set never decides without the effect, which on a
+   *  `permit` would turn an approval hold into a plain allow. Any other
+   *  annotation is your own. Every policy entry point goes through here,
+   *  {@link load} and the CLI included.
    *
    *  COMPILED BEFORE THE FIRST DECISION, NEVER SKIPPED. The engine compiles
    *  asynchronously, so a Cedar syntax error surfaces at {@link ready} or the
@@ -1159,7 +1165,6 @@ export class Watchlight {
 
   private _add(cedarCode: string, name?: string, source?: string): this {
     const policyName = name ?? `policy-${this._shared.policyCount}`;
-    checkPolicyAnnotations(cedarCode, policyName);
     this._backend.addPolicy({ name: policyName, code: cedarCode, source });
     this._shared.policyCount += 1;
     return this;
@@ -1203,10 +1208,10 @@ export class Watchlight {
    *  the previous copy stays and `policyCount` grows; construct a fresh
    *  governor when you need the old set gone.
    *
-   *  CHECKED BEFORE IT LOADS: the whole file is checked first, so a policy
-   *  carrying an `@enforcement_effect` the engine does not implement throws
-   *  {@link PolicyError} and NOTHING from that file is added — the governor is
-   *  left exactly as it was, and the source is not remembered. See
+   *  A policy the engine refuses, for a Cedar error or for an
+   *  `@enforcement_effect` it cannot honour, surfaces at {@link ready} or the
+   *  next decision as {@link PolicyCompileError} or {@link PolicyError}, and
+   *  every decision throws it until {@link reload} replaces the set. See
    *  {@link allow}. */
   load(
     file: string,
@@ -1215,13 +1220,6 @@ export class Watchlight {
     const key = opts.sourceId ?? resolveSource(file);
     if (!opts.force && this._shared.sources.has(key)) return this;
     const entries = readPolicyFile(file, { op: "load", allowEmpty: opts.allowEmpty });
-    // Check the whole file before adding any of it, so one refused policy leaves
-    // the governor exactly as it was rather than half-loaded.
-    entries.forEach((e, offset) =>
-      checkPolicyAnnotations(e.code, e.name ?? `policy-${this._shared.policyCount + offset}`, {
-        warn: false,
-      })
-    );
     for (const e of entries) this._add(e.code, e.name, file);
     this._shared.sources.add(key);
     return this;
@@ -1242,17 +1240,17 @@ export class Watchlight {
    * so it could only ever WIDEN authority. An operator console that can edit a
    * policy set has to be able to take one away.
    *
-   * FAIL-CLOSED ON THE WAY IN. The new set is parsed and its annotations are
-   * checked before anything is swapped, so a missing file, an empty set or a
-   * refused annotation leaves the governor exactly as it was and throws. Only
-   * those checks are atomic.
+   * FAIL-CLOSED ON THE WAY IN. The new set is parsed before anything is
+   * swapped, so a missing file or an empty set leaves the governor exactly as
+   * it was and throws. Only those checks are atomic.
    *
-   * A Cedar compile error is not: the engine compiles asynchronously, so it
-   * cannot throw here. The new set is swapped in, and the error surfaces at
-   * {@link ready} or the next decision as {@link PolicyCompileError}. From then
-   * on every decision throws it until a reload with a set that compiles: the
-   * old set is gone, and the new one never decides without the policy that
-   * failed. `await govern.reload(...).ready()` surfaces it at once.
+   * A policy the engine refuses is not: the engine compiles asynchronously, so
+   * it cannot throw here. The new set is swapped in, and the refusal surfaces at
+   * {@link ready} or the next decision as {@link PolicyCompileError} (a Cedar
+   * error) or {@link PolicyError} (an `@enforcement_effect` the engine cannot
+   * honour). From then on every decision throws it until a reload with a set
+   * that loads: the old set is gone, and the new one never decides without the
+   * policy that failed. `await govern.reload(...).ready()` surfaces it at once.
    *
    * It reads the same file shapes as {@link load} and refuses the same
    * mistakes. A missing file or an empty set throws rather than replacing the
@@ -1287,11 +1285,6 @@ export class Watchlight {
       entries = policyEntries(source.policies, "the policies given", { op: "reload" });
       key = source.sourceId;
     }
-    // Check every policy BEFORE building anything, so a refused annotation
-    // leaves the governor untouched — the same contract `load` gives.
-    entries.forEach((e, offset) =>
-      checkPolicyAnnotations(e.code, e.name ?? `policy-${offset}`, { warn: false })
-    );
     const backend = selectBackend(this._shared.backendOptions);
     entries.forEach((e, offset) =>
       backend.addPolicy({
@@ -1655,7 +1648,7 @@ export class Watchlight {
       });
       // A policy set that did not compile is a configuration error, not a bad
       // request: raised as itself, so the message says which policy to fix.
-      if (e instanceof PolicyCompileError) throw e;
+      if (e instanceof PolicyCompileError || e instanceof PolicyError) throw e;
       throw new AuthorizeRequestError();
     }
     const { result, principal, resource, decisionId } = decided;
