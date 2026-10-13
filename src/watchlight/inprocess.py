@@ -197,6 +197,9 @@ def _audited_client_class() -> Any:
             self._wl_sessions: Dict[str, Tuple[str, ...]] = {}
             # child run-handle id -> its chain, so a grandchild finds its parent.
             self._wl_handles: Dict[str, Tuple[str, ...]] = {}
+            # run reference -> its session id. The SDK names a run by an opaque
+            # reference when it ends one; this finds the session to forget.
+            self._wl_runs: Dict[Any, str] = {}
             self._wl_warned_record = False
 
         # ── observation: who is acting ───────────────────────────────
@@ -207,45 +210,58 @@ def _audited_client_class() -> Any:
                 self._wl_agent_names[str(agent["id"])] = slug
             return agent
 
-        async def create_session(self, agent_id: str, *args: Any, **kwargs: Any) -> Optional[Dict[str, Any]]:
-            response = await super().create_session(agent_id, *args, **kwargs)
-            session = (response or {}).get("session") if isinstance(response, dict) else None
-            if isinstance(session, dict) and session.get("id"):
-                self._wl_sessions[str(session["id"])] = (str(agent_id),)
-            return response
-
-        async def spawn_subagent(
-            self, request_body: Dict[str, Any], session_token: Optional[str] = None
-        ) -> Dict[str, Any]:
-            response = await super().spawn_subagent(request_body, session_token=session_token)
+        async def create_session(self, agent_id: str, *args: Any, **kwargs: Any) -> Any:
+            # The SDK returns a ``SessionInfo``: the run reference, the session
+            # id and a non-secret session record.
+            info = await super().create_session(agent_id, *args, **kwargs)
             try:
-                parent_handle = str(request_body["parent_run_handle_id"])
+                session_id = getattr(info, "session_id", None)
+                if session_id:
+                    self._wl_sessions[str(session_id)] = (str(agent_id),)
+                    self._wl_runs[info.run] = str(session_id)
+            except Exception as exc:  # noqa: BLE001 — observing never changes the run
+                self._wl_report_record_failure(exc)
+            return info
+
+        async def spawn_subagent(self, parent: Any, request: Dict[str, Any]) -> Dict[str, Any]:
+            response = await super().spawn_subagent(parent, request)
+            try:
+                parent_handle = str(request["parent_run_handle_id"])
                 parent_chain = self._wl_handles.get(parent_handle) or (
-                    str(request_body["parent_agent_id"]),
+                    str(request["parent_agent_id"]),
                 )
-                chain = parent_chain + (str(request_body["child_agent_id"]),)
+                chain = parent_chain + (str(request["child_agent_id"]),)
                 child_handle = str(response["child_run_handle_id"])
                 # The session the SDK's handle uses for the child: the one the
                 # backend returned, else `ses_<child run handle>` — the SDK's
                 # own derivation, in the base handle and in every plugin.
-                child_session = response.get("child_session_id") or f"ses_{child_handle}"
+                child_session = str(response.get("child_session_id") or f"ses_{child_handle}")
                 self._wl_handles[child_handle] = chain
-                self._wl_sessions[str(child_session)] = chain
+                self._wl_sessions[child_session] = chain
+                child_run = response.get("child_run")
+                if child_run is not None:
+                    self._wl_runs[child_run] = child_session
             except Exception as exc:  # noqa: BLE001 — observing never changes the spawn
                 self._wl_report_record_failure(exc)
             return response
 
-        async def complete_session(self, session_id: str, session_token: Optional[str] = None) -> bool:
-            self._wl_forget(session_id)
-            return await super().complete_session(session_id, session_token=session_token)
+        async def complete_session(self, run: Any) -> bool:
+            self._wl_forget(run)
+            return await super().complete_session(run)
 
-        async def terminate_session(self, session_id: str, reason: str = "manual") -> bool:
-            self._wl_forget(session_id)
-            return await super().terminate_session(session_id, reason)
+        async def terminate_session(self, run: Any, reason: str = "manual") -> bool:
+            self._wl_forget(run)
+            return await super().terminate_session(run, reason)
 
-        def _wl_forget(self, session_id: str) -> None:
+        def _wl_forget(self, run: Any) -> None:
+            try:
+                session_id = self._wl_runs.pop(run, None)
+            except TypeError:  # an unhashable value names no run we know
+                return
+            if session_id is None:
+                return
             self._wl_sessions.pop(session_id, None)
-            if isinstance(session_id, str) and session_id.startswith("ses_"):
+            if session_id.startswith("ses_"):
                 self._wl_handles.pop(session_id[4:], None)
 
         # ── the decision ─────────────────────────────────────────────
@@ -259,7 +275,7 @@ def _audited_client_class() -> Any:
             execution_id: Optional[str] = None,
             session_id: Optional[str] = None,
             intent: Optional[Dict[str, Any]] = None,
-            session_token: Optional[str] = None,
+            run: Any = None,
         ) -> Dict[str, Any]:
             marker = _CALL_MARKER.get()
             if marker is not None:
@@ -275,6 +291,14 @@ def _audited_client_class() -> Any:
             resource = principals.assert_name(resource, "resource")
             if execution_id is not None:
                 execution_id = principals.assert_name(execution_id, "execution_id")
+            # The session the record is filed under: the one the handle names,
+            # else the one its run reference belongs to.
+            record_session = session_id
+            if record_session is None and run is not None:
+                try:
+                    record_session = self._wl_runs.get(run)
+                except TypeError:  # an unhashable value names no run we know
+                    record_session = None
             try:
                 result = await super().authorize(
                     principal,
@@ -284,12 +308,12 @@ def _audited_client_class() -> Any:
                     execution_id=execution_id,
                     session_id=session_id,
                     intent=intent,
-                    session_token=session_token,
+                    run=run,
                 )
             except Exception:
                 # The direct path's rule: a request the engine cannot evaluate
                 # is a refusal like any other — recorded, then raised as itself.
-                self._wl_record(session_id, None, principal, action, resource, "Deny", execution_id)
+                self._wl_record(record_session, None, principal, action, resource, "Deny", execution_id)
                 raise
             # The verdict the plugin acts on. The SDK reads it the same way —
             # case- and space-insensitively — and anything but an Allow is a
@@ -297,7 +321,7 @@ def _audited_client_class() -> Any:
             verdict = result.get("decision") if isinstance(result, dict) else None
             allowed = str(verdict).strip().lower() == "allow"
             self._wl_record(
-                session_id, None, principal, action, resource,
+                record_session, None, principal, action, resource,
                 "Allow" if allowed else "Deny", execution_id,
             )
             return result

@@ -10,6 +10,31 @@ between the version you are on and the one you are moving to.
 
 ## Unreleased
 
+**The framework extras now require `watchlight-agent-sdk` 0.10 and the plugin
+releases written for it.** The `langgraph`, `pydantic-ai`, `claude-agent`, `sdk`
+and `all` extras require `watchlight-agent-sdk>=0.10,<0.11`,
+`watchlight-langgraph>=0.5,<0.6`, `watchlight-pydantic-ai>=0.4,<0.5` and
+`watchlight-claude-agent>=0.3,<0.4`. If you only use `governed_plugin()` or
+`in_process_backend()` with a plugin, upgrading the extra is all you do. If
+your own code calls the backend that `in_process_backend()` returns, it must
+follow the SDK 0.10 interface: `create_session` returns a `SessionInfo` (read
+`info.session_id` and keep `info.run`) instead of a dict, and `authorize`,
+`spawn_subagent`, `complete_session` and `terminate_session` take the run
+reference (`run=...`, or `spawn_subagent(parent_run, request)`) instead of a
+session id or `session_token`. Old calls fail with `TypeError` or
+`AttributeError` at once; none of them silently changes a verdict. If you
+pinned `watchlight-agent-sdk` below 0.10 yourself, raise the pin; pip reports
+the conflict at install time.
+
+**A sub-agent spawned from a sub-agent needs a time budget.** With
+`watchlight-engine` 0.2.2 (which 0.13.2 already allows), a spawn whose resolved time budget is zero is
+refused with `ScopeAttenuationDenied` ("unsatisfiable scope"), because such a
+child could not make a single call. A first-level sub-agent with no
+`time_budget_seconds` keeps working, but any child it spawns gets a budget of
+at most its parent's, which is zero. To fix it, pass `time_budget_seconds` on
+each spawn, no larger than the parent's. This only moves in the closed
+direction.
+
 **The TypeScript SDK requires Node 22 or later (Node 18 and 20 are end of life); it relies on the Web Crypto global.** `@watchlight/sdk` now declares `engines.node >=22`. The engine
 (`@watchlight/engine`) reads randomness from `globalThis.crypto`, which Node 18
 does not define by default, so on Node 18 the first decision fails instead of
