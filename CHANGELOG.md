@@ -34,6 +34,12 @@ the SDK's backend directly.
   session id passed alongside it, and a sub-agent's actor chain comes from the
   parent run it was spawned under, never from ids in the spawn request. A
   decision recorded after its run ended still names the run's agent.
+- Hardening: a sub-agent's time is bounded in process as it is by the
+  networked service. A spawn that names no time budget inherits its parent's
+  remaining time (a sub-agent of the run inherits the root's ceiling, 3600
+  seconds by default). An explicit `0`, a budget larger than the parent's and
+  a spawn from a parent with no time left are refused. Once its time runs out,
+  every call the sub-agent makes is denied. Requires `watchlight-engine>=0.2.3`.
 - The TypeScript SDK requires Node 22 or later (Node 18 and 20 are end of life); it relies on the Web Crypto global. `engines.node` in `@watchlight/sdk` is now `>=22`.
 
 ## 0.13.2 — 2026-10-03

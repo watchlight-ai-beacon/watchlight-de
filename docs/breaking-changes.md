@@ -26,16 +26,22 @@ session id or `session_token`. Old calls fail with `TypeError` or
 pinned `watchlight-agent-sdk` below 0.10 yourself, raise the pin; pip reports
 the conflict at install time.
 
-**Every sub-agent needs a time budget.** A spawn whose resolved time budget is
-zero is refused with `ScopeAttenuationDenied` ("unsatisfiable scope"), because
-such a sub-agent could not make a single call. The resolved budget is the
-smaller of what the spawn asks for and what its parent has left, so a spawn
-without `time_budget_seconds` asks for zero and is refused, at every level,
-including a sub-agent spawned directly from the run. Before, the in-process
-backend granted a first-level sub-agent without a budget; it now refuses it, as
-the networked service always has. Once a sub-agent's budget has run out, every
-call it makes is denied. To fix it, pass `time_budget_seconds` on each spawn,
-no larger than the parent's. This only moves in the closed direction.
+**A sub-agent's time is bounded, and a spawn that names no budget inherits its
+parent's remaining time.** A spawn without `time_budget_seconds` no longer asks
+for zero. It inherits what its parent has left, and never more. A sub-agent
+spawned directly from the run inherits the root's ceiling, which is 3600
+seconds by default. A budget you name can only narrow that. An explicit
+`time_budget_seconds=0` is refused with `ScopeAttenuationDenied` ("unsatisfiable
+scope", reason code `UNSATISFIABLE_SCOPE`), because such a sub-agent could not
+make a single call. So is a spawn from a parent that has no time left, and a
+budget larger than the parent's, which would widen it. A budget that is not a
+whole number of seconds is refused as an invalid spawn request. Once a
+sub-agent's time has run out, every call it makes is denied, including
+`preflight_step`. Before, the in-process backend granted a first-level sub-agent
+whatever it asked for and never checked its deadline. It now behaves as the
+networked service does. Every change here moves in the closed direction,
+except that a spawn which named no budget used to be refused and now runs,
+bounded by its parent. This needs `watchlight-engine` 0.2.3 or later.
 
 **The TypeScript SDK requires Node 22 or later (Node 18 and 20 are end of life); it relies on the Web Crypto global.** `@watchlight/sdk` now declares `engines.node >=22`. The engine
 (`@watchlight/engine`) reads randomness from `globalThis.crypto`, which Node 18
