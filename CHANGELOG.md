@@ -39,6 +39,12 @@ the SDK's backend directly.
   session id passed alongside it, and a sub-agent's actor chain comes from the
   parent run it was spawned under, never from ids in the spawn request. A
   decision recorded after its run ended still names the run's agent.
+- Hardening: a sub-agent's time is bounded in process as it is by the
+  networked service. A spawn that names no time budget inherits its parent's
+  remaining time (a sub-agent of the run inherits the root's ceiling, 3600
+  seconds by default). An explicit `0`, a budget larger than the parent's and
+  a spawn from a parent with no time left are refused. Once its time runs out,
+  every call the sub-agent makes is denied. Requires `watchlight-engine>=0.2.3`.
 - The TypeScript SDK requires Node 22 or later (Node 18 and 20 are end of life); it relies on the Web Crypto global. `engines.node` in `@watchlight/sdk` is now `>=22`.
 - Behaviour change: both SDKs follow the strict entity references of `watchlight-engine` / `@watchlight/engine` 0.2.3, and now require it (`watchlight-engine>=0.2.3,<0.3` and `@watchlight/engine ^0.2.3`), so the reference helpers and the engine always agree. The released 0.13.2 already gets engine 0.2.3 on a fresh install, so it already shows the decision changes below; this release makes the helpers and the documentation match them.
   - A bare principal is now a `User`. `team-42` is read as `User::"team-42"`: it matches `principal is User` and a policy naming `User::"team-42"`, and no longer matches a policy of another type, such as `principal is Agent` or `Agent::"team-42"`. A bare action is an `Action` and a bare resource a `Resource`, and a bare name that contains a quote or `::` is refused as an invalid request.

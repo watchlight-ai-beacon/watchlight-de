@@ -809,6 +809,23 @@ def test_lifecycle_lines_are_neither_decisions_nor_malformed(name, tmp_path):
 # ── handles a framework opens on its own ───────────────────────────────────
 
 
+#: The in-process root's time ceiling (the SDK's default, wl-apdp's default
+#: ``subagent_time_budget_threshold_seconds``).
+ROOT_CEILING_SECONDS = 3600
+
+
+def _assert_budget_bounded_by_root(child):
+    """A sub-agent that named no budget was granted one: the root's remaining
+    time, no more than the root's ceiling, with a deadline inside it."""
+    from datetime import datetime, timedelta, timezone
+
+    granted = getattr(child, "_wl_inner", child).granted_scope
+    assert granted is not None
+    assert 0 < granted.time_budget_seconds <= ROOT_CEILING_SECONDS
+    assert granted.deadline is not None
+    assert granted.deadline <= datetime.now(timezone.utc) + timedelta(seconds=ROOT_CEILING_SECONDS)
+
+
 def test_a_native_task_sub_agent_refusal_is_recorded(tmp_path):
     # The Claude Agent SDK plugin opens a native Task sub-agent through the
     # run's SubagentRegistry. Its child handle must be the recording wrapper,
@@ -824,6 +841,9 @@ def test_a_native_task_sub_agent_refusal_is_recorded(tmp_path):
             capture = {"subagent_id": "task-1", "agent_type": "task-researcher", "allowed_tools": ["web_search"]}
             child = await plugin.on_subagent_start(handle, capture)
             assert child is not None
+            # The Task capture names no time budget: the sub-agent runs, and
+            # inherits the root's remaining time, never more.
+            _assert_budget_bounded_by_root(child)
             assert plugin.resolve_subagent(handle, "task-1") is child
             assert await child.authorize_action('Action::"read"', 'Tool::"web_search"') is True
             with pytest.raises(AgentQuarantinedError):
@@ -863,6 +883,9 @@ def test_pydantic_ai_auto_instrumented_handles_are_wrapped(tmp_path):
             )
             try:
                 assert type(child).__name__ == "_AuditedRunHandle"
+                # The nested agent names no time budget: it runs, and inherits
+                # the root's remaining time, never more.
+                _assert_budget_bounded_by_root(child)
                 with pytest.raises(AgentQuarantinedError):
                     await child.authorize_action('Action::"exfiltrate"', 'Tool::"x"')
                 with pytest.raises(AgentQuarantinedError):
