@@ -412,10 +412,18 @@ def test_a_sub_agent_decision_names_the_sub_agent_and_its_chain(name, tmp_path):
 
     async def run():
         async with await plugin.start_run("lead-agent") as handle:
-            child = await _spawn(plugin, handle, "research-sub", allowed_tools=["web_search"], max_depth=1)
+            # Each delegation names a time budget: the engine refuses a child
+            # whose resolved budget is zero (it could make no call at all), so
+            # a grandchild needs one at or under its parent's.
+            child = await _spawn(
+                plugin, handle, "research-sub",
+                allowed_tools=["web_search"], max_depth=1, time_budget_seconds=300,
+            )
             assert await child.authorize_action(*ALLOWED) is True
             assert await child.authorize_action(*DENIED) is False
-            grandchild = await _spawn(plugin, child, "fetch-sub", allowed_tools=["web_search"])
+            grandchild = await _spawn(
+                plugin, child, "fetch-sub", allowed_tools=["web_search"], time_budget_seconds=60
+            )
             assert await grandchild.authorize_action(*ALLOWED) is True
             assert await handle.authorize_action(*ALLOWED) is True
 
@@ -488,7 +496,7 @@ def test_unusual_agent_names_are_recorded_as_given_and_never_refused(name, tmp_p
     async def run():
         async with await plugin.start_run(root) as handle:
             assert await handle.authorize_action(*ALLOWED)
-            sub = await _spawn(plugin, handle, child, allowed_tools=["web_search"])
+            sub = await _spawn(plugin, handle, child, allowed_tools=["web_search"], time_budget_seconds=60)
             assert await sub.authorize_action(*ALLOWED)
 
     asyncio.run(run())
@@ -571,8 +579,9 @@ SDK_METHODS = {
     "submit_plan": "not a decision: raises NotImplementedError in-process",
     "resolve_agent": "observed for the agent's name",
     "create_session": "observed for the session's agent; refuses application_id and subject_token in-process (SDK 0.9.0)",
-    "complete_session": "bookkeeping (takes the SDK's session_token since 0.9.0)",
-    "terminate_session": "bookkeeping",
+    "complete_session": "bookkeeping (names the run by its reference since SDK 0.10.0)",
+    "terminate_session": "bookkeeping (names the run by its reference since SDK 0.10.0)",
+    "drain": "not a decision: lineage is written synchronously in-process",
     "get_manifest": "not a decision",
     "check_agent_trust": "not a decision",
     "publish_events": "lifecycle lines, written by the SDK",
@@ -609,8 +618,8 @@ def _audited_client(tmp_path):
 def test_every_override_accepts_what_the_sdk_method_accepts():
     """An override must take every argument the SDK's own method takes.
 
-    The SDK's handles call the backend with keyword arguments that a release can
-    add (0.9.0 passes ``session_token`` to ``complete_session``). An override
+    The SDK's handles call the backend with arguments that a release can add or
+    rename (0.10.0 names the run by its reference, ``run``). An override
     with the older signature raises ``TypeError`` there, and the run cannot
     complete — so a new SDK parameter fails here, by name, instead."""
     import inspect as _inspect
@@ -637,19 +646,133 @@ def test_every_override_accepts_what_the_sdk_method_accepts():
     assert {"authorize", "complete_session", "create_session", "spawn_subagent"} <= set(checked)
 
 
-def test_complete_session_forwards_the_session_token(tmp_path, monkeypatch):
+def test_complete_session_forwards_the_run(tmp_path, monkeypatch):
     from watchlight_core import InProcessClient
 
     seen = {}
 
-    async def spy(self, session_id, session_token=None):
-        seen["args"] = (session_id, session_token)
+    async def spy(self, run):
+        seen["args"] = (run,)
         return True
 
     monkeypatch.setattr(InProcessClient, "complete_session", spy)
     client = _audited_client(tmp_path)
-    assert asyncio.run(client.complete_session("ses_1", session_token="tok")) is True
-    assert seen["args"] == ("ses_1", "tok")
+    assert asyncio.run(client.complete_session("run_1")) is True
+    assert seen["args"] == ("run_1",)
+
+
+def test_ending_a_run_forgets_its_session(tmp_path):
+    """The SDK ends a run by its reference; the recording backend maps it back
+    to the session and drops that session's chain, so its bookkeeping does not
+    grow with every run."""
+    client = _audited_client(tmp_path)
+
+    async def run():
+        info = await client.create_session("agent-1")
+        assert client._wl_sessions[info.session_id] == ("agent-1",)
+        assert await client.complete_session(info.run) is True
+        assert info.session_id not in client._wl_sessions
+        assert info.run not in client._wl_runs
+        # An ended run is ended once; a second close is refused by the SDK.
+        assert await client.complete_session(info.run) is False
+
+    asyncio.run(run())
+
+
+async def _named_run(client, slug):
+    agent = await client.resolve_agent(slug)
+    return await client.create_session(agent["id"])
+
+
+def test_a_decision_is_filed_under_its_run_not_the_session_id_it_names(tmp_path):
+    """The SDK names the run by its reference; a `session_id` that names a
+    different run must not move the record to that run's agent."""
+    client = _audited_client(tmp_path)
+
+    async def run():
+        alpha = await _named_run(client, "alpha-agent")
+        beta = await _named_run(client, "beta-agent")
+        await client.authorize(
+            'Agent::"x"', *ALLOWED, {}, session_id=alpha.session_id, run=beta.run
+        )
+        # A call that names no run is filed under the session it names.
+        await client.authorize('Agent::"x"', *ALLOWED, {}, session_id=alpha.session_id)
+
+    asyncio.run(run())
+    agents = [r["agent"] for r in _decisions(_lines(tmp_path / "audit.jsonl"))]
+    assert agents == ["beta-agent", "alpha-agent"]
+
+
+def test_a_sub_agent_chain_comes_from_the_parent_run_not_the_request(tmp_path):
+    """The chain a sub-agent's records carry is its parent RUN's chain. The
+    agent and handle ids in the spawn request are the caller's words and are
+    never used for it."""
+    from uuid import UUID, uuid4
+
+    from watchlight_core.scope import (
+        RequestedScope,
+        SpawnSubagentRequest,
+        spawn_subagent_request_to_dict,
+    )
+
+    client = _audited_client(tmp_path)
+
+    async def run():
+        lead = await _named_run(client, "lead-agent")
+        decoy = await client.resolve_agent("decoy-agent")
+        child = await client.resolve_agent("child-agent")
+        request = spawn_subagent_request_to_dict(
+            SpawnSubagentRequest(
+                # Names another agent as the parent: ignored for the chain.
+                parent_agent_id=UUID(decoy["id"]),
+                child_agent_id=UUID(child["id"]),
+                parent_run_handle_id=UUID(lead.root_run_handle_id or str(uuid4())),
+                requested_scope=RequestedScope(
+                    allowed_tools=["web_search"], time_budget_seconds=60
+                ),
+            )
+        )
+        response = await client.spawn_subagent(lead.run, request)
+        await client.authorize('Agent::"x"', *ALLOWED, {}, run=response["child_run"])
+
+    asyncio.run(run())
+    decisions = _decisions(_lines(tmp_path / "audit.jsonl"))
+    assert [(r["agent"], r.get("actor_chain")) for r in decisions] == [
+        ("child-agent", ["lead-agent", "child-agent"])
+    ]
+
+
+def test_a_decision_after_the_run_ended_still_names_its_agent(tmp_path):
+    client = _audited_client(tmp_path)
+
+    async def run():
+        info = await _named_run(client, "ended-agent")
+        assert await client.complete_session(info.run) is True
+        # The SDK refuses a call for an ended run; the refusal is recorded
+        # under the run's agent, not as unconfigured.
+        result = await client.authorize('Agent::"x"', *ALLOWED, {}, run=info.run)
+        assert result["decision"] == "Deny"
+
+    asyncio.run(run())
+    decisions = _decisions(_lines(tmp_path / "audit.jsonl"))
+    assert [(r["agent"], r["decision"]) for r in decisions] == [("ended-agent", "Deny")]
+
+
+def test_the_ended_run_memory_is_bounded(tmp_path, monkeypatch):
+    import watchlight.inprocess as inprocess
+
+    monkeypatch.setattr(inprocess, "_MAX_ENDED_RUNS", 3)
+    client = _audited_client(tmp_path)
+
+    async def run():
+        for i in range(5):
+            info = await _named_run(client, f"agent-{i}")
+            await client.complete_session(info.run)
+
+    asyncio.run(run())
+    assert len(client._wl_ended_runs) == 3
+    assert len(client._wl_ended_sessions) == 3
+    assert not client._wl_runs and not client._wl_sessions
 
 
 @pytest.mark.parametrize("kwarg", ["application_id", "subject_token"])
@@ -686,6 +809,23 @@ def test_lifecycle_lines_are_neither_decisions_nor_malformed(name, tmp_path):
 # ── handles a framework opens on its own ───────────────────────────────────
 
 
+#: The in-process root's time ceiling (the SDK's default, wl-apdp's default
+#: ``subagent_time_budget_threshold_seconds``).
+ROOT_CEILING_SECONDS = 3600
+
+
+def _assert_budget_bounded_by_root(child):
+    """A sub-agent that named no budget was granted one: the root's remaining
+    time, no more than the root's ceiling, with a deadline inside it."""
+    from datetime import datetime, timedelta, timezone
+
+    granted = getattr(child, "_wl_inner", child).granted_scope
+    assert granted is not None
+    assert 0 < granted.time_budget_seconds <= ROOT_CEILING_SECONDS
+    assert granted.deadline is not None
+    assert granted.deadline <= datetime.now(timezone.utc) + timedelta(seconds=ROOT_CEILING_SECONDS)
+
+
 def test_a_native_task_sub_agent_refusal_is_recorded(tmp_path):
     # The Claude Agent SDK plugin opens a native Task sub-agent through the
     # run's SubagentRegistry. Its child handle must be the recording wrapper,
@@ -701,6 +841,9 @@ def test_a_native_task_sub_agent_refusal_is_recorded(tmp_path):
             capture = {"subagent_id": "task-1", "agent_type": "task-researcher", "allowed_tools": ["web_search"]}
             child = await plugin.on_subagent_start(handle, capture)
             assert child is not None
+            # The Task capture names no time budget: the sub-agent runs, and
+            # inherits the root's remaining time, never more.
+            _assert_budget_bounded_by_root(child)
             assert plugin.resolve_subagent(handle, "task-1") is child
             assert await child.authorize_action('Action::"read"', 'Tool::"web_search"') is True
             with pytest.raises(AgentQuarantinedError):
@@ -740,6 +883,9 @@ def test_pydantic_ai_auto_instrumented_handles_are_wrapped(tmp_path):
             )
             try:
                 assert type(child).__name__ == "_AuditedRunHandle"
+                # The nested agent names no time budget: it runs, and inherits
+                # the root's remaining time, never more.
+                _assert_budget_bounded_by_root(child)
                 with pytest.raises(AgentQuarantinedError):
                     await child.authorize_action('Action::"exfiltrate"', 'Tool::"x"')
                 with pytest.raises(AgentQuarantinedError):
@@ -800,13 +946,13 @@ HANDLE_METHODS = {
     "mark_execution_started_emitted": "lifecycle bookkeeping",
     "mark_execution_completed_emitted": "lifecycle bookkeeping",
     "mark_execution_failed_emitted": "lifecycle bookkeeping",
-    "parse_proxy_token_fields": "parses a session response",
     "parse_root_run_handle_id": "parses a session response",
     "record_declared_intent": "stores the declared intent; the next authorize reads it",
     "synthetic_tools": "tool descriptors, not a decision",
     "synthetic_langchain_tools": "tool descriptors, not a decision (LangGraph)",
     "bind_tools": "binds tool descriptors to a model, not a decision (LangGraph)",
     "callback_handler": "builds a lineage callback handler, not a decision (LangGraph)",
+    "detach_callbacks": "releases the callback handler's context, not a decision (LangGraph)",
 }
 
 

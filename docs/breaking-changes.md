@@ -10,6 +10,39 @@ between the version you are on and the one you are moving to.
 
 ## Unreleased
 
+**The framework extras now require `watchlight-agent-sdk` 0.10 and the plugin
+releases written for it.** The `langgraph`, `pydantic-ai`, `claude-agent`, `sdk`
+and `all` extras require `watchlight-agent-sdk>=0.10,<0.11`,
+`watchlight-langgraph>=0.5,<0.6`, `watchlight-pydantic-ai>=0.4,<0.5` and
+`watchlight-claude-agent>=0.3,<0.4`. If you only use `governed_plugin()` or
+`in_process_backend()` with a plugin, upgrading the extra is all you do. If
+your own code calls the backend that `in_process_backend()` returns, it must
+follow the SDK 0.10 interface: `create_session` returns a `SessionInfo` (read
+`info.session_id` and keep `info.run`) instead of a dict, and `authorize`,
+`spawn_subagent`, `complete_session` and `terminate_session` take the run
+reference (`run=...`, or `spawn_subagent(parent_run, request)`) instead of a
+session id or `session_token`. Old calls fail with `TypeError` or
+`AttributeError` at once; none of them silently changes a verdict. If you
+pinned `watchlight-agent-sdk` below 0.10 yourself, raise the pin; pip reports
+the conflict at install time.
+
+**A sub-agent's time is bounded, and a spawn that names no budget inherits its
+parent's remaining time.** A spawn without `time_budget_seconds` no longer asks
+for zero. It inherits what its parent has left, and never more. A sub-agent
+spawned directly from the run inherits the root's ceiling, which is 3600
+seconds by default. A budget you name can only narrow that. An explicit
+`time_budget_seconds=0` is refused with `ScopeAttenuationDenied` ("unsatisfiable
+scope", reason code `UNSATISFIABLE_SCOPE`), because such a sub-agent could not
+make a single call. So is a spawn from a parent that has no time left, and a
+budget larger than the parent's, which would widen it. A budget that is not a
+whole number of seconds is refused as an invalid spawn request. Once a
+sub-agent's time has run out, every call it makes is denied, including
+`preflight_step`. Before, the in-process backend granted a first-level sub-agent
+whatever it asked for and never checked its deadline. It now behaves as the
+networked service does. Every change here moves in the closed direction,
+except that a spawn which named no budget used to be refused and now runs,
+bounded by its parent. This needs `watchlight-engine` 0.2.3 or later.
+
 **The TypeScript SDK requires Node 22 or later (Node 18 and 20 are end of life); it relies on the Web Crypto global.** `@watchlight/sdk` now declares `engines.node >=22`. The engine
 (`@watchlight/engine`) reads randomness from `globalThis.crypto`, which Node 18
 does not define by default, so on Node 18 the first decision fails instead of
