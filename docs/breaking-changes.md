@@ -75,8 +75,12 @@ combining mark at the start of the id. Engine 0.2.3 refuses such a raw
 character in a request, so on 0.13.2 with engine 0.2.3 the call already fails
 with `AuthorizeRequestError`; the helper now refuses the id before the call. An agent name follows the same rule and is
 refused when the governor is constructed or named. If your ids can carry such
-characters, normalise them in your application before they become a principal,
-for example by mapping a no-break space to a plain space. `counters()` and `count_audit_records`
+characters, change an id only where your identity source already treats both
+forms as the same subject. Otherwise refuse the id, or map it to an encoding you
+can reverse, such as hex or base64url of its UTF-8 bytes. Never map one
+character to another (a no-break space to a plain space, say) by itself: two
+different subjects could become one principal, and one could then act as the
+other. `counters()` and `count_audit_records`
 match the principal as a string, so a quota for such an id counts only the
 records written after the upgrade until its window has passed. If that matters,
 count both spellings for the length of one window.
