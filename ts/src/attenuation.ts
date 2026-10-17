@@ -6,6 +6,11 @@
 // written to the value-free audit trail. Every tree is bounded by its
 // maxDelegationDepth — a governance control (default 8); a hop past it is a deny
 // with reason code DELEGATION_DEPTH_EXCEEDED.
+//
+// A child's timeBudgetSeconds is granted exactly or refused, never shortened. A
+// child that names none inherits the whole seconds its parent has left
+// (Scope.remainingSeconds()); a named budget larger than that, or than the
+// parent's own budget, is refused with a TimeBudget violation.
 
 import * as crypto from "node:crypto";
 import type { Engine, GrantedScope, RequestedScope } from "@watchlight/engine";
@@ -60,6 +65,38 @@ export class DelegationDepthExceeded extends AttenuationDenied {
 }
 
 const norm = (x?: readonly string[] | null): string[] => (x ? [...x] : []);
+
+/** The largest time budget the engine accepts (an unsigned 32-bit count of seconds). */
+export const MAX_TIME_BUDGET_SECONDS = 2 ** 32 - 1;
+
+/** The fixed reason for a named time budget the parent cannot give. It states
+ *  only the whole seconds available, never the requested value. */
+function budgetRefusal(available: number): string {
+  if (available <= 0) return "the parent scope has less than one second left; at most 0 seconds are available";
+  return `time_budget_seconds exceeds the parent's remaining time; at most ${available} seconds are available`;
+}
+
+/** Fixed reason for a named child budget that is not a whole number of seconds
+ *  in range. Never carries the value. */
+const INVALID_BUDGET = `time_budget_seconds must be a whole number of seconds from 1 to ${MAX_TIME_BUDGET_SECONDS}`;
+
+/** Whether `value` is a whole number of seconds from 1 to
+ *  {@link MAX_TIME_BUDGET_SECONDS}. */
+const isValidBudget = (value: unknown): value is number =>
+  typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= MAX_TIME_BUDGET_SECONDS;
+
+/** A root scope's time budget: a whole number of seconds from 1 to
+ *  {@link MAX_TIME_BUDGET_SECONDS}. Value-free `TypeError` or `RangeError`
+ *  otherwise, so a root can never start spent, negative or unbounded. */
+export function checkRootTimeBudget(timeBudgetSeconds: unknown): number {
+  if (typeof timeBudgetSeconds !== "number" || !Number.isInteger(timeBudgetSeconds)) {
+    throw new TypeError("timeBudgetSeconds must be an integer");
+  }
+  if (!isValidBudget(timeBudgetSeconds)) {
+    throw new RangeError(`timeBudgetSeconds must be from 1 to ${MAX_TIME_BUDGET_SECONDS}`);
+  }
+  return timeBudgetSeconds;
+}
 
 /** The bounds on a child scope's request (see `principals.ts`): each list
  *  bounded in entries and bytes, the sub-agent's name a valid agent name, and
@@ -118,13 +155,47 @@ type AttenuationOutcome =
 
 /** Run the engine's strict-subset check for a child of `p`. Creates and records
  *  nothing: the one decision both {@link Scope.attenuate} and the previews act
- *  on, so the two cannot disagree. */
-function attenuationOutcome(engine: Engine, p: ScopeDims, opts: AttenuateOptions): AttenuationOutcome {
+ *  on, so the two cannot disagree.
+ *
+ *  `available` is the whole seconds the parent can still give (see
+ *  {@link Scope.remainingSeconds}). A budget the child NAMES is granted exactly
+ *  or refused, never shortened: one above `available` is refused with a
+ *  `TimeBudget` violation. A budget the child omits inherits `available`. A
+ *  parent with no whole second left grants nothing. */
+function attenuationOutcome(
+  engine: Engine,
+  p: ScopeDims,
+  opts: AttenuateOptions,
+  available: number
+): AttenuationOutcome {
   const childDepth = p.depth + 1;
   const requestedTools = opts.tools !== undefined ? norm(opts.tools) : [...p.allowedTools];
 
   // maxDelegationDepth — a governance control, checked before the engine.
   if (childDepth > p.maxDelegationDepth) return { kind: "depth", requestedTools, childDepth };
+
+  // `undefined` and `null` both mean "absent": the child inherits, as Python's
+  // `None` does.
+  const named: unknown = opts.timeBudgetSeconds ?? undefined;
+  // A named budget must be a whole number of seconds in range. Anything else (0,
+  // a negative, a boolean, a fraction, NaN, Infinity, a string, a BigInt, a
+  // value past the engine's range) is refused here with a fixed reason — never
+  // handed to the engine, and recorded like any other refused attenuation.
+  if (named !== undefined && !isValidBudget(named)) {
+    return { kind: "deny", requestedTools, childDepth, violations: ["TimeBudget"], reason: INVALID_BUDGET };
+  }
+
+  // A parent with no whole second left can give no time, named or inherited.
+  if (available <= 0) {
+    return { kind: "deny", requestedTools, childDepth, violations: ["TimeBudget"], reason: budgetRefusal(0) };
+  }
+
+  // A named budget larger than the parent can give — more than it has left, or
+  // more than its own budget — is refused before the engine, with a reason that
+  // states the seconds available.
+  if (named !== undefined && named > available) {
+    return { kind: "deny", requestedTools, childDepth, violations: ["TimeBudget"], reason: budgetRefusal(available) };
+  }
 
   const parent: GrantedScope = {
     allowed_tools: [...p.allowedTools],
@@ -141,7 +212,9 @@ function attenuationOutcome(engine: Engine, p: ScopeDims, opts: AttenuateOptions
     ),
     allowed_intents: opts.intents !== undefined ? norm(opts.intents) : [...p.allowedIntents],
     max_depth: Math.max(0, p.maxDepth - 1),
-    time_budget_seconds: opts.timeBudgetSeconds !== undefined ? opts.timeBudgetSeconds : p.timeBudgetSeconds,
+    // An absent budget inherits what the parent has left; a named one is passed
+    // as given (already checked), and the engine checks it again.
+    time_budget_seconds: named !== undefined ? named : available,
   };
 
   const resp = engine.attenuateScope(parent, request);
@@ -156,6 +229,16 @@ function attenuationOutcome(engine: Engine, p: ScopeDims, opts: AttenuateOptions
 
   // The engine returns the CLAMPED grant — never the child's raw request.
   const granted = resp.granted_scope;
+  const grantedBudget = granted.time_budget_seconds ?? request.time_budget_seconds;
+  // The engine compares a budget with the parent's GRANTED budget only. A named
+  // budget must also fit in the time the parent has left: it is refused, never
+  // shortened, so a child never starts work sized for time it does not have. A
+  // named budget's grant must be exactly what was named, and no grant may
+  // exceed what the parent has left.
+  const namedChanged = named !== undefined && grantedBudget !== named;
+  if (namedChanged || grantedBudget > available) {
+    return { kind: "deny", requestedTools, childDepth, violations: ["TimeBudget"], reason: budgetRefusal(available) };
+  }
   return {
     kind: "allow",
     childDepth,
@@ -166,7 +249,7 @@ function attenuationOutcome(engine: Engine, p: ScopeDims, opts: AttenuateOptions
       ),
       allowedIntents: granted.allowed_intents ?? request.allowed_intents,
       maxDepth: granted.max_depth ?? request.max_depth,
-      timeBudgetSeconds: granted.time_budget_seconds ?? request.time_budget_seconds,
+      timeBudgetSeconds: grantedBudget,
       depth: granted.depth ?? childDepth,
     },
   };
@@ -176,7 +259,9 @@ export interface AttenuateOptions {
   tools?: readonly string[];
   resources?: readonly string[];
   intents?: readonly string[];
-  timeBudgetSeconds?: number;
+  /** Whole seconds from 1 to 2**32 - 1, granted exactly or refused. Omit it
+   *  (or pass `null`) to inherit the parent's {@link Scope.remainingSeconds}. */
+  timeBudgetSeconds?: number | null;
   /** The sub-agent this scope is spawned FOR. Appends that name to the child's
    *  {@link Scope.actorChain}, which is what a delegated governor
    *  ({@link Watchlight.delegate}) records and what a policy reads as
@@ -276,16 +361,35 @@ export class Scope {
     this._parent = init.parent;
     this._signingSecrets = init.signingSecrets;
     this.issuedAt = init.issuedAt ?? nowSeconds();
-    // A scope never outlives its parent, whatever its own budget says.
     this._expiresAt = this.issuedAt + this.timeBudgetSeconds;
+    // An invariant, not a clamp: attenuate() grants a child no more than the
+    // whole seconds its parent has left, so a child's expiry is never past its
+    // parent's. Kept so a scope can never outlive its parent however it was
+    // constructed.
     if (init.parent) this._expiresAt = Math.min(this._expiresAt, init.parent.expiresAt);
   }
 
   /** Epoch seconds after which this scope is spent: `issuedAt + timeBudgetSeconds`,
-   *  clamped to the parent's expiry (and, for a scope rebuilt from a token, to
-   *  the token's `exp`). */
+   *  never past the parent's expiry (and, for a scope rebuilt from a token,
+   *  never past the token's `exp`). */
   get expiresAt(): number {
     return this._expiresAt;
+  }
+
+  /** The whole seconds this scope can still give a child: the time left before
+   *  {@link expiresAt} on the wall clock, rounded down, and never more than
+   *  {@link timeBudgetSeconds}. `0` once less than one second is left. With 2.9
+   *  seconds left, 2 are available.
+   *
+   *  This is what a child that names no `timeBudgetSeconds` inherits, and the
+   *  most a child may name: a larger named budget is refused, never shortened. */
+  remainingSeconds(): number {
+    return this._availableAt(Date.now() / 1000);
+  }
+
+  private _availableAt(now: number): number {
+    const left = Math.floor(this._expiresAt - now);
+    return Math.max(0, Math.min(this.timeBudgetSeconds, left));
   }
 
   /** @internal Lower this scope's expiry (never raise it). Used when a scope is
@@ -361,15 +465,31 @@ export class Scope {
    * {@link AttenuationDenied} if the request exceeds the parent — or
    * {@link DelegationDepthExceeded}, a subclass, when the child would be deeper
    * than {@link maxDelegationDepth}.
+   *
+   * `timeBudgetSeconds` is granted exactly or refused, never shortened. Omit it
+   * to inherit this scope's {@link remainingSeconds}. A named budget larger
+   * than {@link remainingSeconds} (or than this scope's own budget) throws
+   * {@link AttenuationDenied} with a `TimeBudget` violation whose reason states
+   * the seconds available. A spent scope throws {@link ScopeTokenError}
+   * (`expired`), and one with less than a second left grants nothing either.
    */
   attenuate(opts: AttenuateOptions = {}): Scope {
+    return this._attenuateAt(opts, undefined);
+  }
+
+  /** @internal {@link attenuate} at the wall-clock instant `now` (epoch
+   *  seconds; `undefined`: the current time). Only a token replay pins it, so
+   *  every level of the chain is checked at the one instant the replayed root
+   *  was issued. */
+  _attenuateAt(opts: AttenuateOptions, now: number | undefined): Scope {
     this.assertActive(); // a spent scope grants nothing further (fail-closed)
+    const at = now ?? Date.now() / 1000;
     // Bounded before the engine and before any record: the requested tools, the
     // sub-agent's name and the chain it extends are all written down.
     opts = checkRequest(opts, this.actorChain, "attenuate()");
     // A named sub-agent's records carry the chain it would act under.
     const named = opts.agent ? [...this.actorChain, opts.agent] : undefined;
-    const out = attenuationOutcome(this._engine, this, opts);
+    const out = attenuationOutcome(this._engine, this, opts, this._availableAt(at));
     // A hop past maxDelegationDepth is a deny: the child is never created.
     if (out.kind === "depth") return this._denyDepth(out.requestedTools, out.childDepth, opts.agent);
     if (out.kind === "deny") {
@@ -401,6 +521,8 @@ export class Scope {
       parentId: this.nodeId,
       parent: this,
       signingSecrets: this._signingSecrets,
+      // Issued at the instant its budget was checked against the parent.
+      issuedAt: Math.floor(at),
       // Naming the sub-agent this scope is spawned for extends the delegation
       // chain; narrowing without a name leaves the acting identity unchanged.
       actorChain: named ?? this.actorChain,
@@ -420,14 +542,14 @@ export class Scope {
   /**
    * What {@link attenuate} would grant, without granting it or recording
    * anything — for showing a sub-agent's effective authority. Runs the same
-   * engine check and returns a {@link ScopePreview}: the clamped grant, or the
+   * engine check and returns a {@link ScopePreview}: the engine's grant, or the
    * violations and reason it would be refused with. A preview is data, never a
    * scope: it cannot authorize, delegate, or mint a token.
    */
   previewAttenuate(opts: AttenuateOptions = {}): ScopePreview {
     this.assertActive();
     opts = checkRequest(opts, this.actorChain, "previewAttenuate()");
-    return previewChild(this._engine, this, this.actorChain, opts);
+    return previewChild(this._engine, this, this.actorChain, opts, this.remainingSeconds());
   }
 
   /** Refuse a hop past {@link maxDelegationDepth}: record the deny — the observed
@@ -582,7 +704,12 @@ export class ScopePreview {
         reasonCode: this.reasonCode,
       });
     }
-    return previewChild(this._engine, this, this.actorChain, opts);
+    // A preview stands for a scope created now, at the same instant as its
+    // parent. A real scope's issue time is rounded down to the second, so the
+    // time it has left right after creation is its budget less a fraction of a
+    // second: rounded down, one second less. The preview applies the same loss,
+    // so it never grants what attenuate() would refuse.
+    return previewChild(this._engine, this, this.actorChain, opts, Math.max(0, this.timeBudgetSeconds - 1));
   }
 
   /** The preview as plain data — what `JSON.stringify` writes. */
@@ -611,9 +738,10 @@ function previewChild(
   engine: Engine,
   p: ScopeDims,
   chain: readonly string[],
-  opts: AttenuateOptions
+  opts: AttenuateOptions,
+  available: number
 ): ScopePreview {
-  const out = attenuationOutcome(engine, p, opts);
+  const out = attenuationOutcome(engine, p, opts, available);
   const actorChain = opts.agent ? [...chain, opts.agent] : chain;
   if (out.kind === "allow") {
     const g = out.grant;

@@ -437,7 +437,7 @@ export function verifyScopeToken(
   if (claims.exp <= now) throw new ScopeTokenError("expired", "token has expired");
   if (claims.exp <= claims.iat) throw new ScopeTokenError("lifetime", "token expires before it was issued");
   // A token may never outlive the scope it names: its lifetime is bounded by
-  // the (engine-clamped) time budget of the deepest level it carries.
+  // the (engine-granted) time budget of the deepest level it carries.
   const budget = claims.chain.length ? claims.chain[claims.chain.length - 1].time_budget_seconds : claims.root.time_budget_seconds;
   if (claims.exp - claims.iat > budget) {
     throw new ScopeTokenError("lifetime", "token lifetime exceeds the scope's time budget");
