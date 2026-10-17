@@ -106,19 +106,17 @@ _INVALID_BUDGET = f"time_budget_seconds must be a whole number of seconds from 1
 
 def _is_valid_budget(value: Any) -> bool:
     """Whether ``value`` is a whole number of seconds from 1 to
-    :data:`MAX_TIME_BUDGET_SECONDS` (a bool is not)."""
-    return (
-        not isinstance(value, bool)
-        and isinstance(value, int)
-        and 1 <= value <= MAX_TIME_BUDGET_SECONDS
-    )
+    :data:`MAX_TIME_BUDGET_SECONDS`. Only a plain ``int``: a bool is not, and
+    neither is an ``int`` subclass, whose own comparisons could pass a value
+    outside the range."""
+    return type(value) is int and 1 <= value <= MAX_TIME_BUDGET_SECONDS
 
 
 def _check_root_time_budget(time_budget_seconds: Any) -> int:
     """A root scope's time budget: a whole number of seconds from 1 to
     :data:`MAX_TIME_BUDGET_SECONDS`. Value-free ``TypeError`` or ``ValueError``
     otherwise, so a root can never start spent, negative or unbounded."""
-    if isinstance(time_budget_seconds, bool) or not isinstance(time_budget_seconds, int):
+    if type(time_budget_seconds) is not int:
         raise TypeError("time_budget_seconds must be an int")
     if not _is_valid_budget(time_budget_seconds):
         raise ValueError(f"time_budget_seconds must be from 1 to {MAX_TIME_BUDGET_SECONDS}")
