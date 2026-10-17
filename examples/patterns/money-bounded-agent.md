@@ -17,23 +17,23 @@ when { context.amount > 1000 };
 ## Govern the tool
 
 ```ts
-import { govern } from "@watchlight/sdk";
+import { govern, principals } from "@watchlight/sdk";
 govern.load("charge.policy.json");
 
 const charge = govern.tool(chargeCard, {
   intent: "charge",
-  principal: (o) => `User::"${o.userId}"`,            // the acting end-user
+  principal: (o) => principals.user(o.userId),        // the acting end-user
   context:   (o) => ({ amount: o.amount, limit: o.perActionLimit, refundable: o.refundable }),
   onNeedsApproval: async ({ decisionId }) => askAHuman(decisionId),
 });
 ```
 
 ```python
-from watchlight import govern
+from watchlight import govern, principals
 govern.load("charge.policy.json")
 
 @govern.tool("charge",
-             principal=lambda o: f'User::"{o["userId"]}"',
+             principal=lambda o: principals.user(o["userId"]),
              context=lambda o: {"amount": o["amount"], "limit": o["perActionLimit"],
                                 "refundable": o["refundable"]},
              on_needs_approval=lambda d: ask_a_human(d["decision_id"]))

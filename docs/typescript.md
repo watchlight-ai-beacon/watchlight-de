@@ -18,7 +18,7 @@ Everything below has a Python equivalent under a `snake_case` name.
 ```ts
 const search = govern.tool(webSearch, {
   intent: "research",
-  principal: (q) => `User::"${q.userId}"`,   // who the call is for
+  principal: (q) => principals.user(q.userId),   // who the call is for
   resource: "index/web",
   context: (q) => ({ tier: q.tier }),        // what a policy reads as context.*
 });

@@ -56,9 +56,11 @@ from .principals import (
 from ._audit import MAX_AUDIT_RECORD_BYTES
 from ._annotations import (
     ENFORCEMENT_EFFECT_ANNOTATION,
-    ENFORCEMENT_EFFECTS,
+    ENFORCEMENT_EFFECT_NAME_NEAR_MISS,
+    POLICY_ERROR_CODES,
+    UNRECOGNISED_ENFORCEMENT_EFFECT,
     PolicyError,
-    check_policy_annotations,
+    policy_error_from_engine,
 )
 from ._approval import (
     APPROVAL_KEY_LABEL,
@@ -178,8 +180,10 @@ __all__ = [
     "AuthorizeError",
     "PolicyError",
     "PolicyCompileError",
-    "ENFORCEMENT_EFFECTS",
     "ENFORCEMENT_EFFECT_ANNOTATION",
+    "ENFORCEMENT_EFFECT_NAME_NEAR_MISS",
+    "POLICY_ERROR_CODES",
+    "UNRECOGNISED_ENFORCEMENT_EFFECT",
     "OBLIGATIONS_INVALID_MESSAGE",
     "MAX_ACTOR_CHAIN_BYTES",
     "MAX_AGENT_NAME_BYTES",
@@ -409,11 +413,19 @@ def _compile_detail(cause: BaseException) -> str:
     return f"{cut(kind)}: {cut(detail)}"
 
 
+#: The engine's typed refusal of a policy's ``@enforcement_effect`` annotation
+#: (``watchlight-engine`` >= 0.2.3).
+_ENGINE_ANNOTATION_ERROR: type = getattr(_engine, "PolicyAnnotationError", type(None))
+
+
 def _compile_into(engine: Any, name: str, code: str, source: Optional[str]) -> None:
-    """Add one policy to ``engine``, raising :class:`PolicyCompileError` when
-    the engine refuses it."""
+    """Add one policy to ``engine``. Raises :class:`PolicyError` when the
+    engine refuses it for its ``@enforcement_effect`` annotation, and
+    :class:`PolicyCompileError` when it refuses it for anything else."""
     try:
         engine.add_policy(json.dumps({"name": name, "code": code}))
+    except _ENGINE_ANNOTATION_ERROR as exc:
+        raise policy_error_from_engine(exc, name, source) from exc
     except RuntimeError as exc:
         raise PolicyCompileError(name, source, exc) from exc
 
@@ -748,9 +760,9 @@ def _warn_lenient_principal() -> None:
     print(
         "watchlight: strict_principal is off, so the BARE agent name is recorded as the "
         'acting principal of calls that name none, instead of the typed Agent::"<name>". '
-        "The bare name binds to an unpredictable one of the entity types your policies "
-        "name it with, and the same policy set can decide differently in different "
-        "processes. This is transitional and is removed in a later version: name the "
+        "The engine reads a bare name as a User, so the agent is decided as the user "
+        'User::"<name>": it matches a policy written for a user with that id and never '
+        "an Agent-typed policy. This is transitional and is removed in a later version: name the "
         "subject at the "
         "call site with `principal` (see `principals.user`), and write agent-scoped "
         'policies against Agent::"<name>" or the reserved `context.actor` key.',
@@ -2645,20 +2657,18 @@ class Watchlight:
         additive: calling it twice with the same code adds it twice (use
         :meth:`load` for a set you may load more than once).
 
-        CHECKED BEFORE IT LOADS: a policy carrying an
-        ``@enforcement_effect`` value the engine does not implement raises
-        :class:`PolicyError` naming the value and the accepted set
-        (:data:`ENFORCEMENT_EFFECTS`), rather than loading and quietly deciding
-        without the effect — which on a ``permit`` would turn an approval hold
-        into a plain allow. An annotation NAME that is a near miss for
-        ``@enforcement_effect`` warns on stderr; any other annotation is your
-        own and passes without comment. Every policy entry point goes through
-        here, :meth:`load` and the CLI included.
+        REFUSED IF THE EFFECT CANNOT BE HONOURED: the engine refuses a policy
+        whose ``@enforcement_effect`` value it does not implement, or whose
+        annotation name is a near miss for ``enforcement_effect``, and this
+        raises :class:`PolicyError` (``code`` names which) instead of loading a
+        policy that would decide without the effect — which on a ``permit``
+        would turn an approval hold into a plain allow. Any other annotation is
+        your own. Every policy entry point goes through here, :meth:`load` and
+        the CLI included.
 
         A policy the engine cannot compile raises :class:`PolicyCompileError`
         and is not added."""
         policy_name = name or f"policy-{self._policy_count}"
-        check_policy_annotations(cedar_code, policy_name)
         _compile_into(self._engine, policy_name, cedar_code, None)
         self._policy_count += 1
         return self
@@ -2702,16 +2712,13 @@ class Watchlight:
         added, so the previous copy stays and ``policy_count`` grows; construct
         a fresh governor when you need the old set gone.
 
-        CHECKED BEFORE IT LOADS: the whole file is checked first, so a policy
-        carrying an ``@enforcement_effect`` the engine does not implement raises
-        :class:`PolicyError` and NOTHING from that file is added — the governor
-        is left exactly as it was, and the source is not remembered. See
-        :meth:`allow`.
-
         COMPILED BEFORE IT LOADS: the whole file is compiled into a scratch
-        engine first, so a policy with a Cedar error raises
-        :class:`PolicyCompileError` naming it and the file, and again NOTHING
-        from that file is added."""
+        engine first. A policy with a Cedar error raises
+        :class:`PolicyCompileError`, and one whose ``@enforcement_effect`` the
+        engine refuses raises :class:`PolicyError`, each naming the policy and
+        the file. NOTHING from that file is added: the governor is left
+        exactly as it was, and the source is not remembered. See
+        :meth:`allow`."""
         p = pathlib.Path(path)
         if source_id is not None:
             key = source_id
@@ -2725,14 +2732,6 @@ class Watchlight:
         if key in self._shared.sources and not force:
             return self
         entries = _read_policy_file(p, op="load", allow_empty=allow_empty)
-        # Check the whole file before adding any of it, so one refused policy
-        # leaves the governor exactly as it was rather than half-loaded.
-        for offset, entry in enumerate(entries):
-            check_policy_annotations(
-                entry["code"],
-                entry.get("name") or f"policy-{self._policy_count + offset}",
-                warn=False,
-            )
         # Compile the whole file into a scratch engine first: the live engine
         # cannot drop a policy, so one that fails part-way through would leave
         # the policies before it loaded and the ones after it missing — a
@@ -2807,14 +2806,8 @@ class Watchlight:
         else:
             entries = _read_policy_file(path, op="reload")  # type: ignore[arg-type]
 
-        # Check every policy BEFORE building anything, so a refused annotation
-        # leaves the governor untouched — the same contract `load` gives.
-        for offset, entry in enumerate(entries):
-            check_policy_annotations(
-                entry["code"], entry.get("name") or f"policy-{offset}", warn=False
-            )
-
-        # Compile into a FRESH engine. Only a set that has fully loaded is
+        # Compile into a FRESH engine (a refused annotation raises PolicyError
+        # here, before anything is swapped). Only a set that has fully loaded is
         # allowed to become the one in force.
         engine = _engine.PolicyEngine()
         for offset, entry in enumerate(entries):

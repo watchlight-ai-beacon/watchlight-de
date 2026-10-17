@@ -57,7 +57,7 @@ def governed_plugin(
     name the person or tenant a call is made FOR::
 
         await handle.authorize_action(
-            "read", "tool/read_ticket", principal=f'User::"{user_id}"',
+            "read", "tool/read_ticket", principal=principals.user(user_id),
         )
 
     Omitted, the subject defaults to the agent that runs — ``Agent::"<agent
@@ -65,11 +65,14 @@ def governed_plugin(
     ``watchlight-agent-sdk`` 0.7.0 or later.
 
     **Name the entity type.** ``principal``, ``resource`` and the action reach
-    the engine exactly as given. A typed reference such as ``User::"u-1"``
-    discriminates: a policy naming a different type with the same id does not
-    match it. A BARE name matches a policy naming that id under ``User``,
-    ``Agent``, ``Group`` or ``Role``, and when it matches more than one an
-    allow beats a forbid — the wrong thing for a decision you rely on.
+    the engine exactly as given, and the engine parses each one strictly. A
+    typed reference such as ``User::"u-1"`` discriminates: a policy naming a
+    different type with the same id does not match it. Build it with
+    :mod:`watchlight.principals`, which escapes a quote, an apostrophe or a
+    backslash in the id and refuses an id with a character the engine cannot
+    read; an unescaped quote makes the request invalid. A BARE principal is read as
+    a ``User`` and never matches a policy of another type, so write the type to
+    name an agent, a group or a role.
 
     :param policies: local Cedar policies — a path to a JSON policy file or an
         in-memory list of ``{"name", "code"}`` objects. ``None`` → fail-closed.

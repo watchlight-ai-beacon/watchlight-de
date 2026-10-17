@@ -162,7 +162,7 @@ call is for, goes on the run handle when you authorize that call:
 ```python
 await handle.authorize_action(
     "read_ticket", "tool/read_ticket",
-    principal=f'User::"{user_id}"',                     # who the call is for
+    principal=principals.user(user_id),                  # who the call is for
     context={"caller": caller, "owner": owner},         # what a policy reads
 )
 ```
@@ -176,11 +176,13 @@ instead, it raises an error that names the argument. It does not silently
 ignore it.
 
 **Always name the entity type.** A policy that names `Agent::"u-1"` does not
-match `User::"u-1"`. Leaving the type off is not harmless either: a bare `u-1`
-matches that id as a `User`, an `Agent`, a `Group` or a `Role`. When it matches
-more than one of those, an allow beats a forbid, which is the opposite of
-Cedar's usual rule. So always write the type. The action is always of type
-`Action`, and a policy that gives it another type is rejected.
+match `User::"u-1"`. A bare `u-1` is read as the user `User::"u-1"`, so it never
+matches a policy written for an agent, a group or a role with that id. Build the
+reference with `principals.user` or `principals.agent`, which escape a quote, an
+apostrophe or a backslash in the id and refuse an id with a character that is
+not printable; a reference with an unescaped quote is refused as an invalid
+request. The action is always of type `Action`, and a policy that gives
+it another type is rejected.
 
 ## An MCP server
 

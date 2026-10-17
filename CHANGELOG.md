@@ -13,8 +13,20 @@ Each entry links to its release, which carries the reasoning and the measurement
 
 ## Unreleased
 
+**Security**
+- Hardening: a policy whose `@enforcement_effect` cannot be honoured is refused by the engine (`watchlight-engine` 0.2.3), in both lanes. That covers a value the engine does not implement, and now also an annotation name that is a near miss for `enforcement_effect` (for example `@enforcment_effect`), which used to only warn while the policy loaded as a plain allow. The SDK raises `PolicyError` with a `code` (`UNRECOGNISED_ENFORCEMENT_EFFECT` or `ENFORCEMENT_EFFECT_NAME_NEAR_MISS`), mapped from the engine's typed error, and keeps no list of effects of its own.
+
 **Changed**
+- The SDKs require `watchlight-engine>=0.2.3` / `@watchlight/engine>=0.2.3`.
+- `ENFORCEMENT_EFFECTS` is removed from both SDKs; the engine owns the list. `PolicyError` carries `code`, `policy` and `source` instead of `value` and `accepted`.
 - The TypeScript SDK requires Node 22 or later (Node 18 and 20 are end of life); it relies on the Web Crypto global. `engines.node` in `@watchlight/sdk` is now `>=22`.
+- Behaviour change: both SDKs follow the strict entity references of `watchlight-engine` / `@watchlight/engine` 0.2.3, and now require it (`watchlight-engine>=0.2.3,<0.3` and `@watchlight/engine ^0.2.3`), so the reference helpers and the engine always agree. The released 0.13.2 already gets engine 0.2.3 on a fresh install, so it already shows the decision changes below; this release makes the helpers and the documentation match them.
+  - A bare principal is now a `User`. `team-42` is read as `User::"team-42"`: it matches `principal is User` and a policy naming `User::"team-42"`, and no longer matches a policy of another type, such as `principal is Agent` or `Agent::"team-42"`. A bare action is an `Action` and a bare resource a `Resource`, and a bare name that contains a quote or `::` is refused as an invalid request.
+  - An id with a quote, an apostrophe or a backslash is now escaped inside a reference, in the one spelling the engine accepts. `principals.user('a"b')` returns `User::"a\"b"`, where it used to return `User::"a"b"`, and `principals.user("o'brien@example.com")` returns `User::"o\'brien@example.com"`. Both are the same string `principals.for_policy` returns. Both names stay public. A reference written by hand with an unescaped quote or apostrophe, or with anything after the closing quote, is refused with `AuthorizeRequestError` instead of being decided.
+  - The request helpers (`principals.user`, `agent` and `entity`, and agent names) refuse, with a fixed `TypeError` that does not echo the id, an id holding a character the engine accepts only as `\u{…}`: a control, format, separator, private-use, surrogate or unassigned character (for example U+0085, a soft hyphen, a zero-width space, a byte-order mark, U+2028 and U+2029), a space other than U+0020 (for example a no-break space), a default-ignorable character such as a variation selector, or a combining mark at the start of the id. The engine refuses such a raw character in a request too. Plain spaces, accents, other scripts and emoji are accepted. `for_policy` now writes NUL as `\0`, the spelling the engine accepts.
+  - An agent name must fit in 4087 bytes once escaped, so that `Agent::"<name>"` stays within 4096 bytes; a name made mostly of quotes or backslashes is refused at a shorter length. The reference helpers refuse a reference whose escaped form is longer than 4096 bytes.
+  - The examples, the framework-plugin docstrings and the documentation build every principal with `principals.user` instead of pasting the id into `User::"…"`.
+- Migration: build every reference from an outside id with `principals.user`, `principals.agent` or `principals.entity` (TypeScript: the same names on `principals`), never by pasting the id into a string. Write the type for every principal that is not a user. A quota read with `counters()` matches the principal as a string, so the records of an id with a quote, an apostrophe or a backslash carry a new spelling after the upgrade; see [breaking changes](docs/breaking-changes.md).
 
 ## 0.13.2 — 2026-10-03
 

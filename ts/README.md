@@ -22,7 +22,7 @@ npm install @watchlight/sdk    # Node >= 22, no native toolchain
 Save as `agent.mjs`, then `node agent.mjs`:
 
 ```ts
-import { govern, configureDefault, Denied } from "@watchlight/sdk";
+import { govern, configureDefault, Denied, principals } from "@watchlight/sdk";
 
 configureDefault({ agent: "research-agent" });          // the name on every record
 
@@ -95,7 +95,7 @@ npx --package @watchlight/sdk watchlight policy test suite.json   # exit 1 on an
 ```ts
 const book = govern.tool(bookTrip, {
   intent: "book",
-  principal: (o) => `User::"${o.userId}"`,    // on whose behalf
+  principal: (o) => principals.user(o.userId),    // on whose behalf
   resource:  (o) => `trip/${o.tripId}`,
   context:   (o) => ({ amount: o.amount, limit: o.limit }),
 });

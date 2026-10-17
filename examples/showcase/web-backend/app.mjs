@@ -11,7 +11,7 @@
 // One endpoint, `GET /accounts/:accountId/statement`. The bearer token is looked up
 // in an in-memory table — a stand-in for whatever authenticates requests in a real
 // service — and the user it resolves to becomes the PRINCIPAL of the governed tool
-// call: `principal: (user) => \`User::"${user}"\``. The policy in `policy.suite.json`
+// call: `principal: (user) => principals.user(user)`. The policy in `policy.suite.json`
 // permits `read_statement` for `User::"alice"` on her account and nothing else, so
 // the same endpoint answers 200 to alice and 403 to bob, and every decision in the
 // audit trail carries the user it was made for, never the service.
@@ -34,7 +34,7 @@ function loadSdk() {
   }
   throw new Error("@watchlight/sdk not found — 'npm i -g @watchlight/sdk' or build it with 'cd ts && npm run build'");
 }
-const { Watchlight, Denied, DENY_REASON } = loadSdk();
+const { Watchlight, Denied, DENY_REASON, principals } = loadSdk();
 
 // Express is an optional extra for this example only (see package.json here).
 let express;
@@ -77,7 +77,7 @@ const readStatement = govern.tool(function readStatement(user, accountId) {
   return STATEMENTS[accountId];
 }, {
   intent: "read_statement",
-  principal: (user) => `User::"${user}"`, // the acting user, per call — not the service
+  principal: (user) => principals.user(user), // the acting user, per call — not the service
   resource: (user, accountId) => `account/${accountId}`,
   onResult: attachDecisionId,
 });

@@ -10,11 +10,88 @@ between the version you are on and the one you are moving to.
 
 ## Unreleased
 
+**A near-miss `@enforcement_effect` annotation name is refused, and `PolicyError`
+changes shape.** The engine (`watchlight-engine` 0.2.3, which the SDKs now
+require) refuses a policy whose annotation name is within two edits of
+`enforcement_effect` but is not that name, such as `@enforcment_effect` or
+`@Enforcement_Effect`. Before, the SDK printed a warning and loaded the policy,
+which then decided as if no effect were declared: an approval gate became a
+plain allow. To fix it, correct the spelling, or rename your own annotation so
+it is not a near miss. An unknown effect value is refused as before.
+`PolicyError` now carries `code` (`UNRECOGNISED_ENFORCEMENT_EFFECT` or
+`ENFORCEMENT_EFFECT_NAME_NEAR_MISS`), `policy` and `source`; `value` and
+`accepted` are gone, and so is `ENFORCEMENT_EFFECTS`. Read the code instead of
+the value, and refer to the documented list of effects. In TypeScript the
+refusal now surfaces at `ready()` or the next decision instead of being thrown
+by `allow()`, `load()` or `reload()`: the engine compiles asynchronously. A set
+holding a refused policy never decides; every decision throws `PolicyError`
+until a `reload` with a set that loads. Python still raises at once and adds
+nothing. This only moves in the closed direction.
+
 **The TypeScript SDK requires Node 22 or later (Node 18 and 20 are end of life); it relies on the Web Crypto global.** `@watchlight/sdk` now declares `engines.node >=22`. The engine
 (`@watchlight/engine`) reads randomness from `globalThis.crypto`, which Node 18
 does not define by default, so on Node 18 the first decision fails instead of
 returning a verdict. On an older Node, npm warns at install time (or refuses
 with `engine-strict`). To fix it, run your agent on Node 22 or later.
+
+**The engine reads entity references strictly: a bare principal is a `User`,
+an id with a quote, an apostrophe or a backslash is escaped, and an id with a
+character that is not printable is refused.** `watchlight-engine` and
+`@watchlight/engine` 0.2.3, which the SDKs now require, read every request
+principal, action and resource with the strict Cedar parser they use for policy
+text. The released 0.13.2 allows engine 0.2.3, so a fresh install of 0.13.2
+already decides this way. Three things change.
+
+First, a bare principal, such as `team-42` with no `Type::`, is now the user
+`User::"team-42"`. Before, it matched a policy naming that id under `User`,
+`Agent`, `Group` or `Role`. Now it matches only `User` policies, so a policy
+written for `principal is Agent` or `Agent::"team-42"` no longer matches it, and
+a call that relied on that is denied. A bare name that contains a quote or `::`
+is refused as an invalid request. To fix it, write the type: pass
+`principals.agent(name)` for an agent, and `principals.entity("Group", id)` for
+a group or a role.
+
+Second, a typed reference must be well formed, with the id in the one escaped
+spelling the engine accepts: a quote, an apostrophe and a backslash written as
+`\"`, `\'` and `\\`, and a character that is not printable written as `\u{…}`.
+A reference built by hand from an id, such as `f'User::"{user_id}"'`, is
+refused with `AuthorizeRequestError` when the id contains a quote or an
+apostrophe, as in `o'brien@example.com`, and so is any reference with something
+after the closing quote. To fix it, build the reference with
+`principals.user(user_id)`. Because of this, `principals.user`,
+`principals.agent` and `principals.entity` now escape the id, and return the
+same string as `principals.for_policy` (TypeScript `policyEntityRef`). The
+decision for a reference built with the helpers is unchanged, but the string is
+new for an id with a quote, an apostrophe or a backslash, and the audit record
+carries the new string.
+
+The helpers do not write `\u{…}`. They refuse, with a fixed `TypeError` that
+does not echo the id, an id holding a character that is not printable: a
+control, format, separator, private-use, surrogate or unassigned character (for
+example U+0085, a soft hyphen, a zero-width space, a byte-order mark, U+2028
+and U+2029), a space other than the plain space U+0020 (for example a no-break
+space), a default-ignorable character such as a variation selector, or a
+combining mark at the start of the id. Engine 0.2.3 refuses such a raw
+character in a request, so on 0.13.2 with engine 0.2.3 the call already fails
+with `AuthorizeRequestError`; the helper now refuses the id before the call. An agent name follows the same rule and is
+refused when the governor is constructed or named. If your ids can carry such
+characters, change an id only where your identity source already treats both
+forms as the same subject. Otherwise refuse the id, or map it to an encoding you
+can reverse, such as hex or base64url of its UTF-8 bytes. Never map one
+character to another (a no-break space to a plain space, say) by itself: two
+different subjects could become one principal, and one could then act as the
+other. `counters()` and `count_audit_records`
+match the principal as a string, so a quota for such an id counts only the
+records written after the upgrade until its window has passed. If that matters,
+count both spellings for the length of one window.
+
+Third, an agent name must fit in 4087 bytes once escaped, so that the principal
+`Agent::"<name>"` stays within 4096 bytes. A name made mostly of quotes,
+apostrophes or backslashes is refused at a shorter length, when the governor is constructed or
+named.
+
+In every case we tested, these changes move a decision from allow to deny or
+turn the call into a refusal. They never widen what a bare principal matches.
 
 ## 0.13.2
 

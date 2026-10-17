@@ -11,7 +11,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import { join } from "node:path";
 
-const { Watchlight, Denied, CounterSourceError } = loadSdk();
+const { Watchlight, Denied, CounterSourceError, principals } = loadSdk();
 const t = checks("quotas");
 
 const UNDER_QUOTA =
@@ -45,7 +45,7 @@ const govern = new Watchlight({
 govern.allow(UNDER_QUOTA, "reads-within-hourly-quota");
 govern.allow(CEILING, "hard-ceiling-on-reads");
 
-const user = (o) => `User::"${o.userId}"`;
+const user = (o) => principals.user(o.userId);
 let bodyRuns = 0;
 
 const readDoc = govern.tool(function fetchDocument(o) { bodyRuns++; return `doc:${o.docId}`; }, {
