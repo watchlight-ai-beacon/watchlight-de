@@ -15,12 +15,12 @@ authenticated.
 ```ts
 const pay = govern.tool(payOut, {
   intent: "pay",
-  principal: (o) => `User::"${o.userId}"`,   // resolved per call, not the agent
+  principal: (o) => principals.user(o.userId),   // resolved per call, not the agent
 });
 ```
 
 ```python
-@govern.tool("pay", principal=lambda o: f'User::"{o["userId"]}"')
+@govern.tool("pay", principal=lambda o: principals.user(o["userId"]))
 def pay_out(o): ...
 ```
 

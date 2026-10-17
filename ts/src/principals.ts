@@ -6,20 +6,31 @@
 // token, say), which is an arbitrary string: it may contain a quote, a
 // backslash or a space.
 //
-// The two sides of a Cedar entity reference are NOT written the same way:
+// A request and a policy write a Cedar entity reference the same way. The
+// engine reads every request principal, action and resource with the same
+// strict parser it uses for policy text, so the id inside the quotes is a Cedar
+// string literal on both sides: a quote or a backslash in it must be escaped.
+// The id `a"b` is written `User::"a\"b"` in a request and in a policy alike. An
+// unescaped reference such as `User::"a"b"` is not read as some other entity:
+// the engine refuses the request as invalid.
 //
-//   * a REQUEST (what the SDK sends and records) carries the id verbatim —
-//     `User::"a"b"` is the id `a"b`;
-//   * a POLICY is Cedar source, so the same id must be escaped for the parser —
-//     `permit(principal == User::"a\"b", …)`.
-//
-// So: build the request side with `principals.user` / `principals.agent`, and
-// the policy side with `principals.forPolicy` (or `escapeCedarString`). A
-// reference built with one matches a reference built with the other.
+// So build every reference from an outside id with `principals.user`,
+// `principals.agent` or `principals.entity`, which escape the id for you.
+// `principals.forPolicy` returns the same string as `principals.entity` for
+// every id `entity` accepts, so a reference built for a request matches the
+// same reference written into a policy.
 //
 //   principals.user("db:4412")             →  User::"db:4412"
+//   principals.user('a"b')                 →  User::"a\"b"
 //   principals.agent("research-agent")     →  Agent::"research-agent"
-//   principals.forPolicy("User", sub)      →  User::"…" for policy text
+//   principals.forPolicy("User", 'a"b')    →  User::"a\"b"
+//
+// A BARE principal, one written without `Type::"…"`, is read by the engine as a
+// `User`: `team-42` is the entity `User::"team-42"`. It matches
+// `principal is User` and a policy naming `User::"team-42"`, and never a policy
+// of another type. Write the type to name anything other than a user. In the
+// same way a bare action is read as an `Action` and a bare resource as a
+// `Resource`. A bare name that holds a quote, or `::`, is refused as invalid.
 //
 // The vocabulary the SDK writes and the audit trail carries:
 //   * `User::"<subject>"` — the person a call runs on behalf of (RFC 8693 `sub`);
@@ -61,10 +72,20 @@ function checkType(type: string): void {
 }
 
 /**
- * A Cedar entity reference for a REQUEST — `<Type>::"<id>"`, id verbatim, which
- * is how the engine reads the principal of an authorization. An empty id, or
- * one carrying control characters (which no reference can represent
- * unambiguously), is refused rather than silently mangled.
+ * A Cedar entity reference, `<Type>::"<id>"`, for a request.
+ *
+ * The id is escaped exactly as {@link policyEntityRef} escapes it, because the
+ * engine reads a request reference with the same strict parser it uses for
+ * policy text: a quote or a backslash in the id must be escaped, or the request
+ * is refused as invalid. The engine reads the returned string back as exactly
+ * `id`, so a crafted id can never name another entity or another type.
+ *
+ * These ids are refused rather than silently changed:
+ *
+ *   * an empty id;
+ *   * an id with control characters, which no request principal may carry;
+ *   * an id whose escaped reference is longer than {@link MAX_NAME_BYTES}
+ *     bytes of UTF-8, because the reference is recorded on every audit row.
  */
 export function entityRef(type: string, id: string): string {
   checkType(type);
@@ -74,12 +95,21 @@ export function entityRef(type: string, id: string): string {
   if (CONTROL_CHARS.test(id)) {
     throw new TypeError("entity reference: id must not contain control characters");
   }
-  return `${type}::"${id}"`;
+  const reference = `${type}::"${escapeCedarString(id)}"`;
+  if (utf8Length(reference) > MAX_NAME_BYTES) throw new TypeError(ENTITY_TOO_LONG_MESSAGE);
+  return reference;
 }
 
-/** The same reference as Cedar SOURCE, for a policy you generate: the id is
- *  escaped so the parser reads it back exactly. `principals.user(sub)` in a
- *  request matches `principals.forPolicy("User", sub)` in a policy. */
+/** The reference written into the text of a policy you generate.
+ *
+ *  For every id {@link entityRef} accepts, this returns the same string as
+ *  `entityRef`: requests and policies spell a reference the same way, so
+ *  `principals.user(sub)` in a request matches `principals.forPolicy("User",
+ *  sub)` in a policy. Both names stay public. The one difference is that policy
+ *  text is not a request: an id with control characters is escaped here (`\n`,
+ *  `\u{…}`) instead of refused, and the length is not bounded. Such a policy can
+ *  never match a request, because no request principal may carry a control
+ *  character. */
 export function policyEntityRef(type: string, id: string): string {
   checkType(type);
   if (typeof id !== "string" || id === "") {
@@ -108,7 +138,8 @@ export function policyEntityRef(type: string, id: string): string {
 export const MAX_NAME_BYTES = 4096;
 
 /** The longest agent name: short enough that the principal derived from it,
- *  `Agent::"<name>"`, is itself within {@link MAX_NAME_BYTES}. */
+ *  `Agent::"<name>"`, is itself within {@link MAX_NAME_BYTES}. The bound applies
+ *  to the escaped name too (a quote or a backslash counts two bytes there). */
 export const MAX_AGENT_NAME_BYTES = MAX_NAME_BYTES - 'Agent::""'.length;
 
 /** The most entries a scope's `tools`, `resources` or `intents` list may hold. */
@@ -125,6 +156,11 @@ export const MAX_ACTOR_CHAIN_BYTES = 64 * 1024;
 export const NAME_TOO_LONG_MESSAGE = `is longer than the maximum of ${MAX_NAME_BYTES} bytes`;
 
 const utf8Length = (value: string): number => Buffer.byteLength(value, "utf8");
+
+/** The fixed, value-free message an entity reference over
+ *  {@link MAX_NAME_BYTES} is refused with. @internal */
+export const ENTITY_TOO_LONG_MESSAGE =
+  `entity reference: the escaped reference is longer than the maximum of ${MAX_NAME_BYTES} bytes`;
 
 /** Refuse a string `value` longer than `limit` (default {@link MAX_NAME_BYTES})
  *  UTF-8 bytes and return it unchanged otherwise. A non-string passes through:
@@ -159,8 +195,9 @@ export function assertName(
 }
 
 /** An agent name: a non-empty string with no control characters, of at most
- *  {@link MAX_AGENT_NAME_BYTES}. Throws a `TypeError` prefixed with `where`.
- *  @internal */
+ *  {@link MAX_AGENT_NAME_BYTES}, whose principal `Agent::"<name>"` (with the
+ *  name escaped, see {@link entityRef}) is at most {@link MAX_NAME_BYTES}.
+ *  Throws a `TypeError` prefixed with `where`. @internal */
 export function assertAgentNameRules(value: unknown, where: string): string {
   if (typeof value !== "string" || !value.trim()) {
     throw new TypeError(`${where}: agent must be a non-empty string`);
@@ -168,7 +205,16 @@ export function assertAgentNameRules(value: unknown, where: string): string {
   if (CONTROL_CHARS.test(value)) {
     throw new TypeError(`${where}: agent must not contain control characters`);
   }
-  return assertNameLength(value, `${where}: agent`, (m) => new TypeError(m), MAX_AGENT_NAME_BYTES);
+  assertNameLength(value, `${where}: agent`, (m) => new TypeError(m), MAX_AGENT_NAME_BYTES);
+  // A quote or a backslash takes two bytes once escaped, so a name of at most
+  // MAX_AGENT_NAME_BYTES can still make a longer principal. It is refused here,
+  // at the name, rather than later when the principal is built.
+  if (utf8Length(escapeCedarString(value)) > MAX_AGENT_NAME_BYTES) {
+    throw new TypeError(
+      `${where}: agent is longer than the maximum of ${MAX_AGENT_NAME_BYTES} bytes once escaped for its entity reference`
+    );
+  }
+  return value;
 }
 
 /** Refuse a delegation chain whose agent names hold more than
@@ -234,9 +280,11 @@ export const PRINCIPAL_CONTROL_MESSAGE = "principal must not contain control cha
  *   * it must be at most {@link MAX_NAME_BYTES} bytes of UTF-8, so the record
  *     that carries it stays short enough to be read back and counted.
  *
- * It is deliberately NOT parsed: a bare identifier is a valid, opaque principal
- * (see `docs/identity-model.md`), and only a typed `Type::"id"` reference
- * discriminates by type.
+ * It is not parsed here; the engine parses it when it decides. A typed
+ * reference must be well formed, with the id escaped as {@link entityRef}
+ * escapes it, or the engine refuses the request. A bare identifier is read as a
+ * `User` (see `docs/identity-model.md`). What was checked is what is recorded:
+ * the record carries the principal exactly as the caller wrote it.
  *
  * `makeError` lets a primitive raise its own typed error; the default is the
  * `TypeError` the identity builders raise. @internal
@@ -254,12 +302,15 @@ export function assertPrincipal(
 /** Builders for the principal an application asserts. */
 export const principals = {
   /** The person a call runs on behalf of — the subject an application takes
-   *  from an identity it has already verified. */
+   *  from an identity it has already verified. `User::"<subject>"`, with the
+   *  subject escaped as {@link entityRef} escapes it. */
   user: (subject: string): string => entityRef("User", subject),
-  /** The agent acting on its own behalf. */
+  /** The agent acting on its own behalf. `Agent::"<name>"`, with the name
+   *  escaped as {@link entityRef} escapes it. */
   agent: (name: string): string => entityRef("Agent", name),
   /** Any other entity type the policy set uses. */
   entity: entityRef,
-  /** The reference to write into POLICY text (escaped). */
+  /** The reference to write into policy text. The same string as `entity`
+   *  for every id `entity` accepts. */
   forPolicy: policyEntityRef,
 } as const;

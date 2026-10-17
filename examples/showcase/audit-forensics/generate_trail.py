@@ -30,7 +30,7 @@ import pathlib
 import re
 import sys
 
-from watchlight import AttenuationDenied, Denied, NeedsApproval, Watchlight
+from watchlight import AttenuationDenied, Denied, NeedsApproval, Watchlight, principals
 
 # ── the fixtures: obviously synthetic ────────────────────────────────────────
 
@@ -80,7 +80,7 @@ def run_scenario(govern: Watchlight) -> None:
         return govern.sanitize(body, resource=info["resource"], decision_id=info["decision_id"],
                                known=["Jordan Example"])["text"]
 
-    @govern.tool("read", principal=lambda tid, user: f'User::"{user}"', resource=lambda tid, user: f"ticket/{tid}",
+    @govern.tool("read", principal=lambda tid, user: principals.user(user), resource=lambda tid, user: f"ticket/{tid}",
                  context=lambda tid, user: {"classification": TICKETS[tid]["classification"]}, on_result=minimize)
     def read_ticket(ticket_id: str, user: str) -> str:
         return TICKETS[ticket_id]["body"]
@@ -93,7 +93,7 @@ def run_scenario(govern: Watchlight) -> None:
             raise Denied(info["resource"], "fetch", "not authorized")
         return None
 
-    @govern.tool("fetch", principal=lambda pid, user: f'User::"{user}"', resource=lambda pid, user: f"page/{pid}",
+    @govern.tool("fetch", principal=lambda pid, user: principals.user(user), resource=lambda pid, user: f"page/{pid}",
                  on_result=screen_page)
     def fetch_page(page_id: str, user: str) -> str:
         return PAGES[page_id]
@@ -106,13 +106,13 @@ def run_scenario(govern: Watchlight) -> None:
 
     pending: dict = {}
 
-    @govern.tool("refund", principal=lambda tid, amt, user: f'User::"{user}"',
+    @govern.tool("refund", principal=lambda tid, amt, user: principals.user(user),
                  resource=lambda tid, amt, user: f"ticket/{tid}", context=lambda tid, amt, user: {"amount": amt},
                  on_needs_approval=reviewer)
     def refund(ticket_id: str, amount: int, user: str) -> str:
         return f"refunded {ticket_id}"
 
-    @govern.tool("delete", principal=lambda tid, user: f'User::"{user}"', resource=lambda tid, user: f"ticket/{tid}")
+    @govern.tool("delete", principal=lambda tid, user: principals.user(user), resource=lambda tid, user: f"ticket/{tid}")
     def delete_ticket(ticket_id: str, user: str) -> str:
         return "deleted"
 

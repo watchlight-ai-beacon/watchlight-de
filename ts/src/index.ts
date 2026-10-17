@@ -956,9 +956,10 @@ function warnLenientPrincipal(): void {
   // eslint-disable-next-line no-console
   console.warn(
     "watchlight: strictPrincipal is off, so the BARE agent name is recorded as the acting " +
-      "principal of calls that name none, instead of the typed Agent::\"<name>\". The bare " +
-      "name binds to an unpredictable one of the entity types your policies name it with, " +
-      "and the same policy set can decide differently in different processes. This is " +
+      "principal of calls that name none, instead of the typed Agent::\"<name>\". The " +
+      "engine reads a bare name as a User, so the agent is decided as the user " +
+      "User::\"<name>\": it matches a policy written for a user with that id and never an " +
+      "Agent-typed policy. This is " +
       "transitional and is removed in a later version: name the subject at the call site " +
       "with `principal` (see `principals.user`), and write agent-scoped policies against " +
       "Agent::\"<name>\" or the reserved `context.actor` key."

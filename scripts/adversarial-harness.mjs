@@ -330,7 +330,7 @@ console.log("\nJ. Fail-closed defaults");
     noName.err ? "refused at construction (" + noName.err + ")" : "agent=" + JSON.stringify(noName.ok));
 }
 
-console.log("\nK. Principal forms and the documented bare-identifier hazard");
+console.log("\nK. Principal forms: bare identifiers and strict entity references");
 {
   const recs = [];
   const g = new Watchlight({ agent: "probe", auditFile: false, auditSink: (r) => recs.push(r) });
@@ -340,8 +340,9 @@ console.log("\nK. Principal forms and the documented bare-identifier hazard");
   const empty = await attempt(() => g.authorize({ action: "p", principal: "", resource: "r" }).then((x) => x.decision));
   P("empty principal is refused", empty.err ? "PASS" : "GAP", empty.err || ("ACCEPTED -> " + empty.ok));
 
-  // A BARE identifier is accepted deliberately and is meaningful — recorded, not
-  // rewritten. Not a defect; tracked so a change in policy is noticed.
+  // A BARE identifier is accepted deliberately and is read as a User — recorded
+  // as supplied, not rewritten. A malformed typed reference is refused by the
+  // engine's strict entity parser. Tracked so a change in policy is noticed.
   for (const [label, raw] of [
     ["bare identifier", "u-1"],
     ["unquoted entity-ish", "User::unquoted"],
@@ -366,19 +367,24 @@ console.log("\nK. Principal forms and the documented bare-identifier hazard");
 }
 
 {
-  // DOCUMENTED HAZARD, asserted so a change is noticed: a bare identifier matches
-  // User/Agent/Group/Role, and among those an ALLOW beats a FORBID -- the inverse
-  // of Cedar's usual rule. A forbid naming an agent is therefore defeated by a
-  // permit naming a user with the same id, whenever an untyped principal is passed.
-  // The protection is to always pass a typed principal, via principals.user().
+  // A bare identifier is read as a User, exactly as the typed User reference is:
+  // it never matches an Agent-typed policy, so it decides like
+  // principals.user(id). A forbid naming the user with that id applies to it.
   const h = mk();
   h.allow('forbid(principal == Agent::"dual", action == Action::"t", resource);', "deny-agent");
   h.allow('permit(principal == User::"dual", action == Action::"t", resource);', "allow-user");
   const bare = await attempt(() => h.authorize({ action: "t", principal: "dual", resource: "r" }).then((x) => x.decision));
+  const asUser = await attempt(() => h.authorize({ action: "t", principal: principals.user("dual"), resource: "r" }).then((x) => x.decision));
   const typed = await attempt(() => h.authorize({ action: "t", principal: principals.agent("dual"), resource: "r" }).then((x) => x.decision));
-  P("bare id: allow beats forbid (documented)", bare.ok === "Allow" ? "INFO" : "PASS",
-    "bare -> " + (bare.err || bare.ok) + "  (typed Agent -> " + (typed.err || typed.ok) + ")");
+  P("bare id decides as the typed User reference", !bare.err && bare.ok === asUser.ok ? "PASS" : "GAP",
+    "bare -> " + (bare.err || bare.ok) + "  (typed User -> " + (asUser.err || asUser.ok) + ")");
   P("typed principal still honours the forbid", typed.ok === "Deny" ? "PASS" : "GAP", typed.err || typed.ok);
+  const hu = mk();
+  hu.allow('permit(principal, action == Action::"t", resource);', "allow-all");
+  hu.allow('forbid(principal == User::"dual", action == Action::"t", resource);', "deny-user");
+  const bareForbid = await attempt(() => hu.authorize({ action: "t", principal: "dual", resource: "r" }).then((x) => x.decision));
+  P("a forbid naming the user applies to the bare id", bareForbid.ok === "Deny" ? "PASS" : "GAP",
+    bareForbid.err || bareForbid.ok);
 }
 
 {

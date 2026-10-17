@@ -14,7 +14,7 @@ const {
   DEFAULT_COUNTERS_MAX_BYTES, MAX_COUNTERS_WINDOW_SECONDS, MAX_COUNTERS_LINE_BYTES, MAX_COUNTERS_NESTING,
   MAX_NAME_BYTES, SanitizeError, ScreenError,
   MAX_AGENT_NAME_BYTES, MAX_SCOPE_ENTRIES, MAX_SCOPE_LIST_BYTES, MAX_ACTOR_CHAIN_BYTES,
-  findUnreadableLines, UNREADABLE_REASONS, principals,
+  findUnreadableLines, UNREADABLE_REASONS, principals, escapeCedarString,
   MAX_AUDIT_RECORD_BYTES, governedHooks, DENY_REASON, REFUSED_NAME,
 } = require("../dist/index.js");
 const { AuditTrail } = require("../dist/audit.js");
@@ -371,6 +371,22 @@ console.log("every write path is bounded (shared with Python)");
     return longest;
   };
   const fill = (ch, nbytes) => ch.repeat(Math.floor(nbytes / Buffer.byteLength(ch)));
+  // The longest `<Type>::"<id>"` of characters `ch` within MAX_NAME_BYTES, built
+  // as callers build it: with the id escaped, so the engine's strict entity
+  // parser reads it back. A quote or a backslash takes two bytes once escaped,
+  // so the escaped reference is what reaches the bound.
+  const longestReference = (type, ch) => {
+    const escaped = Buffer.byteLength(escapeCedarString(ch));
+    const ref = principals.entity(type, ch.repeat(Math.floor((MAX_NAME_BYTES - `${type}::""`.length) / escaped)));
+    if (!(Buffer.byteLength(ref) > MAX_NAME_BYTES - escaped && Buffer.byteLength(ref) <= MAX_NAME_BYTES)) {
+      throw new Error("longestReference is not the longest reference");
+    }
+    return ref;
+  };
+  // The longest action or resource of characters `ch`: a bare name where the
+  // engine accepts one, and otherwise (a quote cannot appear in a bare name) the
+  // longest typed reference.
+  const longestName = (type, ch) => (ch.includes('"') ? longestReference(type, ch) : fill(ch, MAX_NAME_BYTES));
   const pad2 = (i) => String(i).padStart(2, "0");
 
   // An agent at its bound derives a principal within the name bound, so the
@@ -463,17 +479,21 @@ console.log("every write path is bounded (shared with Python)");
     const tools = Array.from({ length: MAX_SCOPE_LIST_BYTES / MAX_NAME_BYTES }, (_, i) => fill(ch, MAX_NAME_BYTES - 2) + pad2(i));
     let gov = g.delegate(await g.scope({ tools, resources: tools, intents: tools }), names[1]);
     for (const n of names.slice(2)) gov = g.delegate(gov, n);
-    const name = fill(ch, MAX_NAME_BYTES);
-    const principal = 'User::"' + fill(ch, MAX_NAME_BYTES - 9) + '"';
+    const name = longestName("Action", ch);
+    const resource = longestName("Resource", ch);
+    const principal = longestReference("User", ch);
+    // sanitization and screening record their names without asking the
+    // engine, so they take the raw run of `ch` at the bound
+    const raw = fill(ch, MAX_NAME_BYTES);
     await quiet(async () => {
-      await gov.authorize({ action: name, principal, resource: name });
+      await gov.authorize({ action: name, principal, resource });
       const body = gov.tool(async () => "ok", {
-        intent: name, principal: () => principal, resource: () => name,
+        intent: name, principal: () => principal, resource: () => resource,
         onResult: (_r, info) => { info.intent = info.resource = "x".repeat(2 * MAX_COUNTERS_LINE_BYTES); },
       });
       await body();
-      gov.sanitize("mail a@example.com", { intent: name, resource: name, principal: "p".repeat(128), decisionId: "d".repeat(128) });
-      gov.screen("hello", { intent: name, resource: name, principal: "p".repeat(128), decisionId: "d".repeat(128) });
+      gov.sanitize("mail a@example.com", { intent: raw, resource: raw, principal: "p".repeat(128), decisionId: "d".repeat(128) });
+      gov.screen("hello", { intent: raw, resource: raw, principal: "p".repeat(128), decisionId: "d".repeat(128) });
     });
     const outside = Array.from({ length: MAX_SCOPE_LIST_BYTES / MAX_NAME_BYTES }, (_, i) => fill(ch, MAX_NAME_BYTES - 3) + "z" + pad2(i));
     throws(`worst case (${JSON.stringify(ch)}): the refused attenuation throws`, () => gov.delegatedScope.attenuate({ tools: outside, resources: outside, intents: outside, timeBudgetSeconds: 1e9 }), Error);

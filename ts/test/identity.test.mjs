@@ -188,11 +188,13 @@ async function main() {
   {
     // What a verified identity can actually carry: a quote, a backslash, a space.
     const sub = 'a"b\\c d';
-    ok("principals.user builds the REQUEST form (id verbatim)",
-      principals.user(sub) === 'User::"a"b\\c d"', principals.user(sub));
+    ok("principals.user escapes the id, as the strict entity parser requires",
+      principals.user(sub) === 'User::"a\\"b\\\\c d"', principals.user(sub));
+    ok("a request and a policy spell the reference the same way",
+      principals.entity("User", sub) === policyEntityRef("User", sub) &&
+      principals.forPolicy("User", sub) === principals.user(sub));
     ok("principals.agent types the agent", principals.agent("r-a") === 'Agent::"r-a"');
-    ok("principals.forPolicy escapes for POLICY text",
-      policyEntityRef("User", sub) === 'User::"a\\"b\\\\c d"', policyEntityRef("User", sub));
+    ok("principals.agent escapes a quote", principals.agent('r"a') === 'Agent::"r\\"a"');
     ok("escapeCedarString handles newline/tab", escapeCedarString("a\nb\tc") === "a\\nb\\tc");
     ok("entityRef refuses a bad type",
       (() => { try { entityRef("Not A Type", "x"); return false; } catch { return true; } })());
@@ -201,8 +203,8 @@ async function main() {
     ok("entityRef refuses control characters",
       (() => { try { entityRef("User", "a\nb"); return false; } catch { return true; } })());
 
-    // The two forms are two spellings of ONE entity: a policy written with the
-    // escaped form matches a request built with the verbatim form.
+    // The engine reads the escaped reference back as exactly that id: it
+    // matches a policy naming that id, and nothing else.
     const dir = tmp("escape");
     const g = new Watchlight({ agent: "esc", auditDir: dir });
     g.allow(`permit(principal == ${policyEntityRef("User", sub)}, action == Action::"read", resource);`);
@@ -210,6 +212,42 @@ async function main() {
       (await g.authorize({ action: "read", principal: principals.user(sub) })).allowed === true);
     ok("a different subject does not",
       (await g.authorize({ action: "read", principal: principals.user('a"b\\c e') })).allowed === false);
+    // The same id pasted in by hand, unescaped, is not some other entity: the
+    // engine refuses the request, and nothing is allowed.
+    let refused = false;
+    try { await g.authorize({ action: "read", principal: `User::"${sub}"` }); }
+    catch (e) { refused = e instanceof AuthorizeRequestError; }
+    ok("an unescaped reference is refused as an invalid request", refused);
+  }
+
+  // ── an entity reference is bounded once escaped ────────────────────
+  {
+    const { MAX_NAME_BYTES, MAX_AGENT_NAME_BYTES } = require("../dist/index.js");
+    const fits = '"'.repeat(Math.floor((MAX_NAME_BYTES - 'User::""'.length) / 2));
+    ok("the longest escaped reference fits", Buffer.byteLength(principals.user(fits)) <= MAX_NAME_BYTES);
+    let msg = "";
+    try { principals.user(fits + '"'); } catch (e) { msg = String(e.message); }
+    ok("one more escaped character is refused, value-free",
+      msg.includes("escaped reference is longer") && !msg.includes('"""'), msg);
+    ok("forPolicy escapes a control character instead of refusing",
+      policyEntityRef("User", "a\nb") === 'User::"a\\nb"');
+
+    const half = '"'.repeat(Math.floor(MAX_AGENT_NAME_BYTES / 2));
+    const dir = tmp("agent-escaped");
+    const g = new Watchlight({ agent: half, auditDir: dir });
+    g.allow('permit(principal, action == Action::"x", resource);');
+    ok("an agent name of quotes still governs", (await g.authorize({ action: "x" })).allowed === true);
+    await new Promise((r) => setTimeout(r, 100));
+    ok("...and its principal stays within MAX_NAME_BYTES",
+      Buffer.byteLength(lines(dir)[0].principal) <= MAX_NAME_BYTES);
+    for (const [label, build] of [
+      ["at construction", () => new Watchlight({ agent: half + '"', auditFile: false })],
+      ["in as()", () => g.as(half + "\\")],
+    ]) {
+      let why = "";
+      try { build(); } catch (e) { why = String(e.message); }
+      ok(`an agent name too long once escaped is refused ${label}`, why.includes("once escaped"), why);
+    }
   }
 
   // ── load() is idempotent per resolved source ───────────────────────
@@ -589,41 +627,80 @@ async function main() {
     ok("screen validates it (as a ScreenError)", scrRaised);
   }
 
-  // NOT tightened: a bare identifier is still accepted, and is OPAQUE -- it
-  // binds to whichever entity type the policies around it use, so it
-  // discriminates by none. Only a typed reference does.
+  // A bare identifier is accepted and recorded exactly as supplied, and the
+  // engine reads it as a User: `team-42` is `User::"team-42"`. It matches
+  // `principal is User` and a policy naming `User::"team-42"`, and never a
+  // policy of another type.
   {
     const dir = tmp("principal-bare");
     const g = new Watchlight({ agent: "probe", auditDir: dir });
     g.allow('permit(principal, action == Action::"x", resource);');
-    ok("a bare identifier is still accepted",
+    ok("a bare identifier is accepted",
       (await g.authorize({ action: "x", principal: "team-42" })).allowed === true);
     await new Promise((r) => setTimeout(r, 100));
-    ok("...and recorded verbatim", lines(dir)[0].principal === "team-42");
-    let bothTypes = true;
-    for (const type of ["User", "Agent"]) {
+    ok("...and recorded as supplied", lines(dir)[0].principal === "team-42");
+    const decides = async (policies, principal = "team-42") => {
       const one = new Watchlight({ agent: "probe", auditFile: false });
-      one.allow(`permit(principal is ${type}, action == Action::"t", resource);`);
-      bothTypes &&= (await one.authorize({ action: "t", principal: "team-42" })).allowed === true;
+      for (const policy of [].concat(policies)) one.allow(policy);
+      return (await one.authorize({ action: "t", principal })).allowed;
+    };
+    ok("a bare id matches `principal is User`",
+      (await decides('permit(principal is User, action == Action::"t", resource);')) === true);
+    ok('a bare id matches a policy naming User::"team-42"',
+      (await decides('permit(principal == User::"team-42", action == Action::"t", resource);')) === true);
+    let otherTypes = true;
+    for (const type of ["Agent", "Group", "Role"]) {
+      otherTypes &&= (await decides(`permit(principal is ${type}, action == Action::"t", resource);`)) === false;
+      otherTypes &&= (await decides(`permit(principal == ${type}::"team-42", action == Action::"t", resource);`)) === false;
     }
-    ok("the same bare id satisfies a User-typed and an Agent-typed policy set", bothTypes);
-    const typed = new Watchlight({ agent: "probe", auditFile: false });
-    typed.allow('permit(principal is Agent, action == Action::"t", resource);');
+    ok("a bare id never matches a policy of another type", otherTypes);
+    ok("a forbid naming the user applies to the bare id",
+      (await decides([
+        'permit(principal, action == Action::"t", resource);',
+        'forbid(principal == User::"team-42", action == Action::"t", resource);',
+      ])) === false);
+    ok("a forbid naming an agent with the same id does not",
+      (await decides([
+        'permit(principal, action == Action::"t", resource);',
+        'forbid(principal == Agent::"team-42", action == Action::"t", resource);',
+      ])) === true);
     ok("a typed reference names one type and matches only that one",
-      (await typed.authorize({ action: "t", principal: principals.user("team-42") })).allowed === false);
+      (await decides('permit(principal is Agent, action == Action::"t", resource);',
+        principals.user("team-42"))) === false);
+    let refused = true;
+    for (const bad of ['a"b', "User::unquoted", "x::", "::x"]) {
+      try { await g.authorize({ action: "x", principal: bad }); refused = false; }
+      catch (e) { refused &&= e instanceof AuthorizeRequestError; }
+    }
+    ok("a bare name with a quote or `::` is refused as an invalid request", refused);
   }
 
-  // Unchanged, and asserted so it stays that way.
+  // Asserted so it stays that way: a crafted principal or agent name can never
+  // name another entity or another type. Each one is either a plain non-match
+  // (Deny) or refused as an invalid request; none is ever allowed.
   {
     const g = new Watchlight({ agent: "real-agent", auditFile: false });
     g.allow('permit(principal == User::"alice", action == Action::"x", resource);');
     let denied = true;
-    for (const crafted of ['User::"bob"', 'User::"alice" || true', 'User::"alice"; permit(', "not-an-entity"])
+    for (const crafted of ['User::"bob"', "not-an-entity", principals.user('alice" || true || "')])
       denied &&= (await g.authorize({ action: "x", principal: crafted })).allowed === false;
-    ok("a crafted principal forges nothing -- it denies like any non-match", denied);
+    ok("a crafted principal that parses denies like any non-match", denied);
+    let refused = true;
+    for (const crafted of [
+      'User::"alice" || true', 'User::"alice"; permit(', 'User::"alice" ', 'User::"ali"ce"',
+      'Agent::"x" || principal == User::"alice"',
+    ]) {
+      try { await g.authorize({ action: "x", principal: crafted }); refused = false; }
+      catch (e) { refused &&= e instanceof AuthorizeRequestError; }
+    }
+    ok("a crafted principal that does not parse is refused, never allowed", refused);
     const h = new Watchlight({ agent: 'evil" || true', auditFile: false });
     h.allow('permit(principal, action == Action::"y", resource) when { context.actor == "trusted" };');
     ok("nor does a crafted agent name", (await h.authorize({ action: "y" })).allowed === false);
+    const forger = new Watchlight({ agent: 'nobody" || principal == Agent::"trusted', auditFile: false });
+    forger.allow('permit(principal == Agent::"trusted", action == Action::"y", resource);');
+    ok("a crafted agent name cannot forge an Agent-typed policy",
+      (await forger.authorize({ action: "y" })).allowed === false);
   }
 
   // -- an unnamed governor asserts no identity ------------------------

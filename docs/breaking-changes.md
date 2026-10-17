@@ -34,6 +34,44 @@ does not define by default, so on Node 18 the first decision fails instead of
 returning a verdict. On an older Node, npm warns at install time (or refuses
 with `engine-strict`). To fix it, run your agent on Node 22 or later.
 
+**The engine reads entity references strictly: a bare principal is a `User`,
+and an id with a quote or a backslash is escaped.** `watchlight-engine` and
+`@watchlight/engine` 0.2.3, which the SDKs now require, read every request
+principal, action and resource with the strict Cedar parser they use for policy
+text. The released 0.13.2 allows engine 0.2.3, so a fresh install of 0.13.2
+already decides this way. Three things change.
+
+First, a bare principal, such as `team-42` with no `Type::`, is now the user
+`User::"team-42"`. Before, it matched a policy naming that id under `User`,
+`Agent`, `Group` or `Role`. Now it matches only `User` policies, so a policy
+written for `principal is Agent` or `Agent::"team-42"` no longer matches it, and
+a call that relied on that is denied. A bare name that contains a quote or `::`
+is refused as an invalid request. To fix it, write the type: pass
+`principals.agent(name)` for an agent, and `principals.entity("Group", id)` for
+a group or a role.
+
+Second, a typed reference must be well formed, with a quote or a backslash in
+the id escaped as in a Cedar string. A reference built by hand from an id, such
+as `f'User::"{user_id}"'`, is refused with `AuthorizeRequestError` when the id
+contains a quote, and so is any reference with something after the closing
+quote. To fix it, build the reference with `principals.user(user_id)`. Because
+of this, `principals.user`, `principals.agent` and `principals.entity` now
+escape the id, and return the same string as `principals.for_policy` (TypeScript
+`policyEntityRef`). The decision for a reference built with the helpers is
+unchanged, but the string is new for an id with a quote or a backslash, and the
+audit record carries the new string. `counters()` and `count_audit_records`
+match the principal as a string, so a quota for such an id counts only the
+records written after the upgrade until its window has passed. If that matters,
+count both spellings for the length of one window.
+
+Third, an agent name must fit in 4087 bytes once escaped, so that the principal
+`Agent::"<name>"` stays within 4096 bytes. A name made mostly of quotes or
+backslashes is refused at a shorter length, when the governor is constructed or
+named.
+
+In every case we tested, these changes move a decision from allow to deny or
+turn the call into a refusal. They never widen what a bare principal matches.
+
 ## 0.13.2
 
 **The framework extras now require `watchlight-agent-sdk` 0.9 and

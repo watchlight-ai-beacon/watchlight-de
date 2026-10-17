@@ -128,6 +128,18 @@ def in_process_backend(
 #: ``start_run``, and a sub-agent's, often chosen by the framework or the model
 #: — are recorded as given.
 
+def _agent_reference(agent_id: str) -> str:
+    """The principal recorded for a refusal the handle made itself:
+    ``Agent::"<agent id>"``, with the id escaped by :func:`principals.agent`, so
+    a quote in it can never make the record name another entity. An id the
+    builder refuses is returned as it is; the record's own principal check then
+    refuses it too, and the record carries the value-free marker instead."""
+    try:
+        return principals.agent(agent_id)
+    except TypeError:
+        return agent_id
+
+
 @functools.lru_cache(maxsize=None)
 def _refused_marker(value: Any) -> Dict[str, Any]:
     """The value-free stand-in for a plugin term that broke a name rule: its
@@ -314,7 +326,7 @@ def _audited_client_class() -> Any:
             self._wl_record(
                 session_id,
                 agent_id or None,
-                principal or (f'Agent::"{agent_id}"' if agent_id else ""),
+                principal or (_agent_reference(agent_id) if agent_id else ""),
                 action,
                 resource,
                 "Deny",

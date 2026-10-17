@@ -11,7 +11,7 @@
 One endpoint, `GET /accounts/{account_id}/statement`. The bearer token is looked up
 in an in-memory table — a stand-in for whatever authenticates requests in a real
 service — and the user it resolves to becomes the PRINCIPAL of the governed tool
-call: `principal=lambda user, account_id: f'User::"{user}"'`. The policy in
+call: `principal=lambda user, account_id: principals.user(user)`. The policy in
 `policy.suite.json` permits `read_statement` for `User::"alice"` on her account and
 nothing else, so the same endpoint answers 200 to alice and 403 to bob, and every
 decision in the audit trail carries the user it was made for, never the service.
@@ -30,7 +30,7 @@ import socket
 import sys
 from typing import Optional
 
-from watchlight import DENY_REASON, Denied, Watchlight
+from watchlight import DENY_REASON, Denied, Watchlight, principals
 
 HERE = pathlib.Path(__file__).parent
 
@@ -57,7 +57,7 @@ def attach_decision_id(text: str, info: dict) -> dict:
 
 @govern.tool(
     "read_statement",
-    principal=lambda user, account_id: f'User::"{user}"',  # the acting user, per call — not the service
+    principal=lambda user, account_id: principals.user(user),  # the acting user, per call — not the service
     resource=lambda user, account_id: f"account/{account_id}",
     on_result=attach_decision_id,
 )

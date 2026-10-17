@@ -24,10 +24,10 @@ Compute the counter in the `context` binding, so every call sees the trail as it
 stands at that moment.
 
 ```ts
-import { govern } from "@watchlight/sdk";
+import { govern, principals } from "@watchlight/sdk";
 govern.load("quotas.policy.json");
 
-const user = (o) => `User::"${o.userId}"`;
+const user = (o) => principals.user(o.userId);
 
 const readDoc = govern.tool(fetchDocument, {
   intent: "read",
@@ -41,10 +41,10 @@ const readDoc = govern.tool(fetchDocument, {
 ```
 
 ```python
-from watchlight import govern
+from watchlight import govern, principals
 govern.load("quotas.policy.json")
 
-def user(o): return f'User::"{o["userId"]}"'
+def user(o): return principals.user(o["userId"])
 
 def quota(o):
     c = govern.counters(principal=user(o), intent="read", window="1h")

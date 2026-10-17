@@ -28,6 +28,7 @@ from watchlight import (
     APPROVAL_PRUNE_INTERVAL_MS,
     ApprovalError,
     Watchlight,
+    principals,
 )
 from watchlight._approval import derive_approval_key, normalize_approval_secret
 
@@ -694,11 +695,14 @@ def test_the_principal_action_boundary_cannot_be_shifted(tmp_path):
 
 
 def test_awkward_fields_round_trip(tmp_path):
+    # Quotes and backslashes are escaped inside typed references, as the
+    # engine's strict entity parser requires; the token binds the fields
+    # exactly as they are written.
     g = _any_gov(tmp_path, "a")
     ch = {
-        "principal": 'User::"a b\\c" 12:34',
+        "principal": principals.user('a b\\c" 12:34'),
         "action": "wire funds",
-        "resource": 'acct/"x y"\\z — ünïcode',
+        "resource": principals.entity("Resource", 'acct/"x y"\\z — ünïcode'),
     }
     d = g.authorize(**ch, approval=g.mint_approval(**ch))
     assert d["decision"] == "Allow" and d["approved"] is True
