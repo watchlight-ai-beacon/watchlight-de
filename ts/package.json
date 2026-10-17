@@ -35,7 +35,7 @@
   },
   "devDependencies": {
     "typescript": "^7.0.2",
-    "@types/node": "^22"
+    "@types/node": "^26"
   },
   "license": "Apache-2.0",
   "homepage": "https://www.watchlight.ai",
