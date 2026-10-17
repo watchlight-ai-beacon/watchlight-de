@@ -203,6 +203,13 @@ limited by the governor's `maxDelegationDepth` option, which defaults to 8. A
 step beyond that limit throws `DelegationDepthExceeded`, which is a denial with
 the code `DELEGATION_DEPTH_EXCEEDED`.
 
+A child's `timeBudgetSeconds` is granted exactly or refused, never shortened. If
+you leave it out, the child inherits the whole seconds its parent has left,
+which `remainingSeconds()` reports, rounded down. If you name more than that,
+`attenuate` throws `AttenuationDenied` with a `TimeBudget` violation, and the
+reason says how many seconds are available. A parent whose time has run out
+refuses every child.
+
 `govern.scopeFromToken()` rebuilds the scope in the receiving process, and the
 engine there checks again that it really is a subset. Setting
 `WATCHLIGHT_APDP_URL` moves the same code, unchanged, onto the Watchlight

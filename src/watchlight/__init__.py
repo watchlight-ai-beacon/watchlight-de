@@ -112,6 +112,7 @@ from .attenuation import (
     Scope,
     ScopePreview,
 )
+from .attenuation import _check_root_time_budget
 from .scope_token import MAX_CHAIN_LENGTH as _DEPTH_BOUND
 from ._policy_file import policy_entries as _policy_entries
 from ._policy_file import read_policy_file as _read_policy_file
@@ -123,6 +124,7 @@ from .scope_token import (
     same_set,
     verify_scope_token_any,
 )
+from .scope_token import now_seconds as _now_seconds
 
 __all__ = [
     "Watchlight",
@@ -2851,13 +2853,35 @@ class Watchlight:
         (default 8). ``max_depth`` lowers it for this tree only — it never raises
         it. A hop past the limit raises :class:`DelegationDepthExceeded`. See
         :class:`~watchlight.attenuation.Scope`.
+
+        ``time_budget_seconds`` is a whole number of seconds from 1 to
+        2**32 - 1 (``TypeError`` or ``ValueError`` otherwise). Each sub-agent
+        scope gets at most what its parent has left: a larger named budget is
+        refused, never shortened.
         """
+        return self._new_root(
+            tools=tools, resources=resources, intents=intents, max_depth=max_depth,
+            time_budget_seconds=time_budget_seconds, issued_at=None,
+        )
+
+    def _new_root(
+        self,
+        *,
+        tools: Sequence[str] | None,
+        resources: Sequence[str] | None,
+        intents: Sequence[str] | None,
+        max_depth: Optional[int],
+        time_budget_seconds: int,
+        issued_at: Optional[int],
+    ) -> Scope:
+        """:meth:`scope`, issued at ``issued_at`` (``None``: now)."""
         # Bounded before the engine: the root's tools are recorded. The checked
         # lists are the ones used — each iterable is read exactly once.
         tools = principals.assert_name_list(tools, "tools")
         resources = principals.assert_name_list(resources, "resources")
         intents = principals.assert_name_list(intents, "intents")
         budget = self._root_budget(max_depth)
+        time_budget_seconds = _check_root_time_budget(time_budget_seconds)
         root = Scope(
             engine=self._engine,
             audit_path=self._audit_path,
@@ -2871,6 +2895,7 @@ class Watchlight:
             time_budget_seconds=time_budget_seconds,
             depth=0,
             signing_secrets=self._signing_secrets,
+            issued_at=issued_at,
         )
         root._emit_root()  # record the tree's starting authority for `watchlight dev`
         return root
@@ -2896,6 +2921,7 @@ class Watchlight:
         resources = principals.assert_name_list(resources, "resources")
         intents = principals.assert_name_list(intents, "intents")
         budget = self._root_budget(max_depth)
+        time_budget_seconds = _check_root_time_budget(time_budget_seconds)
         return ScopePreview(
             engine=self._engine,
             allowed=True,
@@ -2934,7 +2960,14 @@ class Watchlight:
         a chain whose engine-granted result differs from the token's claim is
         rejected. Raises :class:`ScopeTokenError` when ``signing_secret`` is unset
         (fail-closed) or the token is malformed, tampered, expired, or bound to a
-        different agent. The returned scope cannot outlive the token's ``exp``."""
+        different agent. The returned scope cannot outlive the token's ``exp``,
+        and a sub-agent scope attenuated from it gets at most the whole seconds
+        left before that ``exp``: a larger named budget is refused.
+
+        The chain is replayed at one whole-second instant, the replayed root's
+        issue time, so each level's budget is checked against the level above
+        it exactly as granted, and a second ticking over mid-replay cannot
+        refuse a valid token."""
         # Any configured secret may have signed it — a rotation is two deploys,
         # not a cutover. Which one verified is never reported.
         secrets = require_secrets(self._signing_secrets)
@@ -2943,19 +2976,27 @@ class Watchlight:
         # The receiving governor's own max_delegation_depth still applies: a token
         # cannot carry a deeper tree than this governor permits.
         root_budget = min(root["max_depth"], self._shared.max_delegation_depth)
-        scope = self.scope(
+        try:
+            _check_root_time_budget(root["time_budget_seconds"])
+        except (TypeError, ValueError):
+            raise ScopeTokenError("malformed", "claims.root.time_budget_seconds is out of range") from None
+        replay_at = _now_seconds()
+        scope = self._new_root(
             tools=root["tools"],
             resources=root["resources"],
             intents=root["intents"],
             max_depth=root_budget,
             time_budget_seconds=root["time_budget_seconds"],
+            issued_at=replay_at,
         )
         for step in claims["chain"]:
-            scope = scope.attenuate(
+            scope = scope._attenuate(
                 tools=step["tools"],
                 resources=step["resources"],
                 intents=step["intents"],
                 time_budget_seconds=step["time_budget_seconds"],
+                agent=None,
+                now=float(replay_at),
             )
         # The engine's grant must be exactly what the token claimed for this level.
         claimed = claims["chain"][-1] if claims["chain"] else root

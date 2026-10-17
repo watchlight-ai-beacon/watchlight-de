@@ -16,13 +16,20 @@ lowered per root scope. A hop past it is a deny with reason code
     analyst = root.attenuate(tools=["read", "search"])   # depth 1  (strict subset)
     reader  = analyst.attenuate(tools=["read"])           # depth 2
     # ... a level past max_delegation_depth raises DelegationDepthExceeded.
+
+A child's ``time_budget_seconds`` is granted exactly or refused, never
+shortened. A child that names none inherits the whole seconds its parent has
+left (:meth:`Scope.remaining_seconds`); a named budget larger than that, or than
+the parent's own budget, is refused with a ``TimeBudget`` violation.
 """
 
 from __future__ import annotations
 
 import datetime
 import json
+import math
 import pathlib
+import time
 import uuid
 from typing import Any, NoReturn, Optional, Sequence
 
@@ -80,6 +87,37 @@ class DelegationDepthExceeded(AttenuationDenied):
 #: Fixed message for a spent scope (never carries scope or token details).
 _EXPIRED_SCOPE = "scope has expired"
 
+#: The largest time budget the engine accepts (an unsigned 32-bit count of seconds).
+MAX_TIME_BUDGET_SECONDS = 2**32 - 1
+
+
+def _budget_refusal(available: int) -> str:
+    """The fixed reason for a named time budget the parent cannot give. It
+    states only the whole seconds available, never the requested value."""
+    if available <= 0:
+        return "the parent scope has less than one second left; at most 0 seconds are available"
+    return f"time_budget_seconds exceeds the parent's remaining time; at most {available} seconds are available"
+
+
+def _is_engine_budget(value: Any) -> bool:
+    """Whether ``value`` is a whole number of seconds the engine accepts."""
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, int)
+        and 0 <= value <= MAX_TIME_BUDGET_SECONDS
+    )
+
+
+def _check_root_time_budget(time_budget_seconds: Any) -> int:
+    """A root scope's time budget: a whole number of seconds from 1 to
+    :data:`MAX_TIME_BUDGET_SECONDS`. Value-free ``TypeError`` or ``ValueError``
+    otherwise, so a root can never start spent, negative or unbounded."""
+    if isinstance(time_budget_seconds, bool) or not isinstance(time_budget_seconds, int):
+        raise TypeError("time_budget_seconds must be an int")
+    if not 1 <= time_budget_seconds <= MAX_TIME_BUDGET_SECONDS:
+        raise ValueError(f"time_budget_seconds must be from 1 to {MAX_TIME_BUDGET_SECONDS}")
+    return int(time_budget_seconds)
+
 
 def _norm(x: Sequence[str] | None) -> list[str]:
     return list(x) if x else []
@@ -130,11 +168,18 @@ def _attenuation_outcome(
     resources: Sequence[str] | None,
     intents: Sequence[str] | None,
     time_budget_seconds: int | None,
+    available: int,
 ) -> dict[str, Any]:
     """Run the engine's strict-subset check for a child of ``parent`` (a
     :class:`Scope` or a :class:`ScopePreview`). Creates and records nothing: the
     one decision both :meth:`Scope.attenuate` and the previews act on, so the two
     cannot disagree.
+
+    ``available`` is the whole seconds the parent can still give (see
+    :meth:`Scope.remaining_seconds`). A budget the child NAMES is granted
+    exactly or refused, never shortened: one above ``available`` is refused
+    with a ``TimeBudget`` violation. A budget the child omits inherits
+    ``available``. A parent with no whole second left grants nothing.
 
     Returns ``{"kind": "depth" | "deny" | "allow", ...}``."""
     child_depth = parent.depth + 1
@@ -144,14 +189,37 @@ def _attenuation_outcome(
     if child_depth > parent.max_delegation_depth:
         return {"kind": "depth", "requested_tools": requested_tools, "child_depth": child_depth}
 
+    # A parent with no whole second left can give no time, named or inherited.
+    if available <= 0:
+        return {
+            "kind": "deny",
+            "requested_tools": requested_tools,
+            "child_depth": child_depth,
+            "violations": ["TimeBudget"],
+            "reason": _budget_refusal(0),
+        }
+
+    # A named budget larger than the parent can give — more than it has left,
+    # or more than its own budget — is refused before the engine, with a reason
+    # that states the seconds available. Anything that is not a whole number
+    # of seconds in the engine's range is left to the engine, which refuses it.
+    if _is_engine_budget(time_budget_seconds) and time_budget_seconds > available:
+        return {
+            "kind": "deny",
+            "requested_tools": requested_tools,
+            "child_depth": child_depth,
+            "violations": ["TimeBudget"],
+            "reason": _budget_refusal(available),
+        }
+
     request = {
         "allowed_tools": requested_tools,
         "allowed_resources": _matchers(_norm(resources) if resources is not None else parent.allowed_resources),
         "allowed_intents": _norm(intents) if intents is not None else parent.allowed_intents,
         "max_depth": max(0, parent.max_depth - 1),
-        "time_budget_seconds": (
-            time_budget_seconds if time_budget_seconds is not None else parent.time_budget_seconds
-        ),
+        # An absent budget inherits what the parent has left; a named one is
+        # passed as given, so the engine checks its type and the widening.
+        "time_budget_seconds": time_budget_seconds if time_budget_seconds is not None else available,
     }
     resp = json.loads(parent._engine.attenuate_scope(json.dumps(parent._as_dict()), json.dumps(request)))
     if resp.get("decision") != "Allow":
@@ -169,6 +237,21 @@ def _attenuation_outcome(
 
     # The engine returns the CLAMPED grant — never the child's raw request.
     granted = resp.get("granted_scope") or {}
+    granted_budget = granted.get("time_budget_seconds", request["time_budget_seconds"])
+    # The engine compares a budget with the parent's GRANTED budget only. A
+    # named budget must also fit in the time the parent has left: it is
+    # refused, never shortened, so a child never starts work sized for time
+    # it does not have. A named budget's grant must be exactly what was named,
+    # and no grant may exceed what the parent has left.
+    named_changed = time_budget_seconds is not None and granted_budget != time_budget_seconds
+    if named_changed or granted_budget > available:
+        return {
+            "kind": "deny",
+            "requested_tools": requested_tools,
+            "child_depth": child_depth,
+            "violations": ["TimeBudget"],
+            "reason": _budget_refusal(available),
+        }
     return {
         "kind": "allow",
         "child_depth": child_depth,
@@ -177,7 +260,7 @@ def _attenuation_outcome(
             "allowed_resources": _unmatchers(granted.get("allowed_resources", request["allowed_resources"])),
             "allowed_intents": granted.get("allowed_intents", request["allowed_intents"]),
             "max_depth": granted.get("max_depth", request["max_depth"]),
-            "time_budget_seconds": granted.get("time_budget_seconds", request["time_budget_seconds"]),
+            "time_budget_seconds": granted_budget,
             "depth": granted.get("depth", child_depth),
         },
     }
@@ -256,17 +339,35 @@ class Scope:
         self._signing_secrets = signing_secrets
         #: Epoch seconds this scope came into force.
         self.issued_at = int(issued_at) if issued_at is not None else now_seconds()
-        # A scope never outlives its parent, whatever its own budget says.
         self._expires_at = self.issued_at + self.time_budget_seconds
+        # An invariant, not a clamp: :meth:`attenuate` grants a child no more
+        # than the whole seconds its parent has left, so a child's expiry is
+        # never past its parent's. Kept so a scope can never outlive its parent
+        # however it was constructed.
         if parent is not None:
             self._expires_at = min(self._expires_at, parent.expires_at)
 
     @property
     def expires_at(self) -> int:
         """Epoch seconds after which this scope is spent: ``issued_at +
-        time_budget_seconds``, clamped to the parent's expiry (and, for a scope
-        rebuilt from a token, to the token's ``exp``)."""
+        time_budget_seconds``, never past the parent's expiry (and, for a scope
+        rebuilt from a token, never past the token's ``exp``)."""
         return self._expires_at
+
+    def remaining_seconds(self) -> int:
+        """The whole seconds this scope can still give a child: the time left
+        before :attr:`expires_at` on the wall clock, rounded down, and never
+        more than :attr:`time_budget_seconds`. ``0`` once less than one second
+        is left. With 2.9 seconds left, 2 are available.
+
+        This is what a child that names no ``time_budget_seconds`` inherits,
+        and the most a child may name: a larger named budget is refused, never
+        shortened."""
+        return self._available_at(time.time())
+
+    def _available_at(self, now: float) -> int:
+        left = math.floor(self._expires_at - now)
+        return max(0, min(self.time_budget_seconds, left))
 
     def _bind_expiry(self, exp: int) -> None:
         """Lower this scope's expiry (never raise it). Used when a scope is
@@ -350,13 +451,40 @@ class Scope:
         parent — or :class:`DelegationDepthExceeded`, a subclass, when the child
         would be deeper than :attr:`max_delegation_depth`.
 
+        ``time_budget_seconds`` is granted exactly or refused, never shortened.
+        Omit it to inherit this scope's :meth:`remaining_seconds`. A named
+        budget larger than :meth:`remaining_seconds` (or than this scope's own
+        budget) raises :class:`AttenuationDenied` with a ``TimeBudget``
+        violation whose reason states the seconds available. A spent scope
+        raises :class:`~watchlight.scope_token.ScopeTokenError` (``expired``),
+        and one with less than a second left grants nothing either.
+
         ``agent`` names the sub-agent this scope is spawned FOR, appending it to
         the child's :attr:`actor_chain` — what a delegated governor
         (:meth:`watchlight.Watchlight.delegate`) records and what a policy reads
         as ``context.actor_chain``. Omit it to narrow authority without naming a
         new actor: the child then inherits the parent's chain unchanged.
         """
+        return self._attenuate(
+            tools=tools, resources=resources, intents=intents,
+            time_budget_seconds=time_budget_seconds, agent=agent, now=None,
+        )
+
+    def _attenuate(
+        self,
+        *,
+        tools: Sequence[str] | None,
+        resources: Sequence[str] | None,
+        intents: Sequence[str] | None,
+        time_budget_seconds: int | None,
+        agent: str | None,
+        now: float | None,
+    ) -> "Scope":
+        """:meth:`attenuate`, at the wall-clock instant ``now`` (``None``: the
+        current time). Only a token replay pins it, so every level of the chain
+        is checked at the one instant the replayed root was issued."""
         self.assert_active()  # a spent scope grants nothing further (fail-closed)
+        at = time.time() if now is None else now
         # Bounded before the engine and before any record: the requested tools,
         # the sub-agent's name and the chain it extends are all written down.
         tools, resources, intents, agent = _check_request(
@@ -365,7 +493,8 @@ class Scope:
         # A named sub-agent's records carry the chain it would act under.
         named = (*self.actor_chain, agent) if agent else None
         out = _attenuation_outcome(
-            self, tools=tools, resources=resources, intents=intents, time_budget_seconds=time_budget_seconds
+            self, tools=tools, resources=resources, intents=intents,
+            time_budget_seconds=time_budget_seconds, available=self._available_at(at),
         )
         if out["kind"] == "depth":
             # A hop past max_delegation_depth is a deny: the child is never created.
@@ -399,6 +528,8 @@ class Scope:
             audit=self._audit,
             parent=self,
             signing_secrets=self._signing_secrets,
+            # Issued at the instant its budget was checked against the parent.
+            issued_at=math.floor(at),
             # Naming the sub-agent this scope is spawned for extends the
             # delegation chain; narrowing without a name leaves the acting
             # identity unchanged.
@@ -436,6 +567,7 @@ class Scope:
         return _preview_child(
             self, tools=tools, resources=resources, intents=intents,
             time_budget_seconds=time_budget_seconds, agent=agent,
+            available=self.remaining_seconds(),
         )
 
     def _deny_depth(self, requested_tools: Sequence[str], child_depth: int, agent: str | None = None) -> NoReturn:
@@ -619,9 +751,12 @@ class ScopePreview:
                 reason="its parent scope would not be granted",
                 reason_code=self.reason_code,
             )
+        # A preview was never issued, so no time has passed for it: it can give
+        # its whole budget.
         return _preview_child(
             self, tools=tools, resources=resources, intents=intents,
             time_budget_seconds=time_budget_seconds, agent=agent,
+            available=self.time_budget_seconds,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -657,10 +792,12 @@ def _preview_child(
     intents: Sequence[str] | None,
     time_budget_seconds: int | None,
     agent: str | None,
+    available: int,
 ) -> ScopePreview:
     """The :class:`ScopePreview` of a child of ``parent`` — nothing recorded."""
     out = _attenuation_outcome(
-        parent, tools=tools, resources=resources, intents=intents, time_budget_seconds=time_budget_seconds
+        parent, tools=tools, resources=resources, intents=intents,
+        time_budget_seconds=time_budget_seconds, available=available,
     )
     chain = (*parent.actor_chain, agent) if agent else tuple(parent.actor_chain)
     if out["kind"] == "allow":

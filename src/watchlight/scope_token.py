@@ -400,7 +400,7 @@ def verify_scope_token(token: Any, secret: bytes, *, agent: str, now: Optional[i
     if claims["exp"] <= claims["iat"]:
         raise ScopeTokenError("lifetime", "token expires before it was issued")
     # A token may never outlive the scope it names: its lifetime is bounded by
-    # the (engine-clamped) time budget of the deepest level it carries.
+    # the (engine-granted) time budget of the deepest level it carries.
     budget = (claims["chain"][-1] if claims["chain"] else claims["root"])["time_budget_seconds"]
     if claims["exp"] - claims["iat"] > budget:
         raise ScopeTokenError("lifetime", "token lifetime exceeds the scope's time budget")

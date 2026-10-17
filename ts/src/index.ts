@@ -18,8 +18,14 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomBytes, createHmac, timingSafeEqual } from "node:crypto";
-import { Scope, DEFAULT_MAX_DELEGATION_DEPTH, type AttenuateOptions, ScopePreview } from "./attenuation";
-import { MAX_CHAIN_LENGTH as DEPTH_BOUND } from "./scope-token";
+import {
+  Scope,
+  DEFAULT_MAX_DELEGATION_DEPTH,
+  type AttenuateOptions,
+  ScopePreview,
+  checkRootTimeBudget,
+} from "./attenuation";
+import { MAX_CHAIN_LENGTH as DEPTH_BOUND, nowSeconds } from "./scope-token";
 import {
   AuditTrail,
   type AuditRecord,
@@ -973,6 +979,10 @@ export interface ScopeOptions {
   /** Lowers this tree's depth limit below the governor's `maxDelegationDepth`;
    *  it never raises it. */
   maxDepth?: number;
+  /** The root's time budget: a whole number of seconds from 1 to 2**32 - 1
+   *  (default 3600; `TypeError` or `RangeError` otherwise). Each sub-agent
+   *  scope gets at most what its parent has left: a larger named budget is
+   *  refused, never shortened. */
   timeBudgetSeconds?: number;
 }
 
@@ -1332,6 +1342,11 @@ export class Watchlight {
   }
 
   async scope(opts: ScopeOptions = {}): Promise<Scope> {
+    return this._newRoot(opts, undefined);
+  }
+
+  /** {@link scope}, issued at `issuedAt` (epoch seconds; `undefined`: now). */
+  private async _newRoot(opts: ScopeOptions, issuedAt: number | undefined): Promise<Scope> {
     // Bounded before the engine: the root's tools are recorded. The checked
     // arrays are the ones used — each iterable is read exactly once.
     opts = {
@@ -1341,6 +1356,7 @@ export class Watchlight {
       intents: assertNameList(opts.intents, "intents"),
     };
     const budget = this._rootBudget(opts.maxDepth);
+    const timeBudgetSeconds = checkRootTimeBudget(opts.timeBudgetSeconds ?? 3600);
     const eng = this._backend.engine();
     if (!eng) {
       throw new Error(
@@ -1358,9 +1374,10 @@ export class Watchlight {
       allowedIntents: norm(opts.intents),
       maxDepth: budget,
       maxDelegationDepth: budget,
-      timeBudgetSeconds: opts.timeBudgetSeconds ?? 3600,
+      timeBudgetSeconds,
       depth: 0,
       signingSecrets: this._signingSecrets,
+      issuedAt,
     });
     root.emitRoot();
     return root;
@@ -1384,6 +1401,7 @@ export class Watchlight {
       intents: assertNameList(opts.intents, "intents"),
     };
     const budget = this._rootBudget(opts.maxDepth);
+    const timeBudgetSeconds = checkRootTimeBudget(opts.timeBudgetSeconds ?? 3600);
     const eng = this._backend.engine();
     if (!eng) {
       throw new Error(
@@ -1398,7 +1416,7 @@ export class Watchlight {
       allowedResources: norm(opts.resources),
       allowedIntents: norm(opts.intents),
       maxDepth: budget,
-      timeBudgetSeconds: opts.timeBudgetSeconds ?? 3600,
+      timeBudgetSeconds,
       depth: 0,
       maxDelegationDepth: budget,
       actorChain: [this.agent],
@@ -1428,7 +1446,14 @@ export class Watchlight {
    * engine-granted result differs from the token's claim is rejected. Throws
    * {@link ScopeTokenError} when `signingSecret` is unset (fail-closed) or the
    * token is malformed, tampered, expired, or bound to a different agent. The
-   * returned scope cannot outlive the token's `exp`.
+   * returned scope cannot outlive the token's `exp`, and a sub-agent scope
+   * attenuated from it gets at most the whole seconds left before that `exp`: a
+   * larger named budget is refused.
+   *
+   * The chain is replayed at one whole-second instant, the replayed root's issue
+   * time, so each level's budget is checked against the level above it exactly
+   * as granted, and a second ticking over mid-replay cannot refuse a valid
+   * token.
    */
   async scopeFromToken(token: string): Promise<Scope> {
     // Any configured secret may have signed it — a rotation is two deploys, not
@@ -1438,21 +1463,33 @@ export class Watchlight {
     // The receiving governor's own maxDelegationDepth still applies: a token
     // cannot carry a deeper tree than this governor permits.
     const rootBudget = Math.min(claims.root.max_depth, this._shared.maxDelegationDepth);
-    const root = await this.scope({
-      tools: claims.root.tools,
-      resources: claims.root.resources,
-      intents: claims.root.intents,
-      maxDepth: rootBudget,
-      timeBudgetSeconds: claims.root.time_budget_seconds,
-    });
+    try {
+      checkRootTimeBudget(claims.root.time_budget_seconds);
+    } catch {
+      throw new ScopeTokenError("malformed", "claims.root.time_budget_seconds is out of range");
+    }
+    const replayAt = nowSeconds();
+    const root = await this._newRoot(
+      {
+        tools: claims.root.tools,
+        resources: claims.root.resources,
+        intents: claims.root.intents,
+        maxDepth: rootBudget,
+        timeBudgetSeconds: claims.root.time_budget_seconds,
+      },
+      replayAt
+    );
     let scope = root;
     for (const step of claims.chain) {
-      scope = scope.attenuate({
-        tools: step.tools,
-        resources: step.resources,
-        intents: step.intents,
-        timeBudgetSeconds: step.time_budget_seconds,
-      });
+      scope = scope._attenuateAt(
+        {
+          tools: step.tools,
+          resources: step.resources,
+          intents: step.intents,
+          timeBudgetSeconds: step.time_budget_seconds,
+        },
+        replayAt
+      );
     }
     // The engine's grant must be exactly what the token claimed for this level.
     const claimed = claims.chain.length ? claims.chain[claims.chain.length - 1] : claims.root;

@@ -1,0 +1,224 @@
+{
+  "_comment": "Shared TS/Python fixture for sub-agent time budgets. Each case creates a root scope with root_budget at the wall-clock instant `start` (epoch seconds), then runs `steps` in order: at start + `at`, attenuate the most recently granted scope (the root at first) with time_budget_seconds (null: omitted). A granted step becomes the scope the next step attenuates; a refused or expired step does not. `refused` is AttenuationDenied with these violations and exactly this reason; `expired` is ScopeTokenError with code `expired`.",
+  "cases": [
+    {
+      "name": "a named budget above the parent's remaining time is refused, naming the seconds available",
+      "start": 1800000000.0,
+      "root_budget": 10,
+      "steps": [
+        {
+          "at": 2.1,
+          "time_budget_seconds": 10,
+          "expect": "refused",
+          "violations": [
+            "TimeBudget"
+          ],
+          "available": 7,
+          "reason": "time_budget_seconds exceeds the parent's remaining time; at most 7 seconds are available"
+        },
+        {
+          "at": 2.1,
+          "time_budget_seconds": 8,
+          "expect": "refused",
+          "violations": [
+            "TimeBudget"
+          ],
+          "available": 7,
+          "reason": "time_budget_seconds exceeds the parent's remaining time; at most 7 seconds are available"
+        },
+        {
+          "at": 2.1,
+          "time_budget_seconds": 7,
+          "expect": "granted",
+          "granted": 7
+        }
+      ]
+    },
+    {
+      "name": "2.9 seconds left means 2 seconds are available",
+      "start": 1800000000.0,
+      "root_budget": 10,
+      "steps": [
+        {
+          "at": 7.1,
+          "time_budget_seconds": 3,
+          "expect": "refused",
+          "violations": [
+            "TimeBudget"
+          ],
+          "available": 2,
+          "reason": "time_budget_seconds exceeds the parent's remaining time; at most 2 seconds are available"
+        },
+        {
+          "at": 7.1,
+          "time_budget_seconds": 2,
+          "expect": "granted",
+          "granted": 2
+        }
+      ]
+    },
+    {
+      "name": "an absent budget inherits the parent's remaining whole seconds",
+      "start": 1800000000.25,
+      "root_budget": 600,
+      "steps": [
+        {
+          "at": 0.0,
+          "time_budget_seconds": null,
+          "expect": "granted",
+          "granted": 599
+        }
+      ]
+    },
+    {
+      "name": "naming the parent's full budget after any time has passed is refused",
+      "start": 1800000000.25,
+      "root_budget": 600,
+      "steps": [
+        {
+          "at": 0.0,
+          "time_budget_seconds": 600,
+          "expect": "refused",
+          "violations": [
+            "TimeBudget"
+          ],
+          "available": 599,
+          "reason": "time_budget_seconds exceeds the parent's remaining time; at most 599 seconds are available"
+        },
+        {
+          "at": 0.0,
+          "time_budget_seconds": 599,
+          "expect": "granted",
+          "granted": 599
+        }
+      ]
+    },
+    {
+      "name": "a named budget above the parent's own budget is refused",
+      "start": 1800000000.0,
+      "root_budget": 100,
+      "steps": [
+        {
+          "at": 0.5,
+          "time_budget_seconds": 200,
+          "expect": "refused",
+          "violations": [
+            "TimeBudget"
+          ],
+          "available": 99,
+          "reason": "time_budget_seconds exceeds the parent's remaining time; at most 99 seconds are available"
+        },
+        {
+          "at": 0.5,
+          "time_budget_seconds": 4294967295,
+          "expect": "refused",
+          "violations": [
+            "TimeBudget"
+          ],
+          "available": 99,
+          "reason": "time_budget_seconds exceeds the parent's remaining time; at most 99 seconds are available"
+        }
+      ]
+    },
+    {
+      "name": "a parent with less than one second left grants nothing, named or inherited",
+      "start": 1800000000.0,
+      "root_budget": 5,
+      "steps": [
+        {
+          "at": 4.5,
+          "time_budget_seconds": 1,
+          "expect": "refused",
+          "violations": [
+            "TimeBudget"
+          ],
+          "available": 0,
+          "reason": "the parent scope has less than one second left; at most 0 seconds are available"
+        },
+        {
+          "at": 4.5,
+          "time_budget_seconds": null,
+          "expect": "refused",
+          "violations": [
+            "TimeBudget"
+          ],
+          "available": 0,
+          "reason": "the parent scope has less than one second left; at most 0 seconds are available"
+        }
+      ]
+    },
+    {
+      "name": "an expired parent refuses, named or inherited",
+      "start": 1800000000.0,
+      "root_budget": 5,
+      "steps": [
+        {
+          "at": 5.0,
+          "time_budget_seconds": 1,
+          "expect": "expired"
+        },
+        {
+          "at": 5.0,
+          "time_budget_seconds": null,
+          "expect": "expired"
+        },
+        {
+          "at": 9.5,
+          "time_budget_seconds": 3,
+          "expect": "expired"
+        }
+      ]
+    },
+    {
+      "name": "a chain of levels: each level is bounded by what the level above has left",
+      "start": 1800000000.0,
+      "root_budget": 100,
+      "steps": [
+        {
+          "at": 10.5,
+          "time_budget_seconds": 80,
+          "expect": "granted",
+          "granted": 80
+        },
+        {
+          "at": 30.5,
+          "time_budget_seconds": null,
+          "expect": "granted",
+          "granted": 59
+        },
+        {
+          "at": 60.5,
+          "time_budget_seconds": 30,
+          "expect": "refused",
+          "violations": [
+            "TimeBudget"
+          ],
+          "available": 28,
+          "reason": "time_budget_seconds exceeds the parent's remaining time; at most 28 seconds are available"
+        },
+        {
+          "at": 60.5,
+          "time_budget_seconds": 28,
+          "expect": "granted",
+          "granted": 28
+        },
+        {
+          "at": 70.5,
+          "time_budget_seconds": null,
+          "expect": "granted",
+          "granted": 17
+        },
+        {
+          "at": 71.5,
+          "time_budget_seconds": 17,
+          "expect": "refused",
+          "violations": [
+            "TimeBudget"
+          ],
+          "available": 15,
+          "reason": "time_budget_seconds exceeds the parent's remaining time; at most 15 seconds are available"
+        }
+      ]
+    }
+  ]
+}

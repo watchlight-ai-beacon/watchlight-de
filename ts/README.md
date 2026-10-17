@@ -180,7 +180,10 @@ const child = root.attenuate({ tools: ["read"] });   // strictly a subset, engin
 const token = child.toToken();                       // carry it to a queue worker
 ```
 
-Widening throws `AttenuationDenied`. `govern.scopeFromToken()` rebuilds a scope
+Widening throws `AttenuationDenied`. A child's `timeBudgetSeconds` is granted
+exactly or refused, never shortened: leave it out to inherit the whole seconds
+the parent has left (`remainingSeconds()`), and a larger one throws
+`AttenuationDenied` with a `TimeBudget` violation. `govern.scopeFromToken()` rebuilds a scope
 on the far side and replays every level through the engine's validator. A token
 needs a shared `signingSecret`; there is no default, and minting and verifying
 both fail closed without one.
