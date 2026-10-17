@@ -134,4 +134,9 @@ def test_every_id_the_helper_accepts_is_one_the_engine_accepts():
             if not _engine_accepts(engine, reference):
                 accepted_but_refused.append(hex(cp))
     assert accepted_but_refused == []
-    assert refused_but_accepted == []
+    # The tables were measured against Unicode 16 data. An older Python can
+    # class an assigned character differently (U+1171E is Mn in Unicode 15.1
+    # and Mc in 16), so the helper refuses an id the engine accepts. That is
+    # the fail-closed direction, so it is asserted only on Unicode 16 or newer.
+    if tuple(int(x) for x in unicodedata.unidata_version.split(".")) >= (16, 0, 0):
+        assert refused_but_accepted == []
