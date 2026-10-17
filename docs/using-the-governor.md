@@ -607,7 +607,7 @@ limit is exported under the same name in both lanes.
 | What | Limit | Constant |
 |---|---|---|
 | A principal, an action, a resource | 4096 bytes | `MAX_NAME_BYTES` |
-| An agent name | 4087 bytes, measured once escaped (a quote or a backslash counts two), so that `Agent::"<name>"` is within 4096 | `MAX_AGENT_NAME_BYTES` |
+| An agent name | 4087 bytes, measured once escaped (a quote, an apostrophe or a backslash counts two), so that `Agent::"<name>"` is within 4096 | `MAX_AGENT_NAME_BYTES` |
 | Each entry of a scope's `tools`, `resources` or `intents` | 4096 bytes | `MAX_NAME_BYTES` |
 | The number of entries in one of those lists | 256 | `MAX_SCOPE_ENTRIES` |
 | All the entries of one of those lists together | 65536 bytes | `MAX_SCOPE_LIST_BYTES` |

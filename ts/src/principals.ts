@@ -9,19 +9,28 @@
 // A request and a policy write a Cedar entity reference the same way. The
 // engine reads every request principal, action and resource with the same
 // strict parser it uses for policy text, so the id inside the quotes is a Cedar
-// string literal on both sides: a quote or a backslash in it must be escaped.
-// The id `a"b` is written `User::"a\"b"` in a request and in a policy alike. An
-// unescaped reference such as `User::"a"b"` is not read as some other entity:
-// the engine refuses the request as invalid.
+// string literal on both sides. The request parser is stricter than the policy
+// parser: it accepts only one spelling of each id. A quote, an apostrophe and a
+// backslash must be written `\"`, `\'` and `\\`, and a character that is not
+// printable (a control, format, separator, private-use or unassigned
+// character, a space other than U+0020, or a combining mark at the start) must
+// be written `\u{…}`. The id `a"b` is written `User::"a\"b"` in a request and in
+// a policy alike. A reference in any other spelling, such as `User::"a"b"` or
+// `User::"o'b"`, is not read as some other entity: the engine refuses the
+// request as invalid.
 //
 // So build every reference from an outside id with `principals.user`,
-// `principals.agent` or `principals.entity`, which escape the id for you.
+// `principals.agent` or `principals.entity`. They escape a quote, an apostrophe
+// and a backslash, and they refuse, with a fixed message, an id holding a
+// character that would need `\u{…}`.
 // `principals.forPolicy` returns the same string as `principals.entity` for
 // every id `entity` accepts, so a reference built for a request matches the
 // same reference written into a policy.
 //
 //   principals.user("db:4412")             →  User::"db:4412"
 //   principals.user('a"b')                 →  User::"a\"b"
+//   principals.user("o'brien@example.com") →  User::"o\'brien@example.com"
+//   principals.user("a b")            →  TypeError (NBSP is not printable)
 //   principals.agent("research-agent")     →  Agent::"research-agent"
 //   principals.forPolicy("User", 'a"b')    →  User::"a\"b"
 //
@@ -47,15 +56,73 @@ const TYPE_NAME = /^[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*$/;
 // eslint-disable-next-line no-control-regex
 const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
 
-/** Escape a Cedar string literal's contents for POLICY TEXT: the two characters
- *  that would end or re-open the literal, plus the control characters a literal
- *  cannot carry raw. Use it when an id from outside goes into a policy you
- *  generate. */
+// ── characters an id may not carry in a request ─────────────────────────────
+//
+// The engine's strict parser accepts a non-ASCII character raw only when it is
+// printable; every other character must be written as `\u{…}`, and a raw one
+// makes the request invalid. The request helpers do not write `\u{…}`: they
+// refuse such an id with a fixed message instead. The rule, measured against
+// @watchlight/engine / watchlight-engine 0.2.3 code point by code point, is:
+//
+//   * anywhere in the id: general category Cc, Cf, Zl, Zp, Co, Cn or Cs, a Zs
+//     space other than U+0020, or a default-ignorable code point outside those
+//     categories (the explicit ranges below);
+//   * as the first character: also a combining mark (Mn, Me) or another
+//     grapheme extender (the explicit ranges below).
+//
+// The explicit ranges are fixed and are the same as `_DEFAULT_IGNORABLE_EXTRA`
+// and `_GRAPHEME_EXTEND_EXTRA` in src/watchlight/principals.py. The general
+// category comes from each runtime's own Unicode data, so the lanes and the
+// engine can disagree about a code point assigned in a recent Unicode version.
+// Either way it fails closed: a lane with older data refuses a character the
+// engine would accept, and a character a lane accepts but the engine does not
+// is refused by the engine as an invalid request. Nothing is ever read as a
+// different id.
+const UNPRINTABLE_ANYWHERE =
+  /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Co}\p{Cn}\p{Cs}\u034F\u115F-\u1160\u17B4-\u17B5\u180B-\u180D\u180F\u3164\uFE00-\uFE0F\uFFA0\u{E0100}-\u{E01EF}]|(?! )\p{Zs}/u;
+const UNPRINTABLE_FIRST = new RegExp(
+  "^[\\p{Mn}\\p{Me}" +
+    "\\u09BE\\u09D7\\u0B3E\\u0B57\\u0BBE\\u0BD7\\u0CC0\\u0CC2\\u0CC7-\\u0CC8\\u0CCA-\\u0CCB" +
+    "\\u0CD5-\\u0CD6\\u0D3E\\u0D57\\u0DCF\\u0DDF\\u1715\\u1734\\u1B35\\u1B3B\\u1B3D\\u1B43-\\u1B44" +
+    "\\u1BAA\\u1BF2-\\u1BF3\\u302E-\\u302F\\uA953\\uA9C0\\uFF9E-\\uFF9F\\u{111C0}\\u{11235}" +
+    "\\u{1133E}\\u{1134D}\\u{11357}\\u{113B8}\\u{113C2}\\u{113C5}\\u{113C7}-\\u{113C9}\\u{113CF}" +
+    "\\u{114B0}\\u{114BD}\\u{115AF}\\u{116B6}\\u{11930}\\u{1193D}\\u{11F41}\\u{16FF0}-\\u{16FF1}" +
+    "\\u{1D165}-\\u{1D166}\\u{1D16D}-\\u{1D172}]",
+  "u"
+);
+
+const UNPRINTABLE_RULE =
+  "must not contain a character the engine requires escaped as \\u{...} (a " +
+  "control, format, separator, private-use, surrogate or unassigned character, " +
+  "a space other than U+0020, a default-ignorable character, or a combining " +
+  "mark at the start)";
+
+/** The fixed, value-free message an id with such a character is refused with.
+ *  @internal */
+export const UNPRINTABLE_ID_MESSAGE = `entity reference: id ${UNPRINTABLE_RULE}`;
+
+/** True when `value` holds a character the request helpers refuse (see above).
+ *  An ASCII id holds none once control characters are excluded. @internal */
+export function hasUnprintable(value: string): boolean {
+  // eslint-disable-next-line no-control-regex
+  if (/^[\u0000-\u007f]*$/.test(value)) return false;
+  return UNPRINTABLE_ANYWHERE.test(value) || UNPRINTABLE_FIRST.test(value);
+}
+
+/** Escape a Cedar string literal's contents: a quote, an apostrophe and a
+ *  backslash, plus the C0 control characters and DEL, each in the one spelling
+ *  the engine's strict request parser accepts (`\"`, `\'`, `\\`, `\n`, `\r`,
+ *  `\t`, `\0`, and `\u{…}` for the rest). Every other character is written as
+ *  it is. The request helpers use it after they have refused the ids it cannot
+ *  make valid for a request (see {@link entityRef}); {@link policyEntityRef}
+ *  uses it for policy text, where those ids are allowed. */
 export function escapeCedarString(value: string): string {
   let out = "";
   for (const ch of String(value)) {
     if (ch === "\\") out += "\\\\";
     else if (ch === '"') out += '\\"';
+    else if (ch === "'") out += "\\'";
+    else if (ch === "\0") out += "\\0";
     else if (ch === "\n") out += "\\n";
     else if (ch === "\r") out += "\\r";
     else if (ch === "\t") out += "\\t";
@@ -74,16 +141,21 @@ function checkType(type: string): void {
 /**
  * A Cedar entity reference, `<Type>::"<id>"`, for a request.
  *
- * The id is escaped exactly as {@link policyEntityRef} escapes it, because the
- * engine reads a request reference with the same strict parser it uses for
- * policy text: a quote or a backslash in the id must be escaped, or the request
- * is refused as invalid. The engine reads the returned string back as exactly
- * `id`, so a crafted id can never name another entity or another type.
+ * The id is escaped exactly as {@link policyEntityRef} escapes it, in the one
+ * spelling the engine's strict request parser accepts: a quote, an apostrophe
+ * and a backslash become `\"`, `\'` and `\\`. Every other character the helper
+ * accepts is printable and is written as it is. For every id this function
+ * accepts, the engine accepts the returned reference and reads it back as
+ * exactly `id`, so a crafted id can never name another entity or another type.
  *
- * These ids are refused rather than silently changed:
+ * These ids are refused with a fixed message rather than silently changed:
  *
  *   * an empty id;
- *   * an id with control characters, which no request principal may carry;
+ *   * an id with C0 control characters or DEL;
+ *   * an id with a character the engine accepts only as `\u{…}`: another
+ *     control, format, separator, private-use, surrogate or unassigned
+ *     character, a space other than U+0020, a default-ignorable character, or a
+ *     combining mark at the start (see {@link UNPRINTABLE_ID_MESSAGE});
  *   * an id whose escaped reference is longer than {@link MAX_NAME_BYTES}
  *     bytes of UTF-8, because the reference is recorded on every audit row.
  */
@@ -95,6 +167,7 @@ export function entityRef(type: string, id: string): string {
   if (CONTROL_CHARS.test(id)) {
     throw new TypeError("entity reference: id must not contain control characters");
   }
+  if (hasUnprintable(id)) throw new TypeError(UNPRINTABLE_ID_MESSAGE);
   const reference = `${type}::"${escapeCedarString(id)}"`;
   if (utf8Length(reference) > MAX_NAME_BYTES) throw new TypeError(ENTITY_TOO_LONG_MESSAGE);
   return reference;
@@ -105,11 +178,14 @@ export function entityRef(type: string, id: string): string {
  *  For every id {@link entityRef} accepts, this returns the same string as
  *  `entityRef`: requests and policies spell a reference the same way, so
  *  `principals.user(sub)` in a request matches `principals.forPolicy("User",
- *  sub)` in a policy. Both names stay public. The one difference is that policy
- *  text is not a request: an id with control characters is escaped here (`\n`,
- *  `\u{…}`) instead of refused, and the length is not bounded. Such a policy can
- *  never match a request, because no request principal may carry a control
- *  character. */
+ *  sub)` in a policy. Both names stay public. The difference is that policy text
+ *  is not a request, and the policy parser accepts more than the strict request
+ *  parser. A C0 control character or DEL is escaped here (`\n`, `\0`, `\u{1b}`)
+ *  instead of refused, any other character the request helpers refuse is
+ *  written raw, which the policy parser accepts, and the length is not bounded.
+ *  Such a policy matches only a request whose principal is written by hand in
+ *  the escaped form the engine accepts, for example `User::"a\nb"`:
+ *  {@link assertPrincipal} refuses a raw control character, not an escaped one. */
 export function policyEntityRef(type: string, id: string): string {
   checkType(type);
   if (typeof id !== "string" || id === "") {
@@ -206,6 +282,8 @@ export function assertAgentNameRules(value: unknown, where: string): string {
     throw new TypeError(`${where}: agent must not contain control characters`);
   }
   assertNameLength(value, `${where}: agent`, (m) => new TypeError(m), MAX_AGENT_NAME_BYTES);
+  // The name becomes an entity id, so it follows the request helpers' rule.
+  if (hasUnprintable(value)) throw new TypeError(`${where}: agent ${UNPRINTABLE_RULE}`);
   // A quote or a backslash takes two bytes once escaped, so a name of at most
   // MAX_AGENT_NAME_BYTES can still make a longer principal. It is refused here,
   // at the name, rather than later when the principal is built.

@@ -80,7 +80,7 @@ extras require.
 - **Write the entity type.** These terms reach the engine as given. A bare `u-1`
   is read as the user `User::"u-1"` and never matches a policy written for
   another type. Build the reference with `principals.user`, which escapes a
-  quote or a backslash in the id.
+  quote, an apostrophe or a backslash in the id.
 - `governed_plugin()` refuses `principal=`, `context=` and `resource=` by name.
   All three belong to a call, and accepting them on the constructor would drop
   them.

@@ -35,7 +35,8 @@ returning a verdict. On an older Node, npm warns at install time (or refuses
 with `engine-strict`). To fix it, run your agent on Node 22 or later.
 
 **The engine reads entity references strictly: a bare principal is a `User`,
-and an id with a quote or a backslash is escaped.** `watchlight-engine` and
+an id with a quote, an apostrophe or a backslash is escaped, and an id with a
+character that is not printable is refused.** `watchlight-engine` and
 `@watchlight/engine` 0.2.3, which the SDKs now require, read every request
 principal, action and resource with the strict Cedar parser they use for policy
 text. The released 0.13.2 allows engine 0.2.3, so a fresh install of 0.13.2
@@ -50,23 +51,39 @@ is refused as an invalid request. To fix it, write the type: pass
 `principals.agent(name)` for an agent, and `principals.entity("Group", id)` for
 a group or a role.
 
-Second, a typed reference must be well formed, with a quote or a backslash in
-the id escaped as in a Cedar string. A reference built by hand from an id, such
-as `f'User::"{user_id}"'`, is refused with `AuthorizeRequestError` when the id
-contains a quote, and so is any reference with something after the closing
-quote. To fix it, build the reference with `principals.user(user_id)`. Because
-of this, `principals.user`, `principals.agent` and `principals.entity` now
-escape the id, and return the same string as `principals.for_policy` (TypeScript
-`policyEntityRef`). The decision for a reference built with the helpers is
-unchanged, but the string is new for an id with a quote or a backslash, and the
-audit record carries the new string. `counters()` and `count_audit_records`
+Second, a typed reference must be well formed, with the id in the one escaped
+spelling the engine accepts: a quote, an apostrophe and a backslash written as
+`\"`, `\'` and `\\`, and a character that is not printable written as `\u{…}`.
+A reference built by hand from an id, such as `f'User::"{user_id}"'`, is
+refused with `AuthorizeRequestError` when the id contains a quote or an
+apostrophe, as in `o'brien@example.com`, and so is any reference with something
+after the closing quote. To fix it, build the reference with
+`principals.user(user_id)`. Because of this, `principals.user`,
+`principals.agent` and `principals.entity` now escape the id, and return the
+same string as `principals.for_policy` (TypeScript `policyEntityRef`). The
+decision for a reference built with the helpers is unchanged, but the string is
+new for an id with a quote, an apostrophe or a backslash, and the audit record
+carries the new string.
+
+The helpers do not write `\u{…}`. They refuse, with a fixed `TypeError` that
+does not echo the id, an id holding a character that is not printable: a
+control, format, separator, private-use, surrogate or unassigned character (for
+example U+0085, a soft hyphen, a zero-width space, a byte-order mark, U+2028
+and U+2029), a space other than the plain space U+0020 (for example a no-break
+space), a default-ignorable character such as a variation selector, or a
+combining mark at the start of the id. Engine 0.2.3 refuses such a raw
+character in a request, so on 0.13.2 with engine 0.2.3 the call already fails
+with `AuthorizeRequestError`; the helper now refuses the id before the call. An agent name follows the same rule and is
+refused when the governor is constructed or named. If your ids can carry such
+characters, normalise them in your application before they become a principal,
+for example by mapping a no-break space to a plain space. `counters()` and `count_audit_records`
 match the principal as a string, so a quota for such an id counts only the
 records written after the upgrade until its window has passed. If that matters,
 count both spellings for the length of one window.
 
 Third, an agent name must fit in 4087 bytes once escaped, so that the principal
-`Agent::"<name>"` stays within 4096 bytes. A name made mostly of quotes or
-backslashes is refused at a shorter length, when the governor is constructed or
+`Agent::"<name>"` stays within 4096 bytes. A name made mostly of quotes,
+apostrophes or backslashes is refused at a shorter length, when the governor is constructed or
 named.
 
 In every case we tested, these changes move a decision from allow to deny or

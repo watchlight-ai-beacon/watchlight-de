@@ -140,14 +140,24 @@ Build the reference with the helpers. A subject id is an arbitrary string that
 may contain a quote, a backslash or a space. The engine reads every request
 principal, action and resource with the same strict Cedar parser it uses for
 policy text, so the id is a Cedar string literal in a request just as it is in a
-policy: a quote or a backslash in it must be escaped. The helpers do that for
-you, and a request and a policy now spell the same reference the same way:
+policy. The request parser accepts only one spelling of each id. A quote, an
+apostrophe and a backslash must be escaped, as `\"`, `\'` and `\\`. A character
+that is not printable must be written as `\u{…}`. That covers control, format,
+separator, private-use, surrogate and unassigned characters, a space other than
+the plain space U+0020 (such as a no-break space), default-ignorable characters
+such as a zero-width space or a variation selector, and a combining mark at the
+start of the id. The helpers escape the quote, the apostrophe and the backslash
+for you. They refuse an id with a character that is not printable, with a fixed
+`TypeError` that does not echo the id, because the engine would refuse it
+anyway. A request and a policy spell the same reference the same way:
 
 ```python
 from watchlight import principals
 from watchlight.principals import for_policy
 
 principals.user('a"b')             # → User::"a\"b"
+principals.user("o'brien@example.com")  # → User::"o\'brien@example.com"
+principals.user("a b")        # → TypeError: a no-break space is not printable
 principals.agent("flight-booker")  # → Agent::"flight-booker"
 for_policy("User", 'a"b')          # → User::"a\"b"   (the same string)
 ```
@@ -156,6 +166,7 @@ for_policy("User", 'a"b')          # → User::"a\"b"   (the same string)
 import { principals, policyEntityRef } from "@watchlight/sdk";
 
 principals.user('a"b');                 // → User::"a\"b"
+principals.user("o'brien@example.com"); // → User::"o\'brien@example.com"
 principals.agent("flight-booker");      // → Agent::"flight-booker"
 policyEntityRef("User", 'a"b');         // → User::"a\"b"   (the same string)
 ```
@@ -163,12 +174,22 @@ policyEntityRef("User", 'a"b');         // → User::"a\"b"   (the same string)
 A request built with `principals.user(sub)` matches a policy written with
 `for_policy("User", sub)`. That is the pair to use when a policy is generated
 from data. `for_policy` returns the same string as `principals.entity` for every
-id the request helpers accept. The only difference is that `for_policy` escapes
-a control character instead of refusing it, because policy text is not a
-request.
+id the request helpers accept. The difference is that policy text is not a
+request: `for_policy` escapes a control character (`\n`, `\0`, `\u{1b}`) instead
+of refusing it, and writes any other character the request helpers refuse as it
+is, which the policy parser accepts.
+
+Plain spaces are fine anywhere in an id, including at the start and the end.
+Letters with accents, other scripts and emoji are fine too. The helpers check
+the characters with the runtime's own Unicode data (Python's `unicodedata`,
+JavaScript's regular-expression property escapes). If that data is older than
+the engine's, the helper refuses a character that was assigned only recently,
+which the engine would have accepted. If it is newer, the engine refuses the
+request instead. Either way the call fails; an id is never read as another id.
 
 Do not paste an id into a reference by hand. A reference such as
-`User::"a"b"`, with the quote left unescaped, is not read as some other entity:
+`User::"a"b"`, with the quote left unescaped, or `User::"o'brien"`, with the
+apostrophe left unescaped, is not read as some other entity:
 the engine refuses the request as invalid, and the call raises
 `AuthorizeRequestError`. The same happens to a reference with anything after
 the closing quote, such as `User::"alice" || true`. A crafted id therefore
@@ -192,8 +213,10 @@ Three rules apply everywhere a `principal` is accepted: `authorize`, `tool`,
   back, so a longer principal raises an error before anything is decided or
   recorded. The same limit applies to the action and the resource. An agent
   name is limited to 4087 bytes, so that `Agent::"<name>"` fits within 4096.
-  The limit is measured on the escaped name, where a quote or a backslash takes
-  two bytes, so a name made mostly of quotes is refused at a shorter length.
+  The limit is measured on the escaped name, where a quote, an apostrophe or a
+  backslash takes two bytes, so a name made mostly of quotes is refused at a
+  shorter length. An agent name with a character that is not printable is
+  refused, as an id is.
   `principals.user` and the other helpers refuse a reference whose escaped form
   is longer than 4096 bytes in the same way.
   See [using the governor](using-the-governor.md#names-have-a-length-limit).

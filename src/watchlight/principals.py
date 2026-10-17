@@ -9,18 +9,27 @@ or a space.
 A request and a policy write a Cedar entity reference the same way. The engine
 reads every request principal, action and resource with the same strict parser
 it uses for policy text, so the id inside the quotes is a Cedar string literal
-on both sides: a quote or a backslash in it must be escaped. The id ``a"b`` is
-written ``User::"a\\"b"`` in a request and in a policy alike. An unescaped
-reference such as ``User::"a"b"`` is not read as some other entity: the engine
-refuses the request as invalid.
+on both sides. The request parser is stricter than the policy parser: it
+accepts only one spelling of each id. A quote, an apostrophe and a backslash
+must be written ``\\"``, ``\\'`` and ``\\\\``, and a character that is not
+printable (a control, format, separator, private-use or unassigned character,
+a space other than U+0020, or a combining mark at the start) must be written
+``\\u{…}``. The id ``a"b`` is written ``User::"a\\"b"`` in a request and in a
+policy alike. A reference in any other spelling, such as ``User::"a"b"`` or
+``User::"o'b"``, is not read as some other entity: the engine refuses the
+request as invalid.
 
 So build every reference from an outside id with :func:`user`, :func:`agent` or
-:func:`entity`, which escape the id for you. :func:`for_policy` returns the
+:func:`entity`. They escape a quote, an apostrophe and a backslash, and they
+refuse, with a fixed message, an id holding a character that would need
+``\\u{…}``. :func:`for_policy` returns the
 same string as :func:`entity` for every id :func:`entity` accepts, so a
 reference built for a request matches the same reference written into a policy::
 
     principals.user("db:4412")             ->  User::"db:4412"
     principals.user('a"b')                 ->  User::"a\\"b"
+    principals.user("o'brien@example.com") ->  User::"o\\'brien@example.com"
+    principals.user("a\\u00a0b")            ->  TypeError (NBSP is not printable)
     principals.agent("research-agent")     ->  Agent::"research-agent"
     principals.for_policy("User", 'a"b')   ->  User::"a\\"b"
 
@@ -48,6 +57,7 @@ The vocabulary the SDK writes and the audit trail carries:
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any, Callable, List, Optional
 
 __all__ = [
@@ -170,6 +180,9 @@ def assert_agent_name(value: Any, where: str) -> str:
     # A quote or a backslash takes two bytes once escaped, so a name of at most
     # MAX_AGENT_NAME_BYTES can still make a longer principal. It is refused
     # here, at the name, rather than later when the principal is built.
+    # The name becomes an entity id, so it follows the request helpers' rule.
+    if _has_unprintable(value):
+        raise TypeError(f"{where}: agent {_UNPRINTABLE_RULE}")
     if _too_long(escape_cedar_string(value), MAX_AGENT_NAME_BYTES):
         raise TypeError(
             f"{where}: agent is longer than the maximum of {MAX_AGENT_NAME_BYTES} "
@@ -215,14 +228,106 @@ def assert_name_list(values: Any, field: str) -> Optional[List[str]]:
 
 _TYPE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*$")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
-_ESCAPES = {"\\": "\\\\", '"': '\\"', "\n": "\\n", "\r": "\\r", "\t": "\\t"}
+# The spelling the engine's strict entity parser accepts for each character
+# that must be escaped. It is the canonical form and the only one it accepts:
+# `\'` and not `'`, `\0` and not `\u{0}`.
+_ESCAPES = {
+    "\\": "\\\\",
+    '"': '\\"',
+    "'": "\\'",
+    "\n": "\\n",
+    "\r": "\\r",
+    "\t": "\\t",
+    "\0": "\\0",
+}
+
+# ── characters an id may not carry in a request ─────────────────────────────
+#
+# The engine's strict parser accepts a non-ASCII character raw only when it is
+# printable; every other character must be written as `\u{…}`, and a raw one
+# makes the request invalid. The request helpers do not write `\u{…}`: they
+# refuse such an id with a fixed message instead. The rule, measured against
+# watchlight-engine / @watchlight/engine 0.2.3 code point by code point, is:
+#
+# * anywhere in the id: general category Cc, Cf, Zl, Zp, Co, Cn or Cs, a Zs
+#   space other than U+0020, or a default-ignorable code point outside those
+#   categories (_DEFAULT_IGNORABLE_EXTRA);
+# * as the first character: also a combining mark (Mn, Me) or another
+#   grapheme extender (_GRAPHEME_EXTEND_EXTRA).
+#
+# The two tables are fixed, and the TypeScript lane (ts/src/principals.ts)
+# holds the same ones. The general category comes from each runtime's own
+# Unicode data, so the lanes and the engine can disagree about a code point
+# assigned in a recent Unicode version. Either way it fails closed: a lane with
+# older data refuses a character the engine would accept, and a character a
+# lane accepts but the engine does not is refused by the engine as an invalid
+# request. Nothing is ever read as a different id.
+_REFUSED_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp", "Co", "Cn", "Cs"})
+_LEADING_REFUSED_CATEGORIES = frozenset({"Mn", "Me"})
+_DEFAULT_IGNORABLE_EXTRA = (
+    (0x034F, 0x034F), (0x115F, 0x1160), (0x17B4, 0x17B5), (0x180B, 0x180D),
+    (0x180F, 0x180F), (0x3164, 0x3164), (0xFE00, 0xFE0F), (0xFFA0, 0xFFA0),
+    (0xE0100, 0xE01EF),
+)
+_GRAPHEME_EXTEND_EXTRA = (
+    (0x09BE, 0x09BE), (0x09D7, 0x09D7), (0x0B3E, 0x0B3E), (0x0B57, 0x0B57),
+    (0x0BBE, 0x0BBE), (0x0BD7, 0x0BD7), (0x0CC0, 0x0CC0), (0x0CC2, 0x0CC2),
+    (0x0CC7, 0x0CC8), (0x0CCA, 0x0CCB), (0x0CD5, 0x0CD6), (0x0D3E, 0x0D3E),
+    (0x0D57, 0x0D57), (0x0DCF, 0x0DCF), (0x0DDF, 0x0DDF), (0x1715, 0x1715),
+    (0x1734, 0x1734), (0x1B35, 0x1B35), (0x1B3B, 0x1B3B), (0x1B3D, 0x1B3D),
+    (0x1B43, 0x1B44), (0x1BAA, 0x1BAA), (0x1BF2, 0x1BF3), (0x302E, 0x302F),
+    (0xA953, 0xA953), (0xA9C0, 0xA9C0), (0xFF9E, 0xFF9F), (0x111C0, 0x111C0),
+    (0x11235, 0x11235), (0x1133E, 0x1133E), (0x1134D, 0x1134D), (0x11357, 0x11357),
+    (0x113B8, 0x113B8), (0x113C2, 0x113C2), (0x113C5, 0x113C5), (0x113C7, 0x113C9),
+    (0x113CF, 0x113CF), (0x114B0, 0x114B0), (0x114BD, 0x114BD), (0x115AF, 0x115AF),
+    (0x116B6, 0x116B6), (0x11930, 0x11930), (0x1193D, 0x1193D), (0x11F41, 0x11F41),
+    (0x16FF0, 0x16FF1), (0x1D165, 0x1D166), (0x1D16D, 0x1D172),
+)
+
+_UNPRINTABLE_RULE = (
+    "must not contain a character the engine requires escaped as \\u{...} (a "
+    "control, format, separator, private-use, surrogate or unassigned character, "
+    "a space other than U+0020, a default-ignorable character, or a combining "
+    "mark at the start)"
+)
+
+#: The fixed, value-free message an id with such a character is refused with.
+UNPRINTABLE_ID_MESSAGE = f"entity reference: id {_UNPRINTABLE_RULE}"
+
+
+def _in(ranges: Any, cp: int) -> bool:
+    return any(low <= cp <= high for low, high in ranges)
+
+
+def _unprintable(ch: str, first: bool) -> bool:
+    category = unicodedata.category(ch)
+    if category in _REFUSED_CATEGORIES:
+        return True
+    if category == "Zs" and ch != " ":
+        return True
+    cp = ord(ch)
+    if _in(_DEFAULT_IGNORABLE_EXTRA, cp):
+        return True
+    return first and (category in _LEADING_REFUSED_CATEGORIES or _in(_GRAPHEME_EXTEND_EXTRA, cp))
+
+
+def _has_unprintable(value: str) -> bool:
+    """True when ``value`` holds a character the request helpers refuse (see
+    above). An ASCII id holds none once control characters are excluded."""
+    if str.isascii(value):
+        return False
+    return any(_unprintable(ch, index == 0) for index, ch in enumerate(value))
 
 
 def escape_cedar_string(value: str) -> str:
-    """Escape a Cedar string literal's contents for POLICY TEXT: the two
-    characters that would end or re-open the literal, plus the control
-    characters a literal cannot carry raw. Use it when an id from outside goes
-    into a policy you generate."""
+    """Escape a Cedar string literal's contents: a quote, an apostrophe and a
+    backslash, plus the C0 control characters and DEL, each in the one spelling
+    the engine's strict request parser accepts (``\\"``, ``\\'``, ``\\\\``,
+    ``\\n``, ``\\r``, ``\\t``, ``\\0``, and ``\\u{…}`` for the rest). Every
+    other character is written as it is. The request helpers use it after they
+    have refused the ids it cannot make valid for a request (see
+    :func:`entity`); :func:`for_policy` uses it for policy text, where those
+    ids are allowed."""
     out = []
     for ch in str(value):
         if ch in _ESCAPES:
@@ -256,17 +361,22 @@ def _reference(entity_type: str, entity_id: str) -> str:
 def entity(entity_type: str, entity_id: str) -> str:
     """A Cedar entity reference, ``<Type>::"<id>"``, for a request.
 
-    The id is escaped exactly as :func:`for_policy` escapes it, because the
-    engine reads a request reference with the same strict parser it uses for
-    policy text: a quote or a backslash in the id must be escaped, or the
-    request is refused as invalid. The engine reads the returned string back as
-    exactly ``entity_id``, so a crafted id can never name another entity or
-    another type.
+    The id is escaped exactly as :func:`for_policy` escapes it, in the one
+    spelling the engine's strict request parser accepts: a quote, an
+    apostrophe and a backslash become ``\\"``, ``\\'`` and ``\\\\``. Every
+    other character the helper accepts is printable and is written as it is.
+    For every id this function accepts, the engine accepts the returned
+    reference and reads it back as exactly ``entity_id``, so a crafted id can
+    never name another entity or another type.
 
-    These ids are refused rather than silently changed:
+    These ids are refused with a fixed message rather than silently changed:
 
     * an empty id;
-    * an id with control characters, which no request principal may carry;
+    * an id with C0 control characters or DEL;
+    * an id with a character the engine accepts only as ``\\u{…}``: another
+      control, format, separator, private-use, surrogate or unassigned
+      character, a space other than U+0020, a default-ignorable character, or a
+      combining mark at the start (see :data:`UNPRINTABLE_ID_MESSAGE`);
     * an id whose escaped reference is longer than :data:`MAX_NAME_BYTES`
       bytes of UTF-8, because the reference is recorded on every audit row.
     """
@@ -276,6 +386,8 @@ def entity(entity_type: str, entity_id: str) -> str:
     entity_id = str.__str__(entity_id)
     if _CONTROL.search(entity_id):
         raise TypeError("entity reference: id must not contain control characters")
+    if _has_unprintable(entity_id):
+        raise TypeError(UNPRINTABLE_ID_MESSAGE)
     reference = _reference(entity_type, entity_id)
     if _too_long(reference, MAX_NAME_BYTES):
         raise TypeError(ENTITY_TOO_LONG_MESSAGE)
@@ -289,10 +401,14 @@ def for_policy(entity_type: str, entity_id: str) -> str:
     :func:`entity`: requests and policies spell a reference the same way, so
     ``principals.user(sub)`` in a request matches
     ``principals.for_policy("User", sub)`` in a policy. Both names stay public.
-    The one difference is that policy text is not a request: an id with control
-    characters is escaped here (``\\n``, ``\\u{…}``) instead of refused, and the
-    length is not bounded. Such a policy can never match a request, because no
-    request principal may carry a control character."""
+    The difference is that policy text is not a request, and the policy
+    parser accepts more than the strict request parser. A C0 control character
+    or DEL is escaped here (``\\n``, ``\\0``, ``\\u{1b}``) instead of refused,
+    any other character the request helpers refuse is written raw, which the
+    policy parser accepts, and the length is not bounded. Such a policy matches
+    only a request whose principal is written by hand in the escaped form the
+    engine accepts, for example ``User::"a\\nb"``: :func:`assert_principal`
+    refuses a raw control character, not an escaped one."""
     _check_type(entity_type)
     if not isinstance(entity_id, str) or entity_id == "":
         raise TypeError("entity reference: id must be a non-empty string")

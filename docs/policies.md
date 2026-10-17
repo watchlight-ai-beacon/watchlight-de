@@ -76,9 +76,11 @@ for an agent, a group or a role.
 
 Build a reference from an outside id with `principals.user`, `principals.agent`
 or `principals.entity`. The engine parses a request reference strictly, so a
-quote or a backslash in the id must be escaped, and the helpers do that. A
-reference with an unescaped quote, or with anything after the closing quote, is
-refused as an invalid request. When you generate a policy from data,
+quote, an apostrophe or a backslash in the id must be escaped, and the helpers
+do that. They refuse an id with a character that is not printable, such as a
+no-break space or a zero-width space, because the engine accepts it only as
+`\u{…}`. A reference with an unescaped quote or apostrophe, or with anything
+after the closing quote, is refused as an invalid request. When you generate a policy from data,
 `principals.for_policy` (TypeScript `policyEntityRef`) builds the same string
 for the policy text.
 

@@ -68,8 +68,9 @@ def governed_plugin(
     the engine exactly as given, and the engine parses each one strictly. A
     typed reference such as ``User::"u-1"`` discriminates: a policy naming a
     different type with the same id does not match it. Build it with
-    :mod:`watchlight.principals`, which escapes a quote or a backslash in the
-    id; an unescaped one makes the request invalid. A BARE principal is read as
+    :mod:`watchlight.principals`, which escapes a quote, an apostrophe or a
+    backslash in the id and refuses an id with a character the engine cannot
+    read; an unescaped quote makes the request invalid. A BARE principal is read as
     a ``User`` and never matches a policy of another type, so write the type to
     name an agent, a group or a role.
 

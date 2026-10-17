@@ -139,7 +139,7 @@ def test_the_limit_is_in_the_docstring_an_integrator_reads(framework):
     # an untyped principal is a User, and never matches another type.
     assert "bare principal is read as" in doc.lower()
     assert "never matches a policy of another type" in doc.lower()
-    assert "escapes a quote or a backslash" in doc.lower()
+    assert "escapes a quote, an apostrophe or a" in doc.lower()
 
 
 @pytest.mark.parametrize("framework", sorted(FACTORIES))

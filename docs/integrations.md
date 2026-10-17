@@ -178,9 +178,10 @@ ignore it.
 **Always name the entity type.** A policy that names `Agent::"u-1"` does not
 match `User::"u-1"`. A bare `u-1` is read as the user `User::"u-1"`, so it never
 matches a policy written for an agent, a group or a role with that id. Build the
-reference with `principals.user` or `principals.agent`, which escape a quote or a
-backslash in the id; a reference with an unescaped quote is refused as an
-invalid request. The action is always of type `Action`, and a policy that gives
+reference with `principals.user` or `principals.agent`, which escape a quote, an
+apostrophe or a backslash in the id and refuse an id with a character that is
+not printable; a reference with an unescaped quote is refused as an invalid
+request. The action is always of type `Action`, and a policy that gives
 it another type is rejected.
 
 ## An MCP server

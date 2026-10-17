@@ -144,8 +144,8 @@ change the fixtures first. Watch them go red before you touch the policy.
 - A **bare identifier** in a fixture's `principal` is read as a `User`, so it
   never matches an `Agent`, `Group` or `Role` policy for that id. Write the
   type, such as `User::"alice"` or `Agent::"triage"`, to test what you mean. An
-  id with a quote or a backslash must be escaped inside the reference
-  (`User::"a\"b"`), or the case is an invalid request.
+  id with a quote, an apostrophe or a backslash must be escaped inside the
+  reference (`User::"a\"b"`, `User::"o\'b"`), or the case is an invalid request.
 - `watchlight policy test` and `govern.test()` run the engine's decision core
   and write no records. A test that calls `authorize()` or a governed tool is a
   governed call like any other. Set `WATCHLIGHT_AUDIT_FILE=0` for the test run

@@ -192,15 +192,15 @@ FRAMEWORK_ALIAS_ATTRS = {"Any", "Optional", "Policies", "_select_backend_kwargs"
 FRAMEWORK_DOC_DIGESTS = {
     "watchlight.langgraph": (
         "67f62afba0776228bb0c7d7add94d562e7800f601683fd1986a8f5a2d653fc74",
-        "52968cecd79b4d58a07fb59f6b3109169a12a40c5b9a8d985b47e894dd470af0",
+        "4b30a9ea47bd652e1ee44f01b0343b2d7580fc0e4c05833e8fdae31fb77adcad",
     ),
     "watchlight.pydantic_ai": (
         "0869072f0cfdb02798738ac45c5eaaa37b70c7184da69d0edf2c88f098d77759",
-        "58a5ed1e14e79fba99570c43ad0073cd8dda130230c292a6da4d75e4e9caabb2",
+        "725d297dba4cff8ddb8522cf94b169443789670ef745c8306e2a3203d8a230ad",
     ),
     "watchlight.claude_agent": (
         "5312e2067be83a7b4e350dfee5f4e1fce7fd08822dec8925c18206223465c3a6",
-        "2033490db4eb31d07f98e078688c4865a4db6ba93e138aad31670fc66c5908cc",
+        "cc5878b7832a0c57e12d5bb2f6f9afa66a35d7b6c480a9adf8f82574f3402324",
     ),
 }
 
