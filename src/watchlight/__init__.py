@@ -2976,10 +2976,17 @@ class Watchlight:
         # The receiving governor's own max_delegation_depth still applies: a token
         # cannot carry a deeper tree than this governor permits.
         root_budget = min(root["max_depth"], self._shared.max_delegation_depth)
+        # Every level's budget is a whole number of seconds from 1 to 2**32 - 1,
+        # checked before anything is replayed.
         try:
             _check_root_time_budget(root["time_budget_seconds"])
         except (TypeError, ValueError):
             raise ScopeTokenError("malformed", "claims.root.time_budget_seconds is out of range") from None
+        for step in claims["chain"]:
+            try:
+                _check_root_time_budget(step["time_budget_seconds"])
+            except (TypeError, ValueError):
+                raise ScopeTokenError("malformed", "claims.chain time_budget_seconds is out of range") from None
         replay_at = _now_seconds()
         scope = self._new_root(
             tools=root["tools"],

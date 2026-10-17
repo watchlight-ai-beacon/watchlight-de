@@ -156,11 +156,81 @@ def test_a_root_budget_that_is_not_an_int_is_refused(tmp_path, bad):
         _gov(tmp_path).scope(tools=["t"], time_budget_seconds=bad)
 
 
-@pytest.mark.parametrize("bad", [0, -1, True, 1.5, "5", 2**32, 2**63])
-def test_an_invalid_child_budget_is_still_refused(tmp_path, bad):
-    root = _gov(tmp_path).scope(tools=["t"], time_budget_seconds=600)
-    with pytest.raises((AttenuationDenied, TypeError, ValueError)):
-        root.attenuate(tools=["t"], time_budget_seconds=bad)
+INVALID = "time_budget_seconds must be a whole number of seconds from 1 to 4294967295"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [0, -1, True, False, 1.5, 2.9, 600.0, float("nan"), float("inf"), "600", 2**32, 2**53, 2**63, [600]],
+    ids=repr,
+)
+def test_an_invalid_child_budget_is_refused_before_the_engine_and_recorded(tmp_path, bad):
+    g = _gov(tmp_path)
+    root = g.scope(tools=["t"], time_budget_seconds=600)
+    with pytest.raises(AttenuationDenied) as err:
+        root.attenuate(tools=["t"], time_budget_seconds=bad, agent="worker")
+    assert err.value.violations == ["TimeBudget"]
+    assert err.value.reason == INVALID
+    # Fixed and value-free: the reason never carries the input.
+    assert str(err.value) == f"attenuation denied (TimeBudget): {INVALID}"
+    deny = [r for r in _records(tmp_path) if r.get("decision") == "Deny"]
+    assert len(deny) == 1 and deny[0]["reason"] == INVALID
+    with pytest.raises(AttenuationDenied):
+        g.delegate(root, "worker", tools=["t"], time_budget_seconds=bad)
+    preview = root.preview_attenuate(tools=["t"], time_budget_seconds=bad)
+    assert not preview.allowed and preview.reason == INVALID
+
+
+def test_none_is_an_absent_child_budget_and_inherits(tmp_path, clock):
+    root = _gov(tmp_path).scope(tools=["t"], time_budget_seconds=10)
+    clock.now += 2.1
+    assert root.attenuate(tools=["t"], time_budget_seconds=None).time_budget_seconds == 7
+
+
+# Each chain is (level-1 budget, level-2 budget, level-3 budget); None = omitted.
+CHAINS = [
+    (None, None, None),
+    (600, None, None),
+    (599, None, None),
+    (599, 599, None),
+    (599, 598, None),
+    (599, 598, 598),
+    (599, 598, 597),
+    (300, 300, None),
+    (300, 299, 298),
+    (None, 599, None),
+    (None, 598, 597),
+]
+
+
+def _real_chain(g, budgets):
+    """Create the chain at once; return each level's (allowed, budget, reason)."""
+    out, scope = [], g.scope(tools=["t"], time_budget_seconds=600)
+    for b in budgets:
+        try:
+            scope = _attenuate(scope, b)
+            out.append((True, scope.time_budget_seconds, ""))
+        except AttenuationDenied as e:
+            out.append((False, 0, e.reason))
+            break
+    return out
+
+
+def _preview_chain(g, budgets):
+    out, preview = [], g.preview_scope(tools=["t"], time_budget_seconds=600)
+    for b in budgets:
+        preview = preview.preview_attenuate(tools=["t"], time_budget_seconds=b)
+        out.append((preview.allowed, preview.time_budget_seconds if preview.allowed else 0, preview.reason))
+        if not preview.allowed:
+            break
+    return out
+
+
+@pytest.mark.parametrize("budgets", CHAINS, ids=repr)
+def test_a_preview_chain_decides_exactly_as_the_real_chain(tmp_path, clock, budgets):
+    clock.now = 1_800_000_000.25  # mid-second, as almost every real call is
+    g = _gov(tmp_path)
+    assert _preview_chain(g, budgets) == _real_chain(g, budgets)
 
 
 # ── scope tokens ────────────────────────────────────────────────────
@@ -221,6 +291,25 @@ def test_a_signed_chain_that_names_more_time_than_its_parent_is_refused(tmp_path
     with pytest.raises(AttenuationDenied) as err:
         _gov(tmp_path).scope_from_token(_signed(claims))
     assert err.value.violations == ["TimeBudget"]
+
+
+@pytest.mark.parametrize("step_budget", [0, 2**32, 2**53 - 1])
+def test_a_signed_chain_budget_out_of_range_is_malformed(tmp_path, step_budget):
+    now = int(time.time())
+    claims = {
+        "agent": "test-agent",
+        "root": {"tools": ["t"], "resources": [], "intents": [], "max_depth": 5, "time_budget_seconds": 600},
+        "chain": [
+            {"tools": ["t"], "resources": [], "intents": [], "time_budget_seconds": step_budget},
+            {"tools": ["t"], "resources": [], "intents": [], "time_budget_seconds": 60},
+        ],
+        "depth": 2,
+        "iat": now,
+        "exp": now + 60,
+    }
+    with pytest.raises(ScopeTokenError) as err:
+        _gov(tmp_path).scope_from_token(_signed(claims))
+    assert err.value.code == "malformed"
 
 
 @pytest.mark.parametrize("root_budget", [0, 2**32])

@@ -99,12 +99,18 @@ def _budget_refusal(available: int) -> str:
     return f"time_budget_seconds exceeds the parent's remaining time; at most {available} seconds are available"
 
 
-def _is_engine_budget(value: Any) -> bool:
-    """Whether ``value`` is a whole number of seconds the engine accepts."""
+#: Fixed reason for a named child budget that is not a whole number of seconds
+#: in range. Never carries the value.
+_INVALID_BUDGET = f"time_budget_seconds must be a whole number of seconds from 1 to {MAX_TIME_BUDGET_SECONDS}"
+
+
+def _is_valid_budget(value: Any) -> bool:
+    """Whether ``value`` is a whole number of seconds from 1 to
+    :data:`MAX_TIME_BUDGET_SECONDS` (a bool is not)."""
     return (
         not isinstance(value, bool)
         and isinstance(value, int)
-        and 0 <= value <= MAX_TIME_BUDGET_SECONDS
+        and 1 <= value <= MAX_TIME_BUDGET_SECONDS
     )
 
 
@@ -114,7 +120,7 @@ def _check_root_time_budget(time_budget_seconds: Any) -> int:
     otherwise, so a root can never start spent, negative or unbounded."""
     if isinstance(time_budget_seconds, bool) or not isinstance(time_budget_seconds, int):
         raise TypeError("time_budget_seconds must be an int")
-    if not 1 <= time_budget_seconds <= MAX_TIME_BUDGET_SECONDS:
+    if not _is_valid_budget(time_budget_seconds):
         raise ValueError(f"time_budget_seconds must be from 1 to {MAX_TIME_BUDGET_SECONDS}")
     return int(time_budget_seconds)
 
@@ -189,6 +195,19 @@ def _attenuation_outcome(
     if child_depth > parent.max_delegation_depth:
         return {"kind": "depth", "requested_tools": requested_tools, "child_depth": child_depth}
 
+    # A named budget must be a whole number of seconds in range. Anything else
+    # (0, a negative, a bool, a float, a string, a value past the engine's
+    # range) is refused here with a fixed reason — never handed to the engine,
+    # and recorded like any other refused attenuation.
+    if time_budget_seconds is not None and not _is_valid_budget(time_budget_seconds):
+        return {
+            "kind": "deny",
+            "requested_tools": requested_tools,
+            "child_depth": child_depth,
+            "violations": ["TimeBudget"],
+            "reason": _INVALID_BUDGET,
+        }
+
     # A parent with no whole second left can give no time, named or inherited.
     if available <= 0:
         return {
@@ -201,9 +220,8 @@ def _attenuation_outcome(
 
     # A named budget larger than the parent can give — more than it has left,
     # or more than its own budget — is refused before the engine, with a reason
-    # that states the seconds available. Anything that is not a whole number
-    # of seconds in the engine's range is left to the engine, which refuses it.
-    if _is_engine_budget(time_budget_seconds) and time_budget_seconds > available:
+    # that states the seconds available.
+    if time_budget_seconds is not None and time_budget_seconds > available:
         return {
             "kind": "deny",
             "requested_tools": requested_tools,
@@ -218,7 +236,7 @@ def _attenuation_outcome(
         "allowed_intents": _norm(intents) if intents is not None else parent.allowed_intents,
         "max_depth": max(0, parent.max_depth - 1),
         # An absent budget inherits what the parent has left; a named one is
-        # passed as given, so the engine checks its type and the widening.
+        # passed as given (already checked), and the engine checks it again.
         "time_budget_seconds": time_budget_seconds if time_budget_seconds is not None else available,
     }
     resp = json.loads(parent._engine.attenuate_scope(json.dumps(parent._as_dict()), json.dumps(request)))
@@ -557,7 +575,7 @@ class Scope:
     ) -> "ScopePreview":
         """What :meth:`attenuate` would grant, without granting it or recording
         anything — for showing a sub-agent's effective authority. Runs the same
-        engine check and returns a :class:`ScopePreview`: the clamped grant, or
+        engine check and returns a :class:`ScopePreview`: the engine's grant, or
         the violations and reason it would be refused with. A preview is data,
         never a scope: it cannot authorize, delegate, or mint a token."""
         self.assert_active()
@@ -751,12 +769,16 @@ class ScopePreview:
                 reason="its parent scope would not be granted",
                 reason_code=self.reason_code,
             )
-        # A preview was never issued, so no time has passed for it: it can give
-        # its whole budget.
+        # A preview stands for a scope created now, at the same instant as its
+        # parent. A real scope's issue time is rounded down to the second, so
+        # the time it has left right after creation is its budget less a
+        # fraction of a second: rounded down, one second less. The preview
+        # applies the same loss, so it never grants what attenuate() would
+        # refuse.
         return _preview_child(
             self, tools=tools, resources=resources, intents=intents,
             time_budget_seconds=time_budget_seconds, agent=agent,
-            available=self.time_budget_seconds,
+            available=max(0, self.time_budget_seconds - 1),
         )
 
     def to_dict(self) -> dict[str, Any]:

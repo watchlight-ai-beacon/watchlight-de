@@ -980,7 +980,8 @@ export interface ScopeOptions {
    *  it never raises it. */
   maxDepth?: number;
   /** The root's time budget: a whole number of seconds from 1 to 2**32 - 1
-   *  (default 3600; `TypeError` or `RangeError` otherwise). Each sub-agent
+   *  (omitted: 3600; `null` or a non-integer is a `TypeError`, out of range a
+   *  `RangeError`). Each sub-agent
    *  scope gets at most what its parent has left: a larger named budget is
    *  refused, never shortened. */
   timeBudgetSeconds?: number;
@@ -1356,7 +1357,7 @@ export class Watchlight {
       intents: assertNameList(opts.intents, "intents"),
     };
     const budget = this._rootBudget(opts.maxDepth);
-    const timeBudgetSeconds = checkRootTimeBudget(opts.timeBudgetSeconds ?? 3600);
+    const timeBudgetSeconds = checkRootTimeBudget(opts.timeBudgetSeconds === undefined ? 3600 : opts.timeBudgetSeconds);
     const eng = this._backend.engine();
     if (!eng) {
       throw new Error(
@@ -1401,7 +1402,7 @@ export class Watchlight {
       intents: assertNameList(opts.intents, "intents"),
     };
     const budget = this._rootBudget(opts.maxDepth);
-    const timeBudgetSeconds = checkRootTimeBudget(opts.timeBudgetSeconds ?? 3600);
+    const timeBudgetSeconds = checkRootTimeBudget(opts.timeBudgetSeconds === undefined ? 3600 : opts.timeBudgetSeconds);
     const eng = this._backend.engine();
     if (!eng) {
       throw new Error(
@@ -1463,10 +1464,19 @@ export class Watchlight {
     // The receiving governor's own maxDelegationDepth still applies: a token
     // cannot carry a deeper tree than this governor permits.
     const rootBudget = Math.min(claims.root.max_depth, this._shared.maxDelegationDepth);
+    // Every level's budget is a whole number of seconds from 1 to 2**32 - 1,
+    // checked before anything is replayed.
     try {
       checkRootTimeBudget(claims.root.time_budget_seconds);
     } catch {
       throw new ScopeTokenError("malformed", "claims.root.time_budget_seconds is out of range");
+    }
+    for (const step of claims.chain) {
+      try {
+        checkRootTimeBudget(step.time_budget_seconds);
+      } catch {
+        throw new ScopeTokenError("malformed", "claims.chain time_budget_seconds is out of range");
+      }
     }
     const replayAt = nowSeconds();
     const root = await this._newRoot(

@@ -126,17 +126,68 @@ async function main() {
     const p = await caughtAsync(() => gov().previewScope({ tools: ["t"], timeBudgetSeconds: bad }));
     ok(`an out-of-range preview root budget (${bad}) is refused`, p instanceof RangeError, String(p));
   }
-  for (const bad of [true, 1.5, "5", NaN, Infinity]) {
+  for (const bad of [true, 1.5, "5", NaN, Infinity, null, 600n]) {
     const e = await caughtAsync(() => gov().scope({ tools: ["t"], timeBudgetSeconds: bad }));
     ok(`a root budget that is not an integer (${String(bad)}) is refused`, e instanceof TypeError, String(e));
   }
   {
-    const root = await gov().scope({ tools: ["t"], timeBudgetSeconds: 600 });
-    for (const bad of [0, -1, true, 1.5, "5", NaN, 2 ** 32]) {
-      const e = caught(() => root.attenuate({ tools: ["t"], timeBudgetSeconds: bad }));
-      ok(`an invalid child budget (${String(bad)}) is still refused`, e !== null, "granted");
+    const INVALID = "time_budget_seconds must be a whole number of seconds from 1 to 4294967295";
+    for (const bad of [0, -1, true, false, 1.5, 2.9, NaN, Infinity, -Infinity, "600", 600n, 2 ** 32, 2 ** 53, [600]]) {
+      const dir = tmp();
+      const g = gov(dir);
+      const root = await g.scope({ tools: ["t"], timeBudgetSeconds: 600 });
+      const e = caught(() => root.attenuate({ tools: ["t"], timeBudgetSeconds: bad, agent: "worker" }));
+      const deny = fs.readFileSync(join(dir, "audit.jsonl"), "utf8").trim().split("\n").map(JSON.parse)
+        .filter((r) => r.decision === "Deny");
+      ok(
+        `an invalid child budget (${String(bad)}) is refused with the fixed reason and recorded`,
+        e instanceof AttenuationDenied && e.violations.includes("TimeBudget") && e.reason === INVALID &&
+          e.message === `sub-agent scope denied: ${INVALID}` && deny.length === 1 && deny[0].reason === INVALID,
+        e ? `${e.name}: ${e.message}` : "granted"
+      );
+      const d = caught(() => g.delegate(root, "worker", { tools: ["t"], timeBudgetSeconds: bad }));
+      ok(`delegate refuses the invalid budget (${String(bad)})`, d instanceof AttenuationDenied && d.reason === INVALID);
+      const pv = root.previewAttenuate({ tools: ["t"], timeBudgetSeconds: bad });
+      ok(`a preview refuses the invalid budget (${String(bad)})`, !pv.allowed && pv.reason === INVALID);
     }
   }
+
+  // ── null at a child means absent, as Python's None does ──
+  pin(1_800_000_000);
+  {
+    const root = await gov().scope({ tools: ["t"], timeBudgetSeconds: 10 });
+    pin(clock + 2.1);
+    const c = caught(() => { if (root.attenuate({ tools: ["t"], timeBudgetSeconds: null }).timeBudgetSeconds !== 7) throw new Error("not 7"); });
+    ok("a null child budget inherits the remaining seconds", c === null, String(c));
+  }
+  unpin();
+
+  // ── a preview chain decides exactly as the real chain created at once ──
+  const CHAINS = [
+    [null, null, null], [600, null, null], [599, null, null], [599, 599, null], [599, 598, null],
+    [599, 598, 598], [599, 598, 597], [300, 300, null], [300, 299, 298], [null, 599, null], [null, 598, 597],
+  ];
+  for (const budgets of CHAINS) {
+    pin(1_800_000_000.25); // mid-second, as almost every real call is
+    const g = gov();
+    const real = [];
+    let scope = await g.scope({ tools: ["t"], timeBudgetSeconds: 600 });
+    for (const b of budgets) {
+      const e = caught(() => { scope = attenuate(scope, b); });
+      real.push(e ? [false, 0, e.reason] : [true, scope.timeBudgetSeconds, ""]);
+      if (e) break;
+    }
+    const preview = [];
+    let pv = await g.previewScope({ tools: ["t"], timeBudgetSeconds: 600 });
+    for (const b of budgets) {
+      pv = pv.previewAttenuate(b === null ? { tools: ["t"] } : { tools: ["t"], timeBudgetSeconds: b });
+      preview.push([pv.allowed, pv.allowed ? pv.timeBudgetSeconds : 0, pv.reason]);
+      if (!pv.allowed) break;
+    }
+    ok(`preview chain ${JSON.stringify(budgets)} matches the real chain`, JSON.stringify(preview) === JSON.stringify(real),
+      `${JSON.stringify(preview)} vs ${JSON.stringify(real)}`);
+  }
+  unpin();
 
   // ── scope tokens ──
   pin(1_800_000_000);
@@ -187,6 +238,19 @@ async function main() {
     }, Buffer.from(SECRET));
     const e = await caughtAsync(() => gov().scopeFromToken(widened));
     ok("a signed chain that names more time than its parent is refused", e instanceof AttenuationDenied && e.violations.includes("TimeBudget"), String(e));
+    for (const stepBudget of [0, 2 ** 32, 2 ** 53 - 1]) {
+      const t = signScopeToken({
+        agent: "test-agent",
+        root: { tools: ["t"], resources: [], intents: [], max_depth: 5, time_budget_seconds: 600 },
+        chain: [
+          { tools: ["t"], resources: [], intents: [], time_budget_seconds: stepBudget },
+          { tools: ["t"], resources: [], intents: [], time_budget_seconds: 60 },
+        ],
+        depth: 2, iat: now, exp: now + 60,
+      }, Buffer.from(SECRET));
+      const m = await caughtAsync(() => gov().scopeFromToken(t));
+      ok(`a signed chain budget out of range (${stepBudget}) is malformed`, m instanceof ScopeTokenError && m.code === "malformed", String(m));
+    }
     for (const rootBudget of [0, 2 ** 32]) {
       const t = signScopeToken({
         agent: "test-agent",

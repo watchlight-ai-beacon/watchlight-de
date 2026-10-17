@@ -76,9 +76,14 @@ function budgetRefusal(available: number): string {
   return `time_budget_seconds exceeds the parent's remaining time; at most ${available} seconds are available`;
 }
 
-/** Whether `value` is a whole number of seconds the engine accepts. */
-const isEngineBudget = (value: unknown): value is number =>
-  typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= MAX_TIME_BUDGET_SECONDS;
+/** Fixed reason for a named child budget that is not a whole number of seconds
+ *  in range. Never carries the value. */
+const INVALID_BUDGET = `time_budget_seconds must be a whole number of seconds from 1 to ${MAX_TIME_BUDGET_SECONDS}`;
+
+/** Whether `value` is a whole number of seconds from 1 to
+ *  {@link MAX_TIME_BUDGET_SECONDS}. */
+const isValidBudget = (value: unknown): value is number =>
+  typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= MAX_TIME_BUDGET_SECONDS;
 
 /** A root scope's time budget: a whole number of seconds from 1 to
  *  {@link MAX_TIME_BUDGET_SECONDS}. Value-free `TypeError` or `RangeError`
@@ -87,7 +92,7 @@ export function checkRootTimeBudget(timeBudgetSeconds: unknown): number {
   if (typeof timeBudgetSeconds !== "number" || !Number.isInteger(timeBudgetSeconds)) {
     throw new TypeError("timeBudgetSeconds must be an integer");
   }
-  if (timeBudgetSeconds < 1 || timeBudgetSeconds > MAX_TIME_BUDGET_SECONDS) {
+  if (!isValidBudget(timeBudgetSeconds)) {
     throw new RangeError(`timeBudgetSeconds must be from 1 to ${MAX_TIME_BUDGET_SECONDS}`);
   }
   return timeBudgetSeconds;
@@ -169,6 +174,17 @@ function attenuationOutcome(
   // maxDelegationDepth — a governance control, checked before the engine.
   if (childDepth > p.maxDelegationDepth) return { kind: "depth", requestedTools, childDepth };
 
+  // `undefined` and `null` both mean "absent": the child inherits, as Python's
+  // `None` does.
+  const named: unknown = opts.timeBudgetSeconds ?? undefined;
+  // A named budget must be a whole number of seconds in range. Anything else (0,
+  // a negative, a boolean, a fraction, NaN, Infinity, a string, a BigInt, a
+  // value past the engine's range) is refused here with a fixed reason — never
+  // handed to the engine, and recorded like any other refused attenuation.
+  if (named !== undefined && !isValidBudget(named)) {
+    return { kind: "deny", requestedTools, childDepth, violations: ["TimeBudget"], reason: INVALID_BUDGET };
+  }
+
   // A parent with no whole second left can give no time, named or inherited.
   if (available <= 0) {
     return { kind: "deny", requestedTools, childDepth, violations: ["TimeBudget"], reason: budgetRefusal(0) };
@@ -176,10 +192,8 @@ function attenuationOutcome(
 
   // A named budget larger than the parent can give — more than it has left, or
   // more than its own budget — is refused before the engine, with a reason that
-  // states the seconds available. Anything that is not a whole number of
-  // seconds in the engine's range is left to the engine, which refuses it.
-  const named = opts.timeBudgetSeconds;
-  if (isEngineBudget(named) && named > available) {
+  // states the seconds available.
+  if (named !== undefined && named > available) {
     return { kind: "deny", requestedTools, childDepth, violations: ["TimeBudget"], reason: budgetRefusal(available) };
   }
 
@@ -199,8 +213,8 @@ function attenuationOutcome(
     allowed_intents: opts.intents !== undefined ? norm(opts.intents) : [...p.allowedIntents],
     max_depth: Math.max(0, p.maxDepth - 1),
     // An absent budget inherits what the parent has left; a named one is passed
-    // as given, so the engine checks its type and the widening.
-    time_budget_seconds: opts.timeBudgetSeconds !== undefined ? opts.timeBudgetSeconds : available,
+    // as given (already checked), and the engine checks it again.
+    time_budget_seconds: named !== undefined ? named : available,
   };
 
   const resp = engine.attenuateScope(parent, request);
@@ -221,7 +235,7 @@ function attenuationOutcome(
   // shortened, so a child never starts work sized for time it does not have. A
   // named budget's grant must be exactly what was named, and no grant may
   // exceed what the parent has left.
-  const namedChanged = opts.timeBudgetSeconds !== undefined && grantedBudget !== opts.timeBudgetSeconds;
+  const namedChanged = named !== undefined && grantedBudget !== named;
   if (namedChanged || grantedBudget > available) {
     return { kind: "deny", requestedTools, childDepth, violations: ["TimeBudget"], reason: budgetRefusal(available) };
   }
@@ -245,7 +259,9 @@ export interface AttenuateOptions {
   tools?: readonly string[];
   resources?: readonly string[];
   intents?: readonly string[];
-  timeBudgetSeconds?: number;
+  /** Whole seconds from 1 to 2**32 - 1, granted exactly or refused. Omit it
+   *  (or pass `null`) to inherit the parent's {@link Scope.remainingSeconds}. */
+  timeBudgetSeconds?: number | null;
   /** The sub-agent this scope is spawned FOR. Appends that name to the child's
    *  {@link Scope.actorChain}, which is what a delegated governor
    *  ({@link Watchlight.delegate}) records and what a policy reads as
@@ -526,7 +542,7 @@ export class Scope {
   /**
    * What {@link attenuate} would grant, without granting it or recording
    * anything — for showing a sub-agent's effective authority. Runs the same
-   * engine check and returns a {@link ScopePreview}: the clamped grant, or the
+   * engine check and returns a {@link ScopePreview}: the engine's grant, or the
    * violations and reason it would be refused with. A preview is data, never a
    * scope: it cannot authorize, delegate, or mint a token.
    */
@@ -688,9 +704,12 @@ export class ScopePreview {
         reasonCode: this.reasonCode,
       });
     }
-    // A preview was never issued, so no time has passed for it: it can give its
-    // whole budget.
-    return previewChild(this._engine, this, this.actorChain, opts, this.timeBudgetSeconds);
+    // A preview stands for a scope created now, at the same instant as its
+    // parent. A real scope's issue time is rounded down to the second, so the
+    // time it has left right after creation is its budget less a fraction of a
+    // second: rounded down, one second less. The preview applies the same loss,
+    // so it never grants what attenuate() would refuse.
+    return previewChild(this._engine, this, this.actorChain, opts, Math.max(0, this.timeBudgetSeconds - 1));
   }
 
   /** The preview as plain data — what `JSON.stringify` writes. */
