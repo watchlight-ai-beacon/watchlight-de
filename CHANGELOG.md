@@ -13,12 +13,38 @@ Each entry links to its release, which carries the reasoning and the measurement
 
 ## Unreleased
 
+The framework extras move to `watchlight-agent-sdk` 0.10 and the plugin
+releases written for it. SDK 0.10 carries security hardening: run credentials
+stay inside the governance backend, a run is never served on the plugin
+credential alone, and a sub-agent is not started when its parent's authority
+cannot be shown. Read [breaking changes](docs/breaking-changes.md) if you call
+the SDK's backend directly.
+
 **Security**
 - Hardening: a policy whose `@enforcement_effect` cannot be honoured is refused by the engine (`watchlight-engine` 0.2.3), in both lanes. That covers a value the engine does not implement, and now also an annotation name that is a near miss for `enforcement_effect` (for example `@enforcment_effect`), which used to only warn while the policy loaded as a plain allow. The SDK raises `PolicyError` with a `code` (`UNRECOGNISED_ENFORCEMENT_EFFECT` or `ENFORCEMENT_EFFECT_NAME_NEAR_MISS`), mapped from the engine's typed error, and keeps no list of effects of its own.
 
 **Changed**
 - The SDKs require `watchlight-engine>=0.2.3` / `@watchlight/engine>=0.2.3`.
 - `ENFORCEMENT_EFFECTS` is removed from both SDKs; the engine owns the list. `PolicyError` carries `code`, `policy` and `source` instead of `value` and `accepted`.
+- The `langgraph`, `pydantic-ai`, `claude-agent`, `sdk` and `all` extras require
+  `watchlight-agent-sdk>=0.10,<0.11`, `watchlight-langgraph>=0.5,<0.6`,
+  `watchlight-pydantic-ai>=0.4,<0.5` and `watchlight-claude-agent>=0.3,<0.4`.
+  Each plugin is now capped below its next minor release too, so an upgrade
+  can never pair a plugin with an SDK it was not written for.
+- `in_process_backend()` follows the SDK 0.10 backend interface: it returns the
+  SDK's `SessionInfo` from `create_session`, and names a run by its run
+  reference (`run`) when it authorizes, spawns, completes or terminates it.
+  Every decision is still recorded exactly once, with the same fields.
+- A plugin decision record is filed under the run the SDK names, never under a
+  session id passed alongside it, and a sub-agent's actor chain comes from the
+  parent run it was spawned under, never from ids in the spawn request. A
+  decision recorded after its run ended still names the run's agent.
+- Hardening: a sub-agent's time is bounded in process as it is by the
+  networked service. A spawn that names no time budget inherits its parent's
+  remaining time; a sub-agent spawned directly from the run gets the root's
+  ceiling of 3600 seconds. An explicit `0`, a budget larger than the parent's and
+  a spawn from a parent with no time left are refused. Once its time runs out,
+  every call the sub-agent makes is denied. Requires `watchlight-engine>=0.2.3`.
 - The TypeScript SDK requires Node 22 or later (Node 18 and 20 are end of life); it relies on the Web Crypto global. `engines.node` in `@watchlight/sdk` is now `>=22`.
 - Behaviour change: both SDKs follow the strict entity references of `watchlight-engine` / `@watchlight/engine` 0.2.3, and now require it (`watchlight-engine>=0.2.3,<0.3` and `@watchlight/engine ^0.2.3`), so the reference helpers and the engine always agree. The released 0.13.2 already gets engine 0.2.3 on a fresh install, so it already shows the decision changes below; this release makes the helpers and the documentation match them.
   - A bare principal is now a `User`. `team-42` is read as `User::"team-42"`: it matches `principal is User` and a policy naming `User::"team-42"`, and no longer matches a policy of another type, such as `principal is Agent` or `Agent::"team-42"`. A bare action is an `Action` and a bare resource a `Resource`, and a bare name that contains a quote or `::` is refused as an invalid request.

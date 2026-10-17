@@ -53,6 +53,7 @@ import functools
 import inspect
 import os
 import sys
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from . import principals
@@ -65,6 +66,10 @@ from ._audit import (
     _marker,
     decision_record,
 )
+
+#: How many ended runs the recording backend remembers, so a refusal recorded
+#: after a run ends still names its agent. Oldest first out.
+_MAX_ENDED_RUNS = 1024
 
 # A local policy source: a path to a JSON policy file, or an in-memory list of
 # ``{"name", "code"}`` Cedar policy objects. ``None`` loads no policies —
@@ -204,11 +209,17 @@ def _audited_client_class() -> Any:
             # path's `agent`, rather than as its derived id.
             self._wl_agent_names: Dict[str, str] = {}
             # session id -> the delegation chain of agent ids, root first. A
-            # root run's chain is its own agent; a sub-agent's is its parent's
-            # chain plus itself.
+            # root run's chain is its own agent; a sub-agent's is its parent
+            # run's chain plus itself.
             self._wl_sessions: Dict[str, Tuple[str, ...]] = {}
-            # child run-handle id -> its chain, so a grandchild finds its parent.
-            self._wl_handles: Dict[str, Tuple[str, ...]] = {}
+            # run reference -> its session id. The SDK names a run by an opaque
+            # reference; this is how a decision, a spawn or an end finds the
+            # run's session and chain. Never the ids a request names.
+            self._wl_runs: Dict[Any, str] = {}
+            # Ended runs, bounded, so a refusal recorded after a run ends still
+            # names its agent: run -> session id, and session id -> chain.
+            self._wl_ended_runs: "OrderedDict[Any, str]" = OrderedDict()
+            self._wl_ended_sessions: "OrderedDict[str, Tuple[str, ...]]" = OrderedDict()
             self._wl_warned_record = False
 
         # ── observation: who is acting ───────────────────────────────
@@ -219,46 +230,82 @@ def _audited_client_class() -> Any:
                 self._wl_agent_names[str(agent["id"])] = slug
             return agent
 
-        async def create_session(self, agent_id: str, *args: Any, **kwargs: Any) -> Optional[Dict[str, Any]]:
-            response = await super().create_session(agent_id, *args, **kwargs)
-            session = (response or {}).get("session") if isinstance(response, dict) else None
-            if isinstance(session, dict) and session.get("id"):
-                self._wl_sessions[str(session["id"])] = (str(agent_id),)
-            return response
-
-        async def spawn_subagent(
-            self, request_body: Dict[str, Any], session_token: Optional[str] = None
-        ) -> Dict[str, Any]:
-            response = await super().spawn_subagent(request_body, session_token=session_token)
+        async def create_session(self, agent_id: str, *args: Any, **kwargs: Any) -> Any:
+            # The SDK returns a ``SessionInfo``: the run reference, the session
+            # id and a non-secret session record.
+            info = await super().create_session(agent_id, *args, **kwargs)
             try:
-                parent_handle = str(request_body["parent_run_handle_id"])
-                parent_chain = self._wl_handles.get(parent_handle) or (
-                    str(request_body["parent_agent_id"]),
-                )
-                chain = parent_chain + (str(request_body["child_agent_id"]),)
+                session_id = getattr(info, "session_id", None)
+                if session_id:
+                    self._wl_sessions[str(session_id)] = (str(agent_id),)
+                    self._wl_runs[info.run] = str(session_id)
+            except Exception as exc:  # noqa: BLE001 — observing never changes the run
+                self._wl_report_record_failure(exc)
+            return info
+
+        async def spawn_subagent(self, parent: Any, request: Dict[str, Any]) -> Dict[str, Any]:
+            response = await super().spawn_subagent(parent, request)
+            try:
+                # The chain comes from the PARENT RUN the SDK spawned under,
+                # never from the handle or agent ids the request names: the
+                # SDK validated the spawn against that run, so its chain is
+                # the one the child extends.
+                parent_session = self._wl_session_of(parent)
+                parent_chain = self._wl_chain_of(parent_session)
+                if not parent_chain:
+                    raise LookupError("the parent run's chain is unknown")
+                chain = parent_chain + (str(request["child_agent_id"]),)
                 child_handle = str(response["child_run_handle_id"])
                 # The session the SDK's handle uses for the child: the one the
                 # backend returned, else `ses_<child run handle>` — the SDK's
                 # own derivation, in the base handle and in every plugin.
-                child_session = response.get("child_session_id") or f"ses_{child_handle}"
-                self._wl_handles[child_handle] = chain
-                self._wl_sessions[str(child_session)] = chain
+                child_session = str(response.get("child_session_id") or f"ses_{child_handle}")
+                self._wl_sessions[child_session] = chain
+                child_run = response.get("child_run")
+                if child_run is not None:
+                    self._wl_runs[child_run] = child_session
             except Exception as exc:  # noqa: BLE001 — observing never changes the spawn
                 self._wl_report_record_failure(exc)
             return response
 
-        async def complete_session(self, session_id: str, session_token: Optional[str] = None) -> bool:
-            self._wl_forget(session_id)
-            return await super().complete_session(session_id, session_token=session_token)
+        async def complete_session(self, run: Any) -> bool:
+            self._wl_forget(run)
+            return await super().complete_session(run)
 
-        async def terminate_session(self, session_id: str, reason: str = "manual") -> bool:
-            self._wl_forget(session_id)
-            return await super().terminate_session(session_id, reason)
+        async def terminate_session(self, run: Any, reason: str = "manual") -> bool:
+            self._wl_forget(run)
+            return await super().terminate_session(run, reason)
 
-        def _wl_forget(self, session_id: str) -> None:
-            self._wl_sessions.pop(session_id, None)
-            if isinstance(session_id, str) and session_id.startswith("ses_"):
-                self._wl_handles.pop(session_id[4:], None)
+        def _wl_session_of(self, run: Any) -> Optional[str]:
+            """The session of a live or recently ended run; ``None`` for a run
+            this backend never opened."""
+            try:
+                return self._wl_runs.get(run) or self._wl_ended_runs.get(run)
+            except TypeError:  # an unhashable value names no run we know
+                return None
+
+        def _wl_chain_of(self, session_id: Optional[str]) -> Tuple[str, ...]:
+            if not session_id:
+                return ()
+            return self._wl_sessions.get(session_id) or self._wl_ended_sessions.get(session_id) or ()
+
+        def _wl_forget(self, run: Any) -> None:
+            """A run ended: its live entries are dropped, and its chain is kept
+            in a bounded list of ended runs, so a refusal recorded after the
+            end still names its agent."""
+            try:
+                session_id = self._wl_runs.pop(run, None)
+            except TypeError:  # an unhashable value names no run we know
+                return
+            if session_id is None:
+                return
+            chain = self._wl_sessions.pop(session_id, None)
+            self._wl_ended_runs[run] = session_id
+            if chain:
+                self._wl_ended_sessions[session_id] = chain
+            while len(self._wl_ended_runs) > _MAX_ENDED_RUNS:
+                _, old_session = self._wl_ended_runs.popitem(last=False)
+                self._wl_ended_sessions.pop(old_session, None)
 
         # ── the decision ─────────────────────────────────────────────
 
@@ -271,7 +318,7 @@ def _audited_client_class() -> Any:
             execution_id: Optional[str] = None,
             session_id: Optional[str] = None,
             intent: Optional[Dict[str, Any]] = None,
-            session_token: Optional[str] = None,
+            run: Any = None,
         ) -> Dict[str, Any]:
             marker = _CALL_MARKER.get()
             if marker is not None:
@@ -287,6 +334,10 @@ def _audited_client_class() -> Any:
             resource = principals.assert_name(resource, "resource")
             if execution_id is not None:
                 execution_id = principals.assert_name(execution_id, "execution_id")
+            # The session the record is filed under: the run's own, when the
+            # call names a run (the SDK's handle always does); the caller's
+            # `session_id` only for a call that names no run.
+            record_session = self._wl_session_of(run) if run is not None else session_id
             try:
                 result = await super().authorize(
                     principal,
@@ -296,12 +347,12 @@ def _audited_client_class() -> Any:
                     execution_id=execution_id,
                     session_id=session_id,
                     intent=intent,
-                    session_token=session_token,
+                    run=run,
                 )
             except Exception:
                 # The direct path's rule: a request the engine cannot evaluate
                 # is a refusal like any other — recorded, then raised as itself.
-                self._wl_record(session_id, None, principal, action, resource, "Deny", execution_id)
+                self._wl_record(record_session, None, principal, action, resource, "Deny", execution_id)
                 raise
             # The verdict the plugin acts on. The SDK reads it the same way —
             # case- and space-insensitively — and anything but an Allow is a
@@ -309,7 +360,7 @@ def _audited_client_class() -> Any:
             verdict = result.get("decision") if isinstance(result, dict) else None
             allowed = str(verdict).strip().lower() == "allow"
             self._wl_record(
-                session_id, None, principal, action, resource,
+                record_session, None, principal, action, resource,
                 "Allow" if allowed else "Deny", execution_id,
             )
             return result
@@ -318,7 +369,12 @@ def _audited_client_class() -> Any:
             """Record a refusal the plugin's handle made without asking us."""
             try:
                 agent_id = str(getattr(handle, "agent_uuid", "") or "")
-                session_id = getattr(handle, "session_id", None)
+                run = getattr(handle, "run", None)
+                # The handle's run names its session, as in `authorize`.
+                session_id = (
+                    self._wl_session_of(run) if run is not None
+                    else getattr(handle, "session_id", None)
+                )
                 execution_id = getattr(handle, "execution_id", None)
             except Exception as exc:  # noqa: BLE001
                 self._wl_report_record_failure(exc)
@@ -349,9 +405,7 @@ def _audited_client_class() -> Any:
             # Everything, the lookups included, is inside the try: building the
             # record must never alter, delay or replace a decision.
             try:
-                chain = self._wl_sessions.get(session_id or "") or (
-                    (agent_id,) if agent_id else ()
-                )
+                chain = self._wl_chain_of(session_id) or ((agent_id,) if agent_id else ())
                 # Stored IN FULL, as the direct path stores them: a quota
                 # matches these fields exactly, so a cut or rewritten term
                 # would be a decision no count could find. A term that breaks
