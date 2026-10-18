@@ -241,7 +241,7 @@ async function main() {
     const auditDir = fs.mkdtempSync(join(os.tmpdir(), "wl-appr-"));
     const g = new Watchlight({
       agent: "appr-agent", auditDir,
-      approvalSecret: SECRET_A, approvalStore: sharedStore(), counterSource: () => 7,
+      approvalSecret: SECRET_A, approvalStore: sharedStore(), counterSource: (q) => (q.principal === "U" ? 7 : 0),
     });
     g.allow(ANY, "any");
     const view = g.as("billing-agent");

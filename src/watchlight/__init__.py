@@ -535,7 +535,6 @@ class _GovernorState:
         "policy_count",
         "announced",
         "sources",
-        "strict_principal",
         "max_delegation_depth",
         "audit_options",
         "audit_env_applied",
@@ -565,7 +564,6 @@ class _GovernorState:
         self.announced = False
         #: Resolved sources already loaded — the key of ``load()``'s idempotence.
         self.sources: set[str] = set()
-        self.strict_principal = True
         #: The sub-agent depth limit — shared, so every name of one governor
         #: attenuates under the same governance control.
         self.max_delegation_depth = DEFAULT_MAX_DELEGATION_DEPTH
@@ -749,27 +747,23 @@ def _resolve_signing_secrets(signing_secret: Any, token_secret: Any) -> Optional
     return under_new_name if under_new_name is not None else under_old_name
 
 
-#: One process-wide notice that the bare agent name is standing in for a missing
-#: subject — the transitional ``strict_principal=False`` behaviour.
-_warned_lenient_principal = False
+#: Why ``strict_principal=False`` is refused. The bare agent name it recorded is
+#: read by the engine as a ``User``, so the agent was decided as a user with
+#: that id. The message is fixed.
+_STRICT_PRINCIPAL_REMOVED_MESSAGE = (
+    "strict_principal=False was removed in 0.15.0: a call that names no principal is "
+    'always decided and recorded as the typed Agent::"<name>". Name the subject at the '
+    "call site with `principal` (see `principals.user`), and write agent-scoped policies "
+    'against Agent::"<name>". See docs/breaking-changes.md'
+)
 
 
-def _warn_lenient_principal() -> None:
-    global _warned_lenient_principal
-    if _warned_lenient_principal:
-        return
-    _warned_lenient_principal = True
-    print(
-        "watchlight: strict_principal is off, so the BARE agent name is recorded as the "
-        'acting principal of calls that name none, instead of the typed Agent::"<name>". '
-        "The engine reads a bare name as a User, so the agent is decided as the user "
-        'User::"<name>": it matches a policy written for a user with that id and never '
-        "an Agent-typed policy. This is transitional and is removed in a later version: name the "
-        "subject at the "
-        "call site with `principal` (see `principals.user`), and write agent-scoped "
-        'policies against Agent::"<name>" or the reserved `context.actor` key.',
-        file=sys.stderr,
-    )
+def _check_strict_principal(value: Any) -> None:
+    """``strict_principal`` is accepted only as ``True`` (or left out), so a
+    deployment that still asks for the removed behaviour fails at start-up
+    instead of being decided as a user."""
+    if value is not None and value is not True:
+        raise ValueError(_STRICT_PRINCIPAL_REMOVED_MESSAGE)
 
 
 class Denied(PermissionError):
@@ -2290,7 +2284,7 @@ class Watchlight:
         audit_file: bool = _UNSET,
         audit_sink_batch: Optional[int] = None,
         audit_sink_interval: Optional[float] = None,
-        strict_principal: bool = True,
+        strict_principal: Optional[bool] = None,
         max_delegation_depth: Optional[int] = None,
     ) -> None:
         """:param agent: stable agent identity for the audit trail and the
@@ -2393,15 +2387,13 @@ class Watchlight:
             A hop past it is a deny (:class:`DelegationDepthExceeded`, reason code
             :data:`DELEGATION_DEPTH_EXCEEDED`), written to the audit trail with
             the observed depth and the limit. :meth:`scope` can lower it per tree.
-        :param strict_principal: how a call that names no ``principal`` is
-            recorded (default ``True``): the agent is the subject and is
-            recorded as a TYPED entity reference, ``Agent::"<name>"`` (build one
-            with :mod:`watchlight.principals`). ``False`` restores the previous
-            behaviour, where the BARE agent name — untyped, and
-            indistinguishable on sight from a user id — stood in for the missing
-            subject; that is transitional, warns once per process, and is
-            removed in a later version. See the 0.8.0 entry in the
+        :param strict_principal: accepted only as ``True``. A call that names no
+            ``principal`` is always decided and recorded as the typed
+            ``Agent::"<name>"``. ``False``, which recorded the bare agent name,
+            was removed in 0.15.0 and raises ``ValueError``: the engine reads a
+            bare name as a ``User``. See the 0.15.0 entry in the
             breaking-changes log: https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/docs/breaking-changes.md"""
+        _check_strict_principal(strict_principal)
         state = _GovernorState()
         self._shared = state
         # An explicitly passed name is validated as given — an empty one, or an
@@ -2454,7 +2446,6 @@ class Watchlight:
             sink_batch=audit_sink_batch,
             sink_interval=audit_sink_interval,
         )
-        state.strict_principal = bool(strict_principal)
         state.max_delegation_depth = (
             DEFAULT_MAX_DELEGATION_DEPTH
             if max_delegation_depth is None
@@ -2640,17 +2631,13 @@ class Watchlight:
         """The subject of a call that named none: a TYPED reference to this
         agent, ``Agent::"<name>"`` — when no human is on whose behalf the call
         runs, the agent is the subject, and typing it says so on sight and in a
-        policy. Transitionally, ``strict_principal=False`` restores the bare,
-        untyped agent name (warned once per process)."""
+        policy."""
         # An explicitly supplied principal is CHECKED, never quietly replaced.
         # ``""`` (from ``user.id or ""``) used to fall through to the agent here,
         # so a person's action was attributed to the runtime; it now raises.
         if explicit is not None:
             return principals.assert_principal(explicit, error)
-        if self._shared.strict_principal:
-            return principals.agent(self.agent)
-        _warn_lenient_principal()
-        return self.agent
+        return principals.agent(self.agent)
 
     # ── policy loading ──────────────────────────────────────────────
 
@@ -3492,8 +3479,9 @@ class Watchlight:
         ``permit(...) when { context.reads_this_hour < 100 }``.
 
         Counts DECISION records (never ``sanitization`` / ``egress`` /
-        ``attenuation``) for exactly this ``principal`` — and, when given, this
-        ``intent`` and ``resource`` — whose ``ts`` falls in ``(now - window,
+        ``attenuation``) for this ``principal`` — and, when given, this
+        ``intent`` and ``resource`` — in any spelling (a bare ``u1`` is
+        ``User::"u1"``), whose ``ts`` falls in ``(now - window,
         now]``. ``outcome`` selects ``"allowed"`` (default), ``"denied"`` (Deny +
         NeedsApproval holds) or ``"all"``. Reads only the local file (an
         ``audit_sink`` mirrors records elsewhere but is never read back), streams
@@ -3919,6 +3907,7 @@ class Watchlight:
         """Apply options to the default governor. Behind :func:`configure_default`;
         not part of the public surface."""
         state = self._shared
+        _check_strict_principal(strict_principal)
         if max_delegation_depth is not None:
             _check_max_delegation_depth(max_delegation_depth)
         # The environment layer lands FIRST, so an explicit option below
@@ -3936,7 +3925,6 @@ class Watchlight:
                 approval_secret=approval_secret,
                 approval_store=approval_store,
                 counter_source=counter_source,
-                strict_principal=strict_principal,
                 max_delegation_depth=max_delegation_depth,
             )
             if conflict is None:
@@ -3992,8 +3980,6 @@ class Watchlight:
             )
         if counter_source is not None:
             state.counter_source = counter_source
-        if strict_principal is not None:
-            state.strict_principal = bool(strict_principal)
         if max_delegation_depth is not None:
             state.max_delegation_depth = max_delegation_depth
 
@@ -4039,7 +4025,6 @@ class Watchlight:
         approval_secret: Any,
         approval_store: Optional[ApprovalStore],
         counter_source: Optional[CounterSource],
-        strict_principal: Optional[bool],
         max_delegation_depth: Optional[int] = None,
     ) -> Optional[str]:
         """The first option that would CHANGE the configuration already in force,
@@ -4091,11 +4076,6 @@ class Watchlight:
             return (
                 "counter_source would change — a source matches when it is the same function "
                 "on the same object; a callable built a second time is a different source"
-            )
-        if strict_principal is not None and bool(strict_principal) != state.strict_principal:
-            return (
-                f"strict_principal would change from {state.strict_principal} "
-                f"to {bool(strict_principal)}"
             )
         if max_delegation_depth is not None and max_delegation_depth != state.max_delegation_depth:
             return (

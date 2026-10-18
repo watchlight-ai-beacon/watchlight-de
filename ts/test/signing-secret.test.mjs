@@ -165,7 +165,7 @@ async function main() {
     configureDefault({
       auditDir: fs.mkdtempSync(join(os.tmpdir(), "wl-sig-")),
       approvalStore: store,
-      counterSource: () => 11,
+      counterSource: (q) => (q.principal === "U" ? 11 : 0),
     });
     const g = configureDefault({ signingSecret: NEW });   // names only the secret
     g.allow(ANY, "any");

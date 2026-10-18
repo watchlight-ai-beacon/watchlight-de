@@ -21,6 +21,7 @@ from watchlight import (
     count_audit_records,
     parse_window_seconds,
 )
+from watchlight import principals
 
 FIXTURE = pathlib.Path(__file__).parent / "fixtures" / "audit-trail.jsonl"
 NOW = "2026-01-15T12:00:00.000Z"
@@ -49,9 +50,9 @@ FIXTURE_UNREADABLE_LINES = 3
 def expected_unreadable(kw):
     principal = kw.get("principal", ALICE)
     bad_ts_matches = (
-        principal == ALICE
-        and kw.get("intent") in (None, "read")
-        and kw.get("resource") in (None, "doc/1")
+        principal in (ALICE, "alice")
+        and kw.get("intent") in (None, "read", 'Action::"read"')
+        and kw.get("resource") in (None, "doc/1", 'Resource::"doc/1"')
         and kw.get("outcome", "allowed") in ("allowed", "all")
     )
     return FIXTURE_UNREADABLE_LINES + (1 if bad_ts_matches else 0)
@@ -104,7 +105,13 @@ def test_alice_read_allowed_1h():
         (dict(principal='User::"carol"', intent="read", outcome="denied"), 1),
         (dict(principal='User::"carol"', intent="read"), 0),
         (dict(principal='User::"dave"'), 0),
-        (dict(principal="alice"), 0),                  # exact, not substring
+        (dict(principal="alice"), 8),                  # bare is the same User
+        (dict(principal='User::"ali"'), 0),            # the entity, not a substring
+        (dict(principal="ali"), 0),
+        (dict(principal='Agent::"alice"'), 0),         # another type is another entity
+        (dict(intent='Action::"read"'), 6),            # one intent, either spelling
+        (dict(intent="read", resource='Resource::"doc/1"'), 4),
+        (dict(intent="read", resource='Resource::"doc"'), 0),
         (dict(intent="read", window="15m"), 3),
         (dict(intent="read", window="24h"), 8),        # start boundary + older records
         (dict(intent="read", window=3600), 6),
@@ -363,3 +370,67 @@ def test_live_quota(tmp_path):
         except Denied as e:
             out.append(type(e).__name__)
     assert out == ["body ran", "body ran", "body ran", "Denied"]
+
+
+# ── one entity, every spelling ──────────────────────────────────────────────
+#
+# The same table is in ts/test/counters.test.mjs, so both lanes read every
+# spelling as the same entity.
+ENTITY_KEYS = [
+    ("u1", "User", ("User", "u1")),
+    ('User::"u1"', "User", ("User", "u1")),
+    ('User::"a\\"b"', "User", ("User", 'a"b')),
+    ("o'b", "User", ("User", "o'b")),
+    ("User::\"o\\'b\"", "User", ("User", "o'b")),
+    ("a\\b", "User", ("User", "a\\b")),
+    ('User::"a\\\\b"', "User", ("User", "a\\b")),
+    ("a b", "User", ("User", "a b")),
+    ('User::"a\\u{a0}b"', "User", ("User", "a b")),
+    ('User::"\\u{1F600}"', "User", ("User", "\U0001F600")),
+    ('User::"x\\0y"', "User", ("User", "x\0y")),
+    ('Agent::"u1"', "User", ("Agent", "u1")),
+    ('ns::Doc::"q"', "Resource", ("ns::Doc", "q")),
+    ("read", "Action", ("Action", "read")),
+    ('User::""', "User", ("User", "")),
+    # Names the engine cannot read as an entity are their own key.
+    ('a"b', "User", ("", 'a"b')),
+    ("User::u1", "User", ("", "User::u1")),
+    ('User::"a"b"', "User", ("", 'User::"a"b"')),
+    ('User::"u1"x', "User", ("", 'User::"u1"x')),
+    ('User::"\\q"', "User", ("", 'User::"\\q"')),
+    ('User::"\\u{d800}"', "User", ("", 'User::"\\u{d800}"')),
+    ('User::"\\u{110000}"', "User", ("", 'User::"\\u{110000}"')),
+    ('1x::"u1"', "User", ("", '1x::"u1"')),
+    ('User::"', "User", ("", 'User::"')),
+]
+
+
+@pytest.mark.parametrize("value,bare_type,key", ENTITY_KEYS)
+def test_entity_key(value, bare_type, key):
+    assert principals.entity_key(value, bare_type) == key
+
+
+def test_every_spelling_of_one_entity_counts_once_each(tmp_path):
+    """A caller cannot widen a quota by switching spellings: every record that
+    names the user counts, and only those."""
+    path = tmp_path / "audit.jsonl"
+    now = "2026-01-15T12:00:00.000Z"
+    names = [
+        ("o'b", "read", "doc/1"),
+        ("User::\"o\\'b\"", 'Action::"read"', 'Resource::"doc/1"'),
+        ("User::\"o\\'b\"", "read", 'Resource::"doc/1"'),
+        ("o'b", 'Action::"read"', "doc/2"),
+        ('Agent::"o\'b"', "read", "doc/1"),
+        ("o", "read", "doc/1"),
+    ]
+    with path.open("w", encoding="utf-8") as f:
+        for principal, intent, resource in names:
+            f.write(json.dumps({"ts": "2026-01-15T11:59:00.000Z", "principal": principal,
+                                "intent": intent, "resource": resource, "decision": "Allow",
+                                "event": "decision"}) + "\n")
+    count = lambda **kw: count_audit_records(path, now=now, **kw)["count"]
+    assert count(principal="o'b") == 4
+    assert count(principal="User::\"o\\'b\"") == 4
+    assert count(principal="o'b", intent="read") == 4
+    assert count(principal="o'b", intent='Action::"read"', resource="doc/1") == 3
+    assert count(principal='Agent::"o\'b"') == 1

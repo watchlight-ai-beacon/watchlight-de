@@ -59,7 +59,7 @@ def test_a_source_replaces_the_local_count(tmp_path):
 
     def source(query):
         seen.append(query)
-        return 42
+        return 42 if query["principal"] == USER else 0
 
     g = _gov(tmp_path, counter_source=source)
     _seed_local(g)
@@ -68,8 +68,12 @@ def test_a_source_replaces_the_local_count(tmp_path):
     assert c["source"] == "external"
     # `records` / `skipped` describe the local scan that did not happen.
     assert (c["records"], c["skipped"], c["truncated"]) == (0, 0, False)
+    # One query per spelling of the principal, the caller's first; intent and
+    # resource as given.
+    assert [q["principal"] for q in seen] == [USER, "u1"]
     q = seen[0]
     assert (q["principal"], q["intent"], q["resource"], q["outcome"]) == (USER, "read", "doc/1", "all")
+    assert seen[1] == {**q, "principal": "u1"}
     assert q["window"]["seconds"] == 900
     start = datetime.datetime.fromisoformat(q["window"]["start"].replace("Z", "+00:00"))
     end = datetime.datetime.fromisoformat(q["window"]["end"].replace("Z", "+00:00"))
@@ -120,7 +124,7 @@ def test_the_sync_path_refuses_an_async_source_by_name(tmp_path):
 
 def test_counters_async_reads_an_async_source(tmp_path):
     async def source(query):
-        return 7
+        return 7 if query["principal"] == USER else 0
 
     g = _gov(tmp_path, counter_source=source)
     c = asyncio.run(g.counters_async(principal=USER))
@@ -175,7 +179,7 @@ def test_the_largest_accepted_count_matches_the_typescript_bound(tmp_path):
     """`Number.isSafeInteger`'s bound, so an int Python would happily carry does
     not sail past the source and fail later inside the engine."""
     assert MAX_COUNTER_VALUE == 2**53 - 1
-    g = _gov(tmp_path, counter_source=lambda q: MAX_COUNTER_VALUE)
+    g = _gov(tmp_path, counter_source=lambda q: MAX_COUNTER_VALUE if q["principal"] == USER else 0)
     assert g.counters(principal=USER)["count"] == MAX_COUNTER_VALUE
 
 
@@ -192,10 +196,70 @@ def test_validation_happens_before_the_source_is_called(tmp_path):
 
 
 def test_an_unreadable_local_file_does_not_affect_a_sourced_count(tmp_path):
-    g = _gov(tmp_path, counter_source=lambda q: 5)
+    g = _gov(tmp_path, counter_source=lambda q: 5 if q["principal"] == USER else 0)
     (tmp_path / ".watchlight").mkdir(parents=True, exist_ok=True)
     (tmp_path / ".watchlight" / "audit.jsonl").mkdir()  # a directory is unreadable
     assert g.counters(principal=USER)["count"] == 5
     plain = Watchlight(agent="csrc-agent", audit_dir=str(tmp_path / ".watchlight"))
     with pytest.raises(AuditTrailUnreadable):
         plain.counters(principal=USER)
+
+
+# ── one principal, every spelling ───────────────────────────────────────────
+
+
+def _store_source(records):
+    """A source over a store that matches ``principal`` by exact string, the way
+    the published SQL patterns do."""
+    seen = []
+
+    def source(query):
+        seen.append(query["principal"])
+        return sum(1 for r in records if r == query["principal"])
+
+    return source, seen
+
+
+def test_a_source_counts_both_spellings_of_a_user(tmp_path):
+    """A caller cannot widen a quota by switching between ``u1`` and
+    ``User::"u1"``: the source is asked for each and the answers are added."""
+    source, seen = _store_source(["u1", 'User::"u1"', "u1", 'User::"u2"', 'Agent::"u1"'])
+    g = _gov(tmp_path, counter_source=source)
+    assert g.counters(principal="u1")["count"] == 3
+    assert seen == ["u1", 'User::"u1"']
+    seen.clear()
+    assert g.counters(principal='User::"u1"')["count"] == 3
+    assert seen == ['User::"u1"', "u1"]
+
+
+def test_a_source_is_asked_for_the_engine_spelling_of_an_escaped_id(tmp_path):
+    source, seen = _store_source(["a\xa0b", 'User::"a\\u{a0}b"'])
+    g = _gov(tmp_path, counter_source=source)
+    assert g.counters(principal="a\xa0b")["count"] == 2
+    assert seen == ["a\xa0b", 'User::"a\\u{a0}b"']
+
+
+def test_another_type_has_one_spelling(tmp_path):
+    source, seen = _store_source(['Agent::"u1"', "u1"])
+    g = _gov(tmp_path, counter_source=source)
+    assert g.counters(principal='Agent::"u1"')["count"] == 1
+    assert seen == ['Agent::"u1"']
+
+
+def test_a_name_the_engine_cannot_read_is_asked_as_given(tmp_path):
+    source, seen = _store_source(['a"b'])
+    g = _gov(tmp_path, counter_source=source)
+    assert g.counters(principal='a"b')["count"] == 1
+    assert seen == ['a"b']
+
+
+def test_answers_that_add_up_past_the_largest_count_fail_closed(tmp_path):
+    g = _gov(tmp_path, counter_source=lambda q: MAX_COUNTER_VALUE)
+    with pytest.raises(CounterSourceError):
+        g.counters(principal=USER)
+
+
+def test_every_answer_is_checked(tmp_path):
+    g = _gov(tmp_path, counter_source=lambda q: 1 if q["principal"] == USER else -1)
+    with pytest.raises(CounterSourceError):
+        g.counters(principal=USER)

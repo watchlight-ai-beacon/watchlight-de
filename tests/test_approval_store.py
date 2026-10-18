@@ -221,7 +221,7 @@ def test_views_share_the_secret_the_store_and_the_counter_source(tmp_path):
     store = SharedStore()
     g = _gov(
         tmp_path, "a", policy=ANY,
-        approval_secret=SECRET_A, approval_store=store, counter_source=lambda q: 7,
+        approval_secret=SECRET_A, approval_store=store, counter_source=lambda q: 7 if q["principal"] == "U" else 0,
     )
     view = g.as_("billing-agent")
     assert view._approval is g._approval

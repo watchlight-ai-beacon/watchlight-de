@@ -377,6 +377,130 @@ export function assertPrincipal(
   return value;
 }
 
+// ── one entity, every spelling ──────────────────────────────────────────────
+//
+// The engine reads a bare name as a typed one: a bare principal is a `User`, a
+// bare action an `Action` and a bare resource a `Resource`. So `u1` and
+// `User::"u1"` are the same principal, and a raw no-break space in a bare name is
+// the same character as `\u{a0}` inside a reference. The counters compare names
+// by the entity they stand for, so a caller cannot widen a quota by switching
+// between spellings. Records keep the name exactly as it was written. The same
+// functions are in src/watchlight/principals.py.
+
+/** The type the engine gives a bare principal, action and resource. @internal */
+export const BARE_PRINCIPAL_TYPE = "User";
+/** @internal */
+export const BARE_ACTION_TYPE = "Action";
+/** @internal */
+export const BARE_RESOURCE_TYPE = "Resource";
+
+const UNESCAPES: Record<string, string> = { "\\": "\\", '"': '"', "'": "'", n: "\n", r: "\r", t: "\t", "0": "\0" };
+const UNICODE_ESCAPE = /^u\{([0-9A-Fa-f]{1,6})\}/;
+
+/** The id inside a reference's quotes, with its escapes decoded, or `undefined`
+ *  when the text is not a string the engine could read (a raw quote, or an
+ *  escape it does not know). */
+function decodeId(body: string): string | undefined {
+  let out = "";
+  let i = 0;
+  while (i < body.length) {
+    const ch = body[i];
+    if (ch === '"') return undefined;
+    if (ch !== "\\") {
+      out += ch;
+      i += 1;
+      continue;
+    }
+    const next = body[i + 1];
+    if (next !== undefined && Object.prototype.hasOwnProperty.call(UNESCAPES, next)) {
+      out += UNESCAPES[next];
+      i += 2;
+      continue;
+    }
+    const m = UNICODE_ESCAPE.exec(body.slice(i + 1, i + 11));
+    if (!m) return undefined;
+    const cp = parseInt(m[1], 16);
+    if (cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) return undefined;
+    out += String.fromCodePoint(cp);
+    i += 1 + m[0].length;
+  }
+  return out;
+}
+
+/**
+ * The entity a name stands for, as `[type, id]`, however it is spelled.
+ *
+ * `User::"a\"b"` is `["User", 'a"b']`. A bare name is read as the engine reads
+ * it, as `bareType`: `entityKey("u1", "User")` is `["User", "u1"]`, the same key
+ * as `User::"u1"`. Escapes are decoded, so the key does not depend on the
+ * runtime's Unicode data. A name the engine cannot read as an entity (a bare
+ * name holding a quote or `::`, or a reference with an escape the parser does
+ * not know) is its own key, `["", value]`, and matches only itself.
+ *
+ * The counters compare names with it, and a `counterSource` that filters on
+ * `intent` or `resource` should too (bare type `"Action"` / `"Resource"`).
+ */
+export function entityKey(value: string, bareType: string): [string, string] {
+  const sep = value.indexOf('::"');
+  if (sep >= 0) {
+    const type = value.slice(0, sep);
+    if (TYPE_NAME.test(type) && value.endsWith('"') && value.length >= sep + 4) {
+      const id = decodeId(value.slice(sep + 3, -1));
+      if (id !== undefined) return [type, id];
+    }
+    return ["", value];
+  }
+  if (value.includes('"') || value.includes("::")) return ["", value];
+  return [bareType, value];
+}
+
+/** True when the code point `ch` is one the engine accepts only as `\u{…}`. */
+function unprintableChar(ch: string, first: boolean): boolean {
+  return UNPRINTABLE_ANYWHERE.test(ch) || (first && UNPRINTABLE_FIRST.test(ch));
+}
+
+/** The one spelling of `id` the engine's strict parser accepts:
+ *  {@link escapeCedarString}, plus `\u{…}` for a character the engine accepts
+ *  only escaped. */
+function canonicalEscape(id: string): string {
+  let out = "";
+  let first = true;
+  for (const ch of id) {
+    const escaped = escapeCedarString(ch);
+    if (escaped !== ch) out += escaped;
+    else if (ch.codePointAt(0)! > 0x7f && unprintableChar(ch, first)) out += `\\u{${ch.codePointAt(0)!.toString(16)}}`;
+    else out += ch;
+    first = false;
+  }
+  return out;
+}
+
+/**
+ * Every spelling a record can carry for the entity `value` names, the given one
+ * first: the given text, the typed reference in the engine's spelling, and the
+ * bare name when the entity is a `bareType` whose id can be written bare. A
+ * counter source is asked once for each, so a store that holds an older
+ * spelling still counts it. @internal
+ */
+export function entitySpellings(value: string, bareType: string): string[] {
+  const [type, id] = entityKey(value, bareType);
+  const out = [value];
+  if (!type) return out;
+  const typed = `${type}::"${canonicalEscape(id)}"`;
+  if (!out.includes(typed)) out.push(typed);
+  if (
+    type === bareType &&
+    id.trim() !== "" &&
+    !id.includes('"') &&
+    !id.includes("::") &&
+    !CONTROL_CHARS.test(id) &&
+    !out.includes(id)
+  ) {
+    out.push(id);
+  }
+  return out;
+}
+
 /** Builders for the principal an application asserts. */
 export const principals = {
   /** The person a call runs on behalf of — the subject an application takes

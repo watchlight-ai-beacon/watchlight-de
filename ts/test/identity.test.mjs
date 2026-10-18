@@ -124,21 +124,22 @@ async function main() {
       lines(dir).some((r) => r.principal === 'User::"alice"'));
   }
 
-  // ── the escape hatch: bare name for one release, warned once ───────
-  {
+  // ── the removed escape hatch: strictPrincipal: false is refused ────
+  // The bare agent name it recorded is read by the engine as a User.
+  for (const value of [false, 0, 1, "false", "true", null]) {
     const dir = tmp("lenient");
-    const g = new Watchlight({ agent: "writer", auditDir: dir, strictPrincipal: false });
-    g.allow('permit(principal == User::"writer", action == Action::"legacy", resource);');
-    const said = await warnings(async () => {
-      await g.authorize({ action: "legacy" });
-      await g.authorize({ action: "legacy" });
-    });
-    ok("strictPrincipal:false restores the bare-name substitution",
-      lines(dir).every((r) => r.principal === "writer"));
-    ok("the transitional substitution warns exactly once",
-      said.filter((w) => w.includes("strictPrincipal")).length === 1, JSON.stringify(said));
-    ok("the warning names the key that resolves, `context.actor`",
-      said[0]?.includes("context.actor") && !said[0]?.includes("context.agent"), JSON.stringify(said));
+    let err;
+    try { new Watchlight({ agent: "writer", auditDir: dir, strictPrincipal: value }); } catch (e) { err = e; }
+    ok(`strictPrincipal: ${JSON.stringify(value)} is refused`,
+      err instanceof RangeError && err.message.includes("removed in 0.15.0"), String(err));
+  }
+  {
+    const dir = tmp("strict");
+    const g = new Watchlight({ agent: "writer", auditDir: dir, strictPrincipal: true });
+    g.allow('permit(principal == Agent::"writer", action == Action::"legacy", resource);');
+    ok("strictPrincipal: true is still accepted",
+      (await g.authorize({ action: "legacy" })).decision === "Allow" &&
+      lines(dir).every((r) => r.principal === 'Agent::"writer"'));
   }
 
   // ── the reserved actor context key (policies name the runtime) ─────

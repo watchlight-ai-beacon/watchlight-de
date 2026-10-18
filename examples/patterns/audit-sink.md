@@ -205,6 +205,10 @@ where coalesce(record->>'event', 'decision') = 'decision'  -- decisions only
   and ts > $2 and ts <= $3;                               -- start exclusive, end inclusive
 ```
 
+The SDK asks the source once for each spelling of the principal (`u1` and
+`User::"u1"` name the same user) and adds the answers, so this exact match on
+`principal` counts every record of that user once.
+
 See [quotas](./quotas.md).
 
 **`approvalStore` / `approval_store`** reserves consumed approval-token ids, so
