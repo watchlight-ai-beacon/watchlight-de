@@ -8,7 +8,7 @@ different verdict. Only some announce themselves; the rest surface as a denial
 that looks exactly like a policy of yours doing its job. Read every entry
 between the version you are on and the one you are moving to.
 
-## Unreleased
+## 0.15.0
 
 **A quota counts each principal once, however it is spelled.** `counters()`
 used to match `principal`, `intent` and `resource` as exact strings, so `u1` and

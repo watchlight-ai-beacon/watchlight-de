@@ -11,7 +11,7 @@ upgrade is worth your afternoon.
 
 Each entry links to its release, which carries the reasoning and the measurements.
 
-## Unreleased
+## 0.15.0 — 2026-10-18
 
 A quota now counts each principal once however it is spelled, and
 `strict_principal=False` is removed. Read [breaking changes](docs/breaking-changes.md)
@@ -27,6 +27,8 @@ if you count decisions with `counters()` or a `counter_source`, or still pass
 
 **Removed**
 - `strict_principal=False` / `strictPrincipal: false`. It recorded the bare agent name as the subject of a call that names no principal, and the engine reads a bare name as a `User`, so the agent was decided as a user with that id. It now raises `ValueError` (Python) or `RangeError` (TypeScript) when the governor is built or configured. `strict_principal=True` is still accepted. In TypeScript the option's type is now `true`.
+
+Engine unchanged at `0.2.3`. [Release](https://github.com/watchlight-ai-beacon/watchlight-de/releases/tag/v0.15.0)
 
 ## 0.14.0 — 2026-10-17
 
