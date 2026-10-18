@@ -125,7 +125,13 @@ assert "audit_file would change from True to False" in conflict(audit_file=False
 # A sink BUILT a second time is a different sink: silently keeping the first
 # would discard the records the caller believed it had just redirected.
 assert "audit_sink would change" in conflict(audit_sink=lambda record: None)
-assert "strict_principal would change from True to False" in conflict(strict_principal=False)
+# strict_principal=False is refused outright, before any conflict check.
+try:
+    configure_default(strict_principal=False)
+except ValueError as exc:
+    assert "removed in 0.15.0" in str(exc)
+else:
+    raise AssertionError("strict_principal=False was accepted")
 # A secret conflict never reports either value.
 message = conflict(signing_secret="a-different-signing-secret-32-by")
 assert "signing_secret would change" in message

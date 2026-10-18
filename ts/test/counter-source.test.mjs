@@ -58,13 +58,17 @@ async function main() {
   console.log("a synchronous source");
   {
     const seen = [];
-    const { g } = gov({ counterSource: (q) => { seen.push(q); return 42; } });
+    const { g } = gov({ counterSource: (q) => { seen.push(q); return q.principal === USER ? 42 : 0; } });
     await seedLocal(g);
     const c = g.counters({ principal: USER, intent: "read", resource: "doc/1", window: "15m", outcome: "all" });
     ok("the source's count is used, not the local file's", c.count === 42);
     ok("the result is marked external", c.source === "external");
     ok("`records` / `skipped` describe the local scan that did not happen",
       c.records === 0 && c.skipped === 0 && c.truncated === false);
+    ok("one query per spelling of the principal, the caller's first",
+      seen.map((s) => s.principal).join("|") === `${USER}|u1`);
+    ok("…with intent and resource as given",
+      JSON.stringify(seen[1]) === JSON.stringify({ ...seen[0], principal: "u1" }));
     const q = seen[0];
     ok("the source gets the resolved query: principal, intent, resource, outcome",
       q.principal === USER && q.intent === "read" && q.resource === "doc/1" && q.outcome === "all");
@@ -100,7 +104,7 @@ async function main() {
 
   console.log("an asynchronous source");
   {
-    const { g } = gov({ counterSource: async () => 7 });
+    const { g } = gov({ counterSource: async (q) => (q.principal === USER ? 7 : 0) });
     const err = throws(() => g.counters({ principal: USER }), CounterSourceError);
     ok("the synchronous path REFUSES rather than returning a local count", err !== null);
     ok("…and says which method to use", err && err.message.includes("countersAsync"));
@@ -151,7 +155,7 @@ async function main() {
     // The largest accepted count — the same bound the Python lane applies, so an
     // integer one lane would carry cannot sail past the source and fail later
     // inside the engine.
-    const { g } = gov({ counterSource: () => Number.MAX_SAFE_INTEGER });
+    const { g } = gov({ counterSource: (q) => (q.principal === USER ? Number.MAX_SAFE_INTEGER : 0) });
     ok("Number.MAX_SAFE_INTEGER is accepted",
       g.counters({ principal: USER }).count === Number.MAX_SAFE_INTEGER);
   }
@@ -169,7 +173,7 @@ async function main() {
   }
   {
     // With a source configured, an unreadable local file is irrelevant.
-    const { g, auditDir } = gov({ counterSource: () => 5 });
+    const { g, auditDir } = gov({ counterSource: (q) => (q.principal === USER ? 5 : 0) });
     fs.rmSync(join(auditDir, "audit.jsonl"), { force: true });
     fs.mkdirSync(join(auditDir, "audit.jsonl"));
     const c = g.counters({ principal: USER });
@@ -178,6 +182,57 @@ async function main() {
     fs.mkdirSync(join(dir2, "audit.jsonl"));
     ok("…while without a source it still raises AuditTrailUnreadable",
       throws(() => g2.counters({ principal: USER }), AuditTrailUnreadable) !== null);
+  }
+
+  console.log("one principal, every spelling");
+  {
+    // A store that matches `principal` by exact string, the way the published
+    // SQL patterns do.
+    const storeSource = (records) => {
+      const seen = [];
+      return { seen, source: (q) => { seen.push(q.principal); return records.filter((r) => r === q.principal).length; } };
+    };
+    {
+      const { seen, source } = storeSource(["u1", 'User::"u1"', "u1", 'User::"u2"', 'Agent::"u1"']);
+      const { g } = gov({ counterSource: source });
+      ok("both spellings of a user count", g.counters({ principal: "u1" }).count === 3);
+      ok("…asked bare first, then typed", seen.join("|") === 'u1|User::"u1"');
+      seen.length = 0;
+      ok("the typed spelling counts the same", g.counters({ principal: 'User::"u1"' }).count === 3);
+      ok("…asked typed first, then bare", seen.join("|") === 'User::"u1"|u1');
+    }
+    {
+      const { seen, source } = storeSource(["a\u00a0b", 'User::"a\\u{a0}b"']);
+      const { g } = gov({ counterSource: source });
+      ok("an escaped id is asked in the engine's spelling", g.counters({ principal: "a\u00a0b" }).count === 2);
+      ok("…in that order", seen.join("|") === 'a\u00a0b|User::"a\\u{a0}b"');
+    }
+    {
+      const { seen, source } = storeSource(['Agent::"u1"', "u1"]);
+      const { g } = gov({ counterSource: source });
+      ok("another type has one spelling", g.counters({ principal: 'Agent::"u1"' }).count === 1 && seen.length === 1);
+    }
+    {
+      const { seen, source } = storeSource(['a"b']);
+      const { g } = gov({ counterSource: source });
+      ok("a name the engine cannot read is asked as given",
+        g.counters({ principal: 'a"b' }).count === 1 && seen.join("|") === 'a"b');
+    }
+    {
+      const { entitySpellings } = require("../dist/principals.js");
+      ok("a blank id is asked in both spellings, as in Python",
+        JSON.stringify(entitySpellings('User::" "', "User")) === JSON.stringify(['User::" "', " "]) &&
+        JSON.stringify(entitySpellings('User::"\\u{85}"', "User")) === JSON.stringify(['User::"\\u{85}"', "\x85"]));
+    }
+    {
+      const { g } = gov({ counterSource: () => Number.MAX_SAFE_INTEGER });
+      ok("answers that add up past the largest count fail closed",
+        throws(() => g.counters({ principal: USER }), CounterSourceError) !== null);
+    }
+    {
+      const { g } = gov({ counterSource: (q) => (q.principal === USER ? 1 : -1) });
+      ok("every answer is checked", throws(() => g.counters({ principal: USER }), CounterSourceError) !== null);
+    }
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);

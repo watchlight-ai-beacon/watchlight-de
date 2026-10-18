@@ -11,6 +11,23 @@ upgrade is worth your afternoon.
 
 Each entry links to its release, which carries the reasoning and the measurements.
 
+## Unreleased
+
+A quota now counts each principal once however it is spelled, and
+`strict_principal=False` is removed. Read [breaking changes](docs/breaking-changes.md)
+if you count decisions with `counters()` or a `counter_source`, or still pass
+`strict_principal`.
+
+**Security**
+- Hardening: `counters()` matches `principal`, `intent` and `resource` by the entity they name, as the engine reads them. A bare `u1` is `User::"u1"`, `read` is `Action::"read"`, `doc/1` is `Resource::"doc/1"`, and an escape such as `\u{a0}` matches the character it stands for. Before, a caller that switched between two spellings of the same principal was counted separately for each and could get about twice its quota. Records still keep each name exactly as it was written. A count can only go up: every record that matched before still matches.
+- Hardening: a `counter_source` is asked once for each spelling of the principal, the caller's own first, and the answers are added, so a store that holds either spelling counts each record once. A `User` principal usually takes two calls and any other type one. `intent` and `resource` are passed as given. Answers that add up past the largest count fail closed with `CounterSourceError`.
+
+**Added**
+- `principals.entity_key(value, bare_type)` / `entityKey(value, bareType)`: the entity a name stands for, as `(type, id)`, however it is spelled. A `counter_source` that filters on `intent` or `resource` can compare with it.
+
+**Removed**
+- `strict_principal=False` / `strictPrincipal: false`. It recorded the bare agent name as the subject of a call that names no principal, and the engine reads a bare name as a `User`, so the agent was decided as a user with that id. It now raises `ValueError` (Python) or `RangeError` (TypeScript) when the governor is built or configured. `strict_principal=True` is still accepted. In TypeScript the option's type is now `true`.
+
 ## 0.14.0 — 2026-10-17
 
 The framework extras move to `watchlight-agent-sdk` 0.10 and the plugin

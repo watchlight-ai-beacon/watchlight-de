@@ -124,26 +124,20 @@ def test_omitted_principal_is_the_typed_agent_at_every_site(tmp_path):
     assert any(r["principal"] == 'User::"alice"' for r in records(tmp_path))
 
 
-def test_strict_principal_off_restores_the_bare_name_and_warns_once(tmp_path, capsys):
-    g = Watchlight(agent="writer", audit_dir=str(tmp_path), strict_principal=False)
-    g.allow('permit(principal == User::"writer", action == Action::"legacy", resource);')
-    g.authorize(action="legacy")
-    g.authorize(action="legacy")
-    assert all(r["principal"] == "writer" for r in records(tmp_path))
-    # The notice is process-wide, so assert it in a fresh process.
-    out = subprocess.run(
-        [sys.executable, "-c", textwrap.dedent(f"""
-            from watchlight import Watchlight
-            g = Watchlight(agent="writer", audit_dir={str(tmp_path)!r}, strict_principal=False)
-            g.allow('permit(principal, action, resource);')
-            g.authorize(action="legacy")
-            g.authorize(action="legacy")
-        """)],
-        capture_output=True, text=True, check=True,
-    )
-    assert out.stderr.count("strict_principal is off") == 1
-    # The key that resolves is `context.actor`; `context.agent` never does.
-    assert "context.actor" in out.stderr and "context.agent" not in out.stderr
+@pytest.mark.parametrize("value", [False, 0, 1, "false", "true"])
+def test_strict_principal_off_is_refused(tmp_path, value):
+    """The bare agent name it recorded is read by the engine as a User, so the
+    option is refused at construction rather than deciding the agent as one."""
+    with pytest.raises(ValueError, match="removed in 0.15.0"):
+        Watchlight(agent="writer", audit_dir=str(tmp_path), strict_principal=value)
+    assert not (tmp_path / "audit.jsonl").exists()
+
+
+def test_strict_principal_true_is_still_accepted(tmp_path):
+    g = Watchlight(agent="writer", audit_dir=str(tmp_path), strict_principal=True)
+    g.allow('permit(principal == Agent::"writer", action == Action::"legacy", resource);')
+    assert g.authorize(action="legacy")["decision"] == "Allow"
+    assert all(r["principal"] == 'Agent::"writer"' for r in records(tmp_path))
 
 
 # ── the reserved actor context key ──────────────────────────────────

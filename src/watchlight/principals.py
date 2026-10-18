@@ -73,6 +73,7 @@ __all__ = [
     "assert_name_length",
     "assert_name_list",
     "escape_cedar_string",
+    "entity_key",
     "entity",
     "for_policy",
     "user",
@@ -340,7 +341,7 @@ def escape_cedar_string(value: str) -> str:
 
 
 def _check_type(entity_type: str) -> None:
-    if not isinstance(entity_type, str) or not _TYPE_NAME.match(entity_type):
+    if not isinstance(entity_type, str) or not _TYPE_NAME.fullmatch(entity_type):
         raise TypeError("entity reference: type must be a Cedar entity type name")
 
 
@@ -467,3 +468,125 @@ def agent(name: str) -> str:
     """The agent acting on its own behalf. ``Agent::"<name>"``, with the name
     escaped as :func:`entity` escapes it."""
     return entity("Agent", name)
+
+
+# ── one entity, every spelling ──────────────────────────────────────────────
+#
+# The engine reads a bare name as a typed one: a bare principal is a ``User``, a
+# bare action an ``Action`` and a bare resource a ``Resource``. So ``u1`` and
+# ``User::"u1"`` are the same principal, and a raw no-break space in a bare name
+# is the same character as ``\u{a0}`` inside a reference. The counters compare
+# names by the entity they stand for, so a caller cannot widen a quota by
+# switching between spellings. Records keep the name exactly as it was written.
+
+#: The type the engine gives a bare principal, action and resource.
+BARE_PRINCIPAL_TYPE = "User"
+BARE_ACTION_TYPE = "Action"
+BARE_RESOURCE_TYPE = "Resource"
+
+_UNESCAPES = {"\\": "\\", '"': '"', "'": "'", "n": "\n", "r": "\r", "t": "\t", "0": "\0"}
+_UNICODE_ESCAPE = re.compile(r"u\{([0-9A-Fa-f]{1,6})\}")
+
+
+def _decode_id(body: str) -> Optional[str]:
+    """The id inside a reference's quotes, with its escapes decoded, or ``None``
+    when the text is not a string the engine could read (a raw quote, or an
+    escape it does not know)."""
+    if "\\" not in body:
+        # The common case: nothing to decode.
+        return None if '"' in body else body
+    out = []
+    i = 0
+    while i < len(body):
+        ch = body[i]
+        if ch == '"':
+            return None
+        if ch != "\\":
+            out.append(ch)
+            i += 1
+            continue
+        nxt = body[i + 1 : i + 2]
+        if nxt in _UNESCAPES and nxt:
+            out.append(_UNESCAPES[nxt])
+            i += 2
+            continue
+        m = _UNICODE_ESCAPE.match(body, i + 1)
+        if not m:
+            return None
+        cp = int(m.group(1), 16)
+        if cp > 0x10FFFF or 0xD800 <= cp <= 0xDFFF:
+            return None
+        out.append(chr(cp))
+        i = m.end()
+    return "".join(out)
+
+
+def entity_key(value: str, bare_type: str) -> tuple:
+    """The entity a name stands for, as ``(type, id)``, however it is spelled.
+
+    ``User::"a\\"b"`` is ``("User", 'a"b')``. A bare name is read as the engine
+    reads it, as ``bare_type``: ``entity_key("u1", "User")`` is
+    ``("User", "u1")``, the same key as ``User::"u1"``. Escapes are decoded, so
+    the key does not depend on the runtime's Unicode data. A name the engine
+    cannot read as an entity (a bare name holding a quote or ``::``, or a
+    reference with an escape the parser does not know) is its own key,
+    ``("", value)``, and matches only itself.
+
+    The counters compare names with it, and a ``counter_source`` that filters
+    on ``intent`` or ``resource`` should too (bare type ``"Action"`` /
+    ``"Resource"``)."""
+    value = str.__str__(value)
+    sep = value.find('::"')
+    if sep >= 0:
+        entity_type = value[:sep]
+        if _TYPE_NAME.fullmatch(entity_type) and value.endswith('"') and len(value) >= sep + 4:
+            entity_id = _decode_id(value[sep + 3 : -1])
+            if entity_id is not None:
+                return (entity_type, entity_id)
+        return ("", value)
+    if '"' in value or "::" in value:
+        return ("", value)
+    return (bare_type, value)
+
+
+def _canonical_escape(entity_id: str) -> str:
+    """The one spelling of ``entity_id`` the engine's strict parser accepts:
+    :func:`escape_cedar_string`, plus ``\\u{…}`` for a character the engine
+    accepts only escaped."""
+    out = []
+    for index, ch in enumerate(entity_id):
+        if ch in _ESCAPES:
+            out.append(_ESCAPES[ch])
+        elif _CONTROL.match(ch) or (not ch.isascii() and _unprintable(ch, index == 0)):
+            out.append(f"\\u{{{ord(ch):x}}}")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def entity_spellings(value: str, bare_type: str) -> List[str]:
+    """Every spelling a record can carry for the entity ``value`` names, the
+    given one first: the given text, the typed reference in the engine's
+    spelling, and the bare name when the entity is a ``bare_type`` whose id can
+    be written bare. A counter source is asked once for each, so a store that
+    holds an older spelling still counts it. Internal."""
+    value = str.__str__(value)
+    entity_type, entity_id = entity_key(value, bare_type)
+    out = [value]
+    if not entity_type:
+        return out
+    typed = f'{entity_type}::"{_canonical_escape(entity_id)}"'
+    if typed not in out:
+        out.append(typed)
+    # No blank check: a spelling nobody wrote answers 0, so asking for it
+    # can never over-count, and both lanes ask the same questions.
+    if (
+        entity_type == bare_type
+        and entity_id
+        and '"' not in entity_id
+        and "::" not in entity_id
+        and not _CONTROL.search(entity_id)
+        and entity_id not in out
+    ):
+        out.append(entity_id)
+    return out

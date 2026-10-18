@@ -86,9 +86,12 @@ plus the filter it applied. Both lanes behave identically.
   `sanitization`, `screening`, `egress` and `attenuation` are read past.
 - **`outcome`** — `allowed` (default) is `Allow`, including approved ones;
   `denied` is `Deny` plus `NeedsApproval` holds; `all` is both.
-- **Exact string matching** on `principal` (required — write it as it appears on
-  the record, `User::"u1"`), and on `intent` and `resource` when given. No
-  prefixes, no globs.
+- **Matching by entity** on `principal` (required), and on `intent` and
+  `resource` when given. A bare name is read as the engine reads it, so `u1`
+  and `User::"u1"` are one principal, `read` and `Action::"read"` one intent,
+  and `doc/1` and `Resource::"doc/1"` one resource, and an escape such as
+  `\u{a0}` matches the character it stands for. A caller cannot widen a quota
+  by switching between spellings. No prefixes, no globs.
 - **The window is `(now − window, now]`** on each record's own `ts`, never file
   order. `window` takes `"15m"`, `"1h"`, `"24h"`, `"7d"` or seconds, up to 366
   days. `now` defaults to the current time and can be pinned.
@@ -104,6 +107,16 @@ quota spans every replica and survives a deploy.
 A store is a network call, so the source returns a promise and the `context`
 binding awaits `countersAsync` / `counters_async`. A synchronous source and a
 synchronous binding work the same way.
+
+Your store holds each record's names exactly as they were written, and a user
+principal can be spelled two ways, `u1` and `User::"u1"`. So the SDK asks the
+source once for each spelling of the principal, with `principal` to be matched
+as an exact string, and adds the answers. Each record carries one spelling, so
+each is counted once. A `User` principal usually takes two calls and any other
+type one. Match `principal` as an exact string: a source that compares
+principals by entity itself would count a record more than once. `intent` and `resource` are passed as you wrote them. If your records can
+carry both spellings of an action or a resource, compare them with
+`entityKey` / `principals.entity_key` (bare type `"Action"` or `"Resource"`).
 
 ```ts
 import { Watchlight } from "@watchlight/sdk";

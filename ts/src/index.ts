@@ -164,6 +164,7 @@ export {
   entityRef,
   policyEntityRef,
   escapeCedarString,
+  entityKey,
   MAX_NAME_BYTES,
   MAX_AGENT_NAME_BYTES,
   MAX_SCOPE_ENTRIES,
@@ -431,15 +432,13 @@ export interface WatchlightOptions {
    *  silently.
    *  @deprecated Use `signingSecret` (and `WATCHLIGHT_SIGNING_SECRET`). */
   tokenSecret?: SecretInput;
-  /** How a call that names no `principal` is recorded. Defaults to `true`: the
-   *  agent is the subject and is recorded as a TYPED entity reference,
-   *  `Agent::"<name>"` (build one with {@link principals}). Set `false` to
-   *  restore the previous behaviour, where the BARE agent name — untyped, and
-   *  indistinguishable on sight from a user id — stood in for the missing
-   *  subject; that is transitional, warns once per process, and is removed in a
-   *  later version. See the 0.8.0 entry in the breaking-changes log:
+  /** Accepted only as `true`. A call that names no `principal` is always
+   *  decided and recorded as the typed `Agent::"<name>"` (build one with
+   *  {@link principals}). `false`, which recorded the bare agent name, was
+   *  removed in 0.15.0 and throws a `RangeError`: the engine reads a bare name
+   *  as a `User`. See the 0.15.0 entry in the breaking-changes log:
    *  https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/docs/breaking-changes.md */
-  strictPrincipal?: boolean;
+  strictPrincipal?: true;
   /** How many attenuation hops a sub-agent tree may go below its root (depth 0)
    *  — a governance control, like a privilege-escalation depth limit in
    *  traditional IAM. Defaults to {@link DEFAULT_MAX_DELEGATION_DEPTH} (8); `0`
@@ -732,7 +731,6 @@ interface GovernorState {
   /** Resolved sources already loaded — the key of {@link Watchlight.load}'s
    *  idempotence. */
   sources: Set<string>;
-  strictPrincipal: boolean;
   /** The sub-agent depth limit — shared, so every name of one governor
    *  attenuates under the same governance control. */
   maxDelegationDepth: number;
@@ -900,6 +898,7 @@ function resolveSigningSecrets(opts: WatchlightOptions): Uint8Array[] | undefine
 }
 
 function newState(opts: WatchlightOptions): GovernorState {
+  checkStrictPrincipal(opts.strictPrincipal);
   // Resolved once: the approval key falls back to the scope-token secret, so
   // both are derived from the same configured value.
   const signingSecrets = resolveSigningSecrets(opts);
@@ -933,7 +932,6 @@ function newState(opts: WatchlightOptions): GovernorState {
     policyCount: 0,
     announced: false,
     sources: new Set<string>(),
-    strictPrincipal: opts.strictPrincipal !== false,
     maxDelegationDepth:
       opts.maxDelegationDepth === undefined
         ? DEFAULT_MAX_DELEGATION_DEPTH
@@ -953,23 +951,20 @@ function newState(opts: WatchlightOptions): GovernorState {
   };
 }
 
-/** One process-wide notice that the agent name is standing in for a missing
- *  subject — the transitional `strictPrincipal: false` behaviour. */
-let warnedLenientPrincipal = false;
-function warnLenientPrincipal(): void {
-  if (warnedLenientPrincipal) return;
-  warnedLenientPrincipal = true;
-  // eslint-disable-next-line no-console
-  console.warn(
-    "watchlight: strictPrincipal is off, so the BARE agent name is recorded as the acting " +
-      "principal of calls that name none, instead of the typed Agent::\"<name>\". The " +
-      "engine reads a bare name as a User, so the agent is decided as the user " +
-      "User::\"<name>\": it matches a policy written for a user with that id and never an " +
-      "Agent-typed policy. This is " +
-      "transitional and is removed in a later version: name the subject at the call site " +
-      "with `principal` (see `principals.user`), and write agent-scoped policies against " +
-      "Agent::\"<name>\" or the reserved `context.actor` key."
-  );
+/** Why `strictPrincipal: false` is refused. The bare agent name it recorded is
+ *  read by the engine as a `User`, so the agent was decided as a user with that
+ *  id. The message is fixed. */
+const STRICT_PRINCIPAL_REMOVED_MESSAGE =
+  "strictPrincipal: false was removed in 0.15.0: a call that names no principal is " +
+  'always decided and recorded as the typed Agent::"<name>". Name the subject at the ' +
+  "call site with `principal` (see `principals.user`), and write agent-scoped policies " +
+  'against Agent::"<name>". See docs/breaking-changes.md';
+
+/** `strictPrincipal` is accepted only as `true` (or left out), so a deployment
+ *  that still asks for the removed behaviour fails at start-up instead of being
+ *  decided as a user. */
+function checkStrictPrincipal(value: unknown): void {
+  if (value !== undefined && value !== true) throw new RangeError(STRICT_PRINCIPAL_REMOVED_MESSAGE);
 }
 
 export interface ScopeOptions {
@@ -1315,8 +1310,7 @@ export class Watchlight {
   /** The subject of a call that named none: a TYPED reference to this agent,
    *  `Agent::"<name>"` — when no human is on whose behalf the call runs, the
    *  agent is the subject, and typing it says so on sight and in a policy.
-   *  Transitionally, `strictPrincipal: false` restores the bare, untyped agent
-   *  name (warned once per process). Framework adapters use this so their
+   *  Framework adapters use this so their
    *  `egress` records carry the same subject as the decision they join.
    *  @internal */
   _principal(explicit?: string, makeError?: (message: string) => Error): string {
@@ -1324,9 +1318,7 @@ export class Watchlight {
     // `""` (from `user?.id ?? ""`) used to fall through to the agent here, so a
     // person's action was attributed to the runtime; it now raises.
     if (explicit !== undefined) return assertPrincipal(explicit, makeError);
-    if (this._shared.strictPrincipal) return principals.agent(this.agent);
-    warnLenientPrincipal();
-    return this.agent;
+    return principals.agent(this.agent);
   }
 
   // ── sub-agent scope attenuation ───────────────────────────────────
@@ -1919,9 +1911,10 @@ export class Watchlight {
    * Fold this governor's local audit trail into a count the caller places in
    * Cedar `context` — the input to a quota policy such as
    * `permit(...) when { context.reads_this_hour < 100 }`. Counts DECISION
-   * records (never `sanitization` / `egress` / `attenuation`) for exactly this
-   * `principal` — and, when given, this `intent` and `resource` — whose `ts`
-   * falls in `(now - window, now]`. `outcome` selects `allowed` (default),
+   * records (never `sanitization` / `egress` / `attenuation`) for this
+   * `principal` — and, when given, this `intent` and `resource` — in any
+   * spelling (a bare `u1` is `User::"u1"`), whose `ts` falls in
+   * `(now - window, now]`. `outcome` selects `allowed` (default),
    * `denied` (Deny + NeedsApproval holds) or `all`. Reads only the local file
    * (an `auditSink` mirrors records elsewhere but is never read back), streams
    * it, and scans at most `maxBytes` from its end — `truncated` flags a lower
@@ -2198,6 +2191,7 @@ export class Watchlight {
    *  @internal */
   _configure(opts: WatchlightOptions): void {
     const shared = this._shared;
+    checkStrictPrincipal(opts.strictPrincipal);
     // The environment layer lands FIRST, so an explicit option below overwrites
     // it — option > environment > default, in every order the two can arrive in.
     this._applyEnvDefaults();
@@ -2256,7 +2250,6 @@ export class Watchlight {
       );
     }
     if (opts.counterSource !== undefined) shared.counterSource = opts.counterSource;
-    if (opts.strictPrincipal !== undefined) shared.strictPrincipal = opts.strictPrincipal !== false;
     if (opts.maxDelegationDepth !== undefined) {
       shared.maxDelegationDepth = checkMaxDelegationDepth(opts.maxDelegationDepth);
     }
@@ -2357,12 +2350,6 @@ export class Watchlight {
     }
     if (opts.counterSource !== undefined && opts.counterSource !== shared.counterSource) {
       return "counterSource would change — a source matches only when it is the SAME object";
-    }
-    if (
-      opts.strictPrincipal !== undefined &&
-      (opts.strictPrincipal !== false) !== shared.strictPrincipal
-    ) {
-      return `strictPrincipal would change from ${shared.strictPrincipal} to ${opts.strictPrincipal !== false}`;
     }
     if (opts.maxDelegationDepth !== undefined && opts.maxDelegationDepth !== shared.maxDelegationDepth) {
       return `maxDelegationDepth would change from ${shared.maxDelegationDepth} to ${opts.maxDelegationDepth}`;
