@@ -159,7 +159,10 @@ export type CounterSourceKind = "local" | "external";
  *  (`u1` and `User::"u1"`), so the source is asked once for each spelling of
  *  the principal, with `principal` matched by exact string equality, and the
  *  answers are added. Each record carries one spelling, so it is counted once.
- *  A `User` principal takes two calls; any other type takes one. `intent` /
+ *  A `User` principal usually takes two calls and any other type one (a
+ *  reference written with a needless escape adds one). A source that already
+ *  compares principals by entity would count a record more than once: match
+ *  `principal` as an exact string. `intent` /
  *  `resource` are passed as the caller wrote them; a source that filters on
  *  them should compare {@link entityKey} (bare type `"Action"` / `"Resource"`)
  *  so that `read` and `Action::"read"` count together. */

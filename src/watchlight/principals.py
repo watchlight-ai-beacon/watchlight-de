@@ -341,7 +341,7 @@ def escape_cedar_string(value: str) -> str:
 
 
 def _check_type(entity_type: str) -> None:
-    if not isinstance(entity_type, str) or not _TYPE_NAME.match(entity_type):
+    if not isinstance(entity_type, str) or not _TYPE_NAME.fullmatch(entity_type):
         raise TypeError("entity reference: type must be a Cedar entity type name")
 
 
@@ -492,6 +492,9 @@ def _decode_id(body: str) -> Optional[str]:
     """The id inside a reference's quotes, with its escapes decoded, or ``None``
     when the text is not a string the engine could read (a raw quote, or an
     escape it does not know)."""
+    if "\\" not in body:
+        # The common case: nothing to decode.
+        return None if '"' in body else body
     out = []
     i = 0
     while i < len(body):
@@ -536,7 +539,7 @@ def entity_key(value: str, bare_type: str) -> tuple:
     sep = value.find('::"')
     if sep >= 0:
         entity_type = value[:sep]
-        if _TYPE_NAME.match(entity_type) and value.endswith('"') and len(value) >= sep + 4:
+        if _TYPE_NAME.fullmatch(entity_type) and value.endswith('"') and len(value) >= sep + 4:
             entity_id = _decode_id(value[sep + 3 : -1])
             if entity_id is not None:
                 return (entity_type, entity_id)
@@ -575,9 +578,11 @@ def entity_spellings(value: str, bare_type: str) -> List[str]:
     typed = f'{entity_type}::"{_canonical_escape(entity_id)}"'
     if typed not in out:
         out.append(typed)
+    # No blank check: a spelling nobody wrote answers 0, so asking for it
+    # can never over-count, and both lanes ask the same questions.
     if (
         entity_type == bare_type
-        and str.strip(entity_id)
+        and entity_id
         and '"' not in entity_id
         and "::" not in entity_id
         and not _CONTROL.search(entity_id)

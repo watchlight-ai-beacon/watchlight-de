@@ -402,6 +402,7 @@ ENTITY_KEYS = [
     ('User::"\\u{110000}"', "User", ("", 'User::"\\u{110000}"')),
     ('1x::"u1"', "User", ("", '1x::"u1"')),
     ('User::"', "User", ("", 'User::"')),
+    ('Action\n::"read"', "Action", ("", 'Action\n::"read"')),
 ]
 
 

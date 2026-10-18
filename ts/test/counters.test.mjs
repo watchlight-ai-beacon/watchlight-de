@@ -842,6 +842,7 @@ for (const [value, bareType, key] of [
   ['User::"\\u{110000}"', "User", ["", 'User::"\\u{110000}"']],
   ['1x::"u1"', "User", ["", '1x::"u1"']],
   ['User::"', "User", ["", 'User::"']],
+  ['Action\n::"read"', "Action", ["", 'Action\n::"read"']],
 ]) {
   eq(`entityKey(${JSON.stringify(value)})`, entityKey(value, bareType), key);
 }

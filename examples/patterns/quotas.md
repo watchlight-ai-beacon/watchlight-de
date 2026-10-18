@@ -112,8 +112,9 @@ Your store holds each record's names exactly as they were written, and a user
 principal can be spelled two ways, `u1` and `User::"u1"`. So the SDK asks the
 source once for each spelling of the principal, with `principal` to be matched
 as an exact string, and adds the answers. Each record carries one spelling, so
-each is counted once. A `User` principal takes two calls; any other type takes
-one. `intent` and `resource` are passed as you wrote them. If your records can
+each is counted once. A `User` principal usually takes two calls and any other
+type one. Match `principal` as an exact string: a source that compares
+principals by entity itself would count a record more than once. `intent` and `resource` are passed as you wrote them. If your records can
 carry both spellings of an action or a resource, compare them with
 `entityKey` / `principals.entity_key` (bare type `"Action"` or `"Resource"`).
 

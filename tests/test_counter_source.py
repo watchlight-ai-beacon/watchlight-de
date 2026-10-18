@@ -263,3 +263,11 @@ def test_every_answer_is_checked(tmp_path):
     g = _gov(tmp_path, counter_source=lambda q: 1 if q["principal"] == USER else -1)
     with pytest.raises(CounterSourceError):
         g.counters(principal=USER)
+
+
+def test_a_blank_id_is_asked_in_both_spellings(tmp_path):
+    """No blank check: the lanes trim differently, and a spelling nobody wrote
+    answers 0, so both lanes ask the same questions."""
+    from watchlight import principals
+    assert principals.entity_spellings('User::" "', "User") == ['User::" "', " "]
+    assert principals.entity_spellings('User::"\\u{85}"', "User") == ['User::"\\u{85}"', "\x85"]

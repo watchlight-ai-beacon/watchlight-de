@@ -733,16 +733,12 @@ audit by policy order: a rule that looks unreachable in this run may be the one
 that matched in the last.
 
 Anything comparing an audit record's `principal` to the bare name — a dashboard,
-a log query — must use `Agent::"<name>"`. `counters()` is keyed on the principal
-exactly, so a quota that counted `"my-agent"` now counts `Agent::"my-agent"`.
+a log query — must use `Agent::"<name>"`. A quota that counted `"my-agent"` now
+counts `Agent::"my-agent"`.
 
-`strict_principal=False` / `strictPrincipal: false` restores the old
-substitution and warns once per process. It restores the unpredictable binding
-with it, so use it to unblock a deploy, not to stay on.
-
-```python
-Watchlight(agent="my-agent", strict_principal=False)   # transitional
-```
+`strict_principal=False` / `strictPrincipal: false` restored the old
+substitution for a time. It was removed in 0.15.0 and now raises; see the
+0.15.0 entry.
 
 ### `context.actor` and `context.actor_chain` are reserved
 

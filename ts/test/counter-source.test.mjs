@@ -219,6 +219,12 @@ async function main() {
         g.counters({ principal: 'a"b' }).count === 1 && seen.join("|") === 'a"b');
     }
     {
+      const { entitySpellings } = require("../dist/principals.js");
+      ok("a blank id is asked in both spellings, as in Python",
+        JSON.stringify(entitySpellings('User::" "', "User")) === JSON.stringify(['User::" "', " "]) &&
+        JSON.stringify(entitySpellings('User::"\\u{85}"', "User")) === JSON.stringify(['User::"\\u{85}"', "\x85"]));
+    }
+    {
       const { g } = gov({ counterSource: () => Number.MAX_SAFE_INTEGER });
       ok("answers that add up past the largest count fail closed",
         throws(() => g.counters({ principal: USER }), CounterSourceError) !== null);

@@ -401,6 +401,8 @@ const UNICODE_ESCAPE = /^u\{([0-9A-Fa-f]{1,6})\}/;
  *  when the text is not a string the engine could read (a raw quote, or an
  *  escape it does not know). */
 function decodeId(body: string): string | undefined {
+  // The common case: nothing to decode.
+  if (!body.includes("\\")) return body.includes('"') ? undefined : body;
   let out = "";
   let i = 0;
   while (i < body.length) {
@@ -488,9 +490,11 @@ export function entitySpellings(value: string, bareType: string): string[] {
   if (!type) return out;
   const typed = `${type}::"${canonicalEscape(id)}"`;
   if (!out.includes(typed)) out.push(typed);
+  // No blank check: a spelling nobody wrote answers 0, so asking for it can
+  // never over-count, and both lanes ask the same questions.
   if (
     type === bareType &&
-    id.trim() !== "" &&
+    id !== "" &&
     !id.includes('"') &&
     !id.includes("::") &&
     !CONTROL_CHARS.test(id) &&
