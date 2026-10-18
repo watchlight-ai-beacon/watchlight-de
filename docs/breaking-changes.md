@@ -8,7 +8,7 @@ different verdict. Only some announce themselves; the rest surface as a denial
 that looks exactly like a policy of yours doing its job. Read every entry
 between the version you are on and the one you are moving to.
 
-## Unreleased
+## 0.14.0
 
 **A near-miss `@enforcement_effect` annotation name is refused, and `PolicyError`
 changes shape.** The engine (`watchlight-engine` 0.2.3, which the SDKs now

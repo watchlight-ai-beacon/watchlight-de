@@ -11,7 +11,7 @@ upgrade is worth your afternoon.
 
 Each entry links to its release, which carries the reasoning and the measurements.
 
-## Unreleased
+## 0.14.0 — 2026-10-17
 
 The framework extras move to `watchlight-agent-sdk` 0.10 and the plugin
 releases written for it. SDK 0.10 carries security hardening: run credentials
@@ -54,6 +54,8 @@ the SDK's backend directly.
   - An agent name must fit in 4087 bytes once escaped, so that `Agent::"<name>"` stays within 4096 bytes; a name made mostly of quotes or backslashes is refused at a shorter length. The reference helpers refuse a reference whose escaped form is longer than 4096 bytes.
   - The examples, the framework-plugin docstrings and the documentation build every principal with `principals.user` instead of pasting the id into `User::"…"`.
 - Migration: build every reference from an outside id with `principals.user`, `principals.agent` or `principals.entity` (TypeScript: the same names on `principals`), never by pasting the id into a string. Write the type for every principal that is not a user. A quota read with `counters()` matches the principal as a string, so the records of an id with a quote, an apostrophe or a backslash carry a new spelling after the upgrade; see [breaking changes](docs/breaking-changes.md).
+
+Engine now `0.2.3` or later (`watchlight-engine>=0.2.3,<0.3`, `@watchlight/engine ^0.2.3`). [Release](https://github.com/watchlight-ai-beacon/watchlight-de/releases/tag/v0.14.0)
 
 ## 0.13.2 — 2026-10-03
 
