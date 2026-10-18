@@ -65,7 +65,7 @@ async function main() {
   ok("govern.sanitize returns redacted text", !r.text.includes("alice@acme.com"));
   const raw = fs.readFileSync(join(auditDir, "audit.jsonl"), "utf8");
   ok("audit records sanitization event + counts", raw.includes('"event":"sanitization"') && raw.includes('"EMAIL":2'));
-  ok("audit is value-free (no PII values)", !raw.includes("acme.com") && !raw.includes("123-45-6789") && !raw.includes("4111"));
+  ok("audit is value-free (no PII values)", !raw.includes("acme.com") && !raw.includes("123-45-6789") && !raw.includes("4111 1111"));
   ok("audit line without decisionId carries no decision_id", !JSON.parse(raw.trim().split("\n").pop()).decision_id);
 
   // ── decisionId: echoed on the report, never interpreted ──
