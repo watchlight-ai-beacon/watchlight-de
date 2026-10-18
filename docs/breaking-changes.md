@@ -8,6 +8,40 @@ different verdict. Only some announce themselves; the rest surface as a denial
 that looks exactly like a policy of yours doing its job. Read every entry
 between the version you are on and the one you are moving to.
 
+## Unreleased
+
+**A quota counts each principal once, however it is spelled.** `counters()`
+used to match `principal`, `intent` and `resource` as exact strings, so `u1` and
+`User::"u1"`, which the engine reads as the same user, were counted
+separately. They now count together, as do `read` and `Action::"read"`,
+`doc/1` and `Resource::"doc/1"`, and an escaped character and the raw one. A
+count can only go up, so this moves in the closed direction: a quota that a
+caller reached by mixing spellings now trips at its real limit. Nothing to do
+unless you relied on two spellings having separate counts; if you did, give
+them different ids.
+
+**A `counter_source` is asked once per spelling of the principal.** For a
+`User` principal it is usually called twice, with `principal` set to each
+spelling (`u1`, then `User::"u1"`, the caller's own spelling first), and the
+answers are added. Match `principal` as an exact string. A source that already
+treats the two spellings as one would count each record twice and trip the
+quota early; make it match exactly. `intent` and `resource` are still passed
+as the caller wrote them; to count both spellings of those, compare
+`principals.entity_key` / `entityKey`.
+
+**`strict_principal=False` / `strictPrincipal: false` is removed and raises.**
+It recorded the bare agent name as the subject of a call that names no
+principal. The engine reads a bare name as a `User`, so the agent was decided
+as the user with that id: it matched a policy for that user and never an
+`Agent` policy. Building or configuring a governor with it now raises
+`ValueError` (Python) or `RangeError` (TypeScript), so the deployment fails at
+start-up rather than at a decision. To migrate, remove the option, name the
+subject at the call site with `principal` (see `principals.user`), and write
+agent-scoped policies against `Agent::"<name>"`. Records of calls that name no
+principal carry `Agent::"<name>"`, so a dashboard or a quota that compared them
+to the bare name must use the typed one. `strict_principal=True` is still
+accepted.
+
 ## 0.14.0
 
 **A near-miss `@enforcement_effect` annotation name is refused, and `PolicyError`
