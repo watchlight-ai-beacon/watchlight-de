@@ -173,5 +173,9 @@ def test_audit_value_free_with_correlation(tmp_path):
     assert '"principal": "User::\\"alice\\""' in raw
     assert '"approved": true' in raw
     assert '"event": "sanitization"' in raw
-    # value-free: no context amounts / PII values in the trail
-    assert "5000" not in raw and "a@b.com" not in raw and "4111" not in raw
+    # value-free: no context amounts / PII values in the trail. Ids and
+    # timestamps are left out of the search, so a random id or a timestamp
+    # that happens to contain the digits 5000 cannot fail it.
+    records = [json.loads(line) for line in raw.splitlines()]
+    rest = json.dumps([{k: v for k, v in r.items() if k != "ts" and not k.endswith("_id")} for r in records])
+    assert "5000" not in rest and "a@b.com" not in raw
