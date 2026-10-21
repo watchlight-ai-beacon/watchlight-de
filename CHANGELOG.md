@@ -11,6 +11,14 @@ upgrade is worth your afternoon.
 
 Each entry links to its release, which carries the reasoning and the measurements.
 
+## Unreleased
+
+**Added**
+- A test reads every Cedar policy in the README, `docs/` and `examples/` and decides it against the scenario its page describes: a `permit` must allow it and a `forbid` must deny it. A policy whose principal, action or condition never matches its own example now fails the suite (`tests/test_doc_policy_examples.py`).
+
+**Changed**
+- `docs/integrations.md` says which principal a framework plugin call has: `Agent::"<agent id>"`, the id the in-process backend resolves from the agent's name, never the name itself.
+
 ## 0.15.0 — 2026-10-18
 
 A quota now counts each principal once however it is spelled, and
