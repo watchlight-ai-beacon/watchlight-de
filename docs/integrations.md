@@ -171,6 +171,16 @@ If you leave out `principal`, it defaults to the agent that is running, so
 calls you have already written keep working unchanged. These arguments need
 `watchlight-agent-sdk` 0.7.0 or later, which the extras already require.
 
+On this path the agent that is running is named by its **id**, not by the name
+you passed to `start_run`. The in-process backend resolves the name to an id
+(its `resolve_agent` method returns it as `"id"`), and the principal is
+`Agent::"<agent id>"`. A policy that names the agent by its name,
+`principal == Agent::"research-agent"`, never matches a plugin call: a `permit`
+written that way allows nothing, and a `forbid` written that way forbids
+nothing. Write `principal is Agent` for a rule that covers every agent, or name
+the id. This differs from the `tool()` decorator and `authorize`, where a call
+that names no principal is `Agent::"<agent name>"`.
+
 If you pass `principal=`, `context=` or `resource=` to `governed_plugin()`
 instead, it raises an error that names the argument. It does not silently
 ignore it.
