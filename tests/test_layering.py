@@ -75,6 +75,7 @@ LAYERS: Dict[str, str] = {
     "watchlight.langgraph": "integration",
     "watchlight.pydantic_ai": "integration",
     "watchlight.claude_agent": "integration",
+    "watchlight.deepagents": "integration",
     # the command line sits on top of everything
     "watchlight.cli": "cli",
 }
