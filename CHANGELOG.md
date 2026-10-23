@@ -11,6 +11,14 @@ upgrade is worth your afternoon.
 
 Each entry links to its release, which carries the reasoning and the measurements.
 
+## Unreleased
+
+**Added**
+- `watchlight.deepagents.governed_plugin`: governs a deepagents deep agent in-process. Pass the plugin to `create_governed_deep_agent` from `watchlight-deepagents`. Every tool and filesystem call the agent makes is authorized by your policy before it runs. Each `task` sub-agent runs under its own run and may call only the tools its scope in `subagent_scopes` grants; a sub-agent with no scope, including deepagents' automatic `general-purpose` one, may call none. Every decision goes to the local audit trail. `examples/governed_deepagents.py` now builds a real governed deep agent and runs without an API key.
+
+**Changed**
+- The `deepagents` extra installs `watchlight-deepagents` (with `watchlight-agent-sdk`) instead of `deepagents` alone, and so does `all`. `deepagents` itself still comes with it.
+
 ## 0.15.0 — 2026-10-18
 
 A quota now counts each principal once however it is spelled, and
