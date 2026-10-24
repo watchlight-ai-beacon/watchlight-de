@@ -52,7 +52,17 @@
 //   * which runtime executed the call is NOT the principal: it is the reserved
 //     `context.actor` key (RFC 8693 `act.sub`; see `ACTOR_CONTEXT_KEY`).
 
-const TYPE_NAME = /^[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*$/;
+// A Cedar entity type name: one or more identifiers joined by `::`
+// (`User`, `App::User`). The check splits on `::` and tests each part on its
+// own, so it runs in time linear in the input with no backtracking. It accepts
+// exactly what `/^[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*$/` accepts:
+// an identifier holds no `:`, so the parts are the identifiers, and an empty
+// part (a leading, trailing or doubled `::`) or a part holding a single `:`
+// (as in `a:::b`) fails the part check.
+const TYPE_SEGMENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
+function isTypeName(type: string): boolean {
+  return type.split("::").every((part) => TYPE_SEGMENT.test(part));
+}
 // eslint-disable-next-line no-control-regex
 const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
 
@@ -133,7 +143,7 @@ export function escapeCedarString(value: string): string {
 }
 
 function checkType(type: string): void {
-  if (!TYPE_NAME.test(type)) {
+  if (!isTypeName(type)) {
     throw new TypeError("entity reference: type must be a Cedar entity type name");
   }
 }
@@ -446,7 +456,7 @@ export function entityKey(value: string, bareType: string): [string, string] {
   const sep = value.indexOf('::"');
   if (sep >= 0) {
     const type = value.slice(0, sep);
-    if (TYPE_NAME.test(type) && value.endsWith('"') && value.length >= sep + 4) {
+    if (isTypeName(type) && value.endsWith('"') && value.length >= sep + 4) {
       const id = decodeId(value.slice(sep + 3, -1));
       if (id !== undefined) return [type, id];
     }

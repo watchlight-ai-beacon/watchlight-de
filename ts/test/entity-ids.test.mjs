@@ -11,7 +11,7 @@ import { createRequire } from "node:module";
 import * as fs from "node:fs";
 
 const require = createRequire(import.meta.url);
-const { Watchlight, principals, policyEntityRef } = require("../dist/index.js");
+const { Watchlight, principals, policyEntityRef, entityRef, entityKey } = require("../dist/index.js");
 const { Engine } = require("@watchlight/engine");
 
 let pass = 0, fail = 0;
@@ -100,6 +100,52 @@ async function main() {
   }
   ok("every id the helper accepts is one the engine accepts", accepted.length === 0, accepted.slice(0, 10).join(","));
   ok("every assigned character the helper refuses is one the engine refuses", refused.length === 0, refused.slice(0, 10).join(","));
+
+  // ── entity type names ────────────────────────────────────────────────────
+  // A type is one or more identifiers joined by `::`. The check is a split on
+  // `::` plus a per-part test, which must accept exactly what the earlier
+  // whole-string pattern accepted, and run in linear time on any input.
+  const OLD_TYPE_NAME = /^[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*$/;
+  // policyEntityRef checks the type and bounds nothing else, so the answer is
+  // the type check's alone, at any length.
+  const typeAccepted = (type) => {
+    try { policyEntityRef(type, "x"); return true; } catch { return false; }
+  };
+  const keyAccepted = (type) => entityKey(`${type}::"x"`, "User")[0] === type && type !== "";
+  ok("entityRef checks the type too", (() => { try { entityRef("A::", "x"); return false; } catch { return true; } })());
+  for (const type of ["User", "_", "_a1", "App::User", "A::B::C", "a_1::_2::Z9"]) {
+    ok(`type ${JSON.stringify(type)} is accepted`, typeAccepted(type) && keyAccepted(type));
+  }
+  for (const type of ["", "::", "::User", "User::", "A::::B", "A:::B", "A:B", ":A", "A:", "1A",
+                      "A::1B", "A-B", "A B", "A::B ", "Ü", "A::ü", "A\n", "A::B\n"]) {
+    ok(`type ${JSON.stringify(type)} is refused`, !typeAccepted(type) && !keyAccepted(type));
+  }
+  // Every string up to five characters over an alphabet that reaches each
+  // branch of the grammar gets the same answer as the earlier pattern.
+  const alphabet = ["a", "Z", "_", "0", ":", "-"];
+  let mismatches = [];
+  const walk = (prefix, depth) => {
+    if (typeAccepted(prefix) !== OLD_TYPE_NAME.test(prefix)) mismatches.push(prefix);
+    if (depth === 0) return;
+    for (const c of alphabet) walk(prefix + c, depth - 1);
+  };
+  walk("", 5);
+  ok("type check agrees with the earlier pattern on every short string", mismatches.length === 0,
+     mismatches.slice(0, 10).map((m) => JSON.stringify(m)).join(","));
+  // Long inputs built to make a backtracking matcher retry finish quickly.
+  const longInputs = [
+    "a" + "::a".repeat(200_000) + "::",
+    "a" + "::a".repeat(200_000) + ":",
+    "a" + "::a".repeat(200_000) + "!",
+    "a".repeat(1_000_000) + "!",
+    ":".repeat(1_000_001),
+    "a" + "::a".repeat(200_000),
+  ];
+  const started = process.hrtime.bigint();
+  const answers = longInputs.map((t) => typeAccepted(t) && keyAccepted(t));
+  const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+  ok("long type names get the right answer", answers.join(",") === "false,false,false,false,false,true", answers.join(","));
+  ok("long type names are checked in linear time", elapsedMs < 5000, `${elapsedMs.toFixed(1)} ms`);
 
   console.log(`\n${pass} passed, ${fail} failed`);
   if (fail) process.exit(1);
