@@ -49,9 +49,12 @@ Each entry links to its release, which carries the reasoning and the measurement
 - `FrameworkIntegration` checks its `name`, `extra`, `plugin_module` and
   `plugin_class` with `re.fullmatch`, so a value with a trailing newline is
   refused with the same `ValueError` as any other malformed value.
-- `examples/governed_mcp_server.py` passes a 10-second timeout to `urlopen`,
-  and notes that its plain-HTTP URLs are loopback-only and that a real
-  upstream should use `https://` with certificate verification.
+- `examples/governed_mcp_server.py` calls its PEP with an
+  `http.client.HTTPConnection` to `127.0.0.1` and a 10-second timeout, instead
+  of `urllib.request.urlopen`, so the demo client can only reach the loopback
+  PEP and never goes through a proxy set in the environment. It notes that its
+  plain-HTTP URLs are loopback-only and that a real upstream should use
+  `https://` with certificate verification.
 
 ## 0.15.0 — 2026-10-18
 

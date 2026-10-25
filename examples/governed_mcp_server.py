@@ -36,11 +36,11 @@ Point a real MCP client at http://127.0.0.1:9700/mcp instead of the server.
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import threading
 import time
-import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import watchlight_mcp
@@ -75,22 +75,28 @@ def _call(tool: str) -> dict:
     body = json.dumps(
         {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": {}}}
     ).encode()
-    # This demo talks only to a server on the local loopback interface, so plain
-    # HTTP is fine here. A real upstream should use https:// with certificate
-    # verification.
-    req = urllib.request.Request(
-        f"http://127.0.0.1:{PEP_PORT}/mcp",
-        data=body,
-        headers={
-            "content-type": "application/json",
-            "MCP-Protocol-Version": "2026-07-28",
-            "Mcp-Method": "tools/call",
-            "Mcp-Name": tool,
-            "Watchlight-Agent-Id": "demo-agent",
-            "Watchlight-Execution-Id": f"exec_{tool}",
-        },
-    )
-    return json.loads(urllib.request.urlopen(req, timeout=10).read())
+    # A connection to the PEP on the loopback interface, by fixed host and port:
+    # it cannot be pointed at another scheme or host, and it does not go through
+    # a proxy from the environment. Plain HTTP is fine for a loopback demo; a
+    # real deployment should use HTTPS with certificate verification.
+    conn = http.client.HTTPConnection("127.0.0.1", PEP_PORT, timeout=10)
+    try:
+        conn.request(
+            "POST",
+            "/mcp",
+            body=body,
+            headers={
+                "content-type": "application/json",
+                "MCP-Protocol-Version": "2026-07-28",
+                "Mcp-Method": "tools/call",
+                "Mcp-Name": tool,
+                "Watchlight-Agent-Id": "demo-agent",
+                "Watchlight-Execution-Id": f"exec_{tool}",
+            },
+        )
+        return json.loads(conn.getresponse().read())
+    finally:
+        conn.close()
 
 
 def main() -> None:
