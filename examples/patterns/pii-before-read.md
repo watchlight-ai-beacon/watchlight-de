@@ -182,10 +182,12 @@ Proved by [`suites/pii-before-read.suite.json`](./suites/pii-before-read.suite.j
 - Overlapping values merge into one span, so no fragment survives, and `known` is
   honoured even when `types` narrows the detectors.
 - A `known` value matches as a whole word: not where an ASCII letter, digit or
-  `_` touches either end of it. Punctuation, a space, or a letter of another
-  script is a boundary, so `张伟` matches in `我是张伟。` and `Ann` in
-  `联系Ann获取`, but `Smith` does not match in `Smithfield`. The rule is the same
-  in both lanes.
+  `_` touches either end of it. Any other character, including an accented
+  or non-Latin letter, is a boundary, so `张伟` matches in `我是张伟。` and `Ann`
+  in `联系Ann获取`, but `Smith` does not match in `Smithfield`. The same rule
+  lets `Ann` match the start of `Annå`, and lets a Cyrillic, Greek or CJK entry
+  match the start of a longer word in its own script, so pass the longer words
+  too when that matters. The rule is the same in both lanes.
 - `known` matching is case-insensitive, non-ASCII letters included. Python
   compares characters the way `re.IGNORECASE` does, which also equates
   `σ`/`ς`/`Σ`, `ſ`/`s`, the Kelvin sign and `k`, and `ı`/`İ`/`i`; TypeScript

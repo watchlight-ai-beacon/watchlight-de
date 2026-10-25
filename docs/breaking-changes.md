@@ -45,7 +45,10 @@ match an entry given in either form, and are tagged and hashed as one value.
 In Python, spellings that `re.IGNORECASE` equates (`Ross`, `Roſs`) also share
 one tag. The output changes only for non-ASCII text: more is redacted, and
 some spans that had separate tags now share one. A `hash` of an ASCII value
-is unchanged.
+is unchanged, but the hash of a non-ASCII value can change, because the key is
+now decomposed, folded the way matching folds, and recomposed: a final sigma
+`ς` is keyed as `σ`, so `λόγος` hashes as `λόγοσ` does, and `J` + U+030C
+hashes as `ǰ` does. Update anything that stores or compares those hashes.
 
 ## 0.15.0
 

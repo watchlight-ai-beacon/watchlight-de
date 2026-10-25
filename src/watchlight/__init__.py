@@ -1558,9 +1558,9 @@ def _effective_detector_version() -> str:
 
 # A word character for the dictionary's whole-word check: ASCII letters, digits
 # and `_`, the same set as `\w` in the TypeScript lane's regexes. Any other
-# character, including a letter of another script, is a boundary, so a value
-# written next to CJK text (`我是张伟。`) still matches; the check can only make
-# a match more likely, never hide one that the ASCII rule allows.
+# character, including an accented or non-Latin letter, is a boundary, so a
+# value written next to CJK text (`我是张伟。`) still matches; the check can only
+# make a match more likely, never hide one that the ASCII rule allows.
 _ASCII_WORD_CHAR = re.compile(r"[A-Za-z0-9_]")
 
 
@@ -1706,11 +1706,13 @@ def _normal_forms(values: Sequence[str]) -> list[str]:
 
 
 def _known_tag_key(value: str) -> str:
-    """The key a redacted KNOWN span is tagged and hashed under: NFC, then
-    folded the way matching folds, so the spellings one value matches (``Ross``,
-    ``ROSS``, ``Roſs``; composed or decomposed) share one tag. Lowercase for
-    ASCII, as the TypeScript lane's key is."""
-    return _match_key(unicodedata.normalize("NFC", value))
+    """The key a redacted KNOWN span is tagged and hashed under, so the
+    spellings one value matches (``Ross``, ``ROSS``, ``Roſs``; composed or
+    decomposed) share one tag: decomposed (NFD) first, so a letter with no
+    precomposed capital (``ǰ``, whose capital is ``J`` + U+030C) folds like its
+    other spellings, then folded the way matching folds, then recomposed (NFC).
+    Lowercase for ASCII and common letters, as the TypeScript lane's key is."""
+    return unicodedata.normalize("NFC", _match_key(unicodedata.normalize("NFD", value)))
 
 
 def _detect_known(text: str, known: Sequence[str]) -> list[tuple[int, int, str, str]]:
@@ -1725,8 +1727,9 @@ def _detect_known(text: str, known: Sequence[str]) -> list[tuple[int, int, str, 
     compares them (:func:`_match_char`); a word character is an ASCII letter,
     digit or ``_``. Each value is also matched in its NFC and NFD forms
     (:func:`_normal_forms`). The work at one position is bounded by the longest
-    of those forms, never by the number of values, and nothing is compiled from
-    the values, so no dictionary within the limits can fail to build.
+    of those forms (NFD can make an entry up to about four times longer), never
+    by the number of values, and nothing is compiled from the values, so no
+    dictionary within the limits can fail to build.
     """
     values = _dedupe_known(_normal_forms([str.__str__(v) for v in known]))
     if not values:
@@ -1791,9 +1794,10 @@ def sanitize(
     application-supplied dictionary of exact strings to redact — every
     occurrence covered, counted under ``KNOWN``; the values never appear in the
     output, report, or audit trail. A value matches as a whole word: not where
-    an ASCII letter, digit or ``_`` touches either end of it (punctuation, a
-    space or a letter of another script is a boundary, so ``张伟`` matches in
-    ``我是张伟。``). Matching is case-insensitive the way ``re.IGNORECASE``
+    an ASCII letter, digit or ``_`` touches either end of it. Any other
+    character, including an accented or non-Latin letter, is a boundary, so
+    ``张伟`` matches in ``我是张伟。``, and ``Ann`` also matches the start of
+    ``Annå``. Matching is case-insensitive the way ``re.IGNORECASE``
     compares characters, non-ASCII letters included, with its extra
     equivalences (``σ``/``ς``/``Σ``, ``ſ``/``s``, the Kelvin sign and ``k``,
     ``ı``/``İ``/``i``); the TypeScript lane folds by JavaScript's rules, so a
@@ -1807,7 +1811,8 @@ def sanitize(
     :class:`SanitizeError`. Case variants of one value count as one value.
     Every dictionary within the limits works; at each position the longest
     entry that matches as a whole word wins, and the work there is bounded by
-    the longest entry, not by the number of entries.
+    the longest entry in its NFC or NFD form (up to about four times its
+    length), not by the number of entries.
     ``person_exclusions`` lists exact, case-insensitive values that the optional
     ``PERSON`` heuristic must leave untouched. It applies only to a complete
     ``PERSON`` candidate; other enabled detectors still run over the same text.

@@ -23,7 +23,8 @@ Each entry links to its release, which carries the reasoning and the measurement
   chain of nested entries (`a`, `ab`, `abc`, ...) could exceed the
   interpreter's recursion limit while the regex was built, and the call failed
   with `SanitizeError`. The work at each position of the text is bounded by
-  the longest entry, never by the number of entries. Characters still compare
+  the longest entry in its NFC or NFD form (up to about four times its
+  length), never by the number of entries. Characters still compare
   the way each lane's case-insensitive regex compared them.
 - Hardening: at each position of the text, the longest `known` entry that
   matches there as a whole word now wins, as documented, whichever way the
@@ -40,11 +41,12 @@ Each entry links to its release, which carries the reasoning and the measurement
   forms, in both lanes, so text with composed accents and text with combining
   accents both match it. Before, an entry matched only text in the same
   normal form.
-- Hardening: a redacted `known` span is tagged and hashed under its NFC form,
-  folded the way matching folds, in both lanes. Spellings that match one
-  entry (`Ross` and `Roſs` in Python, composed and decomposed `José`) now
-  share one tag and one hash instead of getting one each. ASCII keys are
-  unchanged.
+- Hardening: a redacted `known` span is tagged and hashed under a key that is
+  decomposed (NFD), folded the way matching folds, and recomposed (NFC), in
+  both lanes. Spellings that match one entry (`Ross` and `Roſs` in Python,
+  composed and decomposed `José`, `ǰ` and `J` + U+030C, `ς` and `σ`) now share
+  one tag and one hash instead of getting one each. ASCII keys are unchanged;
+  some non-ASCII hashes change.
 - Hardening: in Python, a `known` that is not iterable raises `SanitizeError`
   instead of `TypeError`. In TypeScript, `known` is checked against the entry
   limit before any entry is read, and each entry is read once into a copy that

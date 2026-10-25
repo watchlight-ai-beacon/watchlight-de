@@ -627,6 +627,11 @@ def test_known_tag_key_folds_like_matching():
     )
     hashed = sanitize("Ross Ro\u017fs", known=["ross"], mode="hash", types=[])["text"].split(" ")
     assert hashed[0] == hashed[1] == sanitize("ross", known=["ross"], mode="hash")["text"]
+    # Letters with no precomposed capital: the capital is the base letter plus
+    # combining marks, and still shares the tag.
+    for small, capital in (("\u01f0", "J\u030c"), ("\u0390", "\u0399\u0308\u0301"), ("\u03b0", "\u03a5\u0308\u0301")):
+        text = f"{small} and {capital} and {small}"
+        assert sanitize(text, known=[small], types=[])["text"] == "<KNOWN_1> and <KNOWN_1> and <KNOWN_1>", ascii(small)
 
 
 @pytest.mark.parametrize("bad", [5, 1.5, object(), True])

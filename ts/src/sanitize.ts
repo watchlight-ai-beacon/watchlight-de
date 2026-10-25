@@ -114,9 +114,10 @@ export interface SanitizeOptions {
   /** Application-supplied dictionary: exact strings to redact (names, streets,
    *  ids the caller already holds). Every occurrence is covered; overlapping or
    *  nested occurrences merge into one span. A value matches as a whole word:
-   *  not where an ASCII letter, digit or `_` touches either end of it
-   *  (punctuation, a space or a letter of another script is a boundary, so
-   *  `张伟` matches in `我是张伟。`). Matching is case-insensitive the way a
+   *  not where an ASCII letter, digit or `_` touches either end of it. Any
+   *  other character, including an accented or non-Latin letter, is a
+   *  boundary, so `张伟` matches in `我是张伟。`, and `Ann` also matches the
+   *  start of `Annå`. Matching is case-insensitive the way a
    *  JavaScript regex with the `i` flag and no `u` flag compares UTF-16 units,
    *  non-ASCII letters included; the Python lane folds by Python's rules, so a
    *  few non-ASCII equivalences differ between the lanes. Each value is also
@@ -130,7 +131,8 @@ export interface SanitizeOptions {
    *  {@link SanitizeError}. Case variants of one value count as one value.
    *  Every dictionary within the limits works; at each position the longest
    *  entry that matches as a whole word wins, and the work there is bounded by
-   *  the longest entry, not by the number of entries. */
+   *  the longest entry in its NFC or NFD form (up to about four times its
+   *  length), not by the number of entries. */
   known?: string[];
   /** Exact values the optional `PERSON` heuristic must leave untouched.
    *  Matching is case-insensitive and covers only a complete `PERSON`
@@ -418,20 +420,22 @@ function foldKey(value: string): string {
   return units.join("");
 }
 
-/** The key a redacted KNOWN span is tagged and hashed under: NFC, then folded
- *  the way matching folds, so the spellings one value matches share one tag.
- *  Each folded unit is written in lowercase when that lowercase folds back to
- *  it, so the key is lowercase for ASCII and common letters, as the Python
- *  lane's key is. */
+/** The key a redacted KNOWN span is tagged and hashed under, so the spellings
+ *  one value matches share one tag: NFD, then folded the way matching folds,
+ *  then NFC. Each folded unit is written in lowercase when that lowercase folds
+ *  back to it, so the key is lowercase for ASCII and common letters, as the
+ *  Python lane's key is. */
 function knownTagKey(value: string): string {
-  const nfc = value.normalize("NFC");
+  // Decomposed first, so a letter with no precomposed capital (`ǰ`, whose
+  // capital is `J` + U+030C) folds like its other spellings; recomposed last.
+  const nfd = value.normalize("NFD");
   const units: string[] = [];
-  for (let i = 0; i < nfc.length; i++) {
-    const f = String.fromCharCode(foldUnit(nfc.charCodeAt(i)));
+  for (let i = 0; i < nfd.length; i++) {
+    const f = String.fromCharCode(foldUnit(nfd.charCodeAt(i)));
     const lower = f.toLowerCase();
     units.push(lower.length === 1 && foldUnit(lower.charCodeAt(0)) === f.charCodeAt(0) ? lower : f);
   }
-  return units.join("");
+  return units.join("").normalize("NFC");
 }
 
 /** Each value as given, then in Unicode NFC and NFD form when those differ, so
@@ -519,8 +523,10 @@ function isWordUnit(c: number): boolean {
  *  can start; at each position the longest value that matches there as a
  *  whole word wins, and the next position is tried, so every occurrence of
  *  every value is covered. Units compare the way a non-`u` regex with the `i`
- *  flag compares them. The work at one position is bounded by the longest
- *  value (`KNOWN_VALUE_MAX_LENGTH`), never by the number of values, and no
+ *  flag compares them; each value is also matched in its NFC and NFD forms.
+ *  The work at one position is bounded by the longest of those forms (NFD can
+ *  make an entry up to about four times longer), never by the number of
+ *  values, and no
  *  regex is compiled from the values, so no dictionary within the limits can
  *  fail to build. */
 function detectKnown(text: string, known: string[]): Span[] {

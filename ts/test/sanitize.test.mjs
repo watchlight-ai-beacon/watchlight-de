@@ -321,6 +321,9 @@ async function main() {
     ok("KNOWN: a letter of another script is a word boundary",
       sanitize("我是张伟。", { known: ["张伟"], mode: "mask", types: [] }).text === "我是[KNOWN]。" &&
       sanitize("联系Ann获取", { known: ["Ann"], mode: "mask", types: [] }).text === "联系[KNOWN]获取");
+    ok("KNOWN: a letter with no precomposed capital shares one tag",
+      [["\u01f0", "J\u030c"], ["\u0390", "\u0399\u0308\u0301"], ["\u03b0", "\u03a5\u0308\u0301"]].every(([small, capital]) =>
+        sanitize(`${small} and ${capital} and ${small}`, { known: [small], types: [] }).text === "<KNOWN_1> and <KNOWN_1> and <KNOWN_1>"));
     ok("KNOWN: tag and hash keys of ASCII values are their lowercase",
       sanitize("Ada", { known: ["ADA"], mode: "hash" }).text === `<KNOWN_${createHash("sha256").update("ada").digest("hex").slice(0, 8)}>`);
     // The count is checked before any entry is read: a huge sparse array is

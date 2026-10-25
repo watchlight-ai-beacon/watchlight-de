@@ -107,6 +107,24 @@
       ],
       "mode": "tag",
       "expect": "<KNOWN_1> and <KNOWN_1> and <KNOWN_1>"
+    },
+    {
+      "name": "a letter with no precomposed capital shares one tag",
+      "text": "ǰ and J̌ and ǰ",
+      "known": [
+        "ǰ"
+      ],
+      "mode": "tag",
+      "expect": "<KNOWN_1> and <KNOWN_1> and <KNOWN_1>"
+    },
+    {
+      "name": "spellings of one value share one hash, the same in both lanes",
+      "text": "ǰ and J̌",
+      "known": [
+        "ǰ"
+      ],
+      "mode": "hash",
+      "expect": "<KNOWN_9ec0c487> and <KNOWN_9ec0c487>"
     }
   ],
   "_generated_comment": "generated_cases build their dictionaries, texts and expected texts instead of spelling them out. An entry group gives entries k = 0..count-1, each value*repeat, then grow*k, then k zero-padded to index_width digits (when index_width is given). text and expect are lists of parts, each value*repeat, joined.",
