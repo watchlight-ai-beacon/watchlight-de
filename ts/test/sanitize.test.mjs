@@ -261,10 +261,14 @@ async function main() {
     sanitize("John Smith x", { known: ["JOHN", "john smith"], mode: "mask" }).text === "[KNOWN] x" &&
     sanitize("a-b-c", { known: ["A", "a-b-c"], mode: "mask" }).text === "[KNOWN]");
   {
-    // One regex per entry, tried at every position: the longest whole-word
-    // match at each start, overlapping matches merged. Slow, and obviously what
-    // the dictionary matcher promises.
-    const esc = (v) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    // Every entry compared unit by unit at every position: the longest
+    // whole-word match at each start, overlapping matches merged. Slow, and
+    // obviously what the dictionary matcher promises.
+    // Two UTF-16 units are equal the way a regex with the `i` flag and no `u`
+    // flag compares them: a fixed pattern whose backreference repeats the first
+    // unit, so the regex engine's own case folding decides.
+    const sameUnit = (a, b) => /^([\s\S])\1$/i.test(a + b);
+    const sameText = (a, b) => a.length === b.length && Array.from({ length: a.length }, (_, k) => k).every((k) => sameUnit(a[k], b[k]));
     const reference = (text, known) => {
       // ASCII word characters as the boundary (`\w` without `u`), and each value
       // in its given, NFC and NFD forms.
@@ -275,7 +279,7 @@ async function main() {
         let end = -1;
         for (const v of values) {
           const e = i + v.length;
-          if (e <= text.length && new RegExp(`^${esc(v)}$`, "i").test(text.slice(i, e)) && (e === text.length || !/\w/.test(text[e]))) end = Math.max(end, e);
+          if (e <= text.length && sameText(v, text.slice(i, e)) && (e === text.length || !/\w/.test(text[e]))) end = Math.max(end, e);
         }
         if (end < 0) continue;
         const last = spans[spans.length - 1];
@@ -300,7 +304,7 @@ async function main() {
       const got = sanitize(text, { known, mode: "mask", types: [] }).text;
       if (got !== reference(text, known)) mismatch = JSON.stringify({ text, known, got });
     }
-    ok("KNOWN: matches a regex-per-entry reference", mismatch === null, mismatch ?? "");
+    ok("KNOWN: matches an entry-by-entry reference", mismatch === null, mismatch ?? "");
   }
   {
     // A dictionary of nested word prefixes over text made of the same word: the
@@ -325,7 +329,7 @@ async function main() {
       [["\u01f0", "J\u030c"], ["\u0390", "\u0399\u0308\u0301"], ["\u03b0", "\u03a5\u0308\u0301"]].every(([small, capital]) =>
         sanitize(`${small} and ${capital} and ${small}`, { known: [small], types: [] }).text === "<KNOWN_1> and <KNOWN_1> and <KNOWN_1>"));
     ok("KNOWN: tag and hash keys of ASCII values are their lowercase",
-      sanitize("Ada", { known: ["ADA"], mode: "hash" }).text === `<KNOWN_${createHash("sha256").update("ada").digest("hex").slice(0, 8)}>`);
+      sanitize("Ada", { known: ["ADA"], mode: "hash" }).text === "<KNOWN_" + createHash("sha256").update("ada").digest("hex").slice(0, 8) + ">");
     // The count is checked before any entry is read: a huge sparse array is
     // refused at once.
     const huge = []; huge.length = 2 ** 31;
