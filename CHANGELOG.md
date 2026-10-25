@@ -11,6 +11,11 @@ upgrade is worth your afternoon.
 
 Each entry links to its release, which carries the reasoning and the measurements.
 
+## Unreleased
+
+**Security**
+- Hardening: the TypeScript SDK checks an entity type name (`entityRef`, `policyEntityRef`, `entityKey`) by splitting it on `::` and testing each part, instead of with one pattern that repeats a group. The check runs in linear time on any input, including a long type name built to make a backtracking matcher retry. It accepts and refuses exactly the same names as before.
+
 ## 0.15.0 — 2026-10-18
 
 A quota now counts each principal once however it is spelled, and
