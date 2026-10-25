@@ -1,5 +1,5 @@
 {
-  "_comment": "Shared by tests/test_sanitize.py and ts/test/sanitize.test.mjs: both lanes must give the same text for every case and accept or refuse every limit case the same way. ASCII only; Unicode case folding differs between the lanes by design.",
+  "_comment": "Shared by tests/test_sanitize.py and ts/test/sanitize.test.mjs: both lanes must give the same text for every case and accept or refuse every limit case the same way. Text and values may be non-ASCII (word boundaries and Unicode normal forms are the same in both lanes), but no case pairs non-ASCII letters: their case folding differs between the lanes by design.",
   "limits": {
     "KNOWN_MAX_VALUES": 50000,
     "KNOWN_VALUE_MAX_LENGTH": 512,
@@ -79,6 +79,34 @@
       ],
       "mode": "mask",
       "expect": "[KNOWN] and [KNOWN]; [KNOWN]."
+    },
+    {
+      "name": "a letter of another script is a word boundary",
+      "text": "我是张伟。联系Ann获取",
+      "known": [
+        "张伟",
+        "ann"
+      ],
+      "mode": "mask",
+      "expect": "我是[KNOWN]。联系[KNOWN]获取"
+    },
+    {
+      "name": "an ASCII letter after a non-ASCII one is not a boundary",
+      "text": "Renée's file, René's file",
+      "known": [
+        "René"
+      ],
+      "mode": "mask",
+      "expect": "Renée's file, [KNOWN]'s file"
+    },
+    {
+      "name": "composed and decomposed text share one tag",
+      "text": "José and José and JOSÉ",
+      "known": [
+        "José"
+      ],
+      "mode": "tag",
+      "expect": "<KNOWN_1> and <KNOWN_1> and <KNOWN_1>"
     }
   ],
   "_generated_comment": "generated_cases build their dictionaries, texts and expected texts instead of spelling them out. An entry group gives entries k = 0..count-1, each value*repeat, then grow*k, then k zero-padded to index_width digits (when index_width is given). text and expect are lists of parts, each value*repeat, joined.",

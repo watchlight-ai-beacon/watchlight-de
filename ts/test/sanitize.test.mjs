@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
+import { createHash } from "node:crypto";
 
 const require = createRequire(import.meta.url);
 const { sanitize, SanitizeError, Watchlight, DECISION_ID_MAX_LENGTH, KNOWN_MAX_VALUES, KNOWN_VALUE_MAX_LENGTH, KNOWN_MAX_TOTAL_LENGTH, DETECTOR_VERSION, DEFAULT_PII_TYPES, HEURISTIC_PII_TYPES, registerDetector, registeredDetectors, _clearCustomDetectors } = require("../dist/index.js");
@@ -265,7 +266,9 @@ async function main() {
     // the dictionary matcher promises.
     const esc = (v) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const reference = (text, known) => {
-      const values = known.filter((v) => v.trim().length > 0);
+      // ASCII word characters as the boundary (`\w` without `u`), and each value
+      // in its given, NFC and NFD forms.
+      const values = known.filter((v) => v.trim().length > 0).flatMap((v) => [v, v.normalize("NFC"), v.normalize("NFD")]);
       const spans = [];
       for (let i = 0; i < text.length; i++) {
         if (i > 0 && /\w/.test(text[i - 1])) continue;
@@ -308,6 +311,31 @@ async function main() {
     const out = sanitize("x " + "a ".repeat(10000) + "y", { known: chain, mode: "mask" }).text;
     const ms = Date.now() - t;
     ok("KNOWN: a pathological dictionary stays bounded", out === "x [KNOWN] y" && ms < 10000, `${out.slice(0, 40)} ${ms}ms`);
+  }
+  {
+    const composed = "Jos\u00e9", decomposed = "Jose\u0301";
+    const text = `${composed} and ${decomposed} and ${composed.toUpperCase()}`;
+    ok("KNOWN: composed and decomposed text match under one tag",
+      [composed, decomposed].every((e) => sanitize(text, { known: [e], types: [] }).text === "<KNOWN_1> and <KNOWN_1> and <KNOWN_1>" &&
+        new Set(sanitize(text, { known: [e], mode: "hash", types: [] }).text.split(" and ")).size === 1));
+    ok("KNOWN: a letter of another script is a word boundary",
+      sanitize("我是张伟。", { known: ["张伟"], mode: "mask", types: [] }).text === "我是[KNOWN]。" &&
+      sanitize("联系Ann获取", { known: ["Ann"], mode: "mask", types: [] }).text === "联系[KNOWN]获取");
+    ok("KNOWN: tag and hash keys of ASCII values are their lowercase",
+      sanitize("Ada", { known: ["ADA"], mode: "hash" }).text === `<KNOWN_${createHash("sha256").update("ada").digest("hex").slice(0, 8)}>`);
+    // The count is checked before any entry is read: a huge sparse array is
+    // refused at once.
+    const huge = []; huge.length = 2 ** 31;
+    const t = Date.now();
+    ok("KNOWN: a huge sparse array is refused by its length, at once",
+      throwsSanitize(() => sanitize("x", { known: huge }), `more than ${KNOWN_MAX_VALUES} entries`) && Date.now() - t < 1000);
+    // Each entry is read once: a getter cannot pass the checks with one value
+    // and be matched with another.
+    let reads = 0;
+    const tricky = ["x"];
+    Object.defineProperty(tricky, 0, { get() { reads++; return reads === 1 ? "Ada" : "z".repeat(KNOWN_VALUE_MAX_LENGTH + 1); } });
+    const once = sanitize("Ada", { known: tricky, mode: "mask" }).text;
+    ok("KNOWN: each entry is read once", reads === 1 && once === "[KNOWN]", `${reads} ${once}`);
   }
   const sparse = ["Ada"]; sparse[3] = "Grace";
   ok("KNOWN: a sparse array still works (holes skipped)", sanitize("Ada and Grace", { known: sparse, mode: "mask" }).text === "[KNOWN] and [KNOWN]");

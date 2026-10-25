@@ -42,6 +42,7 @@ import re
 import sys
 import threading
 import time
+import unicodedata
 from typing import Any, Awaitable, Callable, Optional, Sequence, TypeVar, Union
 
 import watchlight_engine as _engine
@@ -1555,9 +1556,12 @@ def _effective_detector_version() -> str:
     return f"{DETECTOR_VERSION}+custom.{digest}"
 
 
-# \w exactly as the regex engine defines it, so the whole-word check of the
-# dictionary matcher is the same one a `(?<!\w)...(?!\w)` pattern makes.
-_WORD_CHAR = re.compile(r"\w")
+# A word character for the dictionary's whole-word check: ASCII letters, digits
+# and `_`, the same set as `\w` in the TypeScript lane's regexes. Any other
+# character, including a letter of another script, is a boundary, so a value
+# written next to CJK text (`我是张伟。`) still matches; the check can only make
+# a match more likely, never hide one that the ASCII rule allows.
+_ASCII_WORD_CHAR = re.compile(r"[A-Za-z0-9_]")
 
 
 @functools.lru_cache(maxsize=None)
@@ -1635,33 +1639,17 @@ def _match_key(value: str) -> str:
     return value.translate(table) if table else value
 
 
-def _fold_char(ch: str) -> str:
-    # The regex's IGNORECASE compares characters by their simple lowercase.
-    # str.lower() agrees with it whenever it yields one character; a character
-    # whose full lowercase is longer (U+0130) is kept as itself, so it is never
-    # merged with a value it might not match.
-    lower = ch.lower()
-    return lower if len(lower) == 1 else ch
-
-
-def _fold_key(value: str) -> str:
-    """The case-folded key of a known value. Two values with the same key match
-    exactly the same text under ``re.IGNORECASE``."""
-    if value.isascii():
-        return value.lower()
-    return "".join(_fold_char(ch) for ch in value)
-
-
 def _dedupe_known(known: Sequence[str]) -> list[str]:
-    """One value per case-folded key, the first occurrence kept. Matching is
-    case-insensitive, so the dropped values match nothing the kept one does not,
-    and the trie stays one branch per distinct value."""
+    """One value per match key (:func:`_match_key`), the first occurrence kept.
+    Values with one key match exactly the same text, so the dropped values match
+    nothing the kept one does not, and the trie stays one branch per distinct
+    value."""
     seen: set = set()
     values: list[str] = []
     for v in known:
         if not v.strip():
             continue
-        key = _fold_key(v)
+        key = _match_key(v)
         if key in seen:
             continue
         seen.add(key)
@@ -1703,6 +1691,28 @@ def _known_trie(values: Sequence[str]) -> dict:
     return root
 
 
+def _normal_forms(values: Sequence[str]) -> list[str]:
+    """Each value as given, then in Unicode NFC and NFD form when those differ.
+    A value is then found in text written fully composed (``é`` as U+00E9) or
+    fully decomposed (``e`` + U+0301), whichever form the value was given in.
+    At most three forms per value, so the dictionary stays bounded."""
+    out: list[str] = []
+    for v in values:
+        out.append(v)
+        if not v.isascii():
+            out.append(unicodedata.normalize("NFC", v))
+            out.append(unicodedata.normalize("NFD", v))
+    return out
+
+
+def _known_tag_key(value: str) -> str:
+    """The key a redacted KNOWN span is tagged and hashed under: NFC, then
+    folded the way matching folds, so the spellings one value matches (``Ross``,
+    ``ROSS``, ``Roſs``; composed or decomposed) share one tag. Lowercase for
+    ASCII, as the TypeScript lane's key is."""
+    return _match_key(unicodedata.normalize("NFC", value))
+
+
 def _detect_known(text: str, known: Sequence[str]) -> list[tuple[int, int, str, str]]:
     """Every occurrence of every known value, case-insensitive and matched as a
     whole word; overlapping occurrences merge into one span. Values are never
@@ -1712,32 +1722,29 @@ def _detect_known(text: str, known: Sequence[str]) -> list[tuple[int, int, str, 
     can start; at each position the longest value that matches there as a
     whole word wins, and the next position is tried, so every occurrence of
     every value is covered. Characters compare the way ``re.IGNORECASE``
-    compares them (:func:`_match_char`). The work at one position is bounded by
-    the longest value (``KNOWN_VALUE_MAX_LENGTH``), never by the number of
-    values, and nothing is compiled from the values, so no dictionary within
-    the limits can fail to build.
+    compares them (:func:`_match_char`); a word character is an ASCII letter,
+    digit or ``_``. Each value is also matched in its NFC and NFD forms
+    (:func:`_normal_forms`). The work at one position is bounded by the longest
+    of those forms, never by the number of values, and nothing is compiled from
+    the values, so no dictionary within the limits can fail to build.
     """
-    values = _dedupe_known([str.__str__(v) for v in known])
+    values = _dedupe_known(_normal_forms([str.__str__(v) for v in known]))
     if not values:
         return []
     root = _known_trie(values)
     folded = _match_key(text)
     n = len(text)
-    # "w" exactly where `text` has a word character (`\w`), anything else
-    # elsewhere: every character `\w` matches becomes "w", and "w" is itself a
-    # word character, so no other character can be mistaken for one. One
-    # trailing space, so the end of the text counts as a word boundary.
-    word = _WORD_CHAR.sub("w", text) + " "
-    # Candidate starts: a position whose character begins some value. These are
-    # exact characters of the folded text, so this regex folds no case itself.
-    starts = re.compile("[" + "".join(re.escape(ch) for ch in sorted(root)) + "]")
+    # "w" exactly where `text` has an ASCII word character, the character
+    # itself elsewhere ("w" is one of them, so nothing else can be taken for
+    # one). One trailing space, so the end of the text is a word boundary.
+    word = _ASCII_WORD_CHAR.sub("w", text) + " "
     raw: list[tuple[int, int]] = []
-    for m in starts.finditer(folded):
-        i = m.start()
+    for i in range(n):
         # Bounded so a value that is also an ordinary word does not rewrite
-        # prose: `known=["Will"]` must not blank every "will". `\w` boundaries
-        # rather than `\b` so a value whose own edge is punctuation still matches.
-        if i and word[i - 1] == "w":
+        # prose: `known=["Will"]` must not blank every "will". Word-character
+        # boundaries rather than `\b` so a value whose own edge is punctuation
+        # still matches.
+        if folded[i] not in root or (i and word[i - 1] == "w"):
             continue
         node, j, end = root, i, -1
         while True:
@@ -1781,11 +1788,19 @@ def sanitize(
     ``tag`` (consistent ``<EMAIL_1>``), ``mask`` (``[EMAIL]``), or ``hash``.
     ``types`` restricts the detectors (default: every structured type; the
     heuristics ``PERSON`` / ``ADDRESS`` run only when listed). ``known`` is an
-    application-supplied dictionary of exact strings to redact — matched
-    case-insensitively as substrings, every occurrence covered, counted under
-    ``KNOWN``; the values never appear in the output, report, or audit trail.
-    Dictionary matching is simple (ASCII-style) case-insensitive; Unicode case
-    folding differs between the Python and TypeScript lanes.
+    application-supplied dictionary of exact strings to redact — every
+    occurrence covered, counted under ``KNOWN``; the values never appear in the
+    output, report, or audit trail. A value matches as a whole word: not where
+    an ASCII letter, digit or ``_`` touches either end of it (punctuation, a
+    space or a letter of another script is a boundary, so ``张伟`` matches in
+    ``我是张伟。``). Matching is case-insensitive the way ``re.IGNORECASE``
+    compares characters, non-ASCII letters included, with its extra
+    equivalences (``σ``/``ς``/``Σ``, ``ſ``/``s``, the Kelvin sign and ``k``,
+    ``ı``/``İ``/``i``); the TypeScript lane folds by JavaScript's rules, so a
+    few non-ASCII equivalences differ between the lanes. Each value is also
+    matched in its Unicode NFC and NFD forms, so composed and decomposed text
+    both match it; text that mixes the two forms inside one value does not, so
+    normalise such text to NFC first.
     ``known`` holds at most :data:`KNOWN_MAX_VALUES` entries of at most
     :data:`KNOWN_VALUE_MAX_LENGTH` characters each, and at most
     :data:`KNOWN_MAX_TOTAL_LENGTH` characters in all; more raises
@@ -1827,7 +1842,11 @@ def sanitize(
         raise SanitizeError("known must be a sequence of strings")
     # Read at most one entry past the limit, so an oversized iterable is
     # refused without being materialised.
-    known_values = list(itertools.islice(known, KNOWN_MAX_VALUES + 1)) if known is not None else []
+    try:
+        known_values = list(itertools.islice(known, KNOWN_MAX_VALUES + 1)) if known is not None else []
+    except TypeError:
+        # Not iterable: the same fail-closed, value-free error as a bad entry.
+        raise SanitizeError("known must be a sequence of strings") from None
     if not all(isinstance(v, str) for v in known_values):
         # Value-free by design: the message never echoes the offending entry.
         raise SanitizeError("known must be a sequence of strings")
@@ -1905,8 +1924,9 @@ def sanitize(
         out, cursor = [], 0
         for start, end, typ, val in kept:
             out.append(text[cursor:start])
-            # KNOWN values were matched case-insensitively, so hash and tag keys are too.
-            key_value = val.lower() if typ == "KNOWN" else val
+            # KNOWN values were matched case-insensitively and in either normal
+            # form, so hash and tag keys fold the same way.
+            key_value = _known_tag_key(val) if typ == "KNOWN" else val
             if mode == "mask":
                 rep = f"[{typ}]"
             elif mode == "hash":

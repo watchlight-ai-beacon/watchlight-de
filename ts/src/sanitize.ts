@@ -112,10 +112,17 @@ export interface SanitizeOptions {
    *  anything derived from the content. */
   principal?: string;
   /** Application-supplied dictionary: exact strings to redact (names, streets,
-   *  ids the caller already holds). Matched as substrings with simple
-   *  (ASCII-style) case-insensitivity — Unicode case folding differs between
-   *  the TypeScript and Python lanes; every occurrence is covered — overlapping
-   *  or nested occurrences merge into one span. Counted under `KNOWN`. The
+   *  ids the caller already holds). Every occurrence is covered; overlapping or
+   *  nested occurrences merge into one span. A value matches as a whole word:
+   *  not where an ASCII letter, digit or `_` touches either end of it
+   *  (punctuation, a space or a letter of another script is a boundary, so
+   *  `张伟` matches in `我是张伟。`). Matching is case-insensitive the way a
+   *  JavaScript regex with the `i` flag and no `u` flag compares UTF-16 units,
+   *  non-ASCII letters included; the Python lane folds by Python's rules, so a
+   *  few non-ASCII equivalences differ between the lanes. Each value is also
+   *  matched in its Unicode NFC and NFD forms, so composed and decomposed text
+   *  both match it; text that mixes the two forms inside one value does not, so
+   *  normalise such text to NFC first. Counted under `KNOWN`. The
    *  values never appear in the output, the report, or the audit trail. At
    *  most {@link KNOWN_MAX_VALUES} entries of at most
    *  {@link KNOWN_VALUE_MAX_LENGTH} characters each, and at most
@@ -392,6 +399,14 @@ function canonicalizeUnit(unit: string): string {
 /** Folded units, filled in as non-ASCII units are first seen; 0 = not yet. */
 const foldedUnits = new Uint16Array(0x10000);
 
+/** {@link canonicalizeUnit} by code, cached. */
+function foldUnit(c: number): number {
+  if (c < 0x80) return c >= 0x61 && c <= 0x7a ? c - 0x20 : c;
+  let f = foldedUnits[c];
+  if (f === 0) foldedUnits[c] = f = canonicalizeUnit(String.fromCharCode(c)).charCodeAt(0);
+  return f;
+}
+
 /** The case-folded key of a string, one folded unit per unit of the string
  *  (so positions in the key are positions in the string), folded the way a
  *  non-`u` regex with the `i` flag folds. */
@@ -399,17 +414,36 @@ function foldKey(value: string): string {
   // ASCII folds the same way unit by unit and as a whole string.
   if (/^[\x00-\x7f]*$/.test(value)) return value.toUpperCase();
   const units: string[] = [];
-  for (let i = 0; i < value.length; i++) {
-    const c = value.charCodeAt(i);
-    if (c < 0x80) {
-      units.push(c >= 0x61 && c <= 0x7a ? String.fromCharCode(c - 0x20) : value[i]);
-      continue;
-    }
-    let f = foldedUnits[c];
-    if (f === 0) foldedUnits[c] = f = canonicalizeUnit(value[i]).charCodeAt(0);
-    units.push(String.fromCharCode(f));
+  for (let i = 0; i < value.length; i++) units.push(String.fromCharCode(foldUnit(value.charCodeAt(i))));
+  return units.join("");
+}
+
+/** The key a redacted KNOWN span is tagged and hashed under: NFC, then folded
+ *  the way matching folds, so the spellings one value matches share one tag.
+ *  Each folded unit is written in lowercase when that lowercase folds back to
+ *  it, so the key is lowercase for ASCII and common letters, as the Python
+ *  lane's key is. */
+function knownTagKey(value: string): string {
+  const nfc = value.normalize("NFC");
+  const units: string[] = [];
+  for (let i = 0; i < nfc.length; i++) {
+    const f = String.fromCharCode(foldUnit(nfc.charCodeAt(i)));
+    const lower = f.toLowerCase();
+    units.push(lower.length === 1 && foldUnit(lower.charCodeAt(0)) === f.charCodeAt(0) ? lower : f);
   }
   return units.join("");
+}
+
+/** Each value as given, then in Unicode NFC and NFD form when those differ, so
+ *  a value is found in text written fully composed (`é` as U+00E9) or fully
+ *  decomposed (`e` + U+0301). At most three forms per value. */
+function normalForms(values: string[]): string[] {
+  const out: string[] = [];
+  for (const v of values) {
+    out.push(v);
+    if (!/^[\x00-\x7f]*$/.test(v)) out.push(v.normalize("NFC"), v.normalize("NFD"));
+  }
+  return out;
 }
 
 /** One value per case-folded key, the first occurrence kept. Matching is
@@ -490,7 +524,7 @@ function isWordUnit(c: number): boolean {
  *  regex is compiled from the values, so no dictionary within the limits can
  *  fail to build. */
 function detectKnown(text: string, known: string[]): Span[] {
-  const values = dedupeKnown(known);
+  const values = dedupeKnown(normalForms(known));
   if (values.length === 0) return [];
   const root = knownTrie(values);
   const folded = foldKey(text);
@@ -576,8 +610,9 @@ function replacement(
   perType: Map<DetectorLabel, number>
 ): string {
   if (mode === "mask") return `[${span.type}]`;
-  // KNOWN values were matched case-insensitively, so hash and tag keys are too.
-  const keyValue = span.type === "KNOWN" ? span.value.toLowerCase() : span.value;
+  // KNOWN values were matched case-insensitively and in either normal form, so
+  // hash and tag keys fold the same way.
+  const keyValue = span.type === "KNOWN" ? knownTagKey(span.value) : span.value;
   if (mode === "hash") {
     const h = createHash("sha256").update(keyValue).digest("hex").slice(0, 8);
     return `<${span.type}_${h}>`;
@@ -870,19 +905,27 @@ export function sanitize(text: string, opts: SanitizeOptions = {}): SanitizeResu
   const principalId = validateOpaqueId(opts.principal, "principal", sanitizeError);
   const principal =
     principalId === undefined ? undefined : assertPrincipal(principalId, sanitizeError);
-  const known = opts.known ?? [];
-  if (!Array.isArray(known) || known.some((v) => typeof v !== "string")) {
-    // Value-free by design: the message never echoes the offending entry.
-    throw new SanitizeError("known must be an array of strings");
-  }
-  // Bounded so the dictionary's cost is predictable. Value-free: the messages
-  // name the limit, never an entry.
-  if (known.length > KNOWN_MAX_VALUES) {
+  const knownOpt = opts.known ?? [];
+  // Value-free by design: no message below echoes an entry.
+  if (!Array.isArray(knownOpt)) throw new SanitizeError("known must be an array of strings");
+  // Bounded so the dictionary's cost is predictable: the count first, so a huge
+  // (even sparse) array is refused before any entry is read.
+  if (knownOpt.length > KNOWN_MAX_VALUES) {
     throw new SanitizeError(`known holds more than ${KNOWN_MAX_VALUES} entries`);
+  }
+  // Each entry is read once, into a copy that is both checked and matched, so
+  // an array that changes under us (a getter, a proxy) cannot pass the checks
+  // with one value and be matched with another. A hole in a sparse array is
+  // skipped, as before.
+  const known: string[] = [];
+  for (let i = 0; i < knownOpt.length; i++) {
+    if (!(i in knownOpt)) continue;
+    const v: unknown = knownOpt[i];
+    if (typeof v !== "string") throw new SanitizeError("known must be an array of strings");
+    known.push(v);
   }
   let knownTotal = 0;
   for (const v of known) {
-    if (typeof v !== "string") continue; // a hole in a sparse array
     if (v.length > KNOWN_VALUE_MAX_LENGTH) {
       throw new SanitizeError(`known has an entry longer than ${KNOWN_VALUE_MAX_LENGTH} characters`);
     }

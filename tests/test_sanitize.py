@@ -8,6 +8,7 @@ import random
 import re
 import sys
 import time
+import unicodedata
 
 import pytest
 
@@ -526,9 +527,10 @@ _EXOTIC = ["a", "A", "b", " ", "-", "_", "1", "ı", "İ", "i", "I", "ſ", "s", "
 def _reference_known(text, known):
     # One regex per entry, tried at every position: the longest whole-word
     # match at each start, overlapping matches merged. Slow, and obviously
-    # what the dictionary matcher promises.
-    word = re.compile(r"\w")
-    values = [v for v in known if v.strip()]
+    # what the dictionary matcher promises: ASCII word characters as the
+    # boundary, and each value in its given, NFC and NFD forms.
+    word = re.compile(r"[A-Za-z0-9_]")
+    values = [f for v in known if v.strip() for f in {v, unicodedata.normalize("NFC", v), unicodedata.normalize("NFD", v)}]
     covered, out = [], []
     for i in range(len(text)):
         if i and word.match(text, i - 1):
@@ -598,6 +600,39 @@ def test_known_pathological_dictionary_stays_bounded():
     out = sanitize("x " + "a " * 10_000 + "y", known=chain, mode="mask")
     assert out["text"] == "x [KNOWN] y"
     assert time.perf_counter() - t < 10
+
+
+def test_known_boundaries_are_ascii_word_characters():
+    # A letter of another script is a boundary, as in the TypeScript lane: a
+    # value written next to CJK text is still redacted.
+    assert sanitize("我是张伟。", known=["张伟"], mode="mask", types=[])["text"] == "我是[KNOWN]。"
+    assert sanitize("联系Ann获取", known=["Ann"], mode="mask", types=[])["text"] == "联系[KNOWN]获取"
+    assert sanitize("Smithfield", known=["Smith"], mode="mask", types=[])["text"] == "Smithfield"
+    assert sanitize("Renée's", known=["René"], mode="mask", types=[])["text"] == "Renée's"
+
+
+def test_known_matches_composed_and_decomposed_text_under_one_tag():
+    composed, decomposed = "Jos\u00e9", "Jose\u0301"
+    text = f"{composed} and {decomposed} and {composed.upper()}"
+    for entry in (composed, decomposed):
+        assert sanitize(text, known=[entry], types=[])["text"] == "<KNOWN_1> and <KNOWN_1> and <KNOWN_1>"
+        hashed = sanitize(text, known=[entry], mode="hash", types=[])["text"].split(" and ")
+        assert len(set(hashed)) == 1
+
+
+def test_known_tag_key_folds_like_matching():
+    # ſ matches s, so both spellings of one value share a tag and a hash.
+    assert sanitize("Ross and Ro\u017fs and Kim and kim", known=["ross", "kim"], types=[])["text"] == (
+        "<KNOWN_1> and <KNOWN_1> and <KNOWN_2> and <KNOWN_2>"
+    )
+    hashed = sanitize("Ross Ro\u017fs", known=["ross"], mode="hash", types=[])["text"].split(" ")
+    assert hashed[0] == hashed[1] == sanitize("ross", known=["ross"], mode="hash")["text"]
+
+
+@pytest.mark.parametrize("bad", [5, 1.5, object(), True])
+def test_known_that_is_not_iterable_is_a_sanitize_error(bad):
+    with pytest.raises(SanitizeError, match="known must be a sequence of strings"):
+        sanitize("x", known=bad)
 
 
 def test_known_limit_errors_are_value_free():

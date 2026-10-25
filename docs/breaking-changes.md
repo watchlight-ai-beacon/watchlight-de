@@ -29,6 +29,24 @@ one (` Smith`) in the text. This fails safe: the only change is that more text
 is redacted, sometimes as one tag where there were two. Nothing to do unless a
 test pins the old output.
 
+**Python: a `known` entry next to non-Latin letters is now redacted.** The
+whole-word boundary is an ASCII letter, digit or `_` in both lanes. Python
+used to count any Unicode letter as part of the word, so `known=["张伟"]` left
+`我是张伟。` unchanged; it now gives `我是<KNOWN_1>。`, as TypeScript always did.
+This fails safe: more text is redacted. The flip side is that an entry now
+also matches when the character next to it is a non-ASCII letter:
+`known=["Ann"]` redacts the first three letters of `Annå`. If an entry is
+also the start of longer words written with non-ASCII letters, pass those
+longer words too.
+
+**`known` entries match in both Unicode normal forms, and share one tag.**
+Composed (`José` with U+00E9) and decomposed (`Jose` + U+0301) text both
+match an entry given in either form, and are tagged and hashed as one value.
+In Python, spellings that `re.IGNORECASE` equates (`Ross`, `Roſs`) also share
+one tag. The output changes only for non-ASCII text: more is redacted, and
+some spans that had separate tags now share one. A `hash` of an ASCII value
+is unchanged.
+
 ## 0.15.0
 
 **A quota counts each principal once, however it is spelled.** `counters()`

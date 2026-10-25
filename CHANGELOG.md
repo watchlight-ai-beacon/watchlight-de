@@ -31,6 +31,24 @@ Each entry links to its release, which carries the reasoning and the measurement
   `john smith`) could make a shorter entry win, which left the rest of the
   longer entry (` Smith`) in the text. Output changes only where more text is
   now redacted.
+- Hardening: in the Python lane, a `known` entry's whole-word boundary is now
+  an ASCII letter, digit or `_`, the same rule as the TypeScript lane. Before,
+  Python treated any Unicode letter as part of the word, so an entry written
+  next to CJK or other non-Latin text (`张伟` in `我是张伟。`, `Ann` in
+  `联系Ann获取`) was never redacted in Python while TypeScript redacted it.
+- Hardening: each `known` entry is also matched in its Unicode NFC and NFD
+  forms, in both lanes, so text with composed accents and text with combining
+  accents both match it. Before, an entry matched only text in the same
+  normal form.
+- Hardening: a redacted `known` span is tagged and hashed under its NFC form,
+  folded the way matching folds, in both lanes. Spellings that match one
+  entry (`Ross` and `Roſs` in Python, composed and decomposed `José`) now
+  share one tag and one hash instead of getting one each. ASCII keys are
+  unchanged.
+- Hardening: in Python, a `known` that is not iterable raises `SanitizeError`
+  instead of `TypeError`. In TypeScript, `known` is checked against the entry
+  limit before any entry is read, and each entry is read once into a copy that
+  is both validated and matched.
 
 **Changed**
 - Bounded and de-duplicated the known-values list in `sanitize`, in both the
@@ -47,12 +65,14 @@ Each entry links to its release, which carries the reasoning and the measurement
   including an entry at the length limit, a 512-deep chain of nested
   prefixes, and dictionaries at the full count and total-length limits.
 - `FrameworkIntegration` checks its `name`, `extra`, `plugin_module` and
-  `plugin_class` with `re.fullmatch`, so a value with a trailing newline is
-  refused with the same `ValueError` as any other malformed value.
+  `plugin_class` with `re.fullmatch`, and each pattern is also anchored with
+  `\A` and `\Z`, so a value with a trailing newline is refused with the same
+  `ValueError` as any other malformed value.
 - `examples/governed_mcp_server.py` calls its PEP with an
   `http.client.HTTPConnection` to `127.0.0.1` and a 10-second timeout, instead
   of `urllib.request.urlopen`, so the demo client can only reach the loopback
-  PEP and never goes through a proxy set in the environment. It notes that its
+  PEP and never goes through a proxy set in the environment. It stops with an
+  error on any response that is not HTTP 200 with a JSON body. It notes that its
   plain-HTTP URLs are loopback-only and that a real upstream should use
   `https://` with certificate verification.
 
