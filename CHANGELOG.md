@@ -15,19 +15,37 @@ Each entry links to its release, which carries the reasoning and the measurement
 
 **Security**
 - Hardening: the TypeScript SDK checks an entity type name (`entityRef`, `policyEntityRef`, `entityKey`) by splitting it on `::` and testing each part, instead of with one pattern that repeats a group. The check runs in linear time on any input, including a long type name built to make a backtracking matcher retry. It accepts and refuses exactly the same names as before.
+- Hardening: `sanitize` matches the `known` dictionary by walking a prefix tree
+  over the entries, in both the Python and TypeScript lanes, instead of
+  compiling one regex built from the dictionary. Nothing recursive is built
+  from the entries, so every dictionary within the limits below works on
+  Python 3.9 to 3.13 and Node 22 and later. Before, a long entry or a deep
+  chain of nested entries (`a`, `ab`, `abc`, ...) could exceed the
+  interpreter's recursion limit while the regex was built, and the call failed
+  with `SanitizeError`. The work at each position of the text is bounded by
+  the longest entry, never by the number of entries. Characters still compare
+  the way each lane's case-insensitive regex compared them.
+- Hardening: at each position of the text, the longest `known` entry that
+  matches there as a whole word now wins, as documented, whichever way the
+  entries are spelled. Before, two entries that differ in case (`JOHN` and
+  `john smith`) could make a shorter entry win, which left the rest of the
+  longer entry (` Smith`) in the text. Output changes only where more text is
+  now redacted.
 
 **Changed**
 - Bounded and de-duplicated the known-values list in `sanitize`, in both the
   Python and TypeScript lanes. Before the matcher is built, `known` keeps one
   value per case-folded key (the first occurrence), folded the way each lane's
-  case-insensitive regex folds, so the output and spans for any input are
-  unchanged. `known` is now limited to `KNOWN_MAX_VALUES` (50,000) entries,
+  case-insensitive regex folds; the dropped variants match nothing the kept
+  value does not. `known` is now limited to `KNOWN_MAX_VALUES` (50,000) entries,
   `KNOWN_VALUE_MAX_LENGTH` (512) characters per entry and
   `KNOWN_MAX_TOTAL_LENGTH` (500,000) characters in all; a dictionary over any
   limit raises `SanitizeError` with a message that names the limit and never
   an entry. The three limits are exported from `watchlight` and
   `@watchlight/sdk`. Python reads at most one entry past the entry limit from
-  an iterable. A shared fixture holds both lanes to the same results.
+  an iterable. A shared fixture holds both lanes to the same results,
+  including an entry at the length limit, a 512-deep chain of nested
+  prefixes, and dictionaries at the full count and total-length limits.
 - `FrameworkIntegration` checks its `name`, `extra`, `plugin_module` and
   `plugin_class` with `re.fullmatch`, so a value with a trailing newline is
   refused with the same `ValueError` as any other malformed value.

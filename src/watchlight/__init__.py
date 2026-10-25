@@ -1555,28 +1555,84 @@ def _effective_detector_version() -> str:
     return f"{DETECTOR_VERSION}+custom.{digest}"
 
 
-_END = object()
+# \w exactly as the regex engine defines it, so the whole-word check of the
+# dictionary matcher is the same one a `(?<!\w)...(?!\w)` pattern makes.
+_WORD_CHAR = re.compile(r"\w")
 
 
-def _trie_regex(values: Sequence[str]) -> str:
-    """Escaped prefix-trie alternation over the values: at each position the
-    regex walks the trie (cost bounded by the trie's branching, not the
-    dictionary size) and prefers the longest value (children before the empty
-    branch)."""
-    root: dict = {}
-    for v in values:
-        node = root
-        for ch in v:
-            node = node.setdefault(ch, {})
-        node[_END] = True
+@functools.lru_cache(maxsize=None)
+def _regex_equates(lower: str, other: str) -> bool:
+    """Whether ``re.IGNORECASE`` treats ``lower`` and ``other`` as one
+    character. Asked only for the few lowercase letters that share an
+    uppercase with a different lowercase letter (``ı``/``i``, ``ſ``/``s``,
+    ``ς``/``σ``...), so the cache stays small. Asking the regex engine rather
+    than keeping a table means the answer always matches the running
+    interpreter, whose table has grown between Python versions."""
+    return re.fullmatch(re.escape(lower), other, re.IGNORECASE) is not None
 
-    def render(node: dict) -> str:
-        alts = [re.escape(ch) + render(node[ch]) for ch in sorted(k for k in node if k is not _END)]
-        if _END in node:
-            alts.append("")
-        return alts[0] if len(alts) == 1 and alts[0] != "" else "(?:" + "|".join(alts) + ")"
 
-    return render(root)
+@functools.lru_cache(maxsize=1)
+def _multi_char_uppercase() -> dict:
+    """Every character whose uppercase is more than one character (``ß``,
+    ``ΐ``, ``ﬅ``...), grouped by that uppercase. Built once, the first time
+    such a character is folded: blocks whose uppercase keeps their length are
+    skipped whole, so only a few hundred characters are looked at one by one."""
+    groups: dict = {}
+    for base in range(0, 0x110000, 4096):
+        pending = [(base, base + 4096)]
+        while pending:
+            lo, hi = pending.pop()
+            block = "".join(map(chr, range(lo, hi)))
+            if len(block.upper()) == hi - lo:
+                continue  # every character in the block uppercases to one
+            if hi - lo > 64:
+                mid = (lo + hi) // 2
+                pending += [(lo, mid), (mid, hi)]
+                continue
+            for ch in block:
+                upper = ch.upper()
+                if len(upper) > 1:
+                    groups.setdefault(upper, []).append(ch)
+    return groups
+
+
+def _match_char(ch: str) -> str:
+    """The one character that stands for every character ``re.IGNORECASE``
+    treats as equal to ``ch``: two characters map to the same one exactly when
+    a case-insensitive regex literal of one matches the other.
+
+    The engine compares a cased character by its simple lowercase (the first
+    character of ``str.lower()``), and also equates the lowercase letters that
+    share one uppercase. A character that is not cased only ever matches itself.
+    """
+    lower = ch.lower()[0]
+    if lower == ch and ch.upper()[0] == ch:
+        return ch  # not cased: the engine matches it exactly
+    upper = lower.upper()
+    if len(upper) == 1:
+        rep = upper.lower()[0]
+        return rep if rep != lower and _regex_equates(lower, rep) else lower
+    # Letters whose uppercase is several characters (U+0390 and U+1FD3 share
+    # one): the smallest character of the group the engine equates with this
+    # one, which is the same answer from every member of the group.
+    best = lower
+    for other in _multi_char_uppercase().get(upper, ()):
+        if other < best and _regex_equates(lower, other):
+            best = other
+    return best
+
+
+def _match_key(value: str) -> str:
+    """``value`` with every character replaced by :func:`_match_char`. Same
+    length as ``value``, so positions in the key are positions in the value."""
+    if value.isascii():
+        return value.lower()
+    table = {}
+    for ch in set(value):
+        rep = _match_char(ch)
+        if rep != ch:
+            table[ord(ch)] = rep
+    return value.translate(table) if table else value
 
 
 def _fold_char(ch: str) -> str:
@@ -1613,24 +1669,92 @@ def _dedupe_known(known: Sequence[str]) -> list[str]:
     return values
 
 
+def _known_trie(values: Sequence[str]) -> dict:
+    """A compressed prefix tree (radix tree) over the match keys of ``values``.
+
+    A node is a dict: a child is stored under the first character of the edge
+    that leads to it, as ``(edge, child)``, and ``""`` marks a node where a
+    value ends. Built with loops only, so no dictionary within the limits can
+    exhaust the stack, and it holds at most two nodes per value.
+    """
+    root: dict = {}
+    for value in values:
+        key = _match_key(value)
+        node, pos = root, 0
+        while True:
+            if pos == len(key):
+                node[""] = True
+                break
+            entry = node.get(key[pos])
+            if entry is None:
+                node[key[pos]] = (key[pos:], {"": True})
+                break
+            edge, child = entry
+            shared = 1  # edge[0] == key[pos]: that is how the entry was found
+            limit = min(len(edge), len(key) - pos)
+            while shared < limit and edge[shared] == key[pos + shared]:
+                shared += 1
+            if shared == len(edge):
+                node, pos = child, pos + shared
+                continue
+            middle: dict = {edge[shared]: (edge[shared:], child)}
+            node[key[pos]] = (edge[:shared], middle)
+            node, pos = middle, pos + shared
+    return root
+
+
 def _detect_known(text: str, known: Sequence[str]) -> list[tuple[int, int, str, str]]:
     """Every occurrence of every known value, case-insensitive and matched as a
-    whole word; overlapping occurrences merge into one span. One escaped trie alternation compiled once
-    per call; at each position the longest value wins and the scan resumes one
-    character later, so every occurrence of every value is covered. Values are
-    never logged or raised."""
-    values = _dedupe_known(known)
+    whole word; overlapping occurrences merge into one span. Values are never
+    logged or raised.
+
+    A walk of a prefix tree over the values, from every position where a word
+    can start; at each position the longest value that matches there as a
+    whole word wins, and the next position is tried, so every occurrence of
+    every value is covered. Characters compare the way ``re.IGNORECASE``
+    compares them (:func:`_match_char`). The work at one position is bounded by
+    the longest value (``KNOWN_VALUE_MAX_LENGTH``), never by the number of
+    values, and nothing is compiled from the values, so no dictionary within
+    the limits can fail to build.
+    """
+    values = _dedupe_known([str.__str__(v) for v in known])
     if not values:
         return []
-    # Bounded so a value that is also an ordinary word does not rewrite prose:
-    # `known=["Will"]` must not blank every "will". `\w` boundaries rather than
-    # `\b` so a value whose own edge is punctuation still matches.
-    pat = re.compile(r"(?<!\w)(?:" + _trie_regex(values) + r")(?!\w)", re.IGNORECASE)
+    root = _known_trie(values)
+    folded = _match_key(text)
+    n = len(text)
+    # "w" exactly where `text` has a word character (`\w`), anything else
+    # elsewhere: every character `\w` matches becomes "w", and "w" is itself a
+    # word character, so no other character can be mistaken for one. One
+    # trailing space, so the end of the text counts as a word boundary.
+    word = _WORD_CHAR.sub("w", text) + " "
+    # Candidate starts: a position whose character begins some value. These are
+    # exact characters of the folded text, so this regex folds no case itself.
+    starts = re.compile("[" + "".join(re.escape(ch) for ch in sorted(root)) + "]")
     raw: list[tuple[int, int]] = []
-    pos = 0
-    while (m := pat.search(text, pos)) is not None:
-        raw.append((m.start(), m.end()))
-        pos = m.start() + 1  # also find overlapping occurrences
+    for m in starts.finditer(folded):
+        i = m.start()
+        # Bounded so a value that is also an ordinary word does not rewrite
+        # prose: `known=["Will"]` must not blank every "will". `\w` boundaries
+        # rather than `\b` so a value whose own edge is punctuation still matches.
+        if i and word[i - 1] == "w":
+            continue
+        node, j, end = root, i, -1
+        while True:
+            if "" in node and word[j] != "w":
+                end = j
+            if j == n:
+                break
+            entry = node.get(folded[j])
+            if entry is None:
+                break
+            edge, child = entry
+            if not folded.startswith(edge, j):
+                break
+            j += len(edge)
+            node = child
+        if end > i:
+            raw.append((i, end))
     merged: list[list[int]] = []
     for s, e in raw:
         if merged and s < merged[-1][1]:
@@ -1666,6 +1790,9 @@ def sanitize(
     :data:`KNOWN_VALUE_MAX_LENGTH` characters each, and at most
     :data:`KNOWN_MAX_TOTAL_LENGTH` characters in all; more raises
     :class:`SanitizeError`. Case variants of one value count as one value.
+    Every dictionary within the limits works; at each position the longest
+    entry that matches as a whole word wins, and the work there is bounded by
+    the longest entry, not by the number of entries.
     ``person_exclusions`` lists exact, case-insensitive values that the optional
     ``PERSON`` heuristic must leave untouched. It applies only to a complete
     ``PERSON`` candidate; other enabled detectors still run over the same text.

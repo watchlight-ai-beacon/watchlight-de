@@ -69,6 +69,222 @@
       ],
       "mode": "mask",
       "expect": "see [KNOWN] and [KNOWN]"
+    },
+    {
+      "name": "longest entry wins whatever the case",
+      "text": "John Smith and JOHN SMITH; john.",
+      "known": [
+        "JOHN",
+        "john smith"
+      ],
+      "mode": "mask",
+      "expect": "[KNOWN] and [KNOWN]; [KNOWN]."
+    }
+  ],
+  "_generated_comment": "generated_cases build their dictionaries, texts and expected texts instead of spelling them out. An entry group gives entries k = 0..count-1, each value*repeat, then grow*k, then k zero-padded to index_width digits (when index_width is given). text and expect are lists of parts, each value*repeat, joined.",
+  "generated_cases": [
+    {
+      "name": "an entry at the length limit matches",
+      "known": [
+        {
+          "value": "q",
+          "repeat": 512,
+          "count": 1
+        }
+      ],
+      "text": [
+        {
+          "value": "see ",
+          "repeat": 1
+        },
+        {
+          "value": "Q",
+          "repeat": 512
+        },
+        {
+          "value": ", not ",
+          "repeat": 1
+        },
+        {
+          "value": "q",
+          "repeat": 513
+        },
+        {
+          "value": ".",
+          "repeat": 1
+        }
+      ],
+      "mode": "mask",
+      "expect": [
+        {
+          "value": "see [KNOWN], not ",
+          "repeat": 1
+        },
+        {
+          "value": "q",
+          "repeat": 513
+        },
+        {
+          "value": ".",
+          "repeat": 1
+        }
+      ]
+    },
+    {
+      "name": "a 512-deep chain of nested prefixes",
+      "known": [
+        {
+          "value": "a",
+          "repeat": 1,
+          "count": 512,
+          "grow": "a"
+        }
+      ],
+      "text": [
+        {
+          "value": "x ",
+          "repeat": 1
+        },
+        {
+          "value": "A",
+          "repeat": 512
+        },
+        {
+          "value": " ",
+          "repeat": 1
+        },
+        {
+          "value": "a",
+          "repeat": 513
+        },
+        {
+          "value": " ",
+          "repeat": 1
+        },
+        {
+          "value": "a",
+          "repeat": 7
+        },
+        {
+          "value": " y",
+          "repeat": 1
+        }
+      ],
+      "mode": "mask",
+      "expect": [
+        {
+          "value": "x [KNOWN] ",
+          "repeat": 1
+        },
+        {
+          "value": "a",
+          "repeat": 513
+        },
+        {
+          "value": " [KNOWN] y",
+          "repeat": 1
+        }
+      ]
+    },
+    {
+      "name": "a chain of nested word prefixes",
+      "known": [
+        {
+          "value": "a",
+          "repeat": 1,
+          "count": 256,
+          "grow": " a"
+        }
+      ],
+      "text": [
+        {
+          "value": "x ",
+          "repeat": 1
+        },
+        {
+          "value": "a ",
+          "repeat": 300
+        },
+        {
+          "value": "y",
+          "repeat": 1
+        }
+      ],
+      "mode": "mask",
+      "expect": [
+        {
+          "value": "x [KNOWN] y",
+          "repeat": 1
+        }
+      ]
+    },
+    {
+      "name": "50,000 distinct entries, 500,000 characters in all",
+      "known": [
+        {
+          "value": "v",
+          "repeat": 1,
+          "count": 50000,
+          "index_width": 9
+        }
+      ],
+      "text": [
+        {
+          "value": "v000000000, V000049999 and v000050000.",
+          "repeat": 1
+        }
+      ],
+      "mode": "tag",
+      "expect": [
+        {
+          "value": "<KNOWN_1>, <KNOWN_2> and v000050000.",
+          "repeat": 1
+        }
+      ]
+    },
+    {
+      "name": "1,000 distinct 500-character entries, 500,000 characters in all",
+      "known": [
+        {
+          "value": "w",
+          "repeat": 491,
+          "count": 1000,
+          "index_width": 9
+        }
+      ],
+      "text": [
+        {
+          "value": "w",
+          "repeat": 491
+        },
+        {
+          "value": "000000999 ",
+          "repeat": 1
+        },
+        {
+          "value": "W",
+          "repeat": 491
+        },
+        {
+          "value": "000001000",
+          "repeat": 1
+        }
+      ],
+      "mode": "mask",
+      "expect": [
+        {
+          "value": "[KNOWN] ",
+          "repeat": 1
+        },
+        {
+          "value": "W",
+          "repeat": 491
+        },
+        {
+          "value": "000001000",
+          "repeat": 1
+        }
+      ]
     }
   ],
   "limit_cases": [

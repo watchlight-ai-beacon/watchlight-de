@@ -220,12 +220,94 @@ async function main() {
       const got = sanitize(c.text, { known: c.known, mode: c.mode }).text;
       ok(`KNOWN parity: ${c.name}`, got === c.expect, `${got} !== ${c.expect}`);
     }
+    // Entry k of a group: value*repeat, then grow*k, then k zero-padded to
+    // index_width digits when index_width is given (see the fixture's comment).
+    const fixtureKnown = (entries) => entries.flatMap((e) => Array.from({ length: e.count }, (_, k) =>
+      e.value.repeat(e.repeat) + (e.grow ?? "").repeat(k) + (e.index_width === undefined ? "" : String(k).padStart(e.index_width, "0"))));
+    const fixtureParts = (parts) => parts.map((p) => p.value.repeat(p.repeat)).join("");
+    // The adversarial shapes: an entry at the length limit, a 512-deep chain of
+    // nested prefixes, and dictionaries at the full count and total-length limits.
+    for (const c of parity.generated_cases) {
+      const got = sanitize(fixtureParts(c.text), { known: fixtureKnown(c.known), mode: c.mode }).text;
+      const want = fixtureParts(c.expect);
+      ok(`KNOWN parity: ${c.name}`, got === want, `${got.slice(0, 80)} !== ${want.slice(0, 80)}`);
+    }
     for (const c of parity.limit_cases) {
-      const known = c.entries.flatMap((e) => Array(e.count).fill(e.value.repeat(e.repeat)));
+      const known = fixtureKnown(c.entries);
       let got = null;
       try { sanitize("x", { known }); } catch (e) { got = e instanceof SanitizeError ? String(e.message) : `other: ${e}`; }
       ok(`KNOWN parity limit: ${c.name}`, c.error === null ? got === null : got !== null && got.includes(c.error), String(got));
     }
+  }
+  {
+    // Nothing recursive is built from the dictionary: the deepest shapes the
+    // limits allow still work with little stack left.
+    const chain = Array.from({ length: KNOWN_VALUE_MAX_LENGTH }, (_, k) => "a".repeat(k + 1));
+    const comb = Array.from({ length: KNOWN_VALUE_MAX_LENGTH }, (_, k) => "a".repeat(k) + "b");
+    const text = "x " + "A".repeat(512) + " " + "a".repeat(511) + "b y";
+    const run = () => [sanitize(text, { known: chain, mode: "mask" }).text, sanitize(text, { known: comb, mode: "mask" }).text];
+    // Find (roughly) how deep this stack can go, then run with a margin left.
+    let max = 0;
+    const probe = (d) => { max = d; probe(d + 1); };
+    try { probe(0); } catch { /* stack exhausted: `max` is the depth reached */ }
+    const atDepth = (d) => (d > 0 ? atDepth(d - 1) : run());
+    let got = null;
+    try { got = atDepth(Math.max(0, max - 2000)); } catch (e) { got = [String(e)]; }
+    ok("KNOWN: deepest dictionaries work with little stack left",
+      got[0] === "x [KNOWN] " + "a".repeat(511) + "b y" && got[1] === "x " + "A".repeat(512) + " [KNOWN] y", String(got).slice(0, 120));
+  }
+  ok("KNOWN: the longest entry wins whatever the case",
+    sanitize("John Smith x", { known: ["JOHN", "john smith"], mode: "mask" }).text === "[KNOWN] x" &&
+    sanitize("a-b-c", { known: ["A", "a-b-c"], mode: "mask" }).text === "[KNOWN]");
+  {
+    // One regex per entry, tried at every position: the longest whole-word
+    // match at each start, overlapping matches merged. Slow, and obviously what
+    // the dictionary matcher promises.
+    const esc = (v) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const reference = (text, known) => {
+      const values = known.filter((v) => v.trim().length > 0);
+      const spans = [];
+      for (let i = 0; i < text.length; i++) {
+        if (i > 0 && /\w/.test(text[i - 1])) continue;
+        let end = -1;
+        for (const v of values) {
+          const e = i + v.length;
+          if (e <= text.length && new RegExp(`^${esc(v)}$`, "i").test(text.slice(i, e)) && (e === text.length || !/\w/.test(text[e]))) end = Math.max(end, e);
+        }
+        if (end < 0) continue;
+        const last = spans[spans.length - 1];
+        if (last && i < last[1]) last[1] = Math.max(last[1], end); else spans.push([i, end]);
+      }
+      let out = "", cursor = 0;
+      for (const [s, e] of spans) { out += text.slice(cursor, s) + "[KNOWN]"; cursor = e; }
+      return out + text.slice(cursor);
+    };
+    const exotic = [..."aAb -_1"].concat(["ı", "İ", "i", "I", "ſ", "s", "S", "K", "K", "k", "σ", "ς", "Σ", "ß", "ẞ", "é", "É", "ͅ", "ι", "Ι", "\u{1F600}", "\ud800", "ǅ", "ǆ", "Ǆ", "µ", "Μ", "μ"]);
+    let seed = 222;
+    const rnd = () => { seed = (seed * 48271) % 2147483647; return seed / 2147483647; };
+    const pick = (a) => a[Math.floor(rnd() * a.length)];
+    const swap = (v) => Array.from(v, (c) => (c === c.toUpperCase() ? c.toLowerCase() : c.toUpperCase())).join("");
+    let mismatch = null;
+    for (let n = 0; n < 1500 && mismatch === null; n++) {
+      const alphabet = Array.from({ length: 2 + Math.floor(rnd() * 7) }, () => pick(exotic));
+      const word = () => Array.from({ length: 1 + Math.floor(rnd() * 6) }, () => pick(alphabet)).join("");
+      const base = Array.from({ length: 1 + Math.floor(rnd() * 6) }, word);
+      const known = base.concat(base.filter(() => rnd() < 0.5).map(swap), base.filter(() => rnd() < 0.3).map((b) => b + pick(alphabet) + b));
+      const text = Array.from({ length: 1 + Math.floor(rnd() * 10) }, () => pick(base.concat([word(), swap(pick(base))]))).join(pick([" ", "", "-"]));
+      const got = sanitize(text, { known, mode: "mask", types: [] }).text;
+      if (got !== reference(text, known)) mismatch = JSON.stringify({ text, known, got });
+    }
+    ok("KNOWN: matches a regex-per-entry reference", mismatch === null, mismatch ?? "");
+  }
+  {
+    // A dictionary of nested word prefixes over text made of the same word: the
+    // walk from every word start runs to the longest entry, the most work any
+    // position can cost. Generous bound: a slow CI runner must not fail it.
+    const chain = Array.from({ length: 256 }, (_, k) => Array(k + 1).fill("a").join(" "));
+    const t = Date.now();
+    const out = sanitize("x " + "a ".repeat(10000) + "y", { known: chain, mode: "mask" }).text;
+    const ms = Date.now() - t;
+    ok("KNOWN: a pathological dictionary stays bounded", out === "x [KNOWN] y" && ms < 10000, `${out.slice(0, 40)} ${ms}ms`);
   }
   const sparse = ["Ada"]; sparse[3] = "Grace";
   ok("KNOWN: a sparse array still works (holes skipped)", sanitize("Ada and Grace", { known: sparse, mode: "mask" }).text === "[KNOWN] and [KNOWN]");

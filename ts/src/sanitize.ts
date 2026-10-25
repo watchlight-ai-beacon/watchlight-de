@@ -120,7 +120,10 @@ export interface SanitizeOptions {
    *  most {@link KNOWN_MAX_VALUES} entries of at most
    *  {@link KNOWN_VALUE_MAX_LENGTH} characters each, and at most
    *  {@link KNOWN_MAX_TOTAL_LENGTH} characters in all; more throws
-   *  {@link SanitizeError}. Case variants of one value count as one value. */
+   *  {@link SanitizeError}. Case variants of one value count as one value.
+   *  Every dictionary within the limits works; at each position the longest
+   *  entry that matches as a whole word wins, and the work there is bounded by
+   *  the longest entry, not by the number of entries. */
   known?: string[];
   /** Exact values the optional `PERSON` heuristic must leave untouched.
    *  Matching is case-insensitive and covers only a complete `PERSON`
@@ -375,36 +378,10 @@ interface Span {
   value: string;
 }
 
-const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-type TrieNode = Map<string, TrieNode> & { end?: boolean };
-
-/** Escaped prefix-trie alternation over the values: at each position the regex
- *  walks the trie (cost bounded by the trie's branching, not the dictionary
- *  size) and prefers the longest value (children before the empty branch). */
-function trieRegex(values: string[]): string {
-  const root: TrieNode = new Map();
-  for (const v of values) {
-    let node = root;
-    for (const ch of v) {
-      let next = node.get(ch);
-      if (!next) node.set(ch, (next = new Map()));
-      node = next;
-    }
-    node.end = true;
-  }
-  const render = (node: TrieNode): string => {
-    const alts = Array.from(node.keys()).sort().map((ch) => escapeRe(ch) + render(node.get(ch)!));
-    if (node.end) alts.push("");
-    return alts.length === 1 && alts[0] !== "" ? alts[0] : `(?:${alts.join("|")})`;
-  };
-  return render(root);
-}
-
 /** One UTF-16 code unit folded the way a non-`u` regex with the `i` flag folds
  *  it (ECMA-262 Canonicalize): upper-cased when that yields a single unit, and
- *  never mapped from non-ASCII to ASCII. Two values with the same folded key
- *  therefore match exactly the same text under `/i`. */
+ *  never mapped from non-ASCII to ASCII. Two units with the same folded unit
+ *  are exactly the units such a regex treats as equal. */
 function canonicalizeUnit(unit: string): string {
   const upper = unit.toUpperCase();
   if (upper.length !== 1) return unit;
@@ -412,12 +389,26 @@ function canonicalizeUnit(unit: string): string {
   return upper;
 }
 
-/** The case-folded key of a known value, matching the regex's own folding. */
+/** Folded units, filled in as non-ASCII units are first seen; 0 = not yet. */
+const foldedUnits = new Uint16Array(0x10000);
+
+/** The case-folded key of a string, one folded unit per unit of the string
+ *  (so positions in the key are positions in the string), folded the way a
+ *  non-`u` regex with the `i` flag folds. */
 function foldKey(value: string): string {
   // ASCII folds the same way unit by unit and as a whole string.
   if (/^[\x00-\x7f]*$/.test(value)) return value.toUpperCase();
   const units: string[] = [];
-  for (let i = 0; i < value.length; i++) units.push(canonicalizeUnit(value[i]));
+  for (let i = 0; i < value.length; i++) {
+    const c = value.charCodeAt(i);
+    if (c < 0x80) {
+      units.push(c >= 0x61 && c <= 0x7a ? String.fromCharCode(c - 0x20) : value[i]);
+      continue;
+    }
+    let f = foldedUnits[c];
+    if (f === 0) foldedUnits[c] = f = canonicalizeUnit(value[i]).charCodeAt(0);
+    units.push(String.fromCharCode(f));
+  }
   return units.join("");
 }
 
@@ -438,34 +429,97 @@ function dedupeKnown(known: string[]): string[] {
   return values;
 }
 
+/** A node of the compressed prefix tree (radix tree) over the folded values: a
+ *  child is stored under the first unit of the edge that leads to it. */
+interface TrieNode {
+  end: boolean;
+  kids: Map<string, [string, TrieNode]>;
+}
+
+/** Built with loops only, so no dictionary within the limits can exhaust the
+ *  stack; it holds at most two nodes per value. */
+function knownTrie(values: string[]): TrieNode {
+  const root: TrieNode = { end: false, kids: new Map() };
+  for (const value of values) {
+    const key = foldKey(value);
+    let node = root;
+    let pos = 0;
+    for (;;) {
+      if (pos === key.length) {
+        node.end = true;
+        break;
+      }
+      const entry = node.kids.get(key[pos]);
+      if (entry === undefined) {
+        node.kids.set(key[pos], [key.slice(pos), { end: true, kids: new Map() }]);
+        break;
+      }
+      const [edge, child] = entry;
+      let shared = 1; // edge[0] === key[pos]: that is how the entry was found
+      const limit = Math.min(edge.length, key.length - pos);
+      while (shared < limit && edge[shared] === key[pos + shared]) shared++;
+      if (shared === edge.length) {
+        node = child;
+        pos += shared;
+        continue;
+      }
+      const middle: TrieNode = { end: false, kids: new Map([[edge[shared], [edge.slice(shared), child]]]) };
+      node.kids.set(key[pos], [edge.slice(0, shared), middle]);
+      node = middle;
+      pos += shared;
+    }
+  }
+  return root;
+}
+
+/** `\w` of a non-`u` regex: ASCII letters, digits and `_`. */
+function isWordUnit(c: number): boolean {
+  return (c >= 0x30 && c <= 0x39) || (c >= 0x41 && c <= 0x5a) || (c >= 0x61 && c <= 0x7a) || c === 0x5f;
+}
+
 /** Every occurrence of every known value, case-insensitive and matched as a
- *  whole word, overlapping occurrences merged into one span. One escaped trie alternation compiled once
- *  per call; at each position the longest value wins and the scan resumes one
- *  character later, so every occurrence of every value is covered. Values are
- *  never logged or thrown. */
+ *  whole word, overlapping occurrences merged into one span. Values are never
+ *  logged or thrown.
+ *
+ *  A walk of a prefix tree over the values, from every position where a word
+ *  can start; at each position the longest value that matches there as a
+ *  whole word wins, and the next position is tried, so every occurrence of
+ *  every value is covered. Units compare the way a non-`u` regex with the `i`
+ *  flag compares them. The work at one position is bounded by the longest
+ *  value (`KNOWN_VALUE_MAX_LENGTH`), never by the number of values, and no
+ *  regex is compiled from the values, so no dictionary within the limits can
+ *  fail to build. */
 function detectKnown(text: string, known: string[]): Span[] {
   const values = dedupeKnown(known);
   if (values.length === 0) return [];
-  // Bounded so a value that is also an ordinary word does not rewrite prose,
-  // and a name is not an occurrence inside a longer name. `\w` boundaries
-  // rather than `\b` so a value whose own edge is punctuation still matches.
-  const re = new RegExp(`(?<!\\w)(?:${trieRegex(values)})(?!\\w)`, "gi");
-  const raw: Array<[number, number]> = [];
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) {
-    raw.push([m.index, m.index + m[0].length]);
-    re.lastIndex = m.index + 1; // also find overlapping occurrences
-  }
+  const root = knownTrie(values);
+  const folded = foldKey(text);
+  const n = text.length;
   const merged: Span[] = [];
-  for (const [s, e] of raw) {
+  for (let i = 0; i < n; i++) {
+    // Bounded so a value that is also an ordinary word does not rewrite prose,
+    // and a name is not an occurrence inside a longer name. `\w` boundaries
+    // rather than `\b` so a value whose own edge is punctuation still matches.
+    if (i > 0 && isWordUnit(text.charCodeAt(i - 1))) continue;
+    let entry = root.kids.get(folded[i]);
+    let j = i;
+    let end = -1;
+    while (entry !== undefined && folded.startsWith(entry[0], j)) {
+      j += entry[0].length;
+      const node = entry[1];
+      if (node.end && (j === n || !isWordUnit(text.charCodeAt(j)))) end = j;
+      if (j === n) break;
+      entry = node.kids.get(folded[j]);
+    }
+    if (end <= i) continue;
     const last = merged[merged.length - 1];
-    if (last && s < last.end) {
-      if (e > last.end) {
-        last.end = e;
-        last.value = text.slice(last.start, e);
+    if (last && i < last.end) {
+      if (end > last.end) {
+        last.end = end;
+        last.value = text.slice(last.start, end);
       }
     } else {
-      merged.push({ start: s, end: e, type: "KNOWN", value: text.slice(s, e) });
+      merged.push({ start: i, end, type: "KNOWN", value: text.slice(i, end) });
     }
   }
   return merged;

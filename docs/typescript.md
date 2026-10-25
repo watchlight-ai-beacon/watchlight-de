@@ -188,6 +188,9 @@ long (`KNOWN_VALUE_MAX_LENGTH`), and at most 500,000 characters in all
 (`KNOWN_MAX_TOTAL_LENGTH`). A dictionary over any of these limits throws
 `SanitizeError`, and the message never includes an entry. Because matching is
 case-insensitive, case variants of one value are matched as that one value.
+Every dictionary within the limits works, and the work at each position of the
+text is bounded by the longest entry, not by how many entries there are. Where
+two entries match at the same position, the longer one wins.
 
 `decisionId` links the audit line to an authorization decision. `principal`
 records *whose* data it was. If you omit `principal`, the line names this agent

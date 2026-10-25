@@ -21,6 +21,14 @@ entries that are not exact values you need redacted. Case variants of one
 value (`Ada`, `ADA`) count as one value when the matcher is built, but every
 entry still counts toward the limits.
 
+**`sanitize` lets the longest `known` entry win at each position.** When two
+entries match at the same position, the longer one is redacted, whichever way
+the two are spelled. Before, entries that differ in case (`JOHN` and
+`john smith`) could make the shorter one win and leave the rest of the longer
+one (` Smith`) in the text. This fails safe: the only change is that more text
+is redacted, sometimes as one tag where there were two. Nothing to do unless a
+test pins the old output.
+
 ## 0.15.0
 
 **A quota counts each principal once, however it is spelled.** `counters()`
