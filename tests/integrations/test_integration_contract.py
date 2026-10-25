@@ -311,3 +311,19 @@ def test_a_plugin_module_with_a_trailing_newline_gets_the_bad_name_error():
     expected = "integration plugin_module must be a top-level watchlight_* plugin package"
     assert str(bad_name.value).startswith(expected)
     assert str(trailing_newline.value).startswith(expected)
+
+
+def test_the_validation_patterns_are_anchored_on_their_own():
+    # A second guard beside fullmatch: each pattern is anchored with \A and \Z,
+    # so even match() or search() checks the whole value.
+    from watchlight.integrations import _contract
+
+    for pattern, good in (
+        (_contract._NAME, "example"),
+        (_contract._EXTRA, "example-x"),
+        (_contract.PLUGIN_MODULE, "watchlight_example"),
+        (_contract._CLASS, "WatchlightExamplePlugin"),
+    ):
+        assert pattern.match(good) and pattern.search(good)
+        for bad in (good + "\n", "x " + good, good + " x"):
+            assert pattern.match(bad) is None and pattern.search(bad) is None, (pattern.pattern, bad)

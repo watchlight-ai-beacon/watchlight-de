@@ -96,7 +96,7 @@ EXTERNAL_OWNERS: Dict[str, Set[str]] = {
 }
 # Kept independent of the contract's own pattern on purpose: a weakened check
 # there does not weaken this one.
-PLUGIN_MODULE = re.compile(r"watchlight_[a-z0-9_]+")
+PLUGIN_MODULE = re.compile(r"\Awatchlight_[a-z0-9_]+\Z")
 
 
 def is_framework_package(top: str) -> bool:

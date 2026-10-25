@@ -42,15 +42,17 @@ from typing import Any, Dict, FrozenSet, Optional
 
 from ..inprocess import Policies, _audited_plugin_class, _select_backend_kwargs
 
-# Every pattern below is applied with ``fullmatch``: ``match`` with a trailing
-# ``$`` would also accept a value ending in a newline.
-_NAME = re.compile(r"[a-z][a-z0-9_]*")
-_EXTRA = re.compile(r"[a-z][a-z0-9-]*")
+# Every pattern below is applied with ``fullmatch`` and is also anchored with
+# ``\A`` and ``\Z`` (never ``$``, which also accepts a value ending in a
+# newline), so a caller that uses ``match`` or ``search`` still checks the whole
+# value.
+_NAME = re.compile(r"\A[a-z][a-z0-9_]*\Z")
+_EXTRA = re.compile(r"\A[a-z][a-z0-9-]*\Z")
 #: A published Watchlight framework plugin package: a top-level ``watchlight_*``
 #: module. Never one of the packages below, which are not framework plugins.
-PLUGIN_MODULE = re.compile(r"watchlight_[a-z0-9_]+")
+PLUGIN_MODULE = re.compile(r"\Awatchlight_[a-z0-9_]+\Z")
 NOT_A_PLUGIN: FrozenSet[str] = frozenset({"watchlight_engine", "watchlight_core"})
-_CLASS = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_CLASS = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*\Z")
 
 #: Keywords that select the governance backend. The backend is chosen by
 #: ``_select_backend_kwargs`` (``WATCHLIGHT_APDP_URL`` or the in-process engine);
