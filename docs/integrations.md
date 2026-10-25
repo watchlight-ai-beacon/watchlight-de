@@ -11,11 +11,11 @@ built.
 ## A framework agent
 
 ```bash
-pip install 'watchlight[langgraph]'   # or [pydantic-ai], [claude-agent]
+pip install 'watchlight[langgraph]'   # or [pydantic-ai], [claude-agent], [deepagents]
 ```
 
 ```python
-from watchlight.langgraph import governed_plugin   # .pydantic_ai / .claude_agent
+from watchlight.langgraph import governed_plugin   # .pydantic_ai / .claude_agent / .deepagents
 
 plugin = governed_plugin("watchlight.policy.json")   # in-process, zero infra
 
@@ -29,7 +29,47 @@ This is the same plugin you ship to production. Moving to production takes one
 environment variable: set `WATCHLIGHT_APDP_URL`, and the same code authorizes
 against a running policy service instead of in-process.
 
-Runnable agents for all three frameworks are in [`examples/`](../examples/).
+Runnable agents for every framework are in [`examples/`](../examples/).
+
+### deepagents
+
+For a deepagents deep agent, pass the plugin to `create_governed_deep_agent`
+from `watchlight-deepagents`, which the `deepagents` extra installs. It takes
+the same arguments as `create_deep_agent`, plus `agent_slug` and the scope of
+each sub-agent:
+
+```python
+from watchlight.deepagents import governed_plugin
+from watchlight_deepagents import create_governed_deep_agent
+
+agent = create_governed_deep_agent(
+    model=model,
+    tools=[search_web, write_report, send_email],
+    subagents=[researcher, reporter],
+    subagent_scopes={"researcher": {"allowed_tools": ["search_web"]}},
+    agent_slug="research-orchestrator",
+    plugin=governed_plugin("watchlight.policy.json"),
+)
+result = await agent.ainvoke({"messages": [...]})
+```
+
+Every tool and filesystem call the agent makes is authorized by your policy
+before it runs. If the call is denied, the model gets an error and the tool
+does not run. The action is a verb taken from the tool name: `read` for
+`search_*`, `get_*`, `read_*`, `list_*` and `find_*`; `write` for `write_*`,
+`edit_*`, `create_*`, `update_*`, `delete_*` and `put_*`; and `execute` for
+everything else. The resource is `deepagents://tool/<name>`, or
+`deepagents://fs/<path>` for a filesystem tool. The principal is the running
+agent, and only the names, count and types of the arguments reach the policy,
+never their values.
+
+A `task` call opens a sub-agent run under the parent. The sub-agent may call
+only the tools named for it in `subagent_scopes`, whatever the policy allows.
+A sub-agent that is not listed there may call no tool at all, and that
+includes deepagents' automatic `general-purpose` sub-agent. Model turns are not
+authorized one by one. The agent must be invoked with `ainvoke`; a synchronous
+`invoke` is refused. See
+[`examples/governed_deepagents.py`](../examples/governed_deepagents.py).
 
 ### What the plugin records
 
@@ -135,7 +175,10 @@ Some frameworks automatically create a general-purpose subagent and give it
 the parent's full tool list. Watchlight can only narrow a scope when the
 framework asks it to authorize something, so it cannot narrow a subagent that
 the framework sets up on its own. You have to configure the framework instead.
-In deepagents, for example, pass your own subagent spec with the same name,
+(deepagents built with `create_governed_deep_agent` is the exception: there,
+the automatic sub-agent is governed and may call no tool unless
+`subagent_scopes` grants it some.) In deepagents built with plain
+`create_deep_agent`, for example, pass your own subagent spec with the same name,
 `general-purpose`, in the `subagents` argument to `create_deep_agent(...)`.
 That replaces the automatic one, so it does not inherit the parent's custom
 tools:

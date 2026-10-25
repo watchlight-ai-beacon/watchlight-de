@@ -98,7 +98,7 @@ variable (`WATCHLIGHT_APDP_URL`), never a rewrite.
 | [`governed_langgraph_agent.py`](governed_langgraph_agent.py) | LangGraph | `watchlight[langgraph]` |
 | [`governed_pydantic_ai_agent.py`](governed_pydantic_ai_agent.py) | Pydantic AI | `watchlight[pydantic-ai]` |
 | [`governed_claude_agent.py`](governed_claude_agent.py) | Claude Agent SDK | `watchlight[claude-agent]` |
-| [`governed_deepagents.py`](governed_deepagents.py) | deepagents, showing **sub-agent scope attenuation**: each sub-agent gets a strict subset of the parent's tools, bounded by `max_delegation_depth`. It runs without an API key. | `watchlight[deepagents]` |
+| [`governed_deepagents.py`](governed_deepagents.py) | deepagents, built with `create_governed_deep_agent`. Your policy authorizes every tool call before it runs, and each sub-agent may call only the tools its spawn granted. It runs without an API key and prints every decision from the audit trail. | `watchlight[deepagents]` |
 
 ## Govern an MCP server
 
