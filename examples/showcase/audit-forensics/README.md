@@ -121,6 +121,7 @@ Two fields ride along on every kind but `attenuation`:
 | `decision_id` | string, optional | the join key, on every decision the governor makes. A framework-plugin decision has none, because the plugin returns no id to join on; it carries `execution_id` instead |
 | `approved` | `true`, optional | only when an approval token downgraded a `NeedsApproval` |
 | `execution_id` | string, optional | only on a decision a Python framework plugin made inside a run: the run's id, which its `execution_started` and `execution_completed` lines carry too |
+| `refused_term` | `true`, optional | only on a `Deny` a Python framework plugin recorded for a call whose action, resource or execution id broke a name rule; that field then holds a value-free marker instead of a name, and `counters()` counts the record as a denied decision of its principal |
 
 An approved action is **two** records: the hold, then a second `Allow` with
 `approved: true` under a new `decision_id`. The deny reason is never written —

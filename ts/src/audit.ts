@@ -86,6 +86,11 @@ export type DecisionRecord = AuditRecordBase &
      *  has no run lifecycle and never writes it; the field is here so one type
      *  reads a trail written by either lane. */
     readonly execution_id?: string;
+    /** Present, and always `true`, only on a `Deny` a Python framework plugin
+     *  recorded for a call whose action, resource or execution id broke a name
+     *  rule: that field holds a value-free marker instead of a name. The
+     *  counters count it as a denied decision of its principal. */
+    readonly refused_term?: true;
   };
 
 /** A PII redaction pass — written by `sanitize()`. Value-free: counts per type

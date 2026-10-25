@@ -549,8 +549,9 @@ def test_a_term_the_backend_refuses_is_a_recorded_deny_without_its_value(name, t
     # watchlight-agent-sdk 0.10.1 the handle turns any backend error into a
     # deny, so the agent sees a refusal: that refusal is recorded once, as a
     # Deny. The term itself is never written: it is replaced by a value-free
-    # marker and the record is marked oversized, which every count includes,
-    # so the refusal can never make a quota under-count.
+    # marker, and the record is marked `refused_term`. The principal is intact,
+    # so the counters count it as a denied decision of that principal only,
+    # inside its window, with the marker matching any resource filter.
     module = _plugin_module(name)
     audit = tmp_path / "audit.jsonl"
     plugin = module.governed_plugin(POLICIES, audit_path=str(audit))
@@ -567,11 +568,21 @@ def test_a_term_the_backend_refuses_is_a_recorded_deny_without_its_value(name, t
     assert "web\tsearch" not in raw and "web\\tsearch" not in raw
     (record,) = _decisions(_lines(audit))
     assert record["decision"] == "Deny"
-    assert record["oversized"] is True
+    assert record["refused_term"] is True and "oversized" not in record
+    assert record["principal"] == 'User::"u1"'
     assert record["resource"] == {"omitted": "refused", "bytes": len(TAB_RESOURCE)}
     assert record["agent"] == "quota-agent"
-    counted = count_audit_records(audit, principal='User::"u1"', resource=TAB_RESOURCE, window="1h")
-    assert counted["count"] == 1 and counted["unreadable"] == 1
+    assert set(record) <= ALLOWED_FIELDS
+
+    def count(principal, outcome, **kw):
+        return count_audit_records(audit, principal=principal, window="1h", outcome=outcome, **kw)
+
+    denied = count('User::"u1"', "denied", resource='Tool::"anything"')
+    assert (denied["count"], denied["unreadable"]) == (1, 0)
+    assert count('User::"u1"', "all")["count"] == 1
+    # Never as allowed, never for another principal.
+    assert count('User::"u1"', "allowed")["count"] == 0
+    assert count('User::"alice"', "all")["count"] == 0
 
 
 @pytest.mark.parametrize("name", NAMES)
@@ -597,20 +608,41 @@ def test_unusual_agent_names_are_recorded_as_given_and_never_refused(name, tmp_p
     assert second["agent"] == child and second["actor_chain"] == [root, child]
 
 
-def test_verdicts_are_read_the_way_the_sdk_reads_them(monkeypatch, tmp_path):
-    # The SDK treats the verdict case- and space-insensitively; so does the record.
+@pytest.mark.parametrize(
+    "answer, expected",
+    [
+        ({"decision": "Allow", "reason": "", "details": {}}, "Allow"),
+        ({"decision": "allow", "reason": "", "details": {}}, "Allow"),
+        # The SDK lower-cases but does not strip: a padded verdict is a deny.
+        ({"decision": " Allow", "reason": "", "details": {}}, "Deny"),
+        ({"decision": " ALLOW ", "reason": "", "details": {}}, "Deny"),
+        # An answer the SDK will not trust is a deny, whatever it names.
+        ({"decision": "Allow", "reason": "", "details": {}, "error": "x"}, "Deny"),
+        ({"decision": "Allow", "reason": 7, "details": {}}, "Deny"),
+        ({"decision": "Deny", "reason": "", "details": {}}, "Deny"),
+    ],
+)
+@pytest.mark.parametrize("name", NAMES)
+def test_verdicts_are_read_the_way_the_sdk_reads_them(name, answer, expected, monkeypatch, tmp_path):
+    # The record says what the handle acted on: the verdict is reduced by the
+    # SDK's own functions, never by a looser reading of the answer.
     from watchlight_core import InProcessClient
 
-    from watchlight.inprocess import in_process_backend
+    async def reply(self, *args, **kwargs):
+        return dict(answer)
 
-    async def answer(self, *args, **kwargs):
-        return {"decision": " ALLOW ", "reason": "", "details": {}}
-
-    monkeypatch.setattr(InProcessClient, "authorize", answer)
+    monkeypatch.setattr(InProcessClient, "authorize", reply)
+    module = _plugin_module(name)
     audit = tmp_path / "audit.jsonl"
-    backend = in_process_backend(POLICIES, audit_path=str(audit))
-    asyncio.run(backend.authorize('Agent::"a"', 'Action::"read"', 'Tool::"x"'))
-    assert [r["decision"] for r in _decisions(_lines(audit))] == ["Allow"]
+    plugin = module.governed_plugin(POLICIES, audit_path=str(audit))
+
+    async def run():
+        async with await plugin.start_run("verdict-agent") as handle:
+            return await handle.authorize_action(*ALLOWED)
+
+    allowed = asyncio.run(run())
+    assert allowed is (expected == "Allow")
+    assert [r["decision"] for r in _decisions(_lines(audit))] == [expected]
 
 
 @pytest.mark.parametrize("engine_raises", [False, True])
@@ -637,8 +669,15 @@ def test_a_record_that_cannot_be_built_never_changes_the_decision(monkeypatch, t
 
     asyncio.run(run())
     err = capsys.readouterr().err
-    assert err.count("could not be recorded (ValueError)") == 1
+    assert err.count("could not be recorded in full (ValueError); a value-free placeholder") == 1
     assert "cannot build" not in err
+    # Each decision is still in the trail, as a placeholder that holds no name
+    # and counts toward every query.
+    records = _decisions(_lines(tmp_path / "audit.jsonl"))
+    expected = "Deny" if engine_raises else "Allow"
+    assert [(r["decision"], r["oversized"], r["principal"]) for r in records] == [
+        (expected, True, {"omitted": "unrecorded"})
+    ] * 2
 
 
 @pytest.mark.parametrize("name", NAMES)
@@ -1108,15 +1147,15 @@ HANDLE_EXITS = {
         "short-circuit after a Quarantine, SeverSubtree, Terminate or Revoke: "
         "the wrapper records the Deny"
     ),
-    ("return", "intent_refused"): (
+    ("return", "deny", "intent_refused"): (
         "a malformed intent refused locally (SDK 0.10.1): the wrapper records the Deny"
     ),
     # After the backend is asked.
-    ("return", "governance backend failed"): (
+    ("return", "deny", "governance backend failed"): (
         "the backend raised: it recorded the Deny before raising, or, for a term "
         "it refused before deciding, wrote none and the wrapper records the Deny"
     ),
-    ("return", "governance backend returned an unrecognised answer"): (
+    ("return", "deny", "governance backend returned an unrecognised answer"): (
         "the backend recorded it as a Deny: it applies the SDK's own answer check"
     ),
     ("return", "AuthorizeResult.deny_transport_failure()"): "the backend's answer, recorded by the backend",
@@ -1140,7 +1179,7 @@ LOCAL_EXITS = {
     ("raise", "AgentQuarantinedError"),
     ("raise", "SubtreeSeveredError"),
     ("call", "self._raise_if_run_ended"),
-    ("return", "intent_refused"),
+    ("return", "deny", "intent_refused"),
 }
 
 
@@ -1159,11 +1198,18 @@ def _exit_key(node):
         return ("raise", exc.id if isinstance(exc, ast.Name) else ast.unparse(node.exc))
     value = node.value
     if isinstance(value, ast.Call) and ast.unparse(value.func) == "AuthorizeResult":
+        # The verdict literal is part of the key, so a new `return
+        # AuthorizeResult("allow", …)` can never pass as a classified deny.
+        verdict = value.args[0] if value.args else next(
+            (k.value for k in value.keywords if k.arg == "decision"), None
+        )
+        verdict = verdict.value if isinstance(verdict, ast.Constant) else ast.unparse(verdict)
         reason = next((k.value for k in value.keywords if k.arg == "reason"), None)
         if isinstance(reason, ast.JoinedStr):
             reason = next((v for v in reason.values if isinstance(v, ast.Constant)), None)
         if isinstance(reason, ast.Constant) and isinstance(reason.value, str):
-            return ("return", _re.split(r"[:;(]", reason.value)[0].strip())
+            return ("return", verdict, _re.split(r"[:;(]", reason.value)[0].strip())
+        return ("return", verdict, ast.unparse(reason) if reason is not None else "")
     return ("return", ast.unparse(value) if value is not None else "None")
 
 
@@ -1228,6 +1274,10 @@ def test_every_handle_decision_path_is_classified():
         "a new path decides before asking the backend: record it, then classify "
         f"{sorted(local - LOCAL_EXITS)} / drop {sorted(LOCAL_EXITS - local)}"
     )
+    # Every verdict the handle returns before asking the backend is a deny.
+    for key in LOCAL_EXITS:
+        if key[0] == "return":
+            assert len(key) == 3 and key[1] == "deny", key
 
     # The short-circuit helper raises only the run-ending errors.
     helper = ast.parse(textwrap.dedent(_inspect.getsource(BaseRunHandle._raise_if_run_ended)))
@@ -1297,5 +1347,220 @@ def test_a_guarded_tool_refused_without_a_backend_record_is_recorded(tmp_path):
     asyncio.run(run())
     assert ran == []
     (record,) = _decisions(_lines(audit))
-    assert (record["resource"], record["decision"], record["oversized"]) == ("fetch", "Deny", True)
+    assert (record["resource"], record["decision"], record.get("refused_term")) == ("fetch", "Deny", True)
     assert record["intent"] == {"omitted": "refused", "bytes": len('Action::"re\tad"')}
+
+
+def test_the_guard_key_tells_an_allow_from_a_deny():
+    # A new pre-backend `return AuthorizeResult("allow", …)` must not pass as
+    # the classified local deny, even with the same reason.
+    import ast
+
+    allow = ast.parse('return AuthorizeResult("allow", reason=f"intent_refused: {x}")').body[0]
+    deny = ast.parse('return AuthorizeResult("deny", reason=f"intent_refused: {x}")').body[0]
+    assert _exit_key(deny) in LOCAL_EXITS
+    assert _exit_key(allow) not in LOCAL_EXITS and _exit_key(allow) not in HANDLE_EXITS
+
+
+# ── regressions from the review of the 0.10.1 adaptation ───────────────────
+
+
+class _HashFails(str):
+    """A str subclass whose hash raises: no cache may need to hash a term."""
+
+    def __hash__(self):
+        raise TypeError("unhashable")
+
+
+@pytest.mark.parametrize(
+    "label, kwargs",
+    [
+        ("resource is a list", {"action": 'Action::"read"', "resource": ["x"]}),
+        ("action is a list", {"action": ["a"], "resource": 'Tool::"x"'}),
+        ("principal is a dict", {"action": 'Action::"read"', "resource": 'Tool::"x"', "principal": {"k": 1}}),
+        ("resource hash raises", {"action": 'Action::"read"', "resource": _HashFails('Tool::"a\nb"')}),
+    ],
+)
+@pytest.mark.parametrize("name", NAMES)
+def test_an_unhashable_refused_term_is_still_recorded_once(name, label, kwargs, tmp_path):
+    module = _plugin_module(name)
+    audit = tmp_path / "audit.jsonl"
+    plugin = module.governed_plugin(POLICIES, audit_path=str(audit))
+
+    async def run():
+        async with await plugin.start_run("odd-agent") as handle:
+            return await handle.authorize_action(**kwargs)
+
+    assert asyncio.run(run()) is False, label
+    (record,) = _decisions(_lines(audit))
+    assert record["decision"] == "Deny", label
+    if "principal" in kwargs:
+        # Whose decision it was cannot be read: counted toward every query.
+        assert record["oversized"] is True and "refused_term" not in record
+    else:
+        assert record["refused_term"] is True and "oversized" not in record
+
+
+def test_refused_terms_are_not_kept_in_memory(tmp_path):
+    import gc
+    import tracemalloc
+
+    from watchlight import inprocess
+
+    assert not hasattr(inprocess._refused_marker, "cache_info")
+    module = _plugin_module("langgraph")
+    plugin = module.governed_plugin(POLICIES, audit_path=str(tmp_path / "audit.jsonl"))
+
+    async def run():
+        async with await plugin.start_run("mem-agent") as handle:
+            for i in range(24):
+                assert await handle.authorize_action('Action::"read"', str(i) + "y" * (1 << 20)) is False
+
+    tracemalloc.start()
+    try:
+        asyncio.run(run())
+        gc.collect()
+        current, _peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    # 24 MiB of refused terms went through; none of them is retained.
+    assert current < 8 * (1 << 20), current
+
+
+def test_a_refused_term_never_inflates_another_principals_quota(tmp_path):
+    import datetime
+
+    module = _plugin_module("langgraph")
+    audit = tmp_path / "audit.jsonl"
+    plugin = module.governed_plugin(POLICIES, audit_path=str(audit))
+
+    async def run():
+        async with await plugin.start_run("attacker-agent") as handle:
+            assert await handle.authorize_action('Action::"read"', 'Tool::"x\ny"', principal='User::"mallory"') is False
+
+    asyncio.run(run())
+    (record,) = _decisions(_lines(audit))
+    assert (record["principal"], record["refused_term"]) == ('User::"mallory"', True)
+    later = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=30)).isoformat()
+    for when in (None, later):
+        for outcome in ("allowed", "denied", "all"):
+            r = count_audit_records(audit, 'User::"alice"', *ALLOWED, window="1m", outcome=outcome, now=when)
+            assert r["count"] == 0, (when, outcome)
+    # Mallory's own denied count includes it now, and it ages out of the window.
+    assert count_audit_records(audit, 'User::"mallory"', window="1m", outcome="denied")["count"] == 1
+    assert count_audit_records(audit, 'User::"mallory"', window="1m", outcome="allowed")["count"] == 0
+    assert count_audit_records(audit, 'User::"mallory"', window="1m", outcome="denied", now=later)["count"] == 0
+
+
+@pytest.mark.parametrize("name", NAMES)
+def test_a_cancelled_call_is_recorded_as_a_deny(name, tmp_path, monkeypatch):
+    # A framework hook that bounds the call (asyncio.wait_for) cancels it; the
+    # action does not run on that call, and the refusal is recorded once.
+    from watchlight_core import InProcessClient
+
+    original = InProcessClient.authorize
+
+    async def slow(self, *a, **k):
+        await asyncio.sleep(5)
+        return await original(self, *a, **k)
+
+    monkeypatch.setattr(InProcessClient, "authorize", slow)
+    module = _plugin_module(name)
+    audit = tmp_path / "audit.jsonl"
+    plugin = module.governed_plugin(POLICIES, audit_path=str(audit))
+
+    async def run():
+        async with await plugin.start_run("cancel-agent") as handle:
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(handle.authorize_action(*ALLOWED), timeout=0.05)
+
+    asyncio.run(run())
+    decisions = _decisions(_lines(audit))
+    assert [(r["agent"], r["intent"], r["decision"]) for r in decisions] == [("cancel-agent", ALLOWED[0], "Deny")]
+
+
+def test_a_guarded_tool_records_its_outcome_from_whether_the_body_ran(tmp_path, monkeypatch):
+    # The decorated tool's own return value says nothing about the decision.
+    # With no backend record, the wrapper records an Allow only when the tool's
+    # body actually started, and a Deny otherwise.
+    from watchlight import inprocess
+
+    module = _plugin_module("pydantic_ai")
+    audit = tmp_path / "audit.jsonl"
+    plugin = module.governed_plugin(POLICIES, audit_path=str(audit))
+
+    async def run():
+        async with await plugin.start_run("tool-agent") as handle:
+            watched = handle._wl_guarded_tool(lambda action="execute": (lambda fn: fn))(action='Action::"read"')
+
+            async def fetch():
+                return None
+
+            async def refuse():
+                return "refused without running"
+
+            # A decorator that lets the body run, and one that never does;
+            # neither asks the backend, so neither writes a backend record.
+            ran = watched(fetch)
+            blocked = handle._wl_guarded_tool(
+                lambda action="execute": (lambda fn: (lambda *a, **k: refuse()))
+            )(action='Action::"read"')(fetch)
+            assert await ran() is None
+            assert await blocked() == "refused without running"
+
+    asyncio.run(run())
+    decisions = _decisions(_lines(audit))
+    assert [(r["resource"], r["decision"]) for r in decisions] == [("fetch", "Allow"), ("fetch", "Deny")]
+    assert inprocess._BODY_RAN.get() is None
+
+
+def test_a_nested_call_through_the_wrapper_is_recorded_once(tmp_path):
+    # A decorated tool whose decorator authorizes through the wrapped handle
+    # (as Pydantic AI's does inside an instrumented run) writes one record,
+    # not one for the inner call and another for the outer.
+    module = _plugin_module("pydantic_ai")
+    audit = tmp_path / "audit.jsonl"
+    plugin = module.governed_plugin(POLICIES, audit_path=str(audit))
+
+    async def run():
+        async with await plugin.start_run("tool-agent") as handle:
+
+            def decorator_factory(action="execute"):
+                def decorate(fn):
+                    async def governed(*a, **k):
+                        if not await handle.authorize_action(action, 'Tool::"web_search"'):
+                            raise PermissionError("denied")
+                        return await fn(*a, **k)
+
+                    return governed
+
+                return decorate
+
+            async def fetch():
+                return "ok"
+
+            tool = handle._wl_guarded_tool(decorator_factory)(action='Action::"read"')(fetch)
+            assert await tool() == "ok"
+
+    asyncio.run(run())
+    assert [r["decision"] for r in _decisions(_lines(audit))] == ["Allow"]
+
+
+def test_a_spawn_refused_by_the_handle_is_not_a_decision_record(tmp_path):
+    # Documented scope: a refused spawn raises and the child never runs, but it
+    # is not an authorize call, so it writes no decision record.
+    from watchlight_core import AgentQuarantinedError
+
+    module = _plugin_module("langgraph")
+    audit = tmp_path / "audit.jsonl"
+    plugin = module.governed_plugin(ENFORCING, audit_path=str(audit))
+
+    async def run():
+        async with await plugin.start_run("q-agent") as handle:
+            with pytest.raises(AgentQuarantinedError):
+                await handle.authorize_action('Action::"exfiltrate"', 'Tool::"x"')
+            with pytest.raises(Exception):
+                await handle.spawn_subagent("child", allowed_tools=["web_search"], time_budget_seconds=60)
+
+    asyncio.run(run())
+    assert [(r["intent"], r["decision"]) for r in _decisions(_lines(audit))] == [('Action::"exfiltrate"', "Deny")]

@@ -1,0 +1,6 @@
+{"ts":"2026-01-15T11:59:00.000Z","agent":"a","principal":"User::\"alice\"","intent":{"omitted":"refused","bytes":11},"event":"decision","resource":"Tool::\"x\"","decision":"Deny","refused_term":true}
+{"ts":"2026-01-15T11:59:00.000Z","agent":"a","principal":"User::\"bob\"","intent":"read","event":"decision","resource":{"omitted":"refused","bytes":11},"decision":"Deny","refused_term":true}
+{"ts":"2026-01-15T11:59:00.000Z","agent":"a","principal":"User::\"alice\"","intent":{"omitted":"refused","bytes":11},"event":"decision","resource":"Tool::\"x\"","decision":"Allow","refused_term":true}
+{"ts":"2026-01-15T11:59:00.000Z","agent":"a","principal":{"omitted":"refused","bytes":11},"intent":"read","event":"decision","resource":"Tool::\"x\"","decision":"Deny","refused_term":true}
+{"ts":"2026-01-14T11:59:00.000Z","agent":"a","principal":"User::\"alice\"","intent":{"omitted":"refused","bytes":11},"event":"decision","resource":"Tool::\"x\"","decision":"Deny","refused_term":true}
+{"ts":"never","agent":"a","principal":"User::\"alice\"","intent":"read","event":"decision","resource":{"omitted":"refused","bytes":11},"decision":"Deny","refused_term":true}

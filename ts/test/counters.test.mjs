@@ -738,6 +738,20 @@ console.log("every write path is bounded (shared with Python)");
     eq("crafted lines classify as in Python", [found.lines, found.findings], [expected.lines, expected.expected]);
     const r = countAuditRecords(PARITY, { principal: ALICE, intent: "read", now: NOW });
     eq("... and count as in Python", [r.count, r.unreadable], [14, 9]);
+    // A `refused_term` Deny (written by a Python framework plugin) counts for its
+    // own principal, as denied, inside its window; one that is not a Deny with
+    // a string principal counts toward every query. Same fixture as Python.
+    const REFUSED = join(here, "..", "..", "tests", "fixtures", "counters-refused-term.jsonl");
+    const refusedExpected = JSON.parse(fs.readFileSync(join(here, "..", "..", "tests", "fixtures", "counters-refused-term.expected.json"), "utf8"));
+    const refusedFound = findUnreadableLines(REFUSED);
+    eq("refused-term lines classify as in Python", [refusedFound.lines, refusedFound.findings], [refusedExpected.lines, refusedExpected.findings]);
+    for (const q of refusedExpected.queries) {
+      const rr = countAuditRecords(REFUSED, {
+        principal: q.principal, intent: q.intent, resource: q.resource,
+        window: "1h", outcome: q.outcome, now: refusedExpected.now,
+      });
+      eq(`refused-term records count as in Python (${q.principal} ${q.outcome})`, [rr.count, rr.unreadable], [q.count, q.unreadable]);
+    }
     for (const spec of ["1h\n", "١h", "１h", "1١"]) {
       throws(`the window grammar is ASCII-only (${JSON.stringify(spec)})`, () => parseWindowSeconds(spec), RangeError);
     }
@@ -766,7 +780,7 @@ console.log("every write path is bounded (shared with Python)");
     ok("... and nothing else", !r.stdout.includes("line 1:") && !r.stdout.includes("line 8:"), r.stdout);
     ok("... value-free", !r.stdout.includes(secretWord) && !r.stdout.includes("ppp"), r.stdout);
     ok("... says the lines never age out", r.stdout.includes("never age out of a window"), r.stdout);
-    eq("... the reasons are the shared ones", Object.keys(UNREADABLE_REASONS), ["oversized", "not-utf8", "too-deep", "not-json", "not-an-object", "unreadable-ts", "oversized-record"]);
+    eq("... the reasons are the shared ones", Object.keys(UNREADABLE_REASONS), ["oversized", "not-utf8", "too-deep", "not-json", "not-an-object", "unreadable-ts", "oversized-record", "malformed-refusal"]);
     eq("... the counters see exactly those lines", countAuditRecords(p, { principal: "p", now: "2026-01-15T12:00:00Z" }).unreadable, 6);
     const limited = cli(p, "--limit", "2");
     ok("--limit caps the listing", limited.status === 1 && limited.stdout.includes("and 4 more"), limited.stdout);

@@ -182,9 +182,12 @@ under. That is normally the run's id; if you pass your own `execution_id` to
 `authorize_action`, the record carries yours. A sub-agent's decision names the
 sub-agent as `agent` and carries the delegation chain in `actor_chain`. The
 plugin's run handle refuses some calls itself: every call after the run is
-quarantined, severed, terminated or revoked, and a call whose intent is not a
-typed intent (an objective and a category). Each of those refusals is recorded
-as a `Deny`, once. The one exception is a handle read from
+quarantined, severed, terminated or revoked, a call whose intent is not a
+typed intent (an objective and a category), and a call cancelled before the
+engine answered. Every authorize call on the handle that ends without a record
+from the engine is recorded by the handle, once. A refused spawn, or a refusal
+a framework makes before it reaches a handle, is not an authorize call and
+writes no decision record. The one exception is a handle read from
 `watchlight_core.current_subagent_handle()`, which is the SDK's own handle; see
 [integrations](integrations.md#what-the-plugin-records). A `preflight_step` is
 advisory and writes no record; the gate is `authorize_action`. Every field is
@@ -192,9 +195,12 @@ recorded exactly as given, as on the direct path, so `counters()` matches it
 exactly. The plugin applies the direct path's name limits at the decision: a
 principal, action, resource or `execution_id` that breaks one is refused before
 the engine sees it. Through the run handle, that refusal is a `Deny` and is
-recorded, with a value-free marker in place of the term, in a record marked
-`"oversized": true`, which counts toward every quota. An agent name over its
-limit is recorded the same way. See
+recorded with a value-free marker in place of the term. When the principal is
+intact, the record is marked `"refused_term": true` and counts as a denied
+decision of that principal, inside its window. When the principal itself was
+refused, the record is marked `"oversized": true` and counts toward every
+quota. An agent name over its limit is recorded with a marker in a record
+marked `"oversized": true`. See
 [integrations](integrations.md#what-the-plugin-records).
 
 A sub-agent's call outside the scope its spawn granted is denied and recorded
@@ -270,7 +276,10 @@ in TypeScript, previews a child of a live scope the same way.
   every quota it matches. A record marked `"oversized": true` is one the
   trail shortened because it would have been longer than 512 KiB or nested
   deeper than the counters read: those fields hold only their length and a
-  digest, and it counts toward every quota. `watchlight audit check` lists all three by line number.
+  digest, and it counts toward every quota. A decision marked
+  `"refused_term": true` that is not a `Deny` with a string principal is not
+  one the SDK writes, and it counts toward every quota too. `watchlight audit
+  check` lists all four by line number.
 
 ## See also
 

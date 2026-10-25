@@ -17,6 +17,13 @@
 //     "Allow"`, including approved ones; `denied` = every decision that did not
 //     let the body run (`Deny` and `NeedsApproval` holds); `all` = both. So
 //     `allowed + denied == all`.
+//   * a `Deny` marked `refused_term: true` — written by a Python framework
+//     plugin for a call whose action, resource or execution id broke a name
+//     rule, with a value-free marker in place of the refused term — is a denied
+//     decision of its principal, inside the window like any other: it never
+//     counts as allowed, and its marker field matches every `intent` or
+//     `resource` filter, since the refused term might have been the one a query
+//     names.
 //   * `principal` (required), `intent` and `resource` (optional) match the
 //     record's fields by the entity they name — no prefixes, no globs. A bare
 //     name is read as the engine reads it, so `u1` and `User::"u1"` are one
@@ -40,8 +47,10 @@
 //   * a record carrying `oversized: true` — one the audit funnel shortened
 //     because it was too long (`boundedLine` in audit.ts) — counts toward every
 //     query, like a line that cannot be read, since a field it replaced might
-//     be the one a query matches on.
-// All three are counted in `unreadable` (so `count - unreadable` is the number of
+//     be the one a query matches on;
+//   * a decision marked `refused_term: true` that is not a `Deny` with a string
+//     principal (one the SDK never writes) counts the same way.
+// All four are counted in `unreadable` (so `count - unreadable` is the number of
 // well-formed matching decisions) and in `skipped`. A well-formed object that
 // is not a decision — a framework run's lifecycle line, or another record kind
 // — is counted in `records` and never counts; one that has a `decision` that is
@@ -392,6 +401,7 @@ export const UNREADABLE_REASONS = {
   "not-an-object": "not a JSON object",
   "unreadable-ts": "a decision whose ts cannot be read",
   "oversized-record": "a record the SDK shortened because it was too long",
+  "malformed-refusal": "a refused-term record that is not a Deny naming its principal",
 } as const;
 
 /** A reason code from {@link UNREADABLE_REASONS}. */
@@ -399,7 +409,7 @@ export type UnreadableReason = keyof typeof UNREADABLE_REASONS;
 
 type Classified =
   | { kind: "blank" }
-  | { kind: Exclude<UnreadableReason, "unreadable-ts" | "oversized-record"> }
+  | { kind: Exclude<UnreadableReason, "unreadable-ts" | "oversized-record" | "malformed-refusal"> }
   | { kind: "record"; rec: Record<string, unknown> };
 
 /** What ONE line is, and its record when it is one. `bytes` is `null` for a
@@ -487,7 +497,7 @@ function* iterLines(fd: number, pos: number, dropPartial: boolean): Generator<Bu
 function tallyLine(bytes: Buffer | null, filter: Filter, t: Tally): void {
   const c = classify(bytes);
   if (c.kind === "blank") return;
-  if (c.kind !== "record" || c.rec.oversized === true) {
+  if (c.kind !== "record" || c.rec.oversized === true || malformedRefusal(c.rec)) {
     // A line that cannot be read at all might be any record, including a
     // matching Allow: it counts toward every query (fail-closed). So does a
     // record the audit funnel shortened (`oversized: true`): a field it
@@ -521,10 +531,19 @@ function tallyLine(bytes: Buffer | null, filter: Filter, t: Tally): void {
     return;
   }
   const allowed = decision === "Allow";
+  // A refused-term record (`refused_term: true`) is a Deny the Python SDK
+  // recorded for a framework-plugin call whose action, resource or execution id
+  // broke a name rule; the refused field holds a value-free marker instead of a
+  // name. It matches by its principal like any decision, and its marker field
+  // matches every filter on that field, since the refused term might have been
+  // the one a query names.
+  const refused = r.refused_term === true;
+  const field = (value: unknown, f: FilterKey | undefined): boolean =>
+    f === undefined || names(value, f) || (refused && typeof value !== "string");
   const matches =
     names(r.principal, filter.principal) &&
-    (filter.intent === undefined || names(r.intent, filter.intent)) &&
-    (filter.resource === undefined || names(r.resource, filter.resource)) &&
+    field(r.intent, filter.intent) &&
+    field(r.resource, filter.resource) &&
     (filter.outcome === "allowed" ? allowed : filter.outcome === "denied" ? !allowed : true);
   const ts = parseIsoMillis(r.ts);
   if (ts === undefined) {
@@ -539,6 +558,17 @@ function tallyLine(bytes: Buffer | null, filter: Filter, t: Tally): void {
   }
   t.records += 1;
   if (matches && ts > filter.start && ts <= filter.end) t.count += 1;
+}
+
+/** A decision marked `refused_term: true` that is not what the SDK writes: a
+ *  `Deny` whose principal is a string. Such a record cannot be matched to its
+ *  principal, so it counts like a line that cannot be read. */
+function malformedRefusal(r: Record<string, unknown>): boolean {
+  return (
+    r.refused_term === true &&
+    (!("event" in r) || r.event === "decision") &&
+    (r.decision !== "Deny" || typeof r.principal !== "string")
+  );
 }
 
 /** The entity a filter names: its key, its bare type and the given text. */
@@ -786,6 +816,7 @@ export function findUnreadableLines(auditPath: string, opts: { limit?: number } 
       let reason: UnreadableReason;
       if (c.kind === "record") {
         if (c.rec.oversized === true) reason = "oversized-record";
+        else if (malformedRefusal(c.rec)) reason = "malformed-refusal";
         else if (!isDecision(c.rec) || parseIsoMillis(c.rec.ts) !== undefined) continue;
         else reason = "unreadable-ts";
       } else {

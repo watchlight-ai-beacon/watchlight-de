@@ -36,17 +36,26 @@ raise a `TypeError` from `handle.authorize_action`, and nothing was recorded.
 `watchlight-agent-sdk` 0.10.1 turns any error from the backend into a deny, so
 the call now returns `False` (or a `deny` result from
 `authorize_action_detailed`), and the refusal is recorded as a `Deny`. The term
-is never written: the record carries a value-free marker and is marked
-`"oversized": true`, so `counters()` counts it toward every quota. This only
-moves in the closed direction. Code that caught the `TypeError` to detect a bad
-term should check the return value instead, and should fix the term, because
-each such refusal also counts toward every quota in its window. Calling the
-backend's `authorize` directly still raises `TypeError` and records nothing.
+is never written: the record carries a value-free marker. When the principal
+is intact, the record is marked `"refused_term": true`, and `counters()` counts
+it as a denied decision of that principal, inside its window, never as
+allowed and never for another principal. When the principal itself was
+refused, the record is marked `"oversized": true` and counts toward every
+query until the file is rotated. This only moves in the closed direction. Code
+that caught the `TypeError` to detect a bad term should check the return value
+instead, and should fix the term: each such refusal counts toward that
+principal's denied quotas in its window. Calling the backend's `authorize`
+directly still raises `TypeError` and records nothing. If you read the trail
+yourself, a decision record can now carry `"refused_term": true`, with a
+marker object in its `intent`, `resource` or `execution_id`.
 
 **A plugin's handle records the refusals it makes after a Terminate or a
-Revoke, and when it refuses a malformed intent.** Each is a new `Deny` record
-in the audit trail, so a quota that counts denials can count higher than
-before. Nothing that was allowed is now denied by this change.
+Revoke, when it refuses a malformed intent, and when a call is cancelled
+before the engine answers.** Each is a new `Deny` record in the audit trail,
+so a quota that counts denials can count higher than before. Nothing that was
+allowed is now denied by this change. A record now also always says what the
+handle acted on: an engine answer the SDK will not trust, such as a padded
+verdict (`" Allow"`), is recorded as a `Deny`.
 
 ## 0.15.0
 

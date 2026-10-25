@@ -55,18 +55,34 @@ with `delegate()` writes.
 The plugin's run handle refuses some calls itself, without a decision from the
 policy engine. Once a run is quarantined, severed, terminated or revoked, it
 refuses every later call. It refuses a call whose intent is not a typed intent
-(see [declaring an intent](#declaring-an-intent)) before anything is sent. And
-when the engine refuses one of the call's terms before deciding (see the name
-limits below), the handle turns that into a refusal. Each of those refusals is
-recorded as a `Deny` too, exactly once. The rule the plugin follows is simple:
-any call the engine did not record is recorded by the handle, so a refusal is
-never missing from the trail, whichever path produced it. That covers the
-handle `start_run` returns, every sub-agent handle `spawn_subagent` returns,
-the Claude Agent SDK's native Task sub-agents, and the handles Pydantic AI's
-automatic instrumentation opens. One route is not covered: a handle you read
-from `watchlight_core.current_subagent_handle()` is the SDK's own handle, so a
-refusal it makes on its own is not recorded. Use the handle that
-`spawn_subagent` returned instead.
+(see [declaring an intent](#declaring-an-intent)) before anything is sent. When
+the engine refuses one of the call's terms before deciding (see the name
+limits below), the handle turns that into a refusal. And a call that is
+cancelled before the engine answers, for example by a framework hook's
+timeout, does not let the action run.
+
+What is guaranteed is this: every `authorize_action` or
+`authorize_action_detailed` call on the handle, and every call of a tool
+decorated with the handle's `guarded_tool`, that ends without a record from
+the engine is recorded by the handle, exactly once. It is recorded as a `Deny`
+unless the action went ahead (for a decorated tool, unless the tool's body
+started). That covers the handle `start_run` returns, every sub-agent handle
+`spawn_subagent` returns, the Claude Agent SDK's native Task sub-agents, and
+the handles Pydantic AI's automatic instrumentation opens.
+
+Some refusals are not decision records, because no authorize call is made:
+
+- A refused spawn. `spawn_subagent` raises and the child never runs, but a
+  spawn is not an authorize call. The in-process engine writes an
+  `attenuation` line for a spawn it refuses itself; a spawn the handle refuses
+  before asking (on a quarantined handle, say) writes nothing.
+- A refusal a framework integration makes before it reaches a handle, such as
+  a nested Pydantic AI agent whose parent run has already ended, or a Claude
+  Agent SDK hook call with no live run.
+- A refusal made by a handle you read from
+  `watchlight_core.current_subagent_handle()`. That is the SDK's own handle,
+  so a refusal it makes on its own is not recorded. Use the handle that
+  `spawn_subagent` returned instead.
 
 The principal, action, resource, `execution_id` and agent names are recorded
 exactly as the call gave them, never shortened or rewritten, so `counters()`
@@ -84,16 +100,29 @@ holds a control character or is longer than 4096 bytes is refused before the
 engine sees it. Through the run handle, that refusal is a denial:
 `handle.authorize_action` returns `False`, and the call is recorded as a `Deny`.
 The term itself is never written. The record carries a value-free marker in
-its place (the term's length, and a digest when it is longer than 256 bytes),
-and it is marked `"oversized": true`, which `counters()` counts toward every
-quota, so a refused call can never make a quota under-count. If you call the
-backend's `authorize` directly instead of through a handle, the same term
-raises a `TypeError` and nothing is recorded, as on `Watchlight.authorize`.
-`start_run` and `spawn_subagent` never raise for an agent name. An agent name
-longer than 4087 bytes is recorded as a value-free marker in the same way, in
-a record marked `"oversized": true`. A refusal the handle makes on its own
-after a quarantine, a sever, a Terminate or a Revoke is recorded the same way
-when one of the call's terms breaks a limit.
+its place (the term's length, and a digest when it is longer than 256 bytes).
+How `counters()` counts the record depends on which term was refused:
+
+- When the action, resource or `execution_id` was refused, the principal is
+  intact, and the record is marked `"refused_term": true`. `counters()` counts
+  it as a denied decision of that principal, inside its window like any other
+  decision. It never counts as allowed, and never for another principal. Its
+  marker matches any `intent` or `resource` filter, because the refused term
+  might have been the one the query names.
+- When the principal itself was refused, whose decision it was cannot be read
+  from the record. It is marked `"oversized": true`, and `counters()` counts it
+  toward every query, whatever the principal, outcome or window, until the
+  file is rotated.
+
+If you call the backend's `authorize` directly instead of through a handle,
+the same term raises a `TypeError` and nothing is recorded, as on
+`Watchlight.authorize`. `start_run` and `spawn_subagent` never raise for an
+agent name. An agent name longer than 4087 bytes is recorded as a value-free
+marker, in a record marked `"oversized": true`. A refusal the handle makes on
+its own after a quarantine, a sever, a Terminate or a Revoke is recorded the
+same way when one of the call's terms breaks a limit. If a decision's record
+cannot be built at all, a placeholder that holds no name is written in its
+place, marked `"oversized": true`, and the failure is reported once on stderr.
 
 Keep every plugin agent name at or under 4087 bytes. A run whose agent name is
 longer is not refused, but every decision record of that run is marked
@@ -142,8 +171,8 @@ and the sink options are not used. The plugin prints a warning once to say so.
 If you build a plugin yourself around `in_process_backend()` instead of using
 `governed_plugin()`, every decision the engine makes is recorded, but the
 refusals the plugin's handle makes on its own (after a quarantine, a sever, a
-Terminate or a Revoke, for an intent that is not typed, or for a term the
-engine refused) are not.
+Terminate or a Revoke, for an intent that is not typed, for a term the engine
+refused, or for a cancelled call) are not.
 
 ### A sub-agent is confined to the scope its spawn granted
 

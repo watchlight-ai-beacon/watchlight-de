@@ -669,8 +669,9 @@ def test_no_plugin_decision_writes_an_unreadable_line(tmp_path, monkeypatch, cap
 def test_plugin_refusals_after_a_quarantine_never_record_an_oversized_name(tmp_path, monkeypatch, capsys):
     """After a quarantine the handle refuses calls itself, without asking the
     backend; those refusals are recorded from the call's own terms. A term that
-    breaks the bounds is replaced by a value-free marker and the record is
-    marked oversized, so it counts toward every quota and is never written."""
+    breaks the bounds is never written: it is replaced by a value-free marker,
+    and the record is marked `refused_term`, so it counts as a denied decision
+    of its (intact) principal, matching any filter on the refused field."""
     pytest.importorskip("watchlight_core")
     from watchlight_core import AgentQuarantinedError, SubtreeSeveredError
 
@@ -695,17 +696,26 @@ def test_plugin_refusals_after_a_quarantine_never_record_an_oversized_name(tmp_p
     lines = trail_lines(tmp_path)
     assert all(len(line) < 64 * 1024 for line in lines)
     decisions = [json.loads(line) for line in lines if b'"event": "decision"' in line]
-    assert [d.get("oversized") for d in decisions] == [None, True, True, True]
+    assert [d.get("oversized") for d in decisions] == [None, None, None, None]
+    assert [d.get("refused_term") for d in decisions] == [None, True, True, True]
     assert huge[:64].encode() not in audit.read_bytes()
     # A short refused term carries only its length — never a digest — like the
     # small fields the audit funnel keeps; a long one also carries a digest.
     tab = decisions[3]["resource"]
     assert tab == {"omitted": "refused", "bytes": len('Tool::"a\nb"')}
     assert decisions[1]["intent"]["omitted"] == "refused" and "sha256" in decisions[1]["intent"]
-    # Each marked refusal counts toward every quota (fail-closed), so a refusal
-    # with a refused name can never make a denied-count under-count.
-    r = count_audit_records(audit, 'User::"anyone"', outcome="denied")
-    assert (r["count"], r["unreadable"]) == (3, 3)
+    # Each marked refusal is a denied decision of the run's agent, and its
+    # marker matches any filter on the refused field, so a refusal with a
+    # refused name can never make that principal's denied-count under-count.
+    # It never counts for another principal, and never as allowed.
+    agent = decisions[0]["principal"]
+    r = count_audit_records(audit, agent, intent='Action::"read"', resource='Tool::"x"', outcome="denied")
+    assert (r["count"], r["unreadable"]) == (3, 0)
+    r = count_audit_records(audit, agent, intent='Action::"anything"', outcome="denied")
+    assert r["count"] == 1
+    assert count_audit_records(audit, agent, outcome="denied")["count"] == 4
+    assert count_audit_records(audit, agent, outcome="allowed")["count"] == 0
+    assert count_audit_records(audit, 'User::"anyone"', outcome="all")["count"] == 0
 
 
 def test_a_plugin_agent_name_is_never_refused_and_never_written_oversized(tmp_path, monkeypatch, capsys):
@@ -741,3 +751,21 @@ def test_the_shortened_line_is_checked_like_the_fast_path(monkeypatch):
     monkeypatch.setattr(_audit, "_fits", lambda line: False)
     out = json.loads(_audit.bounded_line({"ts": "t", "event": "decision", "x": "y" * (600 * 1024)}))
     assert out == {"ts": "t", "event": "decision", "oversized": True, "fields": 3}
+
+
+def test_refused_term_records_count_as_in_typescript():
+    """A `refused_term` Deny counts for its own principal, as denied, inside its
+    window, and its marker field matches any filter on that field. One that is
+    not a Deny with a string principal counts toward every query. The same
+    fixture and expectations are checked by the TypeScript suite."""
+    trail = FIXTURES / "counters-refused-term.jsonl"
+    expected = json.loads((FIXTURES / "counters-refused-term.expected.json").read_text())
+    found = find_unreadable_lines(trail)
+    assert found["lines"] == expected["lines"]
+    assert found["findings"] == expected["findings"]
+    for q in expected["queries"]:
+        r = count_audit_records(
+            trail, q["principal"], q.get("intent"), q.get("resource"),
+            window="1h", outcome=q["outcome"], now=expected["now"],
+        )
+        assert (r["count"], r["unreadable"]) == (q["count"], q["unreadable"]), q
