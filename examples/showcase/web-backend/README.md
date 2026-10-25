@@ -47,7 +47,7 @@ curl -H 'Authorization: Bearer demo-token-bob'   http://127.0.0.1:54321/accounts
 ```python
 @govern.tool(
     "read_statement",
-    principal=lambda user, account_id: f'User::"{user}"',   # the acting user — not the service
+    principal=lambda user, account_id: principals.user(user),   # the acting user — not the service
     resource=lambda user, account_id: f"account/{account_id}",
     on_result=attach_decision_id,
 )

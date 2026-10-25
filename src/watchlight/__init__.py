@@ -57,9 +57,11 @@ from .principals import (
 from ._audit import MAX_AUDIT_RECORD_BYTES
 from ._annotations import (
     ENFORCEMENT_EFFECT_ANNOTATION,
-    ENFORCEMENT_EFFECTS,
+    ENFORCEMENT_EFFECT_NAME_NEAR_MISS,
+    POLICY_ERROR_CODES,
+    UNRECOGNISED_ENFORCEMENT_EFFECT,
     PolicyError,
-    check_policy_annotations,
+    policy_error_from_engine,
 )
 from ._approval import (
     APPROVAL_KEY_LABEL,
@@ -111,6 +113,7 @@ from .attenuation import (
     Scope,
     ScopePreview,
 )
+from .attenuation import _check_root_time_budget
 from .scope_token import MAX_CHAIN_LENGTH as _DEPTH_BOUND
 from ._policy_file import policy_entries as _policy_entries
 from ._policy_file import read_policy_file as _read_policy_file
@@ -122,6 +125,7 @@ from .scope_token import (
     same_set,
     verify_scope_token_any,
 )
+from .scope_token import now_seconds as _now_seconds
 
 __all__ = [
     "Watchlight",
@@ -179,8 +183,10 @@ __all__ = [
     "AuthorizeError",
     "PolicyError",
     "PolicyCompileError",
-    "ENFORCEMENT_EFFECTS",
     "ENFORCEMENT_EFFECT_ANNOTATION",
+    "ENFORCEMENT_EFFECT_NAME_NEAR_MISS",
+    "POLICY_ERROR_CODES",
+    "UNRECOGNISED_ENFORCEMENT_EFFECT",
     "OBLIGATIONS_INVALID_MESSAGE",
     "MAX_ACTOR_CHAIN_BYTES",
     "MAX_AGENT_NAME_BYTES",
@@ -413,11 +419,19 @@ def _compile_detail(cause: BaseException) -> str:
     return f"{cut(kind)}: {cut(detail)}"
 
 
+#: The engine's typed refusal of a policy's ``@enforcement_effect`` annotation
+#: (``watchlight-engine`` >= 0.2.3).
+_ENGINE_ANNOTATION_ERROR: type = getattr(_engine, "PolicyAnnotationError", type(None))
+
+
 def _compile_into(engine: Any, name: str, code: str, source: Optional[str]) -> None:
-    """Add one policy to ``engine``, raising :class:`PolicyCompileError` when
-    the engine refuses it."""
+    """Add one policy to ``engine``. Raises :class:`PolicyError` when the
+    engine refuses it for its ``@enforcement_effect`` annotation, and
+    :class:`PolicyCompileError` when it refuses it for anything else."""
     try:
         engine.add_policy(json.dumps({"name": name, "code": code}))
+    except _ENGINE_ANNOTATION_ERROR as exc:
+        raise policy_error_from_engine(exc, name, source) from exc
     except RuntimeError as exc:
         raise PolicyCompileError(name, source, exc) from exc
 
@@ -525,7 +539,6 @@ class _GovernorState:
         "policy_count",
         "announced",
         "sources",
-        "strict_principal",
         "max_delegation_depth",
         "audit_options",
         "audit_env_applied",
@@ -555,7 +568,6 @@ class _GovernorState:
         self.announced = False
         #: Resolved sources already loaded — the key of ``load()``'s idempotence.
         self.sources: set[str] = set()
-        self.strict_principal = True
         #: The sub-agent depth limit — shared, so every name of one governor
         #: attenuates under the same governance control.
         self.max_delegation_depth = DEFAULT_MAX_DELEGATION_DEPTH
@@ -739,27 +751,23 @@ def _resolve_signing_secrets(signing_secret: Any, token_secret: Any) -> Optional
     return under_new_name if under_new_name is not None else under_old_name
 
 
-#: One process-wide notice that the bare agent name is standing in for a missing
-#: subject — the transitional ``strict_principal=False`` behaviour.
-_warned_lenient_principal = False
+#: Why ``strict_principal=False`` is refused. The bare agent name it recorded is
+#: read by the engine as a ``User``, so the agent was decided as a user with
+#: that id. The message is fixed.
+_STRICT_PRINCIPAL_REMOVED_MESSAGE = (
+    "strict_principal=False was removed in 0.15.0: a call that names no principal is "
+    'always decided and recorded as the typed Agent::"<name>". Name the subject at the '
+    "call site with `principal` (see `principals.user`), and write agent-scoped policies "
+    'against Agent::"<name>". See docs/breaking-changes.md'
+)
 
 
-def _warn_lenient_principal() -> None:
-    global _warned_lenient_principal
-    if _warned_lenient_principal:
-        return
-    _warned_lenient_principal = True
-    print(
-        "watchlight: strict_principal is off, so the BARE agent name is recorded as the "
-        'acting principal of calls that name none, instead of the typed Agent::"<name>". '
-        "The bare name binds to an unpredictable one of the entity types your policies "
-        "name it with, and the same policy set can decide differently in different "
-        "processes. This is transitional and is removed in a later version: name the "
-        "subject at the "
-        "call site with `principal` (see `principals.user`), and write agent-scoped "
-        'policies against Agent::"<name>" or the reserved `context.actor` key.',
-        file=sys.stderr,
-    )
+def _check_strict_principal(value: Any) -> None:
+    """``strict_principal`` is accepted only as ``True`` (or left out), so a
+    deployment that still asks for the removed behaviour fails at start-up
+    instead of being decided as a user."""
+    if value is not None and value is not True:
+        raise ValueError(_STRICT_PRINCIPAL_REMOVED_MESSAGE)
 
 
 class Denied(PermissionError):
@@ -2340,7 +2348,7 @@ class Watchlight:
         audit_file: bool = _UNSET,
         audit_sink_batch: Optional[int] = None,
         audit_sink_interval: Optional[float] = None,
-        strict_principal: bool = True,
+        strict_principal: Optional[bool] = None,
         max_delegation_depth: Optional[int] = None,
     ) -> None:
         """:param agent: stable agent identity for the audit trail and the
@@ -2443,15 +2451,13 @@ class Watchlight:
             A hop past it is a deny (:class:`DelegationDepthExceeded`, reason code
             :data:`DELEGATION_DEPTH_EXCEEDED`), written to the audit trail with
             the observed depth and the limit. :meth:`scope` can lower it per tree.
-        :param strict_principal: how a call that names no ``principal`` is
-            recorded (default ``True``): the agent is the subject and is
-            recorded as a TYPED entity reference, ``Agent::"<name>"`` (build one
-            with :mod:`watchlight.principals`). ``False`` restores the previous
-            behaviour, where the BARE agent name — untyped, and
-            indistinguishable on sight from a user id — stood in for the missing
-            subject; that is transitional, warns once per process, and is
-            removed in a later version. See the 0.8.0 entry in the
+        :param strict_principal: accepted only as ``True``. A call that names no
+            ``principal`` is always decided and recorded as the typed
+            ``Agent::"<name>"``. ``False``, which recorded the bare agent name,
+            was removed in 0.15.0 and raises ``ValueError``: the engine reads a
+            bare name as a ``User``. See the 0.15.0 entry in the
             breaking-changes log: https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/docs/breaking-changes.md"""
+        _check_strict_principal(strict_principal)
         state = _GovernorState()
         self._shared = state
         # An explicitly passed name is validated as given — an empty one, or an
@@ -2504,7 +2510,6 @@ class Watchlight:
             sink_batch=audit_sink_batch,
             sink_interval=audit_sink_interval,
         )
-        state.strict_principal = bool(strict_principal)
         state.max_delegation_depth = (
             DEFAULT_MAX_DELEGATION_DEPTH
             if max_delegation_depth is None
@@ -2690,17 +2695,13 @@ class Watchlight:
         """The subject of a call that named none: a TYPED reference to this
         agent, ``Agent::"<name>"`` — when no human is on whose behalf the call
         runs, the agent is the subject, and typing it says so on sight and in a
-        policy. Transitionally, ``strict_principal=False`` restores the bare,
-        untyped agent name (warned once per process)."""
+        policy."""
         # An explicitly supplied principal is CHECKED, never quietly replaced.
         # ``""`` (from ``user.id or ""``) used to fall through to the agent here,
         # so a person's action was attributed to the runtime; it now raises.
         if explicit is not None:
             return principals.assert_principal(explicit, error)
-        if self._shared.strict_principal:
-            return principals.agent(self.agent)
-        _warn_lenient_principal()
-        return self.agent
+        return principals.agent(self.agent)
 
     # ── policy loading ──────────────────────────────────────────────
 
@@ -2709,20 +2710,18 @@ class Watchlight:
         additive: calling it twice with the same code adds it twice (use
         :meth:`load` for a set you may load more than once).
 
-        CHECKED BEFORE IT LOADS: a policy carrying an
-        ``@enforcement_effect`` value the engine does not implement raises
-        :class:`PolicyError` naming the value and the accepted set
-        (:data:`ENFORCEMENT_EFFECTS`), rather than loading and quietly deciding
-        without the effect — which on a ``permit`` would turn an approval hold
-        into a plain allow. An annotation NAME that is a near miss for
-        ``@enforcement_effect`` warns on stderr; any other annotation is your
-        own and passes without comment. Every policy entry point goes through
-        here, :meth:`load` and the CLI included.
+        REFUSED IF THE EFFECT CANNOT BE HONOURED: the engine refuses a policy
+        whose ``@enforcement_effect`` value it does not implement, or whose
+        annotation name is a near miss for ``enforcement_effect``, and this
+        raises :class:`PolicyError` (``code`` names which) instead of loading a
+        policy that would decide without the effect — which on a ``permit``
+        would turn an approval hold into a plain allow. Any other annotation is
+        your own. Every policy entry point goes through here, :meth:`load` and
+        the CLI included.
 
         A policy the engine cannot compile raises :class:`PolicyCompileError`
         and is not added."""
         policy_name = name or f"policy-{self._policy_count}"
-        check_policy_annotations(cedar_code, policy_name)
         _compile_into(self._engine, policy_name, cedar_code, None)
         self._policy_count += 1
         return self
@@ -2766,16 +2765,13 @@ class Watchlight:
         added, so the previous copy stays and ``policy_count`` grows; construct
         a fresh governor when you need the old set gone.
 
-        CHECKED BEFORE IT LOADS: the whole file is checked first, so a policy
-        carrying an ``@enforcement_effect`` the engine does not implement raises
-        :class:`PolicyError` and NOTHING from that file is added — the governor
-        is left exactly as it was, and the source is not remembered. See
-        :meth:`allow`.
-
         COMPILED BEFORE IT LOADS: the whole file is compiled into a scratch
-        engine first, so a policy with a Cedar error raises
-        :class:`PolicyCompileError` naming it and the file, and again NOTHING
-        from that file is added."""
+        engine first. A policy with a Cedar error raises
+        :class:`PolicyCompileError`, and one whose ``@enforcement_effect`` the
+        engine refuses raises :class:`PolicyError`, each naming the policy and
+        the file. NOTHING from that file is added: the governor is left
+        exactly as it was, and the source is not remembered. See
+        :meth:`allow`."""
         p = pathlib.Path(path)
         if source_id is not None:
             key = source_id
@@ -2789,14 +2785,6 @@ class Watchlight:
         if key in self._shared.sources and not force:
             return self
         entries = _read_policy_file(p, op="load", allow_empty=allow_empty)
-        # Check the whole file before adding any of it, so one refused policy
-        # leaves the governor exactly as it was rather than half-loaded.
-        for offset, entry in enumerate(entries):
-            check_policy_annotations(
-                entry["code"],
-                entry.get("name") or f"policy-{self._policy_count + offset}",
-                warn=False,
-            )
         # Compile the whole file into a scratch engine first: the live engine
         # cannot drop a policy, so one that fails part-way through would leave
         # the policies before it loaded and the ones after it missing — a
@@ -2871,14 +2859,8 @@ class Watchlight:
         else:
             entries = _read_policy_file(path, op="reload")  # type: ignore[arg-type]
 
-        # Check every policy BEFORE building anything, so a refused annotation
-        # leaves the governor untouched — the same contract `load` gives.
-        for offset, entry in enumerate(entries):
-            check_policy_annotations(
-                entry["code"], entry.get("name") or f"policy-{offset}", warn=False
-            )
-
-        # Compile into a FRESH engine. Only a set that has fully loaded is
+        # Compile into a FRESH engine (a refused annotation raises PolicyError
+        # here, before anything is swapped). Only a set that has fully loaded is
         # allowed to become the one in force.
         engine = _engine.PolicyEngine()
         for offset, entry in enumerate(entries):
@@ -2922,13 +2904,35 @@ class Watchlight:
         (default 8). ``max_depth`` lowers it for this tree only — it never raises
         it. A hop past the limit raises :class:`DelegationDepthExceeded`. See
         :class:`~watchlight.attenuation.Scope`.
+
+        ``time_budget_seconds`` is a whole number of seconds from 1 to
+        2**32 - 1 (``TypeError`` or ``ValueError`` otherwise). Each sub-agent
+        scope gets at most what its parent has left: a larger named budget is
+        refused, never shortened.
         """
+        return self._new_root(
+            tools=tools, resources=resources, intents=intents, max_depth=max_depth,
+            time_budget_seconds=time_budget_seconds, issued_at=None,
+        )
+
+    def _new_root(
+        self,
+        *,
+        tools: Sequence[str] | None,
+        resources: Sequence[str] | None,
+        intents: Sequence[str] | None,
+        max_depth: Optional[int],
+        time_budget_seconds: int,
+        issued_at: Optional[int],
+    ) -> Scope:
+        """:meth:`scope`, issued at ``issued_at`` (``None``: now)."""
         # Bounded before the engine: the root's tools are recorded. The checked
         # lists are the ones used — each iterable is read exactly once.
         tools = principals.assert_name_list(tools, "tools")
         resources = principals.assert_name_list(resources, "resources")
         intents = principals.assert_name_list(intents, "intents")
         budget = self._root_budget(max_depth)
+        time_budget_seconds = _check_root_time_budget(time_budget_seconds)
         root = Scope(
             engine=self._engine,
             audit_path=self._audit_path,
@@ -2942,6 +2946,7 @@ class Watchlight:
             time_budget_seconds=time_budget_seconds,
             depth=0,
             signing_secrets=self._signing_secrets,
+            issued_at=issued_at,
         )
         root._emit_root()  # record the tree's starting authority for `watchlight dev`
         return root
@@ -2967,6 +2972,7 @@ class Watchlight:
         resources = principals.assert_name_list(resources, "resources")
         intents = principals.assert_name_list(intents, "intents")
         budget = self._root_budget(max_depth)
+        time_budget_seconds = _check_root_time_budget(time_budget_seconds)
         return ScopePreview(
             engine=self._engine,
             allowed=True,
@@ -3005,7 +3011,14 @@ class Watchlight:
         a chain whose engine-granted result differs from the token's claim is
         rejected. Raises :class:`ScopeTokenError` when ``signing_secret`` is unset
         (fail-closed) or the token is malformed, tampered, expired, or bound to a
-        different agent. The returned scope cannot outlive the token's ``exp``."""
+        different agent. The returned scope cannot outlive the token's ``exp``,
+        and a sub-agent scope attenuated from it gets at most the whole seconds
+        left before that ``exp``: a larger named budget is refused.
+
+        The chain is replayed at one whole-second instant, the replayed root's
+        issue time, so each level's budget is checked against the level above
+        it exactly as granted, and a second ticking over mid-replay cannot
+        refuse a valid token."""
         # Any configured secret may have signed it — a rotation is two deploys,
         # not a cutover. Which one verified is never reported.
         secrets = require_secrets(self._signing_secrets)
@@ -3014,19 +3027,34 @@ class Watchlight:
         # The receiving governor's own max_delegation_depth still applies: a token
         # cannot carry a deeper tree than this governor permits.
         root_budget = min(root["max_depth"], self._shared.max_delegation_depth)
-        scope = self.scope(
+        # Every level's budget is a whole number of seconds from 1 to 2**32 - 1,
+        # checked before anything is replayed.
+        try:
+            _check_root_time_budget(root["time_budget_seconds"])
+        except (TypeError, ValueError):
+            raise ScopeTokenError("malformed", "claims.root.time_budget_seconds is out of range") from None
+        for step in claims["chain"]:
+            try:
+                _check_root_time_budget(step["time_budget_seconds"])
+            except (TypeError, ValueError):
+                raise ScopeTokenError("malformed", "claims.chain time_budget_seconds is out of range") from None
+        replay_at = _now_seconds()
+        scope = self._new_root(
             tools=root["tools"],
             resources=root["resources"],
             intents=root["intents"],
             max_depth=root_budget,
             time_budget_seconds=root["time_budget_seconds"],
+            issued_at=replay_at,
         )
         for step in claims["chain"]:
-            scope = scope.attenuate(
+            scope = scope._attenuate(
                 tools=step["tools"],
                 resources=step["resources"],
                 intents=step["intents"],
                 time_budget_seconds=step["time_budget_seconds"],
+                agent=None,
+                now=float(replay_at),
             )
         # The engine's grant must be exactly what the token claimed for this level.
         claimed = claims["chain"][-1] if claims["chain"] else root
@@ -3515,8 +3543,9 @@ class Watchlight:
         ``permit(...) when { context.reads_this_hour < 100 }``.
 
         Counts DECISION records (never ``sanitization`` / ``egress`` /
-        ``attenuation``) for exactly this ``principal`` — and, when given, this
-        ``intent`` and ``resource`` — whose ``ts`` falls in ``(now - window,
+        ``attenuation``) for this ``principal`` — and, when given, this
+        ``intent`` and ``resource`` — in any spelling (a bare ``u1`` is
+        ``User::"u1"``), whose ``ts`` falls in ``(now - window,
         now]``. ``outcome`` selects ``"allowed"`` (default), ``"denied"`` (Deny +
         NeedsApproval holds) or ``"all"``. Reads only the local file (an
         ``audit_sink`` mirrors records elsewhere but is never read back), streams
@@ -3942,6 +3971,7 @@ class Watchlight:
         """Apply options to the default governor. Behind :func:`configure_default`;
         not part of the public surface."""
         state = self._shared
+        _check_strict_principal(strict_principal)
         if max_delegation_depth is not None:
             _check_max_delegation_depth(max_delegation_depth)
         # The environment layer lands FIRST, so an explicit option below
@@ -3959,7 +3989,6 @@ class Watchlight:
                 approval_secret=approval_secret,
                 approval_store=approval_store,
                 counter_source=counter_source,
-                strict_principal=strict_principal,
                 max_delegation_depth=max_delegation_depth,
             )
             if conflict is None:
@@ -4015,8 +4044,6 @@ class Watchlight:
             )
         if counter_source is not None:
             state.counter_source = counter_source
-        if strict_principal is not None:
-            state.strict_principal = bool(strict_principal)
         if max_delegation_depth is not None:
             state.max_delegation_depth = max_delegation_depth
 
@@ -4062,7 +4089,6 @@ class Watchlight:
         approval_secret: Any,
         approval_store: Optional[ApprovalStore],
         counter_source: Optional[CounterSource],
-        strict_principal: Optional[bool],
         max_delegation_depth: Optional[int] = None,
     ) -> Optional[str]:
         """The first option that would CHANGE the configuration already in force,
@@ -4114,11 +4140,6 @@ class Watchlight:
             return (
                 "counter_source would change — a source matches when it is the same function "
                 "on the same object; a callable built a second time is a different source"
-            )
-        if strict_principal is not None and bool(strict_principal) != state.strict_principal:
-            return (
-                f"strict_principal would change from {state.strict_principal} "
-                f"to {bool(strict_principal)}"
             )
         if max_delegation_depth is not None and max_delegation_depth != state.max_delegation_depth:
             return (

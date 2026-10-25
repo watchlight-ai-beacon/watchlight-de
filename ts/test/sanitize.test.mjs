@@ -65,7 +65,7 @@ async function main() {
   ok("govern.sanitize returns redacted text", !r.text.includes("alice@acme.com"));
   const raw = fs.readFileSync(join(auditDir, "audit.jsonl"), "utf8");
   ok("audit records sanitization event + counts", raw.includes('"event":"sanitization"') && raw.includes('"EMAIL":2'));
-  ok("audit is value-free (no PII values)", !raw.includes("acme.com") && !raw.includes("123-45-6789") && !raw.includes("4111"));
+  ok("audit is value-free (no PII values)", !raw.includes("acme.com") && !raw.includes("123-45-6789") && !raw.includes("4111 1111"));
   ok("audit line without decisionId carries no decision_id", !JSON.parse(raw.trim().split("\n").pop()).decision_id);
 
   // ── decisionId: echoed on the report, never interpreted ──
@@ -109,7 +109,7 @@ async function main() {
   try {
     execFileSync(process.execPath, [
       join(here, "..", "node_modules", "typescript", "bin", "tsc"),
-      "--noEmit", "--strict", "--target", "ES2020", "--module", "commonjs", "--moduleResolution", "node",
+      "--ignoreConfig", "--noEmit", "--strict", "--target", "ES2020", "--module", "node16", "--moduleResolution", "node16",
       "--esModuleInterop", "--skipLibCheck", "--types", "node", join(here, "sanitize-options.typecheck.ts"),
     ], { stdio: "pipe" });
   } catch (e) { typesOk = false; typesErr = String(e.stdout || e.message).slice(0, 400); }

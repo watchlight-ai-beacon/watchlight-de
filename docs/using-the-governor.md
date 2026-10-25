@@ -567,14 +567,16 @@ when { context.amount > 1000 };
 That one is the human-in-the-loop gate: the verdict is `NeedsApproval` rather
 than `Allow`, and a person has to release it. The engine implements eight
 effects: `attenuate`, `escalate`, `observe`, `quarantine`, `require_approval`,
-`revoke`, `sever_subtree` and `terminate`. In both lanes, `allow` and `load`
-refuse any other value before the policy reaches the engine:
+`revoke`, `sever_subtree` and `terminate`. The engine refuses any other value,
+and an annotation name that is a near miss for `enforcement_effect`, and the SDK
+raises `PolicyError` (in TypeScript, at `ready()` or the next decision):
 
 ```python
 govern.allow('@enforcement_effect("needs_approval")\npermit(principal, action, resource);')
 # PolicyError: policy "policy-0": @enforcement_effect("needs_approval") is not an
-# effect this engine implements. Accepted: attenuate, escalate, observe,
-# quarantine, require_approval, revoke, sever_subtree, terminate. …
+# effect this engine implements (accepted: attenuate, escalate, observe,
+# quarantine, require_approval, revoke, sever_subtree, terminate); on a permit an
+# unimplemented effect would leave a plain allow, so the policy is refused
 ```
 
 The Developer Edition acts on `require_approval`. The containment effects load
@@ -605,7 +607,7 @@ limit is exported under the same name in both lanes.
 | What | Limit | Constant |
 |---|---|---|
 | A principal, an action, a resource | 4096 bytes | `MAX_NAME_BYTES` |
-| An agent name | 4087 bytes, so that `Agent::"<name>"` is within 4096 | `MAX_AGENT_NAME_BYTES` |
+| An agent name | 4087 bytes, measured once escaped (a quote, an apostrophe or a backslash counts two), so that `Agent::"<name>"` is within 4096 | `MAX_AGENT_NAME_BYTES` |
 | Each entry of a scope's `tools`, `resources` or `intents` | 4096 bytes | `MAX_NAME_BYTES` |
 | The number of entries in one of those lists | 256 | `MAX_SCOPE_ENTRIES` |
 | All the entries of one of those lists together | 65536 bytes | `MAX_SCOPE_LIST_BYTES` |

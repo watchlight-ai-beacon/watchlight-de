@@ -88,7 +88,8 @@ def test_the_docstring_says_where_per_call_terms_go(name):
     doc = (inspect.getdoc(factory(name)) or "").lower()
     assert "authorize_action" in doc
     assert "principal=" in doc
-    assert "allow beats a forbid" in doc
+    assert "bare principal is read as" in doc
+    assert "never matches a policy of another type" in doc
 
 
 # ── what every factory refuses, and how it fails ────────────────────────────

@@ -12,6 +12,7 @@
 //
 // Fail-closed everywhere: any transport/engine error resolves to Deny.
 
+import { PolicyError, isEngineAnnotationError, policyErrorFromEngine } from "./annotations";
 import { Engine } from "@watchlight/engine";
 
 export interface AuthorizeRequest {
@@ -298,7 +299,7 @@ export class InProcessBackend implements GovernanceBackend {
   private _pending: QueuedPolicy[] = [];
   /** Set once a queued policy fails to compile; never cleared. A backend that
    *  holds it refuses every decision — `reload()` builds a fresh backend. */
-  private _failure?: PolicyCompileError;
+  private _failure?: PolicyCompileError | PolicyError;
   /** Compiles run one at a time, so two concurrent first decisions cannot
    *  both take the same queued policy, or race past a failure. */
   private _queue: Promise<unknown> = Promise.resolve();
@@ -325,7 +326,11 @@ export class InProcessBackend implements GovernanceBackend {
       try {
         await engine.addPolicy({ name: p.name, code: p.code });
       } catch (e) {
-        this._failure = new PolicyCompileError(p.name, p.source, e);
+        // The engine's typed refusal of an `@enforcement_effect` annotation
+        // is a PolicyError; anything else is a compile error.
+        this._failure = isEngineAnnotationError(e)
+          ? policyErrorFromEngine(e, p.name, p.source)
+          : new PolicyCompileError(p.name, p.source, e);
         throw this._failure;
       }
       this._pending.shift();

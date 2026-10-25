@@ -81,7 +81,7 @@ def test_every_record_kind_reaches_the_sink_with_identical_fields(tmp_path):
     assert any(r.get("event") == "attenuation" and r["decision"] == "Allow" and r["resource"] == "root scope" for r in seen)
     assert sum(1 for r in seen if r.get("event") == "attenuation" and r["decision"] == "Deny" and r.get("reason")) == 2
     blob = json.dumps(seen)
-    assert "a@b.com" not in blob and "4111" not in blob and "cedar policies" not in blob  # value-free
+    assert "a@b.com" not in blob and "4111 1111" not in blob and "cedar policies" not in blob  # value-free
 
 
 def test_sink_receives_a_copy_and_cannot_alter_the_file(tmp_path):

@@ -169,7 +169,8 @@ async function main() {
       auditDir,
       auditFile: false,
       auditSink: (record) => { store.push(record); },
-      counterSource: async (q) => { queries.push(q); return stored; },
+      // The store holds the spelling the tool writes, so only that query counts.
+      counterSource: async (q) => { queries.push(q); return q.principal === USER ? stored : 0; },
     });
     quota(g);
 
@@ -187,7 +188,7 @@ async function main() {
     stored = 99;
     ok("under the durable quota the tool runs", (await read({ docId: "a" })) === "doc:a");
     ok("…and the count came from the store, not the local file",
-      queries.length === 1 && queries[0].principal === USER && queries[0].intent === "read");
+      queries.map((q) => q.principal).join("|") === `${USER}|u1` && queries.every((q) => q.intent === "read"));
     ok("…and the decision was mirrored to the sink", store.some((r) => r.decision === "Allow"));
 
     stored = 100;

@@ -58,8 +58,8 @@ PUBLIC_NAMES = [
     "DelegationDepthExceeded",
     "Denied",
     "EGRESS_TIMEOUT_MESSAGE",
-    "ENFORCEMENT_EFFECTS",
     "ENFORCEMENT_EFFECT_ANNOTATION",
+    "ENFORCEMENT_EFFECT_NAME_NEAR_MISS",
     "EgressRecord",
     "EgressTimeout",
     "HEURISTIC_PII_TYPES",
@@ -80,6 +80,7 @@ PUBLIC_NAMES = [
     "MAX_SCOPE_LIST_BYTES",
     "NeedsApproval",
     "OBLIGATIONS_INVALID_MESSAGE",
+    "POLICY_ERROR_CODES",
     "PolicyCompileError",
     "PolicyError",
     "REQUEST_INVALID_MESSAGE",
@@ -96,6 +97,7 @@ PUBLIC_NAMES = [
     "ScreenError",
     "ScreeningRecord",
     "UNCONFIGURED_AGENT",
+    "UNRECOGNISED_ENFORCEMENT_EFFECT",
     "UNRESOLVED_CONTEXT_MESSAGE",
     "UnknownAuditRecord",
     "UnresolvedContextError",
@@ -193,15 +195,15 @@ FRAMEWORK_ALIAS_ATTRS = {"Any", "Optional", "Policies", "_select_backend_kwargs"
 FRAMEWORK_DOC_DIGESTS = {
     "watchlight.langgraph": (
         "67f62afba0776228bb0c7d7add94d562e7800f601683fd1986a8f5a2d653fc74",
-        "cb6b9082247e68c3b7a1a70e11965775bcf8959166c3b3b7bf2b9c70d2042408",
+        "4b30a9ea47bd652e1ee44f01b0343b2d7580fc0e4c05833e8fdae31fb77adcad",
     ),
     "watchlight.pydantic_ai": (
         "0869072f0cfdb02798738ac45c5eaaa37b70c7184da69d0edf2c88f098d77759",
-        "6971576b31da2ee7fd2e304632b34cb6e12eab99e8e6aa577c770afc4feb8908",
+        "725d297dba4cff8ddb8522cf94b169443789670ef745c8306e2a3203d8a230ad",
     ),
     "watchlight.claude_agent": (
         "5312e2067be83a7b4e350dfee5f4e1fce7fd08822dec8925c18206223465c3a6",
-        "76aaa1fee97ba7928888bcbc1582a294a7caf7af0eff608423ba076ec5f4ca0b",
+        "cc5878b7832a0c57e12d5bb2f6f9afa66a35d7b6c480a9adf8f82574f3402324",
     ),
 }
 

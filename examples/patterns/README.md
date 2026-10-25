@@ -42,7 +42,7 @@ examples/patterns/check.sh        # every suite and script, plus a private-data 
 is not a verdict, or both. A doc with neither fails the run. It then runs them
 all and scans the folder for anything resembling private data.
 
-The scripts need Node >= 18 and resolve the SDK from a global
+The scripts need Node >= 22 and resolve the SDK from a global
 `npm i -g @watchlight/sdk` or an in-repo build (`cd ts && npm run build`). The
 [allow-but-redact](./allow-but-redact.md) suite asserts obligations, so it needs
 `@watchlight/engine` / `watchlight-engine` **>= 0.2.0**; on an older engine it

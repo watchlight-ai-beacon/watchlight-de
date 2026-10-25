@@ -13,6 +13,9 @@ Each entry links to its release, which carries the reasoning and the measurement
 
 ## Unreleased
 
+**Security**
+- Hardening: the TypeScript SDK checks an entity type name (`entityRef`, `policyEntityRef`, `entityKey`) by splitting it on `::` and testing each part, instead of with one pattern that repeats a group. The check runs in linear time on any input, including a long type name built to make a backtracking matcher retry. It accepts and refuses exactly the same names as before.
+
 **Changed**
 - Bounded and de-duplicated the known-values list in `sanitize`, in both the
   Python and TypeScript lanes. Before the matcher is built, `known` keeps one
@@ -31,6 +34,71 @@ Each entry links to its release, which carries the reasoning and the measurement
 - `examples/governed_mcp_server.py` passes a 10-second timeout to `urlopen`,
   and notes that its plain-HTTP URLs are loopback-only and that a real
   upstream should use `https://` with certificate verification.
+
+## 0.15.0 — 2026-10-18
+
+A quota now counts each principal once however it is spelled, and
+`strict_principal=False` is removed. Read [breaking changes](docs/breaking-changes.md)
+if you count decisions with `counters()` or a `counter_source`, or still pass
+`strict_principal`.
+
+**Security**
+- Hardening: `counters()` matches `principal`, `intent` and `resource` by the entity they name, as the engine reads them. A bare `u1` is `User::"u1"`, `read` is `Action::"read"`, `doc/1` is `Resource::"doc/1"`, and an escape such as `\u{a0}` matches the character it stands for. Before, a caller that switched between two spellings of the same principal was counted separately for each and could get about twice its quota. Records still keep each name exactly as it was written. A count can only go up: every record that matched before still matches.
+- Hardening: a `counter_source` is asked once for each spelling of the principal, the caller's own first, and the answers are added, so a store that holds either spelling counts each record once. A `User` principal usually takes two calls and any other type one. `intent` and `resource` are passed as given. Answers that add up past the largest count fail closed with `CounterSourceError`.
+
+**Added**
+- `principals.entity_key(value, bare_type)` / `entityKey(value, bareType)`: the entity a name stands for, as `(type, id)`, however it is spelled. A `counter_source` that filters on `intent` or `resource` can compare with it.
+
+**Removed**
+- `strict_principal=False` / `strictPrincipal: false`. It recorded the bare agent name as the subject of a call that names no principal, and the engine reads a bare name as a `User`, so the agent was decided as a user with that id. It now raises `ValueError` (Python) or `RangeError` (TypeScript) when the governor is built or configured. `strict_principal=True` is still accepted. In TypeScript the option's type is now `true`.
+
+Engine unchanged at `0.2.3`. [Release](https://github.com/watchlight-ai-beacon/watchlight-de/releases/tag/v0.15.0)
+
+## 0.14.0 — 2026-10-17
+
+The framework extras move to `watchlight-agent-sdk` 0.10 and the plugin
+releases written for it. SDK 0.10 carries security hardening: run credentials
+stay inside the governance backend, a run is never served on the plugin
+credential alone, and a sub-agent is not started when its parent's authority
+cannot be shown. Read [breaking changes](docs/breaking-changes.md) if you call
+the SDK's backend directly.
+
+**Security**
+- Hardening: a policy whose `@enforcement_effect` cannot be honoured is refused by the engine (`watchlight-engine` 0.2.3), in both lanes. That covers a value the engine does not implement, and now also an annotation name that is a near miss for `enforcement_effect` (for example `@enforcment_effect`), which used to only warn while the policy loaded as a plain allow. The SDK raises `PolicyError` with a `code` (`UNRECOGNISED_ENFORCEMENT_EFFECT` or `ENFORCEMENT_EFFECT_NAME_NEAR_MISS`), mapped from the engine's typed error, and keeps no list of effects of its own.
+
+**Changed**
+- The SDKs require `watchlight-engine>=0.2.3` / `@watchlight/engine>=0.2.3`.
+- `ENFORCEMENT_EFFECTS` is removed from both SDKs; the engine owns the list. `PolicyError` carries `code`, `policy` and `source` instead of `value` and `accepted`.
+- The `langgraph`, `pydantic-ai`, `claude-agent`, `sdk` and `all` extras require
+  `watchlight-agent-sdk>=0.10,<0.11`, `watchlight-langgraph>=0.5,<0.6`,
+  `watchlight-pydantic-ai>=0.4,<0.5` and `watchlight-claude-agent>=0.3,<0.4`.
+  Each plugin is now capped below its next minor release too, so an upgrade
+  can never pair a plugin with an SDK it was not written for.
+- `in_process_backend()` follows the SDK 0.10 backend interface: it returns the
+  SDK's `SessionInfo` from `create_session`, and names a run by its run
+  reference (`run`) when it authorizes, spawns, completes or terminates it.
+  Every decision is still recorded exactly once, with the same fields.
+- A plugin decision record is filed under the run the SDK names, never under a
+  session id passed alongside it, and a sub-agent's actor chain comes from the
+  parent run it was spawned under, never from ids in the spawn request. A
+  decision recorded after its run ended still names the run's agent.
+- Hardening: a sub-agent's time is bounded in process as it is by the
+  networked service. A spawn that names no time budget inherits its parent's
+  remaining time; a sub-agent spawned directly from the run gets the root's
+  ceiling of 3600 seconds. An explicit `0`, a budget larger than the parent's and
+  a spawn from a parent with no time left are refused. Once its time runs out,
+  every call the sub-agent makes is denied. Requires `watchlight-engine>=0.2.3`.
+- Hardening, and a behaviour change for upgraders: a sub-agent scope's named time budget is granted exactly or refused, never shortened. In both lanes, `attenuate()`, `delegate()` and the previews refuse a `time_budget_seconds` larger than the whole seconds the parent has left with `AttenuationDenied` (violation `TimeBudget`, reason "at most N seconds are available"). Before, such a child was granted with the budget it named but silently expired with its parent, so it could start work sized for time it did not have. A child that names no budget inherits the parent's remaining whole seconds, the new `Scope.remaining_seconds()` / `remainingSeconds()`. A parent with less than a second left refuses every child. A scope's issue time is rounded down to the second, so right after a parent is created a child can name at most the parent's budget minus one, and each level loses up to one more second: `scope(600)` then `attenuate(600)` at once is refused ("at most 599"), and 600 → 300 → 300 at once refuses the grandchild ("at most 299"). A child that omits the budget inherits everything left. The previews apply the same one-second loss per level: at the same instant, a preview never grants what `attenuate()` would refuse, and at an exact second boundary it can be one second stricter. A named child budget that is not a whole number of seconds from 1 to 2**32 - 1 is refused up front with `AttenuationDenied` and a fixed, value-free reason, and recorded as a deny; `None` (TS `undefined` or `null`) means no budget. A root `scope()` or `preview_scope()` budget must be a whole number of seconds from 1 to 2**32 - 1; `0`, a negative, a bool, a float or a larger value is now refused. A scope rebuilt from a token gives a child no more than the time left before the token's `exp`. To migrate, omit `time_budget_seconds` on a child to inherit what the parent has left, or catch `AttenuationDenied` and read the seconds available from its reason.
+- The TypeScript SDK requires Node 22 or later (Node 18 and 20 are end of life); it relies on the Web Crypto global. `engines.node` in `@watchlight/sdk` is now `>=22`.
+- Behaviour change: both SDKs follow the strict entity references of `watchlight-engine` / `@watchlight/engine` 0.2.3, and now require it (`watchlight-engine>=0.2.3,<0.3` and `@watchlight/engine ^0.2.3`), so the reference helpers and the engine always agree. The released 0.13.2 already gets engine 0.2.3 on a fresh install, so it already shows the decision changes below; this release makes the helpers and the documentation match them.
+  - A bare principal is now a `User`. `team-42` is read as `User::"team-42"`: it matches `principal is User` and a policy naming `User::"team-42"`, and no longer matches a policy of another type, such as `principal is Agent` or `Agent::"team-42"`. A bare action is an `Action` and a bare resource a `Resource`, and a bare name that contains a quote or `::` is refused as an invalid request.
+  - An id with a quote, an apostrophe or a backslash is now escaped inside a reference, in the one spelling the engine accepts. `principals.user('a"b')` returns `User::"a\"b"`, where it used to return `User::"a"b"`, and `principals.user("o'brien@example.com")` returns `User::"o\'brien@example.com"`. Both are the same string `principals.for_policy` returns. Both names stay public. A reference written by hand with an unescaped quote or apostrophe, or with anything after the closing quote, is refused with `AuthorizeRequestError` instead of being decided.
+  - The request helpers (`principals.user`, `agent` and `entity`, and agent names) refuse, with a fixed `TypeError` that does not echo the id, an id holding a character the engine accepts only as `\u{…}`: a control, format, separator, private-use, surrogate or unassigned character (for example U+0085, a soft hyphen, a zero-width space, a byte-order mark, U+2028 and U+2029), a space other than U+0020 (for example a no-break space), a default-ignorable character such as a variation selector, or a combining mark at the start of the id. The engine refuses such a raw character in a request too. Plain spaces, accents, other scripts and emoji are accepted. `for_policy` now writes NUL as `\0`, the spelling the engine accepts.
+  - An agent name must fit in 4087 bytes once escaped, so that `Agent::"<name>"` stays within 4096 bytes; a name made mostly of quotes or backslashes is refused at a shorter length. The reference helpers refuse a reference whose escaped form is longer than 4096 bytes.
+  - The examples, the framework-plugin docstrings and the documentation build every principal with `principals.user` instead of pasting the id into `User::"…"`.
+- Migration: build every reference from an outside id with `principals.user`, `principals.agent` or `principals.entity` (TypeScript: the same names on `principals`), never by pasting the id into a string. Write the type for every principal that is not a user. A quota read with `counters()` matches the principal as a string, so the records of an id with a quote, an apostrophe or a backslash carry a new spelling after the upgrade; see [breaking changes](docs/breaking-changes.md).
+
+Engine now `0.2.3` or later (`watchlight-engine>=0.2.3,<0.3`, `@watchlight/engine ^0.2.3`). [Release](https://github.com/watchlight-ai-beacon/watchlight-de/releases/tag/v0.14.0)
 
 ## 0.13.2 — 2026-10-03
 

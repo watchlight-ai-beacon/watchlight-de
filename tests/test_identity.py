@@ -124,26 +124,20 @@ def test_omitted_principal_is_the_typed_agent_at_every_site(tmp_path):
     assert any(r["principal"] == 'User::"alice"' for r in records(tmp_path))
 
 
-def test_strict_principal_off_restores_the_bare_name_and_warns_once(tmp_path, capsys):
-    g = Watchlight(agent="writer", audit_dir=str(tmp_path), strict_principal=False)
-    g.allow('permit(principal == User::"writer", action == Action::"legacy", resource);')
-    g.authorize(action="legacy")
-    g.authorize(action="legacy")
-    assert all(r["principal"] == "writer" for r in records(tmp_path))
-    # The notice is process-wide, so assert it in a fresh process.
-    out = subprocess.run(
-        [sys.executable, "-c", textwrap.dedent(f"""
-            from watchlight import Watchlight
-            g = Watchlight(agent="writer", audit_dir={str(tmp_path)!r}, strict_principal=False)
-            g.allow('permit(principal, action, resource);')
-            g.authorize(action="legacy")
-            g.authorize(action="legacy")
-        """)],
-        capture_output=True, text=True, check=True,
-    )
-    assert out.stderr.count("strict_principal is off") == 1
-    # The key that resolves is `context.actor`; `context.agent` never does.
-    assert "context.actor" in out.stderr and "context.agent" not in out.stderr
+@pytest.mark.parametrize("value", [False, 0, 1, "false", "true"])
+def test_strict_principal_off_is_refused(tmp_path, value):
+    """The bare agent name it recorded is read by the engine as a User, so the
+    option is refused at construction rather than deciding the agent as one."""
+    with pytest.raises(ValueError, match="removed in 0.15.0"):
+        Watchlight(agent="writer", audit_dir=str(tmp_path), strict_principal=value)
+    assert not (tmp_path / "audit.jsonl").exists()
+
+
+def test_strict_principal_true_is_still_accepted(tmp_path):
+    g = Watchlight(agent="writer", audit_dir=str(tmp_path), strict_principal=True)
+    g.allow('permit(principal == Agent::"writer", action == Action::"legacy", resource);')
+    assert g.authorize(action="legacy")["decision"] == "Allow"
+    assert all(r["principal"] == 'Agent::"writer"' for r in records(tmp_path))
 
 
 # ── the reserved actor context key ──────────────────────────────────
@@ -216,20 +210,73 @@ def test_the_three_cases_are_distinguishable(tmp_path):
 def test_entity_reference_helpers(tmp_path):
     # What a verified identity can actually carry: a quote, a backslash, a space.
     sub = 'a"b\\c d'
-    assert principals.user(sub) == 'User::"a"b\\c d"'
+    # A request and a policy spell the reference the same way: the id escaped.
+    assert principals.user(sub) == 'User::"a\\"b\\\\c d"'
+    assert principals.entity("User", sub) == for_policy("User", sub) == principals.user(sub)
     assert principals.agent("r-a") == 'Agent::"r-a"'
-    assert for_policy("User", sub) == 'User::"a\\"b\\\\c d"'
+    assert principals.agent('r"a') == 'Agent::"r\\"a"'
     assert escape_cedar_string("a\nb\tc") == "a\\nb\\tc"
     for bad in [("Not A Type", "x"), ("User", ""), ("User", "a\nb")]:
         with pytest.raises(TypeError):
             principals.entity(*bad)
 
-    # The two forms are two spellings of ONE entity: a policy written with the
-    # escaped form matches a request built with the verbatim form.
+    # The engine reads the escaped reference back as exactly that id: it
+    # matches a policy naming that id, and nothing else.
     g = Watchlight(agent="esc", audit_dir=str(tmp_path))
     g.allow(f'permit(principal == {for_policy("User", sub)}, action == Action::"read", resource);')
     assert g.authorize(action="read", principal=principals.user(sub))["allowed"] is True
     assert g.authorize(action="read", principal=principals.user('a"b\\c e'))["allowed"] is False
+    assert records(tmp_path)[0]["principal"] == principals.user(sub)   # recorded as supplied
+    # The same id pasted in by hand, unescaped, is not some other entity: the
+    # engine refuses the request, and nothing is allowed.
+    with pytest.raises(AuthorizeRequestError):
+        g.authorize(action="read", principal=f'User::"{sub}"')
+
+
+def test_an_entity_reference_is_bounded_once_escaped():
+    """Escaping doubles a quote or a backslash, so the bound is checked on the
+    reference that is built, not on the id. The message never echoes the id."""
+    from watchlight.principals import MAX_NAME_BYTES
+
+    fits = '"' * ((MAX_NAME_BYTES - len('User::""')) // 2)
+    assert len(principals.user(fits).encode()) <= MAX_NAME_BYTES
+    with pytest.raises(TypeError, match="escaped reference is longer") as refused:
+        principals.user(fits + '"')
+    assert '"""' not in str(refused.value)
+    # Policy text is not a request: for_policy escapes instead of refusing.
+    assert for_policy("User", "a\nb") == 'User::"a\\nb"'
+
+
+def test_an_entity_id_is_escaped_from_its_characters_not_its_methods():
+    """A str subclass cannot change what is escaped after it was checked."""
+
+    class Liar(str):
+        def __str__(self):
+            return 'x" || true || "'
+
+        def __format__(self, spec):
+            return 'x" || true || "'
+
+    assert principals.user(Liar("alice")) == 'User::"alice"'
+    assert for_policy("User", Liar("alice")) == 'User::"alice"'
+
+
+def test_an_agent_name_is_bounded_once_escaped(tmp_path):
+    """The principal derived from an agent name stays within MAX_NAME_BYTES even
+    when every character of the name is escaped."""
+    from watchlight.principals import MAX_AGENT_NAME_BYTES, MAX_NAME_BYTES
+
+    half = '"' * (MAX_AGENT_NAME_BYTES // 2)
+    g = Watchlight(agent=half, audit_dir=str(tmp_path))
+    g.allow('permit(principal, action == Action::"x", resource);')
+    assert g.authorize(action="x")["allowed"] is True
+    assert len(records(tmp_path)[0]["principal"].encode()) <= MAX_NAME_BYTES
+    for build in (
+        lambda: Watchlight(agent=half + '"', audit_file=False),
+        lambda: g.as_(half + "\\"),
+    ):
+        with pytest.raises(TypeError, match="once escaped"):
+            build()
 
 
 # ── load() is idempotent per resolved source ────────────────────────
@@ -584,39 +631,97 @@ def test_every_boundary_that_takes_a_principal_validates_it(tmp_path, value):
         g.screen("ignore all previous instructions", principal=value)
 
 
-def test_a_bare_principal_still_works_and_is_opaque(tmp_path):
-    """NOT tightened: a bare identifier is accepted and recorded verbatim. It is
-    opaque -- it matches whichever entity type a policy names it with, and so
-    discriminates by NONE. Only a typed reference does."""
+def test_a_plugin_refusal_names_its_agent_with_an_escaped_reference():
+    """The principal recorded for a refusal the plugin handle made itself is
+    built by the same helper, so a quote in the agent id cannot make the record
+    name another entity. An id the helper refuses is left for the record's own
+    principal check, which replaces it with the value-free marker."""
+    from watchlight.inprocess import _agent_reference
+
+    assert _agent_reference("agent-1") == 'Agent::"agent-1"'
+    assert _agent_reference('a" || true') == 'Agent::"a\\" || true"'
+    with pytest.raises(TypeError):
+        principals.assert_principal(_agent_reference("a\nb"))
+
+
+def test_a_bare_principal_is_a_user(tmp_path):
+    """A bare identifier is accepted and recorded exactly as supplied, and the
+    engine reads it as a ``User``: ``team-42`` is ``User::"team-42"``. It
+    matches ``principal is User`` and a policy naming ``User::"team-42"``, and
+    never a policy of another type."""
     g = Watchlight(agent="probe", audit_dir=str(tmp_path))
     g.allow('permit(principal, action == Action::"x", resource);')
     assert g.authorize(action="x", principal="team-42")["allowed"] is True
-    assert records(tmp_path)[0]["principal"] == "team-42"     # recorded verbatim
-    # The SAME bare id satisfies a User-typed policy set and an Agent-typed one:
-    # it names no type, so it binds to whichever type the policies around it use.
-    # That is why it is opaque, and why only a typed reference discriminates.
-    for entity_type in ("User", "Agent"):
+    assert records(tmp_path)[0]["principal"] == "team-42"     # recorded as supplied
+
+    def decides(policies, principal="team-42"):
         one = Watchlight(agent="probe", audit_file=False)
-        one.allow(f'permit(principal is {entity_type}, action == Action::"t", resource);')
-        assert one.authorize(action="t", principal="team-42")["allowed"] is True
+        for policy in [policies] if isinstance(policies, str) else policies:
+            one.allow(policy)
+        return one.authorize(action="t", principal=principal)["allowed"]
+
+    assert decides('permit(principal is User, action == Action::"t", resource);') is True
+    assert decides('permit(principal == User::"team-42", action == Action::"t", resource);') is True
+    for entity_type in ("Agent", "Group", "Role"):
+        assert decides(f'permit(principal is {entity_type}, action == Action::"t", resource);') is False
+        assert decides(
+            f'permit(principal == {entity_type}::"team-42", action == Action::"t", resource);'
+        ) is False
+    # A forbid naming the user applies to the bare id; one naming an agent with
+    # the same id does not.
+    assert decides([
+        'permit(principal, action == Action::"t", resource);',
+        'forbid(principal == User::"team-42", action == Action::"t", resource);',
+    ]) is False
+    assert decides([
+        'permit(principal, action == Action::"t", resource);',
+        'forbid(principal == Agent::"team-42", action == Action::"t", resource);',
+    ]) is True
+    # The bare id and the typed User reference are the same entity.
+    assert decides('permit(principal is User, action == Action::"t", resource);',
+                   principals.user("team-42")) is True
     # A typed reference names one type and matches only that one.
-    typed = Watchlight(agent="probe", audit_file=False)
-    typed.allow('permit(principal is Agent, action == Action::"t", resource);')
-    assert typed.authorize(action="t", principal=principals.user("team-42"))["allowed"] is False
+    assert decides('permit(principal is Agent, action == Action::"t", resource);',
+                   principals.user("team-42")) is False
+
+
+def test_a_bare_principal_that_is_not_a_plain_id_is_refused(tmp_path):
+    """A bare name that holds a quote, or ``::``, is not a bare id: the engine
+    refuses it as an invalid request, and nothing is allowed."""
+    g = Watchlight(agent="probe", audit_file=False)
+    g.allow('permit(principal, action, resource);')
+    for bad in ('a"b', 'User::unquoted', "x::", "::x"):
+        with pytest.raises(AuthorizeRequestError):
+            g.authorize(action="t", principal=bad)
 
 
 def test_a_crafted_principal_or_agent_name_still_forges_nothing(tmp_path):
-    """Unchanged, and asserted so it stays that way: ids and names are opaque to
-    the engine, so a crafted one denies exactly like any other non-match."""
+    """Asserted so it stays that way: a crafted principal or agent name can never
+    name another entity or another type. Each one is either a plain non-match
+    (Deny) or refused as an invalid request; none is ever allowed."""
     g = Watchlight(agent="real-agent", audit_dir=str(tmp_path))
     g.allow('permit(principal == User::"alice", action == Action::"x", resource);')
-    for crafted in ('User::"bob"', 'User::"alice" || true', 'User::"alice"; permit(', "not-an-entity"):
+    for crafted in ('User::"bob"', "not-an-entity", principals.user('alice" || true || "')):
         assert g.authorize(action="x", principal=crafted)["allowed"] is False
+    for crafted in (
+        'User::"alice" || true',
+        'User::"alice"; permit(',
+        'User::"alice" ',
+        'User::"ali"ce"',
+        'Agent::"x" || principal == User::"alice"',
+    ):
+        with pytest.raises(AuthorizeRequestError):
+            g.authorize(action="x", principal=crafted)
     crafted_name = Watchlight(agent='evil" || true', audit_dir=str(tmp_path))
     crafted_name.allow(
         'permit(principal, action == Action::"y", resource) when { context.actor == "trusted" };'
     )
     assert crafted_name.authorize(action="y")["allowed"] is False
+    # A crafted agent name is escaped into its own principal, so it cannot
+    # forge an Agent-typed policy either.
+    forger = Watchlight(agent='nobody" || principal == Agent::"trusted', audit_file=False)
+    forger.allow('permit(principal == Agent::"trusted", action == Action::"y", resource);')
+    assert forger.authorize(action="y")["allowed"] is False
 
 
 # -- an unnamed governor asserts no identity ---------------------------------

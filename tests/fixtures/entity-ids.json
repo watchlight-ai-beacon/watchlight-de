@@ -1,0 +1,170 @@
+{
+ "_comment": "Entity ids and the request reference both lanes must build for them (principals.user), or null when both must refuse the id. Checked against the engine by tests/test_entity_ids.py and ts/test/entity-ids.test.mjs.",
+ "cases": [
+  {
+   "label": "an apostrophe, as in an email address",
+   "id": "o'brien@example.com",
+   "user": "User::\"o\\'brien@example.com\""
+  },
+  {
+   "label": "a quote",
+   "id": "a\"b",
+   "user": "User::\"a\\\"b\""
+  },
+  {
+   "label": "a backslash",
+   "id": "a\\b",
+   "user": "User::\"a\\\\b\""
+  },
+  {
+   "label": "an apostrophe, quotes and a backslash together",
+   "id": "it's \"quoted\" \\ here",
+   "user": "User::\"it\\'s \\\"quoted\\\" \\\\ here\""
+  },
+  {
+   "label": "a namespaced id",
+   "id": "db:4412",
+   "user": "User::\"db:4412\""
+  },
+  {
+   "label": "an inner space",
+   "id": "a b",
+   "user": "User::\"a b\""
+  },
+  {
+   "label": "leading and trailing spaces",
+   "id": " a ",
+   "user": "User::\" a \""
+  },
+  {
+   "label": "a precomposed accent",
+   "id": "caf\u00e9",
+   "user": "User::\"caf\u00e9\""
+  },
+  {
+   "label": "a combining mark after a letter",
+   "id": "e\u0301",
+   "user": "User::\"e\u0301\""
+  },
+  {
+   "label": "an emoji",
+   "id": "a\ud83d\ude00b",
+   "user": "User::\"a\ud83d\ude00b\""
+  },
+  {
+   "label": "an emoji alone",
+   "id": "\ud83d\ude00",
+   "user": "User::\"\ud83d\ude00\""
+  },
+  {
+   "label": "CJK",
+   "id": "\u7528\u6237",
+   "user": "User::\"\u7528\u6237\""
+  },
+  {
+   "label": "a double colon inside the quotes",
+   "id": "a::b",
+   "user": "User::\"a::b\""
+  },
+  {
+   "label": "a crafted id",
+   "id": "x\" || principal == Agent::\"y",
+   "user": "User::\"x\\\" || principal == Agent::\\\"y\""
+  },
+  {
+   "label": "NBSP U+00A0",
+   "id": "a\u00a0b",
+   "user": null
+  },
+  {
+   "label": "ZWSP U+200B",
+   "id": "a\u200bb",
+   "user": null
+  },
+  {
+   "label": "NEL U+0085, a C1 control",
+   "id": "a\u0085b",
+   "user": null
+  },
+  {
+   "label": "BOM U+FEFF",
+   "id": "\ufeffa",
+   "user": null
+  },
+  {
+   "label": "LINE SEPARATOR U+2028",
+   "id": "a\u2028b",
+   "user": null
+  },
+  {
+   "label": "PARAGRAPH SEPARATOR U+2029",
+   "id": "a\u2029b",
+   "user": null
+  },
+  {
+   "label": "SOFT HYPHEN U+00AD",
+   "id": "a\u00adb",
+   "user": null
+  },
+  {
+   "label": "IDEOGRAPHIC SPACE U+3000",
+   "id": "a\u3000b",
+   "user": null
+  },
+  {
+   "label": "private use U+E000",
+   "id": "a\ue000b",
+   "user": null
+  },
+  {
+   "label": "noncharacter U+10FFFF",
+   "id": "a\udbff\udfffb",
+   "user": null
+  },
+  {
+   "label": "unassigned U+0378",
+   "id": "a\u0378b",
+   "user": null
+  },
+  {
+   "label": "tag character U+E0001",
+   "id": "a\udb40\udc01b",
+   "user": null
+  },
+  {
+   "label": "variation selector U+FE0F",
+   "id": "a\ufe0fb",
+   "user": null
+  },
+  {
+   "label": "COMBINING GRAPHEME JOINER U+034F",
+   "id": "a\u034fb",
+   "user": null
+  },
+  {
+   "label": "a combining mark at the start",
+   "id": "\u0301a",
+   "user": null
+  },
+  {
+   "label": "a grapheme extender (Mc) at the start",
+   "id": "\u09bea",
+   "user": null
+  },
+  {
+   "label": "a newline",
+   "id": "a\nb",
+   "user": null
+  },
+  {
+   "label": "NUL",
+   "id": "a\u0000b",
+   "user": null
+  },
+  {
+   "label": "DEL",
+   "id": "a\u007fb",
+   "user": null
+  }
+ ]
+}

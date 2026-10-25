@@ -51,3 +51,5 @@ internal/
 # ── Node (example folders that install their own optional extras) ──
 node_modules/
 package-lock.json
+# The SDK's lockfile is committed: it pins the toolchain CI and contributors build with.
+!ts/package-lock.json

@@ -32,6 +32,16 @@ summarizer = root.attenuate(tools=["read_file"])     # subset of the parent
 
 - A child can drop tools, resources and intents and shrink budgets, never add.
   Widening raises `AttenuationDenied`.
+- A child's time budget is granted exactly or refused, never shortened. A child
+  that names no budget inherits the whole seconds its parent has left
+  (`remaining_seconds()`, rounded down). A child that names more than that is
+  refused with a `TimeBudget` violation, and the reason says how many seconds
+  are available. A scope's issue time is rounded down to the second, so right
+  after a parent is created a child can name at most the parent's budget minus
+  one, and each level down loses up to one more second: root 600, child 300,
+  grandchild 300, all at once, refuses the grandchild ("at most 299"). Leave
+  the budget out to inherit everything the parent has left. A parent whose
+  time has run out refuses every child.
 - The tree is bounded by **`max_delegation_depth`** — a governance control
   (default 8), set on the governor and lowerable per root scope. A hop past it
   raises `DelegationDepthExceeded` (reason code `DELEGATION_DEPTH_EXCEEDED`), a

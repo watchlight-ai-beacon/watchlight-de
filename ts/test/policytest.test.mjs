@@ -194,11 +194,16 @@ async function main() {
     gr.reload({ policies: NARROW });
     ok("reload drops inline policies too", (await dec("delete")) === "Deny");
 
-    // Atomic: a set that does not check leaves the governor exactly as it was.
-    let threwBad = false;
-    try { gr.reload(badFile); } catch { threwBad = true; }
-    ok("a refused annotation throws", threwBad);
-    ok("...and the previous set is intact", (await dec("read")) === "Allow" && gr.policyCount === 1);
+    // A set the engine refuses for an annotation surfaces it at ready() or the
+    // next decision (the engine compiles asynchronously), and never decides.
+    let readyBad = null;
+    try { await gr.reload(badFile).ready(); } catch (e) { readyBad = e; }
+    ok("a refused annotation surfaces at ready()", readyBad?.name === "PolicyError");
+    let decidedBad = null;
+    try { await dec("read"); } catch (e) { decidedBad = e; }
+    ok("...and the refused set never decides", decidedBad?.name === "PolicyError");
+    gr.reload({ policies: NARROW });
+    ok("...until a reload with a set that loads", (await dec("read")) === "Allow" && gr.policyCount === 1);
 
     for (const [label, fn] of [
       ["a missing file", () => gr.reload(join(suiteDir, "absent.json"))],
