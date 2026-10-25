@@ -50,15 +50,39 @@ governor:
 
 A decision made by a sub-agent names the sub-agent as `agent`, and carries the
 delegation chain, root first, in `actor_chain`, the same field a governor made
-with `delegate()` writes. Once a run is quarantined or severed, the plugin
-refuses every later call itself, without asking the policy engine. Each of
-those refusals is recorded as a `Deny` too. That covers the handle
-`start_run` returns, every sub-agent handle `spawn_subagent` returns, the
-Claude Agent SDK's native Task sub-agents, and the handles Pydantic AI's
-automatic instrumentation opens. One route is not covered: a handle you read
-from `watchlight_core.current_subagent_handle()` is the SDK's own handle, so a
-refusal it makes on its own is not recorded. Use the handle that
-`spawn_subagent` returned instead.
+with `delegate()` writes.
+
+The plugin's run handle refuses some calls itself, without a decision from the
+policy engine. Once a run is quarantined, severed, terminated or revoked, it
+refuses every later call. It refuses a call whose intent is not a typed intent
+(see [declaring an intent](#declaring-an-intent)) before anything is sent. When
+the engine refuses one of the call's terms before deciding (see the name
+limits below), the handle turns that into a refusal. And a call that is
+cancelled before the engine answers, for example by a framework hook's
+timeout, does not let the action run.
+
+What is guaranteed is this: every `authorize_action` or
+`authorize_action_detailed` call on the handle, and every call of a tool
+decorated with the handle's `guarded_tool`, that ends without a record from
+the engine is recorded by the handle, exactly once. It is recorded as a `Deny`
+unless the action went ahead (for a decorated tool, unless the tool's body
+started). That covers the handle `start_run` returns, every sub-agent handle
+`spawn_subagent` returns, the Claude Agent SDK's native Task sub-agents, and
+the handles Pydantic AI's automatic instrumentation opens.
+
+Some refusals are not decision records, because no authorize call is made:
+
+- A refused spawn. `spawn_subagent` raises and the child never runs, but a
+  spawn is not an authorize call. The in-process engine writes an
+  `attenuation` line for a spawn it refuses itself; a spawn the handle refuses
+  before asking (on a quarantined handle, say) writes nothing.
+- A refusal a framework integration makes before it reaches a handle, such as
+  a nested Pydantic AI agent whose parent run has already ended, or a Claude
+  Agent SDK hook call with no live run.
+- A refusal made by a handle you read from
+  `watchlight_core.current_subagent_handle()`. That is the SDK's own handle,
+  so a refusal it makes on its own is not recorded. Use the handle that
+  `spawn_subagent` returned instead.
 
 The principal, action, resource, `execution_id` and agent names are recorded
 exactly as the call gave them, never shortened or rewritten, so `counters()`
@@ -72,14 +96,35 @@ control character.
 The plugin applies the same name limits as `Watchlight.authorize` (see
 [using the governor](using-the-governor.md#names-have-a-length-limit)), at the
 decision. A principal, action, resource or `execution_id` that is not a string,
-holds a control character or is longer than 4096 bytes raises a `TypeError`
-from `handle.authorize_action` before the engine sees it, and nothing is
-recorded. `start_run` and `spawn_subagent` never raise for an agent name. An
-agent name longer than 4087 bytes is recorded as a value-free marker (its
-length, and a digest when it is longer than 256 bytes), and the record is
-marked `"oversized": true`, which `counters()` counts toward every quota. A
-refusal the handle makes on its own after a quarantine or a sever is recorded
-the same way when one of the call's terms breaks a limit.
+holds a control character or is longer than 4096 bytes is refused before the
+engine sees it. Through the run handle, that refusal is a denial:
+`handle.authorize_action` returns `False`, and the call is recorded as a `Deny`.
+The term itself is never written. The record carries a value-free marker in
+its place (the term's length, and a digest when it is longer than 256 bytes).
+How `counters()` counts the record depends on which term was refused:
+
+- When the action, resource or `execution_id` was refused, the principal is
+  intact, and the record is marked `"refused_term": true`. `counters()` counts
+  it as a denied decision of that principal, inside its window like any other
+  decision. It never counts as allowed, and never for another principal. Its
+  marker matches any `intent` or `resource` filter, because the refused term
+  might have been the one the query names.
+- When the principal itself was refused, whose decision it was cannot be read
+  from the record. It is marked `"refused_principal": true`, and `counters()`
+  counts it as a denied decision of every principal. It still counts only
+  inside its window, and never as allowed. A marker in its action or resource
+  matches any filter on that field; an intact action or resource is matched
+  as usual.
+
+If you call the backend's `authorize` directly instead of through a handle,
+the same term raises a `TypeError` and nothing is recorded, as on
+`Watchlight.authorize`. `start_run` and `spawn_subagent` never raise for an
+agent name. An agent name longer than 4087 bytes is recorded as a value-free
+marker, in a record marked `"oversized": true`. A refusal the handle makes on
+its own after a quarantine, a sever, a Terminate or a Revoke is recorded the
+same way when one of the call's terms breaks a limit. If a decision's record
+cannot be built at all, a placeholder that holds no name is written in its
+place, marked `"oversized": true`, and the failure is reported once on stderr.
 
 Keep every plugin agent name at or under 4087 bytes. A run whose agent name is
 longer is not refused, but every decision record of that run is marked
@@ -127,7 +172,59 @@ When `WATCHLIGHT_APDP_URL` is set, the policy service records the decisions,
 and the sink options are not used. The plugin prints a warning once to say so.
 If you build a plugin yourself around `in_process_backend()` instead of using
 `governed_plugin()`, every decision the engine makes is recorded, but the
-refusals the plugin makes on its own after a quarantine or a sever are not.
+refusals the plugin's handle makes on its own (after a quarantine, a sever, a
+Terminate or a Revoke, for an intent that is not typed, for a term the engine
+refused, or for a cancelled call) are not.
+
+### A sub-agent is confined to the scope its spawn granted
+
+When a plugin spawns a sub-agent, the spawn names the tools, resources and
+intents the sub-agent may use, and a time budget. Every call the sub-agent
+makes is checked against that grant before your policies are read. A call
+outside it is denied with the reason `scope_attenuation_violation`, even when a
+policy would permit it. The first such denial also invalidates the sub-agent's
+run handle. After that, every call on that handle is denied
+(`run_handle_invalidated`), every call on a sub-agent spawned under it is
+denied, and the handle cannot spawn another sub-agent. A `preflight_step`
+answers the same way but never invalidates the handle. The parent run is not
+affected, and a root run has no grant to check.
+
+This needs `watchlight-agent-sdk` 0.10.1 and `watchlight-engine` 0.2.4 or
+later, which the framework extras install. Each of these denials is recorded as
+a `Deny` under the sub-agent, like any other decision. The SDK also writes a
+value-free `scope_violation_observed` line to the same file when it invalidates
+a handle. That line names the sub-agent's handle, the tool it tried and why the
+handle was invalidated. It is not a decision, and `counters()` never counts it.
+
+So grant each sub-agent every tool it will call. A sub-agent spawned with no
+tools is granted none: for example, the nested agent that Pydantic AI's
+automatic instrumentation opens is spawned with no tools, so every call it
+authorizes is denied.
+
+### Declaring an intent
+
+The `watchlight.declare_intent` tool that the framework plugins give an agent
+takes an `objective` and a `category`, and an optional `justification`. The
+category is one of `customer_support`, `data_analysis`, `content_generation`,
+`system_administration`, `financial_operation`, `external_integration`,
+`research`, `code_generation` and `security_compliance`, or `custom:<name>` for
+anything else. A declaration without a valid category is rejected, and once a
+run has declared a category, declaring a different one is rejected too.
+
+An intent you pass to `authorize_action` yourself must be typed in the same
+way, with both an objective and a category:
+
+```python
+await handle.authorize_action(
+    "read", "tool/web_search",
+    intent={"objective": "summarise the quarterly report", "category": "research"},
+)
+```
+
+An intent that is not typed is never dropped, because sending no intent would
+skip the intent checks. The handle refuses the call instead, before anything is
+sent, and the refusal is recorded as a `Deny`. Neither the objective nor the
+category is ever written to the audit trail.
 
 ### Framework-created subagents inherit framework tools
 
