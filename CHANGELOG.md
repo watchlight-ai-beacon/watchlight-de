@@ -13,6 +13,9 @@ Each entry links to its release, which carries the reasoning and the measurement
 
 ## Unreleased
 
+**Security**
+- Hardening: the TypeScript SDK checks an entity type name (`entityRef`, `policyEntityRef`, `entityKey`) by splitting it on `::` and testing each part, instead of with one pattern that repeats a group. The check runs in linear time on any input, including a long type name built to make a backtracking matcher retry. It accepts and refuses exactly the same names as before.
+
 **Added**
 - `watchlight.deepagents.governed_plugin`: governs a deepagents deep agent in-process. Pass the plugin to `create_governed_deep_agent` from `watchlight-deepagents`. Every tool and filesystem call the agent makes is authorized by your policy before it runs. Each `task` sub-agent runs under its own run and may call only the tools its scope in `subagent_scopes` grants; a sub-agent with no scope, including deepagents' automatic `general-purpose` one, may call none. Every decision goes to the local audit trail. `examples/governed_deepagents.py` now builds a real governed deep agent and runs without an API key.
 
