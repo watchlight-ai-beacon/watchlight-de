@@ -104,8 +104,27 @@ async function main() {
   // ── entity type names ────────────────────────────────────────────────────
   // A type is one or more identifiers joined by `::`. The check is a split on
   // `::` plus a per-part test, which must accept exactly what the earlier
-  // whole-string pattern accepted, and run in linear time on any input.
-  const OLD_TYPE_NAME = /^[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*$/;
+  // whole-string pattern accepted (identifier, then any number of `::`
+  // identifier), and run in linear time on any input. The reference below
+  // reads that grammar one character at a time, independently of the split.
+  const IDENT_START = /^[A-Za-z_]$/;
+  const IDENT_CHAR = /^[A-Za-z0-9_]$/;
+  const referenceAccepts = (s) => {
+    let state = "start"; // "start": an identifier must begin; "ident": inside one; "colon": one ':' seen
+    for (const c of s) {
+      if (state === "start") {
+        if (!IDENT_START.test(c)) return false;
+        state = "ident";
+      } else if (state === "ident") {
+        if (c === ":") state = "colon";
+        else if (!IDENT_CHAR.test(c)) return false;
+      } else {
+        if (c !== ":") return false;
+        state = "start";
+      }
+    }
+    return state === "ident";
+  };
   // policyEntityRef checks the type and bounds nothing else, so the answer is
   // the type check's alone, at any length.
   const typeAccepted = (type) => {
@@ -121,16 +140,16 @@ async function main() {
     ok(`type ${JSON.stringify(type)} is refused`, !typeAccepted(type) && !keyAccepted(type));
   }
   // Every string up to five characters over an alphabet that reaches each
-  // branch of the grammar gets the same answer as the earlier pattern.
+  // branch of the grammar gets the same answer as the reference.
   const alphabet = ["a", "Z", "_", "0", ":", "-"];
   let mismatches = [];
   const walk = (prefix, depth) => {
-    if (typeAccepted(prefix) !== OLD_TYPE_NAME.test(prefix)) mismatches.push(prefix);
+    if (typeAccepted(prefix) !== referenceAccepts(prefix)) mismatches.push(prefix);
     if (depth === 0) return;
     for (const c of alphabet) walk(prefix + c, depth - 1);
   };
   walk("", 5);
-  ok("type check agrees with the earlier pattern on every short string", mismatches.length === 0,
+  ok("type check agrees with the reference on every short string", mismatches.length === 0,
      mismatches.slice(0, 10).map((m) => JSON.stringify(m)).join(","));
   // Long inputs built to make a backtracking matcher retry finish quickly.
   const longInputs = [
