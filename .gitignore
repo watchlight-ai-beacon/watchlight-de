@@ -53,3 +53,5 @@ node_modules/
 package-lock.json
 # The SDK's lockfile is committed: it pins the toolchain CI and contributors build with.
 !ts/package-lock.json
+# So is the plugin workspace's, for the same reason.
+!integrations/plugins/ts/package-lock.json
