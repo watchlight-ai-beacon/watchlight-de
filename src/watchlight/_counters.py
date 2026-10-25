@@ -19,8 +19,12 @@ What counts (identical in the TypeScript package):
   let the body run (``Deny`` and ``NeedsApproval`` holds); ``"all"`` = both. So
   ``allowed + denied == all``.
 * ``principal`` (required), ``intent`` and ``resource`` (optional) match the
-  record's fields by exact string equality — no prefixes, no globs. A record
-  without a ``principal`` matches no principal.
+  record's fields by the entity they name — no prefixes, no globs. A bare name
+  is read as the engine reads it, so ``u1`` and ``User::"u1"`` are one
+  principal, ``read`` and ``Action::"read"`` one intent, and ``r`` and
+  ``Resource::"r"`` one resource, and an escape matches the character it
+  stands for. A caller cannot widen a quota by switching between spellings. A
+  record without a ``principal`` matches no principal.
 * the window is ``(end - window, end]`` — start exclusive, end inclusive — on
   the record's own ``ts`` (ISO-8601 with a zone), never on file order. ``end``
   defaults to now. Records timestamped after ``end`` do not count.
@@ -126,8 +130,18 @@ class AuditTrailUnreadable(RuntimeError):
 #: — the validated, resolved form of the caller's arguments, key-for-key
 #: identical to what the TypeScript lane passes. ``window["start"]`` is exclusive
 #: and ``window["end"]`` inclusive, both ISO-8601 UTC, so the source can
-#: translate them straight into a range query; ``intent`` / ``resource`` match by
-#: exact string equality, like the local scan.
+#: translate them straight into a range query. A store holds each record's
+#: names exactly as they were written, and one principal can be spelled two
+#: ways (``u1`` and ``User::"u1"``), so the source is asked once for each
+#: spelling of the principal, with ``principal`` matched by exact string
+#: equality, and the answers are added. Each record carries one spelling, so it
+#: is counted once. A ``User`` principal usually takes two calls and any other
+#: type one (a reference written with a needless escape adds one). A source
+#: that already compares principals by entity would count a record more than
+#: once: match ``principal`` as an exact string. ``intent`` / ``resource`` are passed as the caller wrote them; a source
+#: that filters on them should compare
+#: :func:`watchlight.principals.entity_key` (bare type ``"Action"`` /
+#: ``"Resource"``) so that ``read`` and ``Action::"read"`` count together.
 #:
 #: Must return a non-negative ``int`` no larger than :data:`MAX_COUNTER_VALUE`,
 #: or an awaitable of one (an async source is read with ``counters_async``).
@@ -440,9 +454,9 @@ def _tally_line(raw: Optional[bytes], f: dict, t: _Tally) -> None:
     outcome = f["outcome"]
     allowed = decision == "Allow"
     matches = (
-        rec.get("principal") == f["principal"]
-        and (f["intent"] is None or rec.get("intent") == f["intent"])
-        and (f["resource"] is None or rec.get("resource") == f["resource"])
+        _names(rec.get("principal"), f["principal"], principals.BARE_PRINCIPAL_TYPE)
+        and (f["intent"] is None or _names(rec.get("intent"), f["intent"], principals.BARE_ACTION_TYPE))
+        and (f["resource"] is None or _names(rec.get("resource"), f["resource"], principals.BARE_RESOURCE_TYPE))
         and ((outcome == "allowed" and allowed) or (outcome == "denied" and not allowed) or outcome == "all")
     )
     ts = _parse_iso_millis(rec.get("ts"))
@@ -457,6 +471,19 @@ def _tally_line(raw: Optional[bytes], f: dict, t: _Tally) -> None:
     t.records += 1
     if matches and f["start"] < ts <= f["end"]:
         t.count += 1
+
+
+def _names(value: Any, key: tuple, bare_type: str) -> bool:
+    """True when a record's field names the entity ``key`` (see
+    :func:`watchlight.principals.entity_key`). A field that is not a string
+    names nothing."""
+    return isinstance(value, str) and (value == key[2] or principals.entity_key(value, bare_type) == key[:2])
+
+
+def _filter_key(value: str, bare_type: str) -> tuple:
+    # The given text rides along, so the common case, a record spelled exactly
+    # as the query, needs no decoding.
+    return principals.entity_key(value, bare_type) + (value,)
 
 
 def _prepare_counters(
@@ -490,9 +517,9 @@ def _prepare_counters(
     end = _resolve_now(now)
     start = end - seconds * 1000
     f = {
-        "principal": principal,
-        "intent": intent,
-        "resource": resource,
+        "principal": _filter_key(principal, principals.BARE_PRINCIPAL_TYPE),
+        "intent": None if intent is None else _filter_key(intent, principals.BARE_ACTION_TYPE),
+        "resource": None if resource is None else _filter_key(resource, principals.BARE_RESOURCE_TYPE),
         "outcome": outcome,
         "start": start,
         "end": end,
@@ -513,23 +540,44 @@ def _prepare_counters(
     return f, result
 
 
-def _query_of(result: dict) -> dict:
-    """The query dict a :data:`CounterSource` is handed for these arguments.
+def _queries_of(result: dict) -> list:
+    """The query dicts a :data:`CounterSource` is handed for these arguments.
+
+    A store holds each record's names exactly as they were written, and one
+    principal can be spelled two ways (``u1`` and ``User::"u1"``). So the source
+    is asked once for each spelling of the principal (see
+    :func:`watchlight.principals.entity_spellings`), the caller's own spelling
+    first, and the answers are added. Each record carries one spelling, so no
+    record is counted twice, and a record in either spelling is counted.
+    ``intent`` and ``resource`` are passed as given: a source may ignore those
+    filters, and asking it once per spelling of them would count its records
+    more than once.
 
     ``intent`` / ``resource`` are OMITTED when the caller did not filter on them
-    — never present as ``None`` — so the dict is key-for-key what the TypeScript
-    lane passes (and serialises to the same JSON): one shared counting service
-    must not have to recognise two shapes. Read them with ``query.get("intent")``.
+    — never present as ``None`` — so each dict is key-for-key what the
+    TypeScript lane passes (and serialises to the same JSON), in the same order:
+    one shared counting service must not have to recognise two shapes. Read them
+    with ``query.get("intent")``.
     """
-    query = {
-        "principal": result["principal"],
-        "outcome": result["outcome"],
-        "window": dict(result["window"]),
-    }
-    for key in ("intent", "resource"):
-        if result[key] is not None:
-            query[key] = result[key]
-    return query
+    queries = []
+    for spelling in principals.entity_spellings(result["principal"], principals.BARE_PRINCIPAL_TYPE):
+        query = {"principal": spelling, "outcome": result["outcome"], "window": dict(result["window"])}
+        for key in ("intent", "resource"):
+            if result[key] is not None:
+                query[key] = result[key]
+        queries.append(query)
+    return queries
+
+
+def _check_source_count(count: Any) -> int:
+    if (
+        isinstance(count, bool)
+        or not isinstance(count, int)
+        or count < 0
+        or count > MAX_COUNTER_VALUE
+    ):
+        raise CounterSourceError("a counter source must return a non-negative integer count")
+    return count
 
 
 #: Largest count a source may return: the same bound as TypeScript's
@@ -539,16 +587,12 @@ def _query_of(result: dict) -> dict:
 MAX_COUNTER_VALUE = 2**53 - 1
 
 
-def _counters_from_source_value(count: Any, result: dict) -> dict:
-    """Turn a source's return value into a counters dict, or fail closed."""
-    if (
-        isinstance(count, bool)
-        or not isinstance(count, int)
-        or count < 0
-        or count > MAX_COUNTER_VALUE
-    ):
-        raise CounterSourceError("a counter source must return a non-negative integer count")
-    result["count"] = count
+def _counters_from_source_values(counts: list, result: dict) -> dict:
+    """Add a source's answers into a counters dict, or fail closed."""
+    total = sum(_check_source_count(count) for count in counts)
+    if total > MAX_COUNTER_VALUE:
+        raise CounterSourceError("the counter source's counts add up to more than the largest count")
+    result["count"] = total
     return result
 
 
@@ -560,31 +604,37 @@ def count_from_source(source: CounterSource, /, **kwargs: Any) -> dict:
     ``counters_async``, awaited inside an ``async def`` ``context`` binding."""
     _f, result = _prepare_counters(**kwargs)
     result["source"] = "external"
-    try:
-        count = source(_query_of(result))
-    except Exception as exc:  # noqa: BLE001 — fail-closed
-        raise CounterSourceError("the counter source raised") from exc
-    if inspect.isawaitable(count):
-        close = getattr(count, "close", None)
-        if callable(close):
-            close()  # never surfaces as "never awaited": the caller gets an error
-        raise CounterSourceError(
-            "the counter source is asynchronous — read it with counters_async()"
-        )
-    return _counters_from_source_value(count, result)
+    counts = []
+    for query in _queries_of(result):
+        try:
+            count = source(query)
+        except Exception as exc:  # noqa: BLE001 — fail-closed
+            raise CounterSourceError("the counter source raised") from exc
+        if inspect.isawaitable(count):
+            close = getattr(count, "close", None)
+            if callable(close):
+                close()  # never surfaces as "never awaited": the caller gets an error
+            raise CounterSourceError(
+                "the counter source is asynchronous — read it with counters_async()"
+            )
+        counts.append(_check_source_count(count))
+    return _counters_from_source_values(counts, result)
 
 
 async def count_from_source_async(source: CounterSource, /, **kwargs: Any) -> dict:
     """:func:`count_from_source` for a source that may return an awaitable."""
     _f, result = _prepare_counters(**kwargs)
     result["source"] = "external"
-    try:
-        count = source(_query_of(result))
-        if inspect.isawaitable(count):
-            count = await count
-    except Exception as exc:  # noqa: BLE001 — fail-closed
-        raise CounterSourceError("the counter source raised") from exc
-    return _counters_from_source_value(count, result)
+    counts = []
+    for query in _queries_of(result):
+        try:
+            count = source(query)
+            if inspect.isawaitable(count):
+                count = await count
+        except Exception as exc:  # noqa: BLE001 — fail-closed
+            raise CounterSourceError("the counter source raised") from exc
+        counts.append(_check_source_count(count))
+    return _counters_from_source_values(counts, result)
 
 
 def count_audit_records(
@@ -601,9 +651,11 @@ def count_audit_records(
     """Count decision records in the audit file at ``audit_path``. See the module
     docstring for exactly what counts.
 
-    :param principal: Cedar principal exactly as written on the record, e.g. ``User::"u1"``.
-    :param intent: match only decisions with this intent (the Cedar action). Exact.
-    :param resource: match only decisions on this resource. Exact.
+    :param principal: the Cedar principal, e.g. ``User::"u1"``. A record matches
+        when it names the same entity, in any spelling (``u1`` too).
+    :param intent: match only decisions with this intent (the Cedar action),
+        in any spelling.
+    :param resource: match only decisions on this resource, in any spelling.
     :param window: ``"15m"``, ``"1h"``, ``"24h"``, ``"7d"``, a bare number of
         seconds as a string, or an ``int`` of seconds. Positive, at most 366 days.
     :param outcome: ``"allowed"`` (default), ``"denied"`` or ``"all"``.

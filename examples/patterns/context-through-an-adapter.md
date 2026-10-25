@@ -66,7 +66,7 @@ constructor wiring. The subject and the context go on the run handle instead:
 async with await plugin.start_run("support-agent") as handle:
     ok = await handle.authorize_action(
         "read_ticket", "tool/read_ticket",
-        principal=f'User::"{user_id}"',
+        principal=principals.user(user_id),
         context={"caller": caller, "owner": owner},
     )
 ```
@@ -78,8 +78,9 @@ extras require.
 ## Worth knowing
 
 - **Write the entity type.** These terms reach the engine as given. A bare `u-1`
-  matches a policy naming that id under `User`, `Agent`, `Group` or `Role`, and
-  when it matches more than one an allow beats a forbid.
+  is read as the user `User::"u-1"` and never matches a policy written for
+  another type. Build the reference with `principals.user`, which escapes a
+  quote, an apostrophe or a backslash in the id.
 - `governed_plugin()` refuses `principal=`, `context=` and `resource=` by name.
   All three belong to a call, and accepting them on the constructor would drop
   them.

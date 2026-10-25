@@ -18,8 +18,14 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomBytes, createHmac, timingSafeEqual } from "node:crypto";
-import { Scope, DEFAULT_MAX_DELEGATION_DEPTH, type AttenuateOptions, ScopePreview } from "./attenuation";
-import { MAX_CHAIN_LENGTH as DEPTH_BOUND } from "./scope-token";
+import {
+  Scope,
+  DEFAULT_MAX_DELEGATION_DEPTH,
+  type AttenuateOptions,
+  ScopePreview,
+  checkRootTimeBudget,
+} from "./attenuation";
+import { MAX_CHAIN_LENGTH as DEPTH_BOUND, nowSeconds } from "./scope-token";
 import {
   AuditTrail,
   type AuditRecord,
@@ -69,7 +75,7 @@ import {
 } from "./sanitize";
 import { screen as screenText, ScreenError, type ScreenOptions, type ScreenResult } from "./screen";
 import { assertAgentNameRules, assertName, assertNameList, assertPrincipal, principals } from "./principals";
-import { checkPolicyAnnotations } from "./annotations";
+import { PolicyError } from "./annotations";
 import { policyEntries, readPolicyFile, type PolicyEntry } from "./policy-file";
 import { DEFAULT_ON_RESULT_TIMEOUT_MS, EgressTimeout, resolveEgressTimeoutMs } from "./egress";
 import {
@@ -158,14 +164,21 @@ export {
   entityRef,
   policyEntityRef,
   escapeCedarString,
+  entityKey,
   MAX_NAME_BYTES,
   MAX_AGENT_NAME_BYTES,
   MAX_SCOPE_ENTRIES,
   MAX_SCOPE_LIST_BYTES,
   MAX_ACTOR_CHAIN_BYTES,
 } from "./principals";
-export { PolicyError, ENFORCEMENT_EFFECTS, ENFORCEMENT_EFFECT_ANNOTATION } from "./annotations";
-export type { EnforcementEffect } from "./annotations";
+export {
+  PolicyError,
+  ENFORCEMENT_EFFECT_ANNOTATION,
+  ENFORCEMENT_EFFECT_NAME_NEAR_MISS,
+  POLICY_ERROR_CODES,
+  UNRECOGNISED_ENFORCEMENT_EFFECT,
+} from "./annotations";
+export type { PolicyErrorCode } from "./annotations";
 export {
   screen,
   ScreenError,
@@ -419,15 +432,13 @@ export interface WatchlightOptions {
    *  silently.
    *  @deprecated Use `signingSecret` (and `WATCHLIGHT_SIGNING_SECRET`). */
   tokenSecret?: SecretInput;
-  /** How a call that names no `principal` is recorded. Defaults to `true`: the
-   *  agent is the subject and is recorded as a TYPED entity reference,
-   *  `Agent::"<name>"` (build one with {@link principals}). Set `false` to
-   *  restore the previous behaviour, where the BARE agent name — untyped, and
-   *  indistinguishable on sight from a user id — stood in for the missing
-   *  subject; that is transitional, warns once per process, and is removed in a
-   *  later version. See the 0.8.0 entry in the breaking-changes log:
+  /** Accepted only as `true`. A call that names no `principal` is always
+   *  decided and recorded as the typed `Agent::"<name>"` (build one with
+   *  {@link principals}). `false`, which recorded the bare agent name, was
+   *  removed in 0.15.0 and throws a `RangeError`: the engine reads a bare name
+   *  as a `User`. See the 0.15.0 entry in the breaking-changes log:
    *  https://github.com/watchlight-ai-beacon/watchlight-de/blob/main/docs/breaking-changes.md */
-  strictPrincipal?: boolean;
+  strictPrincipal?: true;
   /** How many attenuation hops a sub-agent tree may go below its root (depth 0)
    *  — a governance control, like a privilege-escalation depth limit in
    *  traditional IAM. Defaults to {@link DEFAULT_MAX_DELEGATION_DEPTH} (8); `0`
@@ -720,7 +731,6 @@ interface GovernorState {
   /** Resolved sources already loaded — the key of {@link Watchlight.load}'s
    *  idempotence. */
   sources: Set<string>;
-  strictPrincipal: boolean;
   /** The sub-agent depth limit — shared, so every name of one governor
    *  attenuates under the same governance control. */
   maxDelegationDepth: number;
@@ -888,6 +898,7 @@ function resolveSigningSecrets(opts: WatchlightOptions): Uint8Array[] | undefine
 }
 
 function newState(opts: WatchlightOptions): GovernorState {
+  checkStrictPrincipal(opts.strictPrincipal);
   // Resolved once: the approval key falls back to the scope-token secret, so
   // both are derived from the same configured value.
   const signingSecrets = resolveSigningSecrets(opts);
@@ -921,7 +932,6 @@ function newState(opts: WatchlightOptions): GovernorState {
     policyCount: 0,
     announced: false,
     sources: new Set<string>(),
-    strictPrincipal: opts.strictPrincipal !== false,
     maxDelegationDepth:
       opts.maxDelegationDepth === undefined
         ? DEFAULT_MAX_DELEGATION_DEPTH
@@ -941,22 +951,20 @@ function newState(opts: WatchlightOptions): GovernorState {
   };
 }
 
-/** One process-wide notice that the agent name is standing in for a missing
- *  subject — the transitional `strictPrincipal: false` behaviour. */
-let warnedLenientPrincipal = false;
-function warnLenientPrincipal(): void {
-  if (warnedLenientPrincipal) return;
-  warnedLenientPrincipal = true;
-  // eslint-disable-next-line no-console
-  console.warn(
-    "watchlight: strictPrincipal is off, so the BARE agent name is recorded as the acting " +
-      "principal of calls that name none, instead of the typed Agent::\"<name>\". The bare " +
-      "name binds to an unpredictable one of the entity types your policies name it with, " +
-      "and the same policy set can decide differently in different processes. This is " +
-      "transitional and is removed in a later version: name the subject at the call site " +
-      "with `principal` (see `principals.user`), and write agent-scoped policies against " +
-      "Agent::\"<name>\" or the reserved `context.actor` key."
-  );
+/** Why `strictPrincipal: false` is refused. The bare agent name it recorded is
+ *  read by the engine as a `User`, so the agent was decided as a user with that
+ *  id. The message is fixed. */
+const STRICT_PRINCIPAL_REMOVED_MESSAGE =
+  "strictPrincipal: false was removed in 0.15.0: a call that names no principal is " +
+  'always decided and recorded as the typed Agent::"<name>". Name the subject at the ' +
+  "call site with `principal` (see `principals.user`), and write agent-scoped policies " +
+  'against Agent::"<name>". See docs/breaking-changes.md';
+
+/** `strictPrincipal` is accepted only as `true` (or left out), so a deployment
+ *  that still asks for the removed behaviour fails at start-up instead of being
+ *  decided as a user. */
+function checkStrictPrincipal(value: unknown): void {
+  if (value !== undefined && value !== true) throw new RangeError(STRICT_PRINCIPAL_REMOVED_MESSAGE);
 }
 
 export interface ScopeOptions {
@@ -966,6 +974,11 @@ export interface ScopeOptions {
   /** Lowers this tree's depth limit below the governor's `maxDelegationDepth`;
    *  it never raises it. */
   maxDepth?: number;
+  /** The root's time budget: a whole number of seconds from 1 to 2**32 - 1
+   *  (omitted: 3600; `null` or a non-integer is a `TypeError`, out of range a
+   *  `RangeError`). Each sub-agent
+   *  scope gets at most what its parent has left: a larger named budget is
+   *  refused, never shortened. */
   timeBudgetSeconds?: number;
 }
 
@@ -1139,14 +1152,14 @@ export class Watchlight {
    *  more than once). (In networked mode policies are managed by the control
    *  plane and this is ignored, with a one-time warning.)
    *
-   *  CHECKED BEFORE IT LOADS: a policy carrying an `@enforcement_effect` value
-   *  the engine does not implement throws {@link PolicyError} naming the value
-   *  and the accepted set ({@link ENFORCEMENT_EFFECTS}), rather than loading and
-   *  quietly deciding without the effect — which on a `permit` would turn an
-   *  approval hold into a plain allow. An annotation NAME that is a near miss
-   *  for `@enforcement_effect` warns on the console; any other annotation is
-   *  your own and passes without comment. Every policy entry point goes through
-   *  here, {@link load} and the CLI included.
+   *  REFUSED IF THE EFFECT CANNOT BE HONOURED: the engine refuses a policy whose
+   *  `@enforcement_effect` value it does not implement, or whose annotation
+   *  name is a near miss for `enforcement_effect`. That surfaces as
+   *  {@link PolicyError} (its `code` names which), the same way a compile error
+   *  does, below: the set never decides without the effect, which on a
+   *  `permit` would turn an approval hold into a plain allow. Any other
+   *  annotation is your own. Every policy entry point goes through here,
+   *  {@link load} and the CLI included.
    *
    *  COMPILED BEFORE THE FIRST DECISION, NEVER SKIPPED. The engine compiles
    *  asynchronously, so a Cedar syntax error surfaces at {@link ready} or the
@@ -1159,7 +1172,6 @@ export class Watchlight {
 
   private _add(cedarCode: string, name?: string, source?: string): this {
     const policyName = name ?? `policy-${this._shared.policyCount}`;
-    checkPolicyAnnotations(cedarCode, policyName);
     this._backend.addPolicy({ name: policyName, code: cedarCode, source });
     this._shared.policyCount += 1;
     return this;
@@ -1203,10 +1215,10 @@ export class Watchlight {
    *  the previous copy stays and `policyCount` grows; construct a fresh
    *  governor when you need the old set gone.
    *
-   *  CHECKED BEFORE IT LOADS: the whole file is checked first, so a policy
-   *  carrying an `@enforcement_effect` the engine does not implement throws
-   *  {@link PolicyError} and NOTHING from that file is added — the governor is
-   *  left exactly as it was, and the source is not remembered. See
+   *  A policy the engine refuses, for a Cedar error or for an
+   *  `@enforcement_effect` it cannot honour, surfaces at {@link ready} or the
+   *  next decision as {@link PolicyCompileError} or {@link PolicyError}, and
+   *  every decision throws it until {@link reload} replaces the set. See
    *  {@link allow}. */
   load(
     file: string,
@@ -1215,13 +1227,6 @@ export class Watchlight {
     const key = opts.sourceId ?? resolveSource(file);
     if (!opts.force && this._shared.sources.has(key)) return this;
     const entries = readPolicyFile(file, { op: "load", allowEmpty: opts.allowEmpty });
-    // Check the whole file before adding any of it, so one refused policy leaves
-    // the governor exactly as it was rather than half-loaded.
-    entries.forEach((e, offset) =>
-      checkPolicyAnnotations(e.code, e.name ?? `policy-${this._shared.policyCount + offset}`, {
-        warn: false,
-      })
-    );
     for (const e of entries) this._add(e.code, e.name, file);
     this._shared.sources.add(key);
     return this;
@@ -1242,17 +1247,17 @@ export class Watchlight {
    * so it could only ever WIDEN authority. An operator console that can edit a
    * policy set has to be able to take one away.
    *
-   * FAIL-CLOSED ON THE WAY IN. The new set is parsed and its annotations are
-   * checked before anything is swapped, so a missing file, an empty set or a
-   * refused annotation leaves the governor exactly as it was and throws. Only
-   * those checks are atomic.
+   * FAIL-CLOSED ON THE WAY IN. The new set is parsed before anything is
+   * swapped, so a missing file or an empty set leaves the governor exactly as
+   * it was and throws. Only those checks are atomic.
    *
-   * A Cedar compile error is not: the engine compiles asynchronously, so it
-   * cannot throw here. The new set is swapped in, and the error surfaces at
-   * {@link ready} or the next decision as {@link PolicyCompileError}. From then
-   * on every decision throws it until a reload with a set that compiles: the
-   * old set is gone, and the new one never decides without the policy that
-   * failed. `await govern.reload(...).ready()` surfaces it at once.
+   * A policy the engine refuses is not: the engine compiles asynchronously, so
+   * it cannot throw here. The new set is swapped in, and the refusal surfaces at
+   * {@link ready} or the next decision as {@link PolicyCompileError} (a Cedar
+   * error) or {@link PolicyError} (an `@enforcement_effect` the engine cannot
+   * honour). From then on every decision throws it until a reload with a set
+   * that loads: the old set is gone, and the new one never decides without the
+   * policy that failed. `await govern.reload(...).ready()` surfaces it at once.
    *
    * It reads the same file shapes as {@link load} and refuses the same
    * mistakes. A missing file or an empty set throws rather than replacing the
@@ -1287,11 +1292,6 @@ export class Watchlight {
       entries = policyEntries(source.policies, "the policies given", { op: "reload" });
       key = source.sourceId;
     }
-    // Check every policy BEFORE building anything, so a refused annotation
-    // leaves the governor untouched — the same contract `load` gives.
-    entries.forEach((e, offset) =>
-      checkPolicyAnnotations(e.code, e.name ?? `policy-${offset}`, { warn: false })
-    );
     const backend = selectBackend(this._shared.backendOptions);
     entries.forEach((e, offset) =>
       backend.addPolicy({
@@ -1310,8 +1310,7 @@ export class Watchlight {
   /** The subject of a call that named none: a TYPED reference to this agent,
    *  `Agent::"<name>"` — when no human is on whose behalf the call runs, the
    *  agent is the subject, and typing it says so on sight and in a policy.
-   *  Transitionally, `strictPrincipal: false` restores the bare, untyped agent
-   *  name (warned once per process). Framework adapters use this so their
+   *  Framework adapters use this so their
    *  `egress` records carry the same subject as the decision they join.
    *  @internal */
   _principal(explicit?: string, makeError?: (message: string) => Error): string {
@@ -1319,9 +1318,7 @@ export class Watchlight {
     // `""` (from `user?.id ?? ""`) used to fall through to the agent here, so a
     // person's action was attributed to the runtime; it now raises.
     if (explicit !== undefined) return assertPrincipal(explicit, makeError);
-    if (this._shared.strictPrincipal) return principals.agent(this.agent);
-    warnLenientPrincipal();
-    return this.agent;
+    return principals.agent(this.agent);
   }
 
   // ── sub-agent scope attenuation ───────────────────────────────────
@@ -1338,6 +1335,11 @@ export class Watchlight {
   }
 
   async scope(opts: ScopeOptions = {}): Promise<Scope> {
+    return this._newRoot(opts, undefined);
+  }
+
+  /** {@link scope}, issued at `issuedAt` (epoch seconds; `undefined`: now). */
+  private async _newRoot(opts: ScopeOptions, issuedAt: number | undefined): Promise<Scope> {
     // Bounded before the engine: the root's tools are recorded. The checked
     // arrays are the ones used — each iterable is read exactly once.
     opts = {
@@ -1347,6 +1349,7 @@ export class Watchlight {
       intents: assertNameList(opts.intents, "intents"),
     };
     const budget = this._rootBudget(opts.maxDepth);
+    const timeBudgetSeconds = checkRootTimeBudget(opts.timeBudgetSeconds === undefined ? 3600 : opts.timeBudgetSeconds);
     const eng = this._backend.engine();
     if (!eng) {
       throw new Error(
@@ -1364,9 +1367,10 @@ export class Watchlight {
       allowedIntents: norm(opts.intents),
       maxDepth: budget,
       maxDelegationDepth: budget,
-      timeBudgetSeconds: opts.timeBudgetSeconds ?? 3600,
+      timeBudgetSeconds,
       depth: 0,
       signingSecrets: this._signingSecrets,
+      issuedAt,
     });
     root.emitRoot();
     return root;
@@ -1390,6 +1394,7 @@ export class Watchlight {
       intents: assertNameList(opts.intents, "intents"),
     };
     const budget = this._rootBudget(opts.maxDepth);
+    const timeBudgetSeconds = checkRootTimeBudget(opts.timeBudgetSeconds === undefined ? 3600 : opts.timeBudgetSeconds);
     const eng = this._backend.engine();
     if (!eng) {
       throw new Error(
@@ -1404,7 +1409,7 @@ export class Watchlight {
       allowedResources: norm(opts.resources),
       allowedIntents: norm(opts.intents),
       maxDepth: budget,
-      timeBudgetSeconds: opts.timeBudgetSeconds ?? 3600,
+      timeBudgetSeconds,
       depth: 0,
       maxDelegationDepth: budget,
       actorChain: [this.agent],
@@ -1434,7 +1439,14 @@ export class Watchlight {
    * engine-granted result differs from the token's claim is rejected. Throws
    * {@link ScopeTokenError} when `signingSecret` is unset (fail-closed) or the
    * token is malformed, tampered, expired, or bound to a different agent. The
-   * returned scope cannot outlive the token's `exp`.
+   * returned scope cannot outlive the token's `exp`, and a sub-agent scope
+   * attenuated from it gets at most the whole seconds left before that `exp`: a
+   * larger named budget is refused.
+   *
+   * The chain is replayed at one whole-second instant, the replayed root's issue
+   * time, so each level's budget is checked against the level above it exactly
+   * as granted, and a second ticking over mid-replay cannot refuse a valid
+   * token.
    */
   async scopeFromToken(token: string): Promise<Scope> {
     // Any configured secret may have signed it — a rotation is two deploys, not
@@ -1444,21 +1456,42 @@ export class Watchlight {
     // The receiving governor's own maxDelegationDepth still applies: a token
     // cannot carry a deeper tree than this governor permits.
     const rootBudget = Math.min(claims.root.max_depth, this._shared.maxDelegationDepth);
-    const root = await this.scope({
-      tools: claims.root.tools,
-      resources: claims.root.resources,
-      intents: claims.root.intents,
-      maxDepth: rootBudget,
-      timeBudgetSeconds: claims.root.time_budget_seconds,
-    });
+    // Every level's budget is a whole number of seconds from 1 to 2**32 - 1,
+    // checked before anything is replayed.
+    try {
+      checkRootTimeBudget(claims.root.time_budget_seconds);
+    } catch {
+      throw new ScopeTokenError("malformed", "claims.root.time_budget_seconds is out of range");
+    }
+    for (const step of claims.chain) {
+      try {
+        checkRootTimeBudget(step.time_budget_seconds);
+      } catch {
+        throw new ScopeTokenError("malformed", "claims.chain time_budget_seconds is out of range");
+      }
+    }
+    const replayAt = nowSeconds();
+    const root = await this._newRoot(
+      {
+        tools: claims.root.tools,
+        resources: claims.root.resources,
+        intents: claims.root.intents,
+        maxDepth: rootBudget,
+        timeBudgetSeconds: claims.root.time_budget_seconds,
+      },
+      replayAt
+    );
     let scope = root;
     for (const step of claims.chain) {
-      scope = scope.attenuate({
-        tools: step.tools,
-        resources: step.resources,
-        intents: step.intents,
-        timeBudgetSeconds: step.time_budget_seconds,
-      });
+      scope = scope._attenuateAt(
+        {
+          tools: step.tools,
+          resources: step.resources,
+          intents: step.intents,
+          timeBudgetSeconds: step.time_budget_seconds,
+        },
+        replayAt
+      );
     }
     // The engine's grant must be exactly what the token claimed for this level.
     const claimed = claims.chain.length ? claims.chain[claims.chain.length - 1] : claims.root;
@@ -1655,7 +1688,7 @@ export class Watchlight {
       });
       // A policy set that did not compile is a configuration error, not a bad
       // request: raised as itself, so the message says which policy to fix.
-      if (e instanceof PolicyCompileError) throw e;
+      if (e instanceof PolicyCompileError || e instanceof PolicyError) throw e;
       throw new AuthorizeRequestError();
     }
     const { result, principal, resource, decisionId } = decided;
@@ -1878,9 +1911,10 @@ export class Watchlight {
    * Fold this governor's local audit trail into a count the caller places in
    * Cedar `context` — the input to a quota policy such as
    * `permit(...) when { context.reads_this_hour < 100 }`. Counts DECISION
-   * records (never `sanitization` / `egress` / `attenuation`) for exactly this
-   * `principal` — and, when given, this `intent` and `resource` — whose `ts`
-   * falls in `(now - window, now]`. `outcome` selects `allowed` (default),
+   * records (never `sanitization` / `egress` / `attenuation`) for this
+   * `principal` — and, when given, this `intent` and `resource` — in any
+   * spelling (a bare `u1` is `User::"u1"`), whose `ts` falls in
+   * `(now - window, now]`. `outcome` selects `allowed` (default),
    * `denied` (Deny + NeedsApproval holds) or `all`. Reads only the local file
    * (an `auditSink` mirrors records elsewhere but is never read back), streams
    * it, and scans at most `maxBytes` from its end — `truncated` flags a lower
@@ -2157,6 +2191,7 @@ export class Watchlight {
    *  @internal */
   _configure(opts: WatchlightOptions): void {
     const shared = this._shared;
+    checkStrictPrincipal(opts.strictPrincipal);
     // The environment layer lands FIRST, so an explicit option below overwrites
     // it — option > environment > default, in every order the two can arrive in.
     this._applyEnvDefaults();
@@ -2215,7 +2250,6 @@ export class Watchlight {
       );
     }
     if (opts.counterSource !== undefined) shared.counterSource = opts.counterSource;
-    if (opts.strictPrincipal !== undefined) shared.strictPrincipal = opts.strictPrincipal !== false;
     if (opts.maxDelegationDepth !== undefined) {
       shared.maxDelegationDepth = checkMaxDelegationDepth(opts.maxDelegationDepth);
     }
@@ -2316,12 +2350,6 @@ export class Watchlight {
     }
     if (opts.counterSource !== undefined && opts.counterSource !== shared.counterSource) {
       return "counterSource would change — a source matches only when it is the SAME object";
-    }
-    if (
-      opts.strictPrincipal !== undefined &&
-      (opts.strictPrincipal !== false) !== shared.strictPrincipal
-    ) {
-      return `strictPrincipal would change from ${shared.strictPrincipal} to ${opts.strictPrincipal !== false}`;
     }
     if (opts.maxDelegationDepth !== undefined && opts.maxDelegationDepth !== shared.maxDelegationDepth) {
       return `maxDelegationDepth would change from ${shared.maxDelegationDepth} to ${opts.maxDelegationDepth}`;

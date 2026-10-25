@@ -135,10 +135,11 @@ def test_the_limit_is_in_the_docstring_an_integrator_reads(framework):
     doc = inspect.getdoc(FACTORIES[framework]) or ""
     assert "authorize_action" in doc  # where every per-call term goes
     assert "principal=" in doc  # including the subject, since 0.7.0
-    # The entity-type rule is the one that bites silently, so it must be said —
-    # including that an untyped principal inverts Cedar's conflict rule.
-    assert "bare" in doc.lower()
-    assert "allow beats a forbid" in doc.lower()
+    # The entity-type rule is the one that bites silently, so it must be said:
+    # an untyped principal is a User, and never matches another type.
+    assert "bare principal is read as" in doc.lower()
+    assert "never matches a policy of another type" in doc.lower()
+    assert "escapes a quote, an apostrophe or a" in doc.lower()
 
 
 @pytest.mark.parametrize("framework", sorted(FACTORIES))

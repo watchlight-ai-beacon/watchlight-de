@@ -69,11 +69,20 @@ from watchlight import principals
 govern.authorize(action="book", principal=principals.user("db:4412"))
 ```
 
-A **bare** identifier — `db:4412`, with no `Type::` — is accepted but opaque. It
-matches a policy naming that id under `User`, `Agent`, `Group` **or** `Role`, and
-when it matches more than one, an **allow beats a forbid** — the opposite of
-Cedar's usual rule. A `forbid` naming an agent can be defeated by a `permit`
-naming a user with the same id. Only a typed reference discriminates.
+A **bare** identifier, such as `db:4412` with no `Type::`, is read as a `User`.
+It matches `principal is User` and a policy naming `User::"db:4412"`, and it
+never matches a policy that names the id under another type. So write the type
+for an agent, a group or a role.
+
+Build a reference from an outside id with `principals.user`, `principals.agent`
+or `principals.entity`. The engine parses a request reference strictly, so a
+quote, an apostrophe or a backslash in the id must be escaped, and the helpers
+do that. They refuse an id with a character that is not printable, such as a
+no-break space or a zero-width space, because the engine accepts it only as
+`\u{…}`. A reference with an unescaped quote or apostrophe, or with anything
+after the closing quote, is refused as an invalid request. When you generate a policy from data,
+`principals.for_policy` (TypeScript `policyEntityRef`) builds the same string
+for the policy text.
 
 The action is always type `Action`; a policy giving it another type is rejected.
 Full detail is in [the identity model](identity-model.md).

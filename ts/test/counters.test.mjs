@@ -14,7 +14,7 @@ const {
   DEFAULT_COUNTERS_MAX_BYTES, MAX_COUNTERS_WINDOW_SECONDS, MAX_COUNTERS_LINE_BYTES, MAX_COUNTERS_NESTING,
   MAX_NAME_BYTES, SanitizeError, ScreenError,
   MAX_AGENT_NAME_BYTES, MAX_SCOPE_ENTRIES, MAX_SCOPE_LIST_BYTES, MAX_ACTOR_CHAIN_BYTES,
-  findUnreadableLines, UNREADABLE_REASONS, principals,
+  findUnreadableLines, UNREADABLE_REASONS, principals, escapeCedarString, entityKey,
   MAX_AUDIT_RECORD_BYTES, governedHooks, DENY_REASON, REFUSED_NAME,
 } = require("../dist/index.js");
 const { AuditTrail } = require("../dist/audit.js");
@@ -48,9 +48,9 @@ const wf = (r) => r.count - r.unreadable;
 const FIXTURE_UNREADABLE_LINES = 3;
 const expectedUnreadable = (o) =>
   FIXTURE_UNREADABLE_LINES +
-  ((o.principal ?? ALICE) === ALICE &&
-  [undefined, "read"].includes(o.intent) &&
-  [undefined, "doc/1"].includes(o.resource) &&
+  ([ALICE, "alice"].includes(o.principal ?? ALICE) &&
+  [undefined, "read", 'Action::"read"'].includes(o.intent) &&
+  [undefined, "doc/1", 'Resource::"doc/1"'].includes(o.resource) &&
   ["allowed", "all"].includes(o.outcome ?? "allowed")
     ? 1
     : 0);
@@ -93,7 +93,13 @@ counted("bob", { principal: 'User::"bob"', intent: "read" }, 1);
 counted("carol denied", { principal: 'User::"carol"', intent: "read", outcome: "denied" }, 1);
 counted("carol allowed", { principal: 'User::"carol"', intent: "read" }, 0);
 counted("unknown principal", { principal: 'User::"dave"' }, 0);
-counted("principal is exact (no substring)", { principal: "alice" }, 0);
+counted("a bare principal is the same User", { principal: "alice" }, 8);
+counted("the entity, not a substring", { principal: 'User::"ali"' }, 0);
+counted("a bare substring is another entity", { principal: "ali" }, 0);
+counted("another type is another entity", { principal: 'Agent::"alice"' }, 0);
+counted("one intent, either spelling", { intent: 'Action::"read"' }, 6);
+counted("one resource, either spelling", { intent: "read", resource: 'Resource::"doc/1"' }, 4);
+counted("a typed resource prefix does not match", { intent: "read", resource: 'Resource::"doc"' }, 0);
 counted("15m window", { intent: "read", window: "15m" }, 3);
 counted("24h window includes the start-boundary and older records", { intent: "read", window: "24h" }, 8);
 counted("window as number of seconds", { intent: "read", window: 3600 }, 6);
@@ -371,6 +377,22 @@ console.log("every write path is bounded (shared with Python)");
     return longest;
   };
   const fill = (ch, nbytes) => ch.repeat(Math.floor(nbytes / Buffer.byteLength(ch)));
+  // The longest `<Type>::"<id>"` of characters `ch` within MAX_NAME_BYTES, built
+  // as callers build it: with the id escaped, so the engine's strict entity
+  // parser reads it back. A quote or a backslash takes two bytes once escaped,
+  // so the escaped reference is what reaches the bound.
+  const longestReference = (type, ch) => {
+    const escaped = Buffer.byteLength(escapeCedarString(ch));
+    const ref = principals.entity(type, ch.repeat(Math.floor((MAX_NAME_BYTES - `${type}::""`.length) / escaped)));
+    if (!(Buffer.byteLength(ref) > MAX_NAME_BYTES - escaped && Buffer.byteLength(ref) <= MAX_NAME_BYTES)) {
+      throw new Error("longestReference is not the longest reference");
+    }
+    return ref;
+  };
+  // The longest action or resource of characters `ch`: a bare name where the
+  // engine accepts one, and otherwise (a quote cannot appear in a bare name) the
+  // longest typed reference.
+  const longestName = (type, ch) => (ch.includes('"') ? longestReference(type, ch) : fill(ch, MAX_NAME_BYTES));
   const pad2 = (i) => String(i).padStart(2, "0");
 
   // An agent at its bound derives a principal within the name bound, so the
@@ -463,17 +485,21 @@ console.log("every write path is bounded (shared with Python)");
     const tools = Array.from({ length: MAX_SCOPE_LIST_BYTES / MAX_NAME_BYTES }, (_, i) => fill(ch, MAX_NAME_BYTES - 2) + pad2(i));
     let gov = g.delegate(await g.scope({ tools, resources: tools, intents: tools }), names[1]);
     for (const n of names.slice(2)) gov = g.delegate(gov, n);
-    const name = fill(ch, MAX_NAME_BYTES);
-    const principal = 'User::"' + fill(ch, MAX_NAME_BYTES - 9) + '"';
+    const name = longestName("Action", ch);
+    const resource = longestName("Resource", ch);
+    const principal = longestReference("User", ch);
+    // sanitization and screening record their names without asking the
+    // engine, so they take the raw run of `ch` at the bound
+    const raw = fill(ch, MAX_NAME_BYTES);
     await quiet(async () => {
-      await gov.authorize({ action: name, principal, resource: name });
+      await gov.authorize({ action: name, principal, resource });
       const body = gov.tool(async () => "ok", {
-        intent: name, principal: () => principal, resource: () => name,
+        intent: name, principal: () => principal, resource: () => resource,
         onResult: (_r, info) => { info.intent = info.resource = "x".repeat(2 * MAX_COUNTERS_LINE_BYTES); },
       });
       await body();
-      gov.sanitize("mail a@example.com", { intent: name, resource: name, principal: "p".repeat(128), decisionId: "d".repeat(128) });
-      gov.screen("hello", { intent: name, resource: name, principal: "p".repeat(128), decisionId: "d".repeat(128) });
+      gov.sanitize("mail a@example.com", { intent: raw, resource: raw, principal: "p".repeat(128), decisionId: "d".repeat(128) });
+      gov.screen("hello", { intent: raw, resource: raw, principal: "p".repeat(128), decisionId: "d".repeat(128) });
     });
     const outside = Array.from({ length: MAX_SCOPE_LIST_BYTES / MAX_NAME_BYTES }, (_, i) => fill(ch, MAX_NAME_BYTES - 3) + "z" + pad2(i));
     throws(`worst case (${JSON.stringify(ch)}): the refused attenuation throws`, () => gov.delegatedScope.attenuate({ tools: outside, resources: outside, intents: outside, timeBudgetSeconds: 1e9 }), Error);
@@ -788,6 +814,59 @@ console.log("live governor");
     for (let i = 0; i < 4; i++) { try { out.push(await read()); } catch (e) { out.push(e.name); } }
     return out;
   })(), ["body ran", "body ran", "body ran", "Denied"]);
+}
+
+console.log("one entity, every spelling (the same table as tests/test_counters.py)");
+for (const [value, bareType, key] of [
+  ["u1", "User", ["User", "u1"]],
+  ['User::"u1"', "User", ["User", "u1"]],
+  ['User::"a\\"b"', "User", ["User", 'a"b']],
+  ["o'b", "User", ["User", "o'b"]],
+  ["User::\"o\\'b\"", "User", ["User", "o'b"]],
+  ["a\\b", "User", ["User", "a\\b"]],
+  ['User::"a\\\\b"', "User", ["User", "a\\b"]],
+  ["a b", "User", ["User", "a b"]],
+  ['User::"a\\u{a0}b"', "User", ["User", "a b"]],
+  ['User::"\\u{1F600}"', "User", ["User", "\u{1F600}"]],
+  ['User::"x\\0y"', "User", ["User", "x\0y"]],
+  ['Agent::"u1"', "User", ["Agent", "u1"]],
+  ['ns::Doc::"q"', "Resource", ["ns::Doc", "q"]],
+  ["read", "Action", ["Action", "read"]],
+  ['User::""', "User", ["User", ""]],
+  ['a"b', "User", ["", 'a"b']],
+  ["User::u1", "User", ["", "User::u1"]],
+  ['User::"a"b"', "User", ["", 'User::"a"b"']],
+  ['User::"u1"x', "User", ["", 'User::"u1"x']],
+  ['User::"\\q"', "User", ["", 'User::"\\q"']],
+  ['User::"\\u{d800}"', "User", ["", 'User::"\\u{d800}"']],
+  ['User::"\\u{110000}"', "User", ["", 'User::"\\u{110000}"']],
+  ['1x::"u1"', "User", ["", '1x::"u1"']],
+  ['User::"', "User", ["", 'User::"']],
+  ['Action\n::"read"', "Action", ["", 'Action\n::"read"']],
+]) {
+  eq(`entityKey(${JSON.stringify(value)})`, entityKey(value, bareType), key);
+}
+{
+  const dir = fs.mkdtempSync(join(os.tmpdir(), "wl-spell-"));
+  const path = join(dir, "audit.jsonl");
+  const now = "2026-01-15T12:00:00.000Z";
+  const rows = [
+    ["o'b", "read", "doc/1"],
+    ["User::\"o\\'b\"", 'Action::"read"', 'Resource::"doc/1"'],
+    ["User::\"o\\'b\"", "read", 'Resource::"doc/1"'],
+    ["o'b", 'Action::"read"', "doc/2"],
+    ["Agent::\"o'b\"", "read", "doc/1"],
+    ["o", "read", "doc/1"],
+  ];
+  fs.writeFileSync(path, rows.map(([principal, intent, resource]) => JSON.stringify({
+    ts: "2026-01-15T11:59:00.000Z", principal, intent, resource, decision: "Allow", event: "decision",
+  }) + "\n").join(""));
+  const count = (o) => countAuditRecords(path, { now, ...o }).count;
+  eq("every spelling of the user counts", count({ principal: "o'b" }), 4);
+  eq("…from the typed spelling too", count({ principal: "User::\"o\\'b\"" }), 4);
+  eq("one intent, either spelling", count({ principal: "o'b", intent: "read" }), 4);
+  eq("intent and resource, either spelling", count({ principal: "o'b", intent: 'Action::"read"', resource: "doc/1" }), 3);
+  eq("another type is another entity", count({ principal: "Agent::\"o'b\"" }), 1);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

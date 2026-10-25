@@ -14,7 +14,7 @@ everything here has a Python equivalent under a `snake_case` name.
 ## Install
 
 ```bash
-npm install @watchlight/sdk    # Node >= 18, no native toolchain
+npm install @watchlight/sdk    # Node >= 22, no native toolchain
 ```
 
 ## Deny a tool call before it runs
@@ -22,7 +22,7 @@ npm install @watchlight/sdk    # Node >= 18, no native toolchain
 Save as `agent.mjs`, then `node agent.mjs`:
 
 ```ts
-import { govern, configureDefault, Denied } from "@watchlight/sdk";
+import { govern, configureDefault, Denied, principals } from "@watchlight/sdk";
 
 configureDefault({ agent: "research-agent" });          // the name on every record
 
@@ -95,7 +95,7 @@ npx --package @watchlight/sdk watchlight policy test suite.json   # exit 1 on an
 ```ts
 const book = govern.tool(bookTrip, {
   intent: "book",
-  principal: (o) => `User::"${o.userId}"`,    // on whose behalf
+  principal: (o) => principals.user(o.userId),    // on whose behalf
   resource:  (o) => `trip/${o.tripId}`,
   context:   (o) => ({ amount: o.amount, limit: o.limit }),
 });
@@ -180,7 +180,10 @@ const child = root.attenuate({ tools: ["read"] });   // strictly a subset, engin
 const token = child.toToken();                       // carry it to a queue worker
 ```
 
-Widening throws `AttenuationDenied`. `govern.scopeFromToken()` rebuilds a scope
+Widening throws `AttenuationDenied`. A child's `timeBudgetSeconds` is granted
+exactly or refused, never shortened: leave it out to inherit the whole seconds
+the parent has left (`remainingSeconds()`), and a larger one throws
+`AttenuationDenied` with a `TimeBudget` violation. `govern.scopeFromToken()` rebuilds a scope
 on the far side and replays every level through the engine's validator. A token
 needs a shared `signingSecret`; there is no default, and minting and verifying
 both fail closed without one.

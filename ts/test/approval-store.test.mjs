@@ -15,7 +15,7 @@ import * as os from "node:os";
 
 const require = createRequire(import.meta.url);
 const { Watchlight, ApprovalError, APPROVAL_KEY_LABEL, APPROVAL_PAYLOAD_VERSION,
-        APPROVAL_PRUNE_INTERVAL_MS, APPROVAL_PRUNE_GRACE_MS } = require("../dist/index.js");
+        APPROVAL_PRUNE_INTERVAL_MS, APPROVAL_PRUNE_GRACE_MS, principals } = require("../dist/index.js");
 const { deriveApprovalKey, normalizeApprovalSecret } = require("../dist/approval.js");
 const { createHmac } = require("node:crypto");
 
@@ -241,7 +241,7 @@ async function main() {
     const auditDir = fs.mkdtempSync(join(os.tmpdir(), "wl-appr-"));
     const g = new Watchlight({
       agent: "appr-agent", auditDir,
-      approvalSecret: SECRET_A, approvalStore: sharedStore(), counterSource: () => 7,
+      approvalSecret: SECRET_A, approvalStore: sharedStore(), counterSource: (q) => (q.principal === "U" ? 7 : 0),
     });
     g.allow(ANY, "any");
     const view = g.as("billing-agent");
@@ -665,12 +665,13 @@ async function main() {
   }
   {
     // Fields with a space, a quote, a backslash, a colon, a digit-colon prefix
-    // and non-ASCII text round-trip exactly.
+    // and non-ASCII text round-trip exactly. Quotes and backslashes are escaped
+    // inside typed references, as the engine's strict entity parser requires.
     const g = govAny();
     const awkward = {
-      principal: 'User::"a b\\c" 12:34',
+      principal: principals.user('a b\\c" 12:34'),
       action: "wire funds",
-      resource: 'acct/"x y"\\z — ünïcode',
+      resource: principals.entity("Resource", 'acct/"x y"\\z — ünïcode'),
     };
     const d = await g.authorize({ ...awkward, approval: g.mintApproval(awkward) });
     ok("a principal/action/resource with spaces, quotes and backslashes round-trips",

@@ -38,8 +38,10 @@ from watchlight import (
     count_audit_records,
     find_unreadable_lines,
     parse_window_seconds,
+    principals,
 )
 from watchlight._audit import MAX_AUDIT_RECORD_BYTES, AuditTrail
+from watchlight.principals import escape_cedar_string
 from watchlight.cli import main as cli_main
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
@@ -53,6 +55,24 @@ FILLS = ["é", '"', "\\", "\U0001f600"]
 def fill(ch, nbytes):
     """The longest run of ``ch`` that fits ``nbytes`` of UTF-8."""
     return ch * (nbytes // len(ch.encode("utf-8")))
+
+
+def longest_reference(entity_type, ch):
+    """The longest ``<Type>::"<id>"`` of characters ``ch`` within
+    MAX_NAME_BYTES, built as callers build it: with the id escaped, so the
+    engine's strict entity parser reads it back. A quote or a backslash takes
+    two bytes once escaped, so the escaped reference is what reaches the bound."""
+    escaped = len(escape_cedar_string(ch).encode("utf-8"))
+    ref = principals.entity(entity_type, ch * ((MAX_NAME_BYTES - len(f'{entity_type}::""')) // escaped))
+    assert MAX_NAME_BYTES - escaped < len(ref.encode("utf-8")) <= MAX_NAME_BYTES
+    return ref
+
+
+def longest_name(entity_type, ch):
+    """The longest action or resource of characters ``ch``: a bare name where the
+    engine accepts one, and otherwise (a quote cannot appear in a bare name) the
+    longest typed reference."""
+    return longest_reference(entity_type, ch) if '"' in ch else fill(ch, MAX_NAME_BYTES)
 
 
 def trail_lines(tmp_path):
@@ -91,24 +111,27 @@ def deepest_governor(tmp_path, ch):
 @pytest.mark.parametrize("ch", FILLS)
 def test_the_worst_case_of_every_record_kind_fits_the_line_limit(tmp_path, ch):
     gov, tools = deepest_governor(tmp_path, ch)
-    name = fill(ch, MAX_NAME_BYTES)
-    principal = 'User::"' + fill(ch, MAX_NAME_BYTES - len('User::""')) + '"'
+    name = longest_name("Action", ch)
+    resource = longest_name("Resource", ch)
+    principal = longest_reference("User", ch)
     # decision
-    assert gov.authorize(action=name, principal=principal, resource=name)["allowed"]
+    assert gov.authorize(action=name, principal=principal, resource=resource)["allowed"]
 
     # egress, from a hook that tries to rewrite the names it is handed
     def hook(_result, info):
         info["intent"] = info["resource"] = "x" * (2 * MAX_COUNTERS_LINE_BYTES)
 
-    @gov.tool(intent=name, principal=principal, resource=name, on_result=hook)
+    @gov.tool(intent=name, principal=principal, resource=resource, on_result=hook)
     def body():
         return "ok"
 
     assert body() == "ok"
-    # sanitization and screening
-    gov.sanitize("mail a@example.com", intent=name, resource=name, principal="p" * 128,
+    # sanitization and screening record their names without asking the engine,
+    # so they take the raw run of ``ch`` at the bound
+    raw = fill(ch, MAX_NAME_BYTES)
+    gov.sanitize("mail a@example.com", intent=raw, resource=raw, principal="p" * 128,
                  decision_id="d" * 128)
-    gov.screen("hello", intent=name, resource=name, principal="p" * 128, decision_id="d" * 128)
+    gov.screen("hello", intent=raw, resource=raw, principal="p" * 128, decision_id="d" * 128)
     # attenuation: a refused request whose reason echoes names from every list,
     # recorded with the full chain; and a granted one.
     scope = gov.delegated_scope
@@ -125,7 +148,7 @@ def test_a_decision_at_every_bound_measures(tmp_path):
     longest chain, in the character Python escapes most (é → \\u00e9)."""
     gov, _tools = deepest_governor(tmp_path, "é")
     name = fill("é", MAX_NAME_BYTES)
-    principal = 'User::"' + fill("é", MAX_NAME_BYTES - 9) + '"'
+    principal = longest_reference("User", "é")
     gov.authorize(action=name, principal=principal, resource=name)
     decision = json.loads(trail_lines(tmp_path)[-1])
     assert decision["event"] == "decision" and len(decision["actor_chain"]) == 65

@@ -8,6 +8,163 @@ different verdict. Only some announce themselves; the rest surface as a denial
 that looks exactly like a policy of yours doing its job. Read every entry
 between the version you are on and the one you are moving to.
 
+## 0.15.0
+
+**A quota counts each principal once, however it is spelled.** `counters()`
+used to match `principal`, `intent` and `resource` as exact strings, so `u1` and
+`User::"u1"`, which the engine reads as the same user, were counted
+separately. They now count together, as do `read` and `Action::"read"`,
+`doc/1` and `Resource::"doc/1"`, and an escaped character and the raw one. A
+count can only go up, so this moves in the closed direction: a quota that a
+caller reached by mixing spellings now trips at its real limit. Nothing to do
+unless you relied on two spellings having separate counts; if you did, give
+them different ids.
+
+**A `counter_source` is asked once per spelling of the principal.** For a
+`User` principal it is usually called twice, with `principal` set to each
+spelling (`u1`, then `User::"u1"`, the caller's own spelling first), and the
+answers are added. Match `principal` as an exact string. A source that already
+treats the two spellings as one would count each record twice and trip the
+quota early; make it match exactly. `intent` and `resource` are still passed
+as the caller wrote them; to count both spellings of those, compare
+`principals.entity_key` / `entityKey`.
+
+**`strict_principal=False` / `strictPrincipal: false` is removed and raises.**
+It recorded the bare agent name as the subject of a call that names no
+principal. The engine reads a bare name as a `User`, so the agent was decided
+as the user with that id: it matched a policy for that user and never an
+`Agent` policy. Building or configuring a governor with it now raises
+`ValueError` (Python) or `RangeError` (TypeScript), so the deployment fails at
+start-up rather than at a decision. To migrate, remove the option, name the
+subject at the call site with `principal` (see `principals.user`), and write
+agent-scoped policies against `Agent::"<name>"`. Records of calls that name no
+principal carry `Agent::"<name>"`, so a dashboard or a quota that compared them
+to the bare name must use the typed one. `strict_principal=True` is still
+accepted.
+
+## 0.14.0
+
+**A near-miss `@enforcement_effect` annotation name is refused, and `PolicyError`
+changes shape.** The engine (`watchlight-engine` 0.2.3, which the SDKs now
+require) refuses a policy whose annotation name is within two edits of
+`enforcement_effect` but is not that name, such as `@enforcment_effect` or
+`@Enforcement_Effect`. Before, the SDK printed a warning and loaded the policy,
+which then decided as if no effect were declared: an approval gate became a
+plain allow. To fix it, correct the spelling, or rename your own annotation so
+it is not a near miss. An unknown effect value is refused as before.
+`PolicyError` now carries `code` (`UNRECOGNISED_ENFORCEMENT_EFFECT` or
+`ENFORCEMENT_EFFECT_NAME_NEAR_MISS`), `policy` and `source`; `value` and
+`accepted` are gone, and so is `ENFORCEMENT_EFFECTS`. Read the code instead of
+the value, and refer to the documented list of effects. In TypeScript the
+refusal now surfaces at `ready()` or the next decision instead of being thrown
+by `allow()`, `load()` or `reload()`: the engine compiles asynchronously. A set
+holding a refused policy never decides; every decision throws `PolicyError`
+until a `reload` with a set that loads. Python still raises at once and adds
+nothing. This only moves in the closed direction.
+
+**The framework extras now require `watchlight-agent-sdk` 0.10 and the plugin
+releases written for it.** The `langgraph`, `pydantic-ai`, `claude-agent`, `sdk`
+and `all` extras require `watchlight-agent-sdk>=0.10,<0.11`,
+`watchlight-langgraph>=0.5,<0.6`, `watchlight-pydantic-ai>=0.4,<0.5` and
+`watchlight-claude-agent>=0.3,<0.4`. If you only use `governed_plugin()` or
+`in_process_backend()` with a plugin, upgrading the extra is all you do. If
+your own code calls the backend that `in_process_backend()` returns, it must
+follow the SDK 0.10 interface: `create_session` returns a `SessionInfo` (read
+`info.session_id` and keep `info.run`) instead of a dict, and `authorize`,
+`spawn_subagent`, `complete_session` and `terminate_session` take the run
+reference (`run=...`, or `spawn_subagent(parent_run, request)`) instead of a
+session id or `session_token`. Most old calls fail with `TypeError` or
+`AttributeError` at once. An old `complete_session(session_id)` or
+`terminate_session(session_id)` instead finds no run, returns `False` and
+leaves the run open, so check its result. None of them changes a verdict. If you
+pinned `watchlight-agent-sdk` below 0.10 yourself, raise the pin; pip reports
+the conflict at install time.
+
+**A sub-agent's time is bounded, and a spawn that names no budget inherits its
+parent's remaining time.** A spawn without `time_budget_seconds` no longer asks
+for zero. A sub-agent spawned from a sub-agent inherits what its parent has left, and
+never more. A sub-agent spawned directly from the run gets the root's ceiling
+of 3600 seconds, which `in_process_backend()` does not let you change; the
+in-process root itself has no deadline. A budget you name can only narrow that. An explicit
+`time_budget_seconds=0` is refused with `ScopeAttenuationDenied` ("unsatisfiable
+scope", reason code `UNSATISFIABLE_SCOPE`), because such a sub-agent could not
+make a single call. So is a spawn from a parent that has no time left, and a
+budget larger than the parent's, which would widen it. A budget that is not a
+whole number of seconds is refused as an invalid spawn request. Once a
+sub-agent's time has run out, every call it makes is denied, including
+`preflight_step`. Before, the in-process backend granted a first-level sub-agent
+whatever it asked for and never checked its deadline. It now behaves as the
+networked service does. Every change here moves in the closed direction,
+except that a sub-agent spawned from a sub-agent that named no budget used to
+be refused and now runs, bounded by its parent. This needs `watchlight-engine` 0.2.3 or later.
+
+**A sub-agent scope's named time budget is refused when the parent cannot give it, instead of being silently shortened.** This affects `attenuate()`, `delegate()`, `preview_attenuate()` and `scope_from_token()` in both lanes. A child that names a `time_budget_seconds` (TS `timeBudgetSeconds`) larger than the whole seconds its parent has left now raises `AttenuationDenied` with a `TimeBudget` violation, and the reason states the seconds available. Before, the child was granted and reported the budget it named, but it expired with its parent. The whole seconds left are the wall-clock time before the parent's `expires_at`, rounded down, so 2.9 seconds left means 2 are available. A scope's issue time is rounded down to the whole second, so right after a scope is created it has a fraction of a second less than its budget left, and a child can name at most its budget minus one. `scope(time_budget_seconds=600)` followed immediately by `attenuate(time_budget_seconds=600)` is refused ("at most 599 seconds are available"), unless the call happens to land exactly on a second boundary. Each level loses up to one more second the same way: root 600, then a child of 300, then a grandchild of 300, all within the same second, refuses the grandchild ("at most 299"). A child that names no budget inherits everything its parent has left, which `Scope.remaining_seconds()` (TS `remainingSeconds()`) reports. The previews apply the same one-second loss per level, so a preview never grants what `attenuate()` would refuse. A named child budget that is not a whole number of seconds from 1 to 2**32 - 1 (`0`, a negative, a bool, a fraction, NaN, a string, and in TS a BigInt) is refused up front with `AttenuationDenied` and a fixed reason, and recorded as a deny; before, the engine raised an error that echoed the value. `None` (TS `undefined` or `null`) means no budget, so the child inherits. A root `scope()` budget must now be a whole number of seconds from 1 to 2**32 - 1; in TS, omitting it still means 3600, and `null` is a `TypeError`. This only moves in the closed direction. To fix it, omit the budget on the child to inherit everything left, name `remaining_seconds()` or less, or catch `AttenuationDenied`.
+
+**The TypeScript SDK requires Node 22 or later (Node 18 and 20 are end of life); it relies on the Web Crypto global.** `@watchlight/sdk` now declares `engines.node >=22`. The engine
+(`@watchlight/engine`) reads randomness from `globalThis.crypto`, which Node 18
+does not define by default, so on Node 18 the first decision fails instead of
+returning a verdict. On an older Node, npm warns at install time (or refuses
+with `engine-strict`). To fix it, run your agent on Node 22 or later.
+
+**The engine reads entity references strictly: a bare principal is a `User`,
+an id with a quote, an apostrophe or a backslash is escaped, and an id with a
+character that is not printable is refused.** `watchlight-engine` and
+`@watchlight/engine` 0.2.3, which the SDKs now require, read every request
+principal, action and resource with the strict Cedar parser they use for policy
+text. The released 0.13.2 allows engine 0.2.3, so a fresh install of 0.13.2
+already decides this way. Three things change.
+
+First, a bare principal, such as `team-42` with no `Type::`, is now the user
+`User::"team-42"`. Before, it matched a policy naming that id under `User`,
+`Agent`, `Group` or `Role`. Now it matches only `User` policies, so a policy
+written for `principal is Agent` or `Agent::"team-42"` no longer matches it, and
+a call that relied on that is denied. A bare name that contains a quote or `::`
+is refused as an invalid request. To fix it, write the type: pass
+`principals.agent(name)` for an agent, and `principals.entity("Group", id)` for
+a group or a role.
+
+Second, a typed reference must be well formed, with the id in the one escaped
+spelling the engine accepts: a quote, an apostrophe and a backslash written as
+`\"`, `\'` and `\\`, and a character that is not printable written as `\u{…}`.
+A reference built by hand from an id, such as `f'User::"{user_id}"'`, is
+refused with `AuthorizeRequestError` when the id contains a quote or an
+apostrophe, as in `o'brien@example.com`, and so is any reference with something
+after the closing quote. To fix it, build the reference with
+`principals.user(user_id)`. Because of this, `principals.user`,
+`principals.agent` and `principals.entity` now escape the id, and return the
+same string as `principals.for_policy` (TypeScript `policyEntityRef`). The
+decision for a reference built with the helpers is unchanged, but the string is
+new for an id with a quote, an apostrophe or a backslash, and the audit record
+carries the new string.
+
+The helpers do not write `\u{…}`. They refuse, with a fixed `TypeError` that
+does not echo the id, an id holding a character that is not printable: a
+control, format, separator, private-use, surrogate or unassigned character (for
+example U+0085, a soft hyphen, a zero-width space, a byte-order mark, U+2028
+and U+2029), a space other than the plain space U+0020 (for example a no-break
+space), a default-ignorable character such as a variation selector, or a
+combining mark at the start of the id. Engine 0.2.3 refuses such a raw
+character in a request, so on 0.13.2 with engine 0.2.3 the call already fails
+with `AuthorizeRequestError`; the helper now refuses the id before the call. An agent name follows the same rule and is
+refused when the governor is constructed or named. If your ids can carry such
+characters, change an id only where your identity source already treats both
+forms as the same subject. Otherwise refuse the id, or map it to an encoding you
+can reverse, such as hex or base64url of its UTF-8 bytes. Never map one
+character to another (a no-break space to a plain space, say) by itself: two
+different subjects could become one principal, and one could then act as the
+other. `counters()` and `count_audit_records`
+match the principal as a string, so a quota for such an id counts only the
+records written after the upgrade until its window has passed. If that matters,
+count both spellings for the length of one window.
+
+Third, an agent name must fit in 4087 bytes once escaped, so that the principal
+`Agent::"<name>"` stays within 4096 bytes. A name made mostly of quotes,
+apostrophes or backslashes is refused at a shorter length, when the governor is constructed or
+named.
+
+In every case we tested, these changes move a decision from allow to deny or
+turn the call into a refusal. They never widen what a bare principal matches.
+
 ## 0.13.2
 
 **The framework extras now require `watchlight-agent-sdk` 0.9 and
@@ -610,16 +767,12 @@ audit by policy order: a rule that looks unreachable in this run may be the one
 that matched in the last.
 
 Anything comparing an audit record's `principal` to the bare name — a dashboard,
-a log query — must use `Agent::"<name>"`. `counters()` is keyed on the principal
-exactly, so a quota that counted `"my-agent"` now counts `Agent::"my-agent"`.
+a log query — must use `Agent::"<name>"`. A quota that counted `"my-agent"` now
+counts `Agent::"my-agent"`.
 
-`strict_principal=False` / `strictPrincipal: false` restores the old
-substitution and warns once per process. It restores the unpredictable binding
-with it, so use it to unblock a deploy, not to stay on.
-
-```python
-Watchlight(agent="my-agent", strict_principal=False)   # transitional
-```
+`strict_principal=False` / `strictPrincipal: false` restored the old
+substitution for a time. It was removed in 0.15.0 and now raises; see the
+0.15.0 entry.
 
 ### `context.actor` and `context.actor_chain` are reserved
 

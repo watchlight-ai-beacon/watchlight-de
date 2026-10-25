@@ -36,7 +36,9 @@ concurrency:
 
 jobs:
   preflight:
-    name: preflight (python ${{ matrix.python }})
+    # The Node 22 entries keep the names branch protection requires; only the
+    # extra LTS entry carries its Node version in the name.
+    name: preflight (python ${{ matrix.python }}${{ matrix.node != '22' && format(', node {0}', matrix.node) || '' }})
     # GitHub-hosted runners in this public repository. The private security
     # mirror sets the DE_RUNNER variable to run the same checks on its own
     # runners; this repository never sets it.
@@ -49,6 +51,12 @@ jobs:
         # is what catches a syntax or typing feature newer than we claim to
         # support — the failure a developer on a current interpreter never sees.
         python: ["3.9", "3.13"]
+        # Node 22 is the floor in ts/package.json `engines`; every entry above
+        # runs on it. One extra entry runs the same gate on the current LTS.
+        node: ["22"]
+        include:
+          - python: "3.13"
+            node: "24"
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -71,9 +79,9 @@ jobs:
           "$HOME/.local/bin/uv" venv --seed --python "$PYTHON_VERSION" .venv
           .venv/bin/python --version
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "22"
+          node-version: ${{ matrix.node }}
 
       # preflight deliberately never installs the Python side for you — which
       # interpreter this repo belongs in is the developer's choice. In CI that

@@ -245,7 +245,8 @@ def test_a_durable_counter_source_feeds_a_quota_through_tool(tmp_path):
 
     async def source(query):
         queries.append(query)
-        return stored["n"]
+        # The store holds the spelling the tool writes, so only that query counts.
+        return stored["n"] if query["principal"] == USER else 0
 
     g = Watchlight(
         agent="actx-agent",
@@ -270,7 +271,9 @@ def test_a_durable_counter_source_feeds_a_quota_through_tool(tmp_path):
 
     stored["n"] = 99
     assert asyncio.run(fetch_doc({"docId": "a"})) == "doc:a"
-    assert len(queries) == 1 and queries[0]["principal"] == USER and queries[0]["intent"] == "read"
+    # One query per spelling of the principal, the caller's first.
+    assert [q["principal"] for q in queries] == [USER, "u1"]
+    assert all(q["intent"] == "read" for q in queries)
     assert any(r.get("decision") == "Allow" for r in store)
 
     stored["n"] = 100

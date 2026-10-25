@@ -18,8 +18,12 @@
 //     let the body run (`Deny` and `NeedsApproval` holds); `all` = both. So
 //     `allowed + denied == all`.
 //   * `principal` (required), `intent` and `resource` (optional) match the
-//     record's fields by exact string equality — no prefixes, no globs. A
-//     record without a `principal` matches no principal.
+//     record's fields by the entity they name — no prefixes, no globs. A bare
+//     name is read as the engine reads it, so `u1` and `User::"u1"` are one
+//     principal, `read` and `Action::"read"` one intent, and `r` and
+//     `Resource::"r"` one resource, and an escape matches the character it
+//     stands for. A caller cannot widen a quota by switching between
+//     spellings. A record without a `principal` matches no principal.
 //   * the window is `(end - window, end]` — start exclusive, end inclusive —
 //     on the record's own `ts` (ISO-8601 with a zone), never on file order.
 //     `end` defaults to now. Records timestamped after `end` do not count.
@@ -74,16 +78,25 @@
 // count is partial.
 
 import * as fs from "node:fs";
-import { assertNameLength, assertPrincipal } from "./principals";
+import {
+  BARE_ACTION_TYPE,
+  BARE_PRINCIPAL_TYPE,
+  BARE_RESOURCE_TYPE,
+  assertNameLength,
+  assertPrincipal,
+  entityKey,
+  entitySpellings,
+} from "./principals";
 
 export type CounterOutcome = "allowed" | "denied" | "all";
 
 export interface CountersOptions {
-  /** Cedar principal exactly as written on the decision record, e.g. `User::"u1"`. */
+  /** The Cedar principal, e.g. `User::"u1"`. A record matches when it names
+   *  the same entity, in any spelling (`u1` too). */
   principal: string;
-  /** Match only decisions with this intent (the Cedar action). Exact match. */
+  /** Match only decisions with this intent (the Cedar action), in any spelling. */
   intent?: string;
-  /** Match only decisions on this resource. Exact match. */
+  /** Match only decisions on this resource, in any spelling. */
   resource?: string;
   /** How far back to count: `"15m"`, `"1h"`, `"24h"`, `"7d"`, a bare number of
    *  seconds as a string, or a number of seconds. Positive, at most 366 days.
@@ -141,8 +154,18 @@ export type CounterSourceKind = "local" | "external";
  *  resolved form of the caller's {@link CountersOptions}. `window.start` is
  *  exclusive and `window.end` inclusive, both ISO-8601 UTC, so the source can
  *  translate them straight into a range query. `intent` / `resource` are absent
- *  when the caller did not filter on them; when present they match by exact
- *  string equality, like the local scan. */
+ *  when the caller did not filter on them. A store holds each record's names
+ *  exactly as they were written, and one principal can be spelled two ways
+ *  (`u1` and `User::"u1"`), so the source is asked once for each spelling of
+ *  the principal, with `principal` matched by exact string equality, and the
+ *  answers are added. Each record carries one spelling, so it is counted once.
+ *  A `User` principal usually takes two calls and any other type one (a
+ *  reference written with a needless escape adds one). A source that already
+ *  compares principals by entity would count a record more than once: match
+ *  `principal` as an exact string. `intent` /
+ *  `resource` are passed as the caller wrote them; a source that filters on
+ *  them should compare {@link entityKey} (bare type `"Action"` / `"Resource"`)
+ *  so that `read` and `Action::"read"` count together. */
 export interface CounterQuery {
   principal: string;
   intent?: string;
@@ -499,9 +522,9 @@ function tallyLine(bytes: Buffer | null, filter: Filter, t: Tally): void {
   }
   const allowed = decision === "Allow";
   const matches =
-    r.principal === filter.principal &&
-    (filter.intent === undefined || r.intent === filter.intent) &&
-    (filter.resource === undefined || r.resource === filter.resource) &&
+    names(r.principal, filter.principal) &&
+    (filter.intent === undefined || names(r.intent, filter.intent)) &&
+    (filter.resource === undefined || names(r.resource, filter.resource)) &&
     (filter.outcome === "allowed" ? allowed : filter.outcome === "denied" ? !allowed : true);
   const ts = parseIsoMillis(r.ts);
   if (ts === undefined) {
@@ -518,10 +541,27 @@ function tallyLine(bytes: Buffer | null, filter: Filter, t: Tally): void {
   if (matches && ts > filter.start && ts <= filter.end) t.count += 1;
 }
 
+/** The entity a filter names: its key, its bare type and the given text. */
+type FilterKey = { key: [string, string]; bareType: string; text: string };
+
+function filterKey(text: string, bareType: string): FilterKey {
+  return { key: entityKey(text, bareType), bareType, text };
+}
+
+/** True when a record's field names the entity `f` names (see
+ *  {@link entityKey}). A field that is not a string names nothing. The common
+ *  case, a record spelled exactly as the query, needs no decoding. */
+function names(value: unknown, f: FilterKey): boolean {
+  if (typeof value !== "string") return false;
+  if (value === f.text) return true;
+  const [type, id] = entityKey(value, f.bareType);
+  return type === f.key[0] && id === f.key[1];
+}
+
 type Filter = {
-  principal: string;
-  intent?: string;
-  resource?: string;
+  principal: FilterKey;
+  intent?: FilterKey;
+  resource?: FilterKey;
   outcome: CounterOutcome;
   start: number;
   end: number;
@@ -550,7 +590,14 @@ function prepareCounters(opts: CountersOptions): { filter: Filter; result: Count
   if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) throw new RangeError("maxBytes must be a positive integer");
   const end = resolveNow(opts.now);
   const start = end - seconds * 1000;
-  const filter = { principal: opts.principal, intent: opts.intent, resource: opts.resource, outcome, start, end };
+  const filter: Filter = {
+    principal: filterKey(opts.principal, BARE_PRINCIPAL_TYPE),
+    intent: opts.intent === undefined ? undefined : filterKey(opts.intent, BARE_ACTION_TYPE),
+    resource: opts.resource === undefined ? undefined : filterKey(opts.resource, BARE_RESOURCE_TYPE),
+    outcome,
+    start,
+    end,
+  };
 
   const result: Counters = {
     count: 0,
@@ -568,24 +615,40 @@ function prepareCounters(opts: CountersOptions): { filter: Filter; result: Count
   return { filter, result, maxBytes };
 }
 
-/** The {@link CounterQuery} a source is handed for these options. @internal */
-function queryOf(result: Counters): CounterQuery {
-  const query: CounterQuery = {
-    principal: result.principal,
-    outcome: result.outcome,
-    window: { ...result.window },
-  };
-  if (result.intent !== undefined) query.intent = result.intent;
-  if (result.resource !== undefined) query.resource = result.resource;
-  return query;
+/**
+ * The {@link CounterQuery}s a source is handed for these options: one for each
+ * spelling of the principal (see {@link entitySpellings}), the caller's own
+ * spelling first, in the same order as the Python lane. A store holds each
+ * record's names exactly as they were written, and each record carries one
+ * spelling, so adding the answers counts every record once, in either
+ * spelling. `intent` and `resource` are passed as given: a source may ignore
+ * those filters, and asking it once per spelling of them would count its
+ * records more than once. @internal
+ */
+function queriesOf(result: Counters): CounterQuery[] {
+  return entitySpellings(result.principal, BARE_PRINCIPAL_TYPE).map((principal) => {
+    const query: CounterQuery = { principal, outcome: result.outcome, window: { ...result.window } };
+    if (result.intent !== undefined) query.intent = result.intent;
+    if (result.resource !== undefined) query.resource = result.resource;
+    return query;
+  });
 }
 
-/** Turn a source's return value into a `Counters`, or fail closed. @internal */
-function countersFromSourceValue(count: unknown, result: Counters): Counters {
+/** One source answer, or fail closed. @internal */
+function checkSourceCount(count: unknown): number {
   if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) {
     throw new CounterSourceError("a counter source must return a non-negative integer count");
   }
-  result.count = count;
+  return count;
+}
+
+/** Add a source's answers into a `Counters`, or fail closed. @internal */
+function countersFromSourceValues(counts: number[], result: Counters): Counters {
+  const total = counts.reduce((sum, count) => sum + count, 0);
+  if (!Number.isSafeInteger(total)) {
+    throw new CounterSourceError("the counter source's counts add up to more than the largest count");
+  }
+  result.count = total;
   return result;
 }
 
@@ -599,20 +662,24 @@ function countersFromSourceValue(count: unknown, result: Counters): Counters {
 export function countFromSource(source: CounterSource, opts: CountersOptions): Counters {
   const { result } = prepareCounters(opts);
   result.source = "external";
-  let count: unknown;
-  try {
-    count = source(queryOf(result));
-  } catch (err) {
-    throw new CounterSourceError("the counter source threw", { cause: err });
+  const counts: number[] = [];
+  for (const query of queriesOf(result)) {
+    let count: unknown;
+    try {
+      count = source(query);
+    } catch (err) {
+      throw new CounterSourceError("the counter source threw", { cause: err });
+    }
+    if (count !== null && typeof count === "object" && typeof (count as Promise<number>).then === "function") {
+      // Never leave it unhandled: the caller is getting an error, not this value.
+      (count as Promise<number>).then(undefined, () => {});
+      throw new CounterSourceError(
+        "the counter source is asynchronous — read it with countersAsync()"
+      );
+    }
+    counts.push(checkSourceCount(count));
   }
-  if (count !== null && typeof count === "object" && typeof (count as Promise<number>).then === "function") {
-    // Never leave it unhandled: the caller is getting an error, not this value.
-    (count as Promise<number>).then(undefined, () => {});
-    throw new CounterSourceError(
-      "the counter source is asynchronous — read it with countersAsync()"
-    );
-  }
-  return countersFromSourceValue(count, result);
+  return countersFromSourceValues(counts, result);
 }
 
 /** {@link countFromSource} for a source that may return a promise. */
@@ -622,13 +689,17 @@ export async function countFromSourceAsync(
 ): Promise<Counters> {
   const { result } = prepareCounters(opts);
   result.source = "external";
-  let count: unknown;
-  try {
-    count = await source(queryOf(result));
-  } catch (err) {
-    throw new CounterSourceError("the counter source threw", { cause: err });
+  const counts: number[] = [];
+  for (const query of queriesOf(result)) {
+    let count: unknown;
+    try {
+      count = await source(query);
+    } catch (err) {
+      throw new CounterSourceError("the counter source threw", { cause: err });
+    }
+    counts.push(checkSourceCount(count));
   }
-  return countersFromSourceValue(count, result);
+  return countersFromSourceValues(counts, result);
 }
 
 /**

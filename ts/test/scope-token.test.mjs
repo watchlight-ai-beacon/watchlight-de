@@ -53,7 +53,7 @@ async function main() {
   ok("rebuilt scope has the same depth", back.depth === 2, String(back.depth));
   ok("rebuilt scope has the engine-granted tools", same(back.allowedTools, ["read"]), JSON.stringify(back.allowedTools));
   ok("rebuilt scope keeps resources/intents", same(back.allowedResources, ["docs/*"]) && same(back.allowedIntents, ["research"]));
-  ok("rebuilt scope keeps the clamped time budget", back.timeBudgetSeconds === 300);
+  ok("rebuilt scope keeps the engine-granted time budget", back.timeBudgetSeconds === 300);
   ok("rebuilt scope cannot outlive the token", back.expiresAt <= grandchild.expiresAt && back.expiresAt <= now() + 300);
   ok("rebuilt scope can attenuate further via the engine", back.attenuate({ tools: ["read"] }).depth === 3);
   let widen = null;

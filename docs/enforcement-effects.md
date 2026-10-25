@@ -44,8 +44,9 @@ processes.
 ## The accepted verbs
 
 The engine accepts `attenuate`, `escalate`, `observe`, `quarantine`,
-`require_approval`, `revoke`, `sever_subtree` and `terminate`.
-`ENFORCEMENT_EFFECTS` exports the set in code.
+`require_approval`, `revoke`, `sever_subtree` and `terminate`. The engine holds
+this list; the SDK keeps no copy of it, so a new verb never needs an SDK
+change.
 
 Two combinations change the verdict your code receives here:
 
@@ -102,28 +103,42 @@ The audit trail records the `Allow` that was returned. It does not mark which
 observed rule would otherwise have denied, so keep the rule under test until you
 are ready to enforce it.
 
-## An unrecognised verb fails at load
+## An unrecognised verb, or a misspelled name, fails at load
 
 ```text
 PolicyError: policy "wire-approval": @enforcement_effect("needs_approval") is not
-an effect this engine implements. Accepted: attenuate, escalate, observe,
-quarantine, require_approval, revoke, sever_subtree, terminate.
+an effect this engine implements (accepted: attenuate, escalate, observe,
+quarantine, require_approval, revoke, sever_subtree, terminate); on a permit an
+unimplemented effect would leave a plain allow, so the policy is refused
 ```
 
-The engine maps a verb it does not implement to *no effect at all*. On a
-`forbid` that is harmless — the deny stands. On a **`permit` it is fail-open**:
-dropping `require_approval` leaves a plain allow, so one mistyped character turns
-an approval gate into an unconditional permit, with no error and no warning.
+A verb the engine does not implement used to have *no effect at all*. On a
+`forbid` that is harmless, because the deny stands. On a **`permit` it is
+fail-open**: dropping `require_approval` leaves a plain allow, so one mistyped
+character turns an approval gate into an unconditional permit. A misspelled
+annotation **name** (`@enforcment_effect`, `@Enforcement_Effect`) did the same,
+because Cedar accepts any annotation name.
 
-To prevent that, `govern.allow()` and `govern.load()` refuse an unrecognised
-verb before the engine sees it. They raise `PolicyError`, which is the same type
-in the Python and TypeScript SDKs, and `watchlight policy test` exits with
-status 2 and prints the same message. `load` accepts a whole file or nothing: if
-one policy is refused, none of the file is loaded. The source is not remembered
-either, so fix the file and load it again.
+The engine (`watchlight-engine` 0.2.3 and later) now refuses both when the
+policy is added, and the SDK raises `PolicyError`, the same type in the Python
+and TypeScript SDKs. Its `code` says which:
 
-A misspelled annotation **name** only warns — an annotation the SDK does not
-read is legitimate Cedar and may well be yours.
+| `code` | Meaning |
+|---|---|
+| `UNRECOGNISED_ENFORCEMENT_EFFECT` | The value is not one the engine implements. Case and spaces count, and an empty value is refused. |
+| `ENFORCEMENT_EFFECT_NAME_NEAR_MISS` | The annotation name is within two edits of `enforcement_effect` (ignoring case) but is not that name. |
+
+An annotation name further away, such as `@owner` or `@enforcement_action`, is
+your own and loads. The same text inside a Cedar string or a `//` comment is not
+an annotation.
+
+In Python, `govern.allow()`, `govern.load()` and `govern.reload()` raise at once,
+and nothing from the refused call is added: `load` adds none of the file and
+does not remember the source, and `reload` keeps the set it had. In TypeScript
+the engine compiles asynchronously, so the refusal surfaces at `govern.ready()`
+or the next decision, as a compile error does, and every decision throws it
+until a `reload` with a set that loads. `watchlight policy test` exits with
+status 2 and prints the message.
 
 ## Fail-closed still wins
 

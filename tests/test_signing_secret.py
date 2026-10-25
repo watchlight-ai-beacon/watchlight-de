@@ -265,7 +265,7 @@ def test_configure_default_applies_the_approval_and_counter_options(tmp_path, mo
     g = watchlight.configure_default(
         signing_secret=NEW,
         approval_store=Store(),
-        counter_source=lambda q: 11,
+        counter_source=lambda q: 11 if q["principal"] == "U" else 0,
     )
     g.allow(ANY, "any")
     token = g.mint_approval(principal="U", action="a", resource="r")

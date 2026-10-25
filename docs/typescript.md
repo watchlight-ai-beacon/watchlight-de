@@ -5,7 +5,7 @@ You get the same governance in your Node app, with no Python sidecar.
 compiled engine in-process, as WebAssembly.
 
 ```bash
-npm install @watchlight/sdk     # Node >= 18, no native toolchain
+npm install @watchlight/sdk     # Node >= 22, no native toolchain
 ```
 
 The five-minute `DENY` is in the [repository README](../README.md#quickstart),
@@ -18,7 +18,7 @@ Everything below has a Python equivalent under a `snake_case` name.
 ```ts
 const search = govern.tool(webSearch, {
   intent: "research",
-  principal: (q) => `User::"${q.userId}"`,   // who the call is for
+  principal: (q) => principals.user(q.userId),   // who the call is for
   resource: "index/web",
   context: (q) => ({ tier: q.tier }),        // what a policy reads as context.*
 });
@@ -202,6 +202,17 @@ holds a strict subset of its parent's. How deep that tree of scopes can grow is
 limited by the governor's `maxDelegationDepth` option, which defaults to 8. A
 step beyond that limit throws `DelegationDepthExceeded`, which is a denial with
 the code `DELEGATION_DEPTH_EXCEEDED`.
+
+A child's `timeBudgetSeconds` is granted exactly or refused, never shortened. If
+you leave it out, the child inherits the whole seconds its parent has left,
+which `remainingSeconds()` reports, rounded down. If you name more than that,
+`attenuate` throws `AttenuationDenied` with a `TimeBudget` violation, and the
+reason says how many seconds are available. Because a scope's issue time is
+rounded down to the second, a child named right after its parent was created
+can have at most the parent's budget minus one, and each level down loses up to
+one more second. Passing `null` is the same as leaving it out. A value that is
+not a whole number of seconds from 1 to 2**32 - 1 throws `AttenuationDenied`
+with a fixed reason. A parent whose time has run out refuses every child.
 
 `govern.scopeFromToken()` rebuilds the scope in the receiving process, and the
 engine there checks again that it really is a subset. Setting

@@ -101,13 +101,13 @@ wl_require_python() {
 
 wl_require_node() {
   command -v node >/dev/null 2>&1 || {
-    echo "error: no 'node' on PATH. Install Node >= 18." >&2
+    echo "error: no 'node' on PATH. Install Node >= 22." >&2
     return 3
   }
   local major
   major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
-  [ "$major" -ge 18 ] 2>/dev/null || {
-    echo "error: Node $(node -v) is too old — the SDK needs Node >= 18." >&2
+  [ "$major" -ge 22 ] 2>/dev/null || {
+    echo "error: Node $(node -v) is too old — the SDK needs Node >= 22." >&2
     return 3
   }
   return 0

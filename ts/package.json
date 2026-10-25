@@ -1,6 +1,6 @@
 {
   "name": "@watchlight/sdk",
-  "version": "0.13.2",
+  "version": "0.15.0",
   "description": "Watchlight Developer Edition govern glue for Node/TypeScript — declare intent, govern a tool with a fail-closed in-process policy decision, and get a value-free audit trail. Glue over @watchlight/engine; zero decision logic in JS.",
   "type": "commonjs",
   "main": "./dist/index.js",
@@ -14,11 +14,11 @@
     "README.md"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && for t in govern identity claude-agent graduation langchain adapter-parity egress-deadline sanitize screen action-gate policytest policy-loading policy-compile policy-annotations obligations audit-sink scope-token scope-preview counters approval-store counter-source async-context principal-record signing-secret default-governor plugin-decision-audit; do node test/$t.test.mjs || exit 1; done",
+    "test": "npm run build && for t in govern identity entity-ids claude-agent graduation langchain adapter-parity egress-deadline sanitize screen action-gate policytest policy-loading policy-compile policy-annotations obligations audit-sink scope-token scope-preview counters approval-store counter-source async-context principal-record signing-secret default-governor plugin-decision-audit scope-time-budget; do node test/$t.test.mjs || exit 1; done",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
@@ -31,11 +31,11 @@
     "ai-agents"
   ],
   "dependencies": {
-    "@watchlight/engine": "^0.2.0"
+    "@watchlight/engine": "^0.2.3"
   },
   "devDependencies": {
-    "typescript": "^5.5.0",
-    "@types/node": "^20.0.0"
+    "typescript": "^7.0.2",
+    "@types/node": "^26"
   },
   "license": "Apache-2.0",
   "homepage": "https://www.watchlight.ai",

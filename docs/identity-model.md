@@ -136,29 +136,64 @@ fails the request rather than silently denying it.
 | `Agent::"<name>"` | the agent on its own behalf — what an omitted `principal` records |
 | `Group::"<id>"`, `Role::"<id>"`, `Workflow::"<id>"` | other subjects the vocabulary accepts |
 
-Build the reference with the helpers. A subject id is an arbitrary string, and
-the request form and the policy form escape it differently:
+Build the reference with the helpers. A subject id is an arbitrary string that
+may contain a quote, a backslash or a space. The engine reads every request
+principal, action and resource with the same strict Cedar parser it uses for
+policy text, so the id is a Cedar string literal in a request just as it is in a
+policy. The request parser accepts only one spelling of each id. A quote, an
+apostrophe and a backslash must be escaped, as `\"`, `\'` and `\\`. A character
+that is not printable must be written as `\u{…}`. That covers control, format,
+separator, private-use, surrogate and unassigned characters, a space other than
+the plain space U+0020 (such as a no-break space), default-ignorable characters
+such as a zero-width space or a variation selector, and a combining mark at the
+start of the id. The helpers escape the quote, the apostrophe and the backslash
+for you. They refuse an id with a character that is not printable, with a fixed
+`TypeError` that does not echo the id, because the engine would refuse it
+anyway. A request and a policy spell the same reference the same way:
 
 ```python
 from watchlight import principals
 from watchlight.principals import for_policy
 
-principals.user('a"b')             # request form → User::"a"b"      (id verbatim)
+principals.user('a"b')             # → User::"a\"b"
+principals.user("o'brien@example.com")  # → User::"o\'brien@example.com"
+principals.user("a b")        # → TypeError: a no-break space is not printable
 principals.agent("flight-booker")  # → Agent::"flight-booker"
-for_policy("User", 'a"b')          # policy form  → User::"a\"b"     (escaped)
+for_policy("User", 'a"b')          # → User::"a\"b"   (the same string)
 ```
 
 ```ts
 import { principals, policyEntityRef } from "@watchlight/sdk";
 
-principals.user('a"b');                 // request form → User::"a"b"
+principals.user('a"b');                 // → User::"a\"b"
+principals.user("o'brien@example.com"); // → User::"o\'brien@example.com"
 principals.agent("flight-booker");      // → Agent::"flight-booker"
-policyEntityRef("User", 'a"b');         // policy form  → User::"a\"b"
+policyEntityRef("User", 'a"b');         // → User::"a\"b"   (the same string)
 ```
 
 A request built with `principals.user(sub)` matches a policy written with
-`for_policy("User", sub)` — the pair to use when a policy is generated from
-data.
+`for_policy("User", sub)`. That is the pair to use when a policy is generated
+from data. `for_policy` returns the same string as `principals.entity` for every
+id the request helpers accept. The difference is that policy text is not a
+request: `for_policy` escapes a control character (`\n`, `\0`, `\u{1b}`) instead
+of refusing it, and writes any other character the request helpers refuse as it
+is, which the policy parser accepts.
+
+Plain spaces are fine anywhere in an id, including at the start and the end.
+Letters with accents, other scripts and emoji are fine too. The helpers check
+the characters with the runtime's own Unicode data (Python's `unicodedata`,
+JavaScript's regular-expression property escapes). If that data is older than
+the engine's, the helper refuses a character that was assigned only recently,
+which the engine would have accepted. If it is newer, the engine refuses the
+request instead. Either way the call fails; an id is never read as another id.
+
+Do not paste an id into a reference by hand. A reference such as
+`User::"a"b"`, with the quote left unescaped, or `User::"o'brien"`, with the
+apostrophe left unescaped, is not read as some other entity:
+the engine refuses the request as invalid, and the call raises
+`AuthorizeRequestError`. The same happens to a reference with anything after
+the closing quote, such as `User::"alice" || true`. A crafted id therefore
+cannot name another entity or another type; at worst it makes the request fail.
 
 ### What every `principal` must satisfy
 
@@ -178,25 +213,39 @@ Three rules apply everywhere a `principal` is accepted: `authorize`, `tool`,
   back, so a longer principal raises an error before anything is decided or
   recorded. The same limit applies to the action and the resource. An agent
   name is limited to 4087 bytes, so that `Agent::"<name>"` fits within 4096.
+  The limit is measured on the escaped name, where a quote, an apostrophe or a
+  backslash takes two bytes, so a name made mostly of quotes is refused at a
+  shorter length. An agent name with a character that is not printable is
+  refused, as an id is.
+  `principals.user` and the other helpers refuse a reference whose escaped form
+  is longer than 4096 bytes in the same way.
   See [using the governor](using-the-governor.md#names-have-a-length-limit).
 
 To name no subject at all, omit `principal` (or pass `None` / `undefined`). That
 records the agent as its own subject.
 
-### The bare form is opaque
+### A bare principal is a `User`
 
-A bare identifier — `team-42`, with no `Type::` — is accepted and recorded
-exactly as given. It is not typed, and it is not inert.
+A bare identifier, such as `team-42` with no `Type::`, is accepted and recorded
+exactly as the caller wrote it. The engine reads it as a `User`: `team-42` is
+the entity `User::"team-42"`. It matches `principal is User` and a policy naming
+`User::"team-42"`. It never matches a policy that names the id under another
+type, such as `Agent::"team-42"`, and it never matches `principal is Agent`.
 
-A bare identifier matches a policy naming that id under `User`, `Agent`, `Group`
-or `Role`. It does not match one naming it under `Tool`, `Resource` or
-`Workflow`. When it matches more than one, an **allow beats a forbid** — the
-opposite of Cedar's usual rule. A `forbid` naming an agent can be defeated by a
-`permit` naming a user with the same id.
+In the same way, a bare action is read as an `Action` and a bare resource as a
+`Resource`. A bare name that contains a quote, or that contains `::`, is not a
+plain id: the engine refuses the request as invalid.
 
-**Name the type.** Only a typed reference discriminates, which is what
-`principals.user` / `principals.agent` are for. Treat `principal` in the audit
-trail the same way: a string to compare, not a shape to parse.
+**Name the type** for anything that is not a user, with `principals.agent` or
+`principals.entity`. Treat `principal` in the audit trail as a string to compare,
+not a shape to parse. The bare `team-42` and the typed `User::"team-42"` are the
+same entity to the engine but two different strings on the record, so pick one
+form and use it everywhere, for example for `counters()`.
+
+Before `watchlight-engine` 0.2.3 a bare identifier matched a policy naming that
+id under `User`, `Agent`, `Group` or `Role`, and when it matched more than one,
+an allow beat a forbid. That no longer happens. See the
+[breaking-changes log](breaking-changes.md).
 
 ## Naming several agents
 

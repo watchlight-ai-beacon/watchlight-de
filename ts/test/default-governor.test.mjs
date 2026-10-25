@@ -150,7 +150,12 @@ must(conflict({ auditFile: false }), "auditFile would change from true to false"
 // A sink BUILT a second time is a different sink: silently keeping the first
 // would discard the records the caller believed it had just redirected.
 must(conflict({ auditSink: () => {} }), "auditSink would change");
-must(conflict({ strictPrincipal: false }), "strictPrincipal would change from true to false");
+// strictPrincipal: false is refused outright, before any conflict check.
+{
+  let refused = "";
+  try { configureDefault({ strictPrincipal: false }); } catch (e) { refused = e instanceof RangeError ? e.message : ""; }
+  must(refused, "removed in 0.15.0");
+}
 const secret = conflict({ signingSecret: "a-different-signing-secret-32-by" });
 must(secret, "signingSecret would change");
 if (secret.includes("a-different-signing-secret")) throw new Error("the secret leaked into the message");

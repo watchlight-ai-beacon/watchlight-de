@@ -24,7 +24,7 @@ function loadSdk() {
   }
   throw new Error("@watchlight/sdk not found — 'npm i -g @watchlight/sdk' or build it with 'cd ts && npm run build'");
 }
-const { Watchlight, Denied, NeedsApproval, AttenuationDenied } = loadSdk();
+const { Watchlight, Denied, NeedsApproval, AttenuationDenied, principals } = loadSdk();
 
 // ── the fixtures: obviously synthetic ────────────────────────────────────────
 const TICKETS = {
@@ -59,7 +59,7 @@ function buildAgent(auditDir) {
 }
 
 async function runScenario(govern) {
-  const user = (u) => `User::"${u}"`;
+  const user = (u) => principals.user(u);
 
   // read: the egress hook sanitizes the body, joined to the read by decisionId.
   const readTicket = govern.tool((id, _u) => TICKETS[id].body, {

@@ -15,7 +15,7 @@
   <a href="https://pypi.org/project/watchlight/"><img alt="PyPI" src="https://img.shields.io/pypi/v/watchlight?color=fbbf24&amp;label=watchlight" /></a>
   <a href="https://pypi.org/project/watchlight/"><img alt="Python 3.9+" src="https://img.shields.io/badge/python-3.9%2B-fbbf24" /></a>
   <a href="https://www.npmjs.com/package/@watchlight/sdk"><img alt="npm" src="https://img.shields.io/npm/v/@watchlight/sdk?color=fbbf24&amp;label=%40watchlight%2Fsdk" /></a>
-  <a href="https://www.npmjs.com/package/@watchlight/sdk"><img alt="Node 18+" src="https://img.shields.io/badge/node-18%2B-fbbf24" /></a>
+  <a href="https://www.npmjs.com/package/@watchlight/sdk"><img alt="Node 22+" src="https://img.shields.io/badge/node-22%2B-fbbf24" /></a>
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue" /></a>
   <a href="https://docs.watchlight.ai/de"><img alt="Docs" src="https://img.shields.io/badge/docs-docs.watchlight.ai%2Fde-fbbf24" /></a>
 </p>
@@ -30,7 +30,7 @@ production.
 
 ```bash
 pip install watchlight        # Python 3.9+, prebuilt wheels
-npm install @watchlight/sdk   # Node 18+, the compiled engine comes with it
+npm install @watchlight/sdk   # Node 22+, the compiled engine comes with it
 ```
 
 ## Quickstart
