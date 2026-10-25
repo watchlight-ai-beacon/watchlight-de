@@ -1,0 +1,252 @@
+# Test the plugins and SDKs under integrations/plugins/.
+#
+# Each Python package under integrations/plugins/python/ and each TypeScript
+# package in the integrations/plugins/ts/ workspace is its own package, with its
+# own manifest and its own tests. scripts/preflight.sh does not run them; this
+# workflow does. It finds the packages from the tree rather than from a list
+# kept here, so a new package is tested from the commit that adds it.
+#
+#   * python      one job per package and per Python version from 3.10 to 3.13
+#                 that the package's `requires-python` accepts. Every plugin is
+#                 installed on top of the SDK source in the same commit
+#                 (watchlight-core), never the last SDK release.
+#   * typescript  the whole npm workspace: npm ci, build, typecheck, test.
+#
+# While a directory holds no packages, its job says so in a notice and passes.
+#
+# The same rules as preflight.yml apply: `pull_request`, never
+# `pull_request_target`, so a fork's code runs with a read-only token and no
+# secrets; the token is not persisted into the checkout; every action is pinned
+# to a full commit SHA.
+
+name: Plugins
+
+on:
+  pull_request:
+    paths:
+      - "integrations/plugins/**"
+      - ".github/workflows/plugins.yml"
+  push:
+    branches: [main]
+    paths:
+      - "integrations/plugins/**"
+      - ".github/workflows/plugins.yml"
+
+# Least privilege: reading the checkout is the only thing this needs.
+permissions:
+  contents: read
+
+# A new push supersedes the run in flight for the same ref.
+concurrency:
+  group: plugins-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  discover:
+    name: discover python packages
+    runs-on: ${{ vars.DE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    outputs:
+      count: ${{ steps.find.outputs.count }}
+      matrix: ${{ steps.find.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      # Reads every integrations/plugins/python/*/pyproject.toml and emits one
+      # matrix entry per (package, Python version) that `requires-python`
+      # accepts. A directory name outside [a-z0-9._-], an unreadable
+      # pyproject.toml, or a package that accepts none of the tested versions
+      # fails the run instead of quietly dropping the package.
+      - name: Find the Python packages
+        id: find
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --quiet "packaging==25.0"
+          python - <<'PY'
+          import json
+          import os
+          import pathlib
+          import re
+          import tomllib
+
+          from packaging.specifiers import InvalidSpecifier, SpecifierSet
+
+          VERSIONS = ["3.10", "3.11", "3.12", "3.13"]
+          root = pathlib.Path("integrations/plugins/python")
+
+          include, errors = [], []
+          for pyproject in sorted(root.glob("*/pyproject.toml")):
+              name = pyproject.parent.name
+              if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", name):
+                  errors.append(f"{name!r}: directory names may use only a-z, 0-9, '.', '_' and '-'")
+                  continue
+              try:
+                  project = tomllib.loads(pyproject.read_text(encoding="utf-8")).get("project", {})
+                  spec = SpecifierSet(project.get("requires-python", ""))
+              except (tomllib.TOMLDecodeError, InvalidSpecifier, UnicodeDecodeError) as exc:
+                  errors.append(f"{name}: cannot read pyproject.toml: {exc}")
+                  continue
+              versions = [v for v in VERSIONS if spec.contains(v)]
+              if not versions:
+                  errors.append(f"{name}: requires-python {str(spec)!r} accepts none of {', '.join(VERSIONS)}")
+                  continue
+              include += [{"package": name, "python": v} for v in versions]
+              print(f"{name}: Python {', '.join(versions)}")
+
+          for error in errors:
+              print(f"::error::{error}")
+          if errors:
+              raise SystemExit(1)
+
+          if not include:
+              print("::notice::No Python packages under integrations/plugins/python/ yet; there is nothing to test.")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write(f"count={len(include)}\n")
+              out.write(f"matrix={json.dumps({'include': include})}\n")
+          PY
+
+  python:
+    name: python (${{ matrix.package }}, ${{ matrix.python }})
+    needs: discover
+    # An empty matrix is an error in GitHub Actions, so the job is skipped,
+    # with the discover job's notice saying why, when there is nothing to test.
+    if: needs.discover.outputs.count != '0'
+    runs-on: ${{ vars.DE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+
+      # The package name reaches the script through the environment, never by
+      # expression interpolation into the script text.
+      - name: Install the package
+        env:
+          PACKAGE: ${{ matrix.package }}
+        run: |
+          set -euo pipefail
+          base="$GITHUB_WORKSPACE/integrations/plugins/python"
+          python -m venv "$RUNNER_TEMP/venv"
+          py="$RUNNER_TEMP/venv/bin/python"
+          "$py" -m pip install --disable-pip-version-check --quiet --upgrade pip
+          if [ "$PACKAGE" != "watchlight-core" ] && [ -f "$base/watchlight-core/pyproject.toml" ]; then
+            "$py" -m pip install --disable-pip-version-check -e "$base/watchlight-core"
+          fi
+          "$py" -m pip install --disable-pip-version-check -e "${base}/${PACKAGE}[dev]" pytest
+          # If the package's pin on watchlight-agent-sdk does not admit the SDK
+          # source in this commit, pip replaces it with a release, and the
+          # plugin would be tested against code that is not in this commit.
+          # Refuse that instead.
+          if [ -f "$base/watchlight-core/pyproject.toml" ]; then
+            "$py" - "$base/watchlight-core" <<'PY'
+          import pathlib
+          import sys
+
+          import watchlight_core
+
+          expected = pathlib.Path(sys.argv[1]).resolve()
+          actual = pathlib.Path(watchlight_core.__file__).resolve()
+          if expected not in actual.parents:
+              print(f"::error::watchlight_core was imported from {actual}, not from {expected}. "
+                    "The package's watchlight-agent-sdk requirement does not admit the SDK version in this commit.")
+              raise SystemExit(1)
+          print(f"watchlight_core from {actual}")
+          PY
+          fi
+
+      - name: Run the tests
+        env:
+          PACKAGE: ${{ matrix.package }}
+        working-directory: integrations/plugins/python/${{ matrix.package }}
+        run: |
+          set -euo pipefail
+          # pytest exits 5 when it collects no tests; that fails the job, so a
+          # package with no tests never passes by default.
+          "$RUNNER_TEMP/venv/bin/python" -m pytest -q
+
+  typescript:
+    name: typescript (node ${{ matrix.node }})
+    runs-on: ${{ vars.DE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # Node 22 is the floor the workspace declares in `engines`; 24 is the
+        # current LTS.
+        node: ["22", "24"]
+    defaults:
+      run:
+        working-directory: integrations/plugins/ts
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+
+      # A workspace step runs a script only in the packages that define it, so
+      # a package without `typecheck` would pass that step without being
+      # checked. Refuse a package that leaves out build, typecheck or test.
+      - name: Find the TypeScript packages
+        id: find
+        run: |
+          set -euo pipefail
+          node - <<'JS'
+          const fs = require("node:fs");
+          const path = require("node:path");
+
+          const packages = fs.readdirSync(".", { withFileTypes: true })
+            .filter((d) => d.isDirectory() && d.name !== "node_modules")
+            .map((d) => d.name)
+            .filter((name) => fs.existsSync(path.join(name, "package.json")))
+            .sort();
+
+          let failed = false;
+          for (const name of packages) {
+            const scripts = JSON.parse(fs.readFileSync(path.join(name, "package.json"), "utf8")).scripts ?? {};
+            const missing = ["build", "typecheck", "test"].filter((s) => typeof scripts[s] !== "string");
+            if (missing.length) {
+              console.log(`::error::${name}: package.json defines no ${missing.join(", ")} script`);
+              failed = true;
+            } else {
+              console.log(name);
+            }
+          }
+          if (failed) process.exit(1);
+          if (packages.length === 0) {
+            console.log("::notice::No TypeScript packages in the integrations/plugins/ts/ workspace yet; there is nothing to test.");
+          }
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `present=${packages.length > 0}\n`);
+          JS
+
+      - name: npm ci
+        if: steps.find.outputs.present == 'true'
+        run: npm ci
+
+      - name: npm run build
+        if: steps.find.outputs.present == 'true'
+        run: npm run build
+
+      - name: npm run typecheck
+        if: steps.find.outputs.present == 'true'
+        run: npm run typecheck
+
+      - name: npm test
+        if: steps.find.outputs.present == 'true'
+        run: npm test
