@@ -180,20 +180,28 @@ every decision it makes. The record has the same fields as one written by
 `authorize()`, plus `execution_id`, the execution id the decision was made
 under. That is normally the run's id; if you pass your own `execution_id` to
 `authorize_action`, the record carries yours. A sub-agent's decision names the
-sub-agent as `agent` and carries the delegation chain in `actor_chain`. After a
-run is quarantined or severed, the plugin refuses every later call itself, and
-each of those refusals is recorded as a `Deny`. The one exception is a handle
-read from `watchlight_core.current_subagent_handle()`, which is the SDK's own
-handle; see [integrations](integrations.md#what-the-plugin-records). A
-`preflight_step` is advisory and writes no record; the gate is
-`authorize_action`. Every field is recorded exactly as given, as on the direct
-path, so `counters()` matches it exactly. The plugin applies the direct path's
-name limits at the decision: a principal, action, resource or `execution_id`
-that breaks one is refused with a `TypeError` before the engine sees it, and
-nothing is recorded. An agent name over its limit, or a term that breaks a
-limit in a refusal the handle makes on its own, is recorded as a value-free
-marker in a record marked `"oversized": true`, which counts toward every quota.
-See [integrations](integrations.md#what-the-plugin-records).
+sub-agent as `agent` and carries the delegation chain in `actor_chain`. The
+plugin's run handle refuses some calls itself: every call after the run is
+quarantined, severed, terminated or revoked, and a call whose intent is not a
+typed intent (an objective and a category). Each of those refusals is recorded
+as a `Deny`, once. The one exception is a handle read from
+`watchlight_core.current_subagent_handle()`, which is the SDK's own handle; see
+[integrations](integrations.md#what-the-plugin-records). A `preflight_step` is
+advisory and writes no record; the gate is `authorize_action`. Every field is
+recorded exactly as given, as on the direct path, so `counters()` matches it
+exactly. The plugin applies the direct path's name limits at the decision: a
+principal, action, resource or `execution_id` that breaks one is refused before
+the engine sees it. Through the run handle, that refusal is a `Deny` and is
+recorded, with a value-free marker in place of the term, in a record marked
+`"oversized": true`, which counts toward every quota. An agent name over its
+limit is recorded the same way. See
+[integrations](integrations.md#what-the-plugin-records).
+
+A sub-agent's call outside the scope its spawn granted is denied and recorded
+as a `Deny` like any other decision. When that denial invalidates the
+sub-agent's handle, the SDK also writes a value-free `scope_violation_observed`
+line, which is not a decision and is never counted. See
+[integrations](integrations.md#a-sub-agent-is-confined-to-the-scope-its-spawn-granted).
 
 The plugin also writes `execution_started` and `execution_completed` lines when
 a run begins and ends. Those lines name their kind in `event_type`, and they

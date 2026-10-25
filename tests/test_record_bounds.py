@@ -604,10 +604,15 @@ async def _attempt_async(fn):
         pass
 
 
-def test_no_plugin_decision_writes_an_unreadable_or_oversized_line(tmp_path, monkeypatch, capsys):
+def test_no_plugin_decision_writes_an_unreadable_line(tmp_path, monkeypatch, capsys):
     """The plugin path applies the direct path's bounds at the decision: an odd
-    principal, action, resource or execution id is refused before the engine,
-    and nothing it writes is unreadable or shortened."""
+    principal, action, resource or execution id is refused before the engine.
+    Called directly, the backend raises and writes nothing, as the direct path
+    does. Through a run handle the refusal comes back as a deny (the SDK turns
+    any backend error into one since watchlight-agent-sdk 0.10.1), so it is
+    recorded: the odd term is replaced by a value-free marker and the record is
+    marked oversized. Nothing either path writes is unreadable, and no odd value
+    is ever written."""
     pytest.importorskip("watchlight_core")
     from watchlight.inprocess import in_process_backend
 
@@ -616,13 +621,21 @@ def test_no_plugin_decision_writes_an_unreadable_or_oversized_line(tmp_path, mon
     backend = in_process_backend(PLUGIN_POLICIES, audit_path=str(audit))
     odd = [x for x in ODD if x is not None] + [Sneaky("y" * (2 * MAX_COUNTERS_LINE_BYTES)), Sneaky("ok")]
 
-    async def drive():
+    async def direct():
         assert (await backend.authorize('Agent::"a"', 'Action::"read"', 'Tool::"x"'))["decision"] == "Allow"
         for x in odd:
             await _attempt_async(lambda: backend.authorize(x, 'Action::"read"', 'Tool::"x"'))
             await _attempt_async(lambda: backend.authorize('Agent::"a"', x, 'Tool::"x"'))
             await _attempt_async(lambda: backend.authorize('Agent::"a"', 'Action::"read"', x))
             await _attempt_async(lambda: backend.authorize('Agent::"a"', 'Action::"read"', 'Tool::"x"', execution_id=x))
+
+    asyncio.run(direct())
+    capsys.readouterr()
+    assert trail_lines(tmp_path)
+    assert_every_line_readable(tmp_path)
+    direct_decisions = len([line for line in trail_lines(tmp_path) if b'"event": "decision"' in line])
+
+    async def handles():
         for module in _plugin_modules():
             plugin = module.governed_plugin(PLUGIN_POLICIES, audit_path=str(audit))
             async with await plugin.start_run("battery-agent") as handle:
@@ -632,10 +645,25 @@ def test_no_plugin_decision_writes_an_unreadable_or_oversized_line(tmp_path, mon
                     await _attempt_async(lambda: handle.authorize_action('Action::"read"', 'Tool::"x"', principal=x))
                     await _attempt_async(lambda: handle.authorize_action_detailed(x, x, principal=x))
 
-    asyncio.run(drive())
+    asyncio.run(handles())
     capsys.readouterr()
-    assert trail_lines(tmp_path)
-    assert_every_line_readable(tmp_path)
+    lines = trail_lines(tmp_path)
+    assert max(len(line) for line in lines) < MAX_COUNTERS_LINE_BYTES
+    raw = audit.read_bytes()
+    assert b"y" * 64 not in raw and HUGE[:64].encode() not in raw
+    found = find_unreadable_lines(audit)
+    # Every finding is a marked record; none is a line that cannot be read.
+    assert {f["reason"] for f in found["findings"]} <= {"oversized-record"}, found
+    records = [json.loads(line) for line in lines]
+    marked = [r for r in records if r.get("oversized") is True]
+    assert marked, "no handle refusal was recorded"
+    for record in marked:
+        assert record["event"] == "decision" and record["decision"] == "Deny", record
+        assert any(
+            isinstance(record.get(field), dict) and record[field].get("omitted") == "refused"
+            for field in ("principal", "intent", "resource")
+        ), record
+    assert len([r for r in records if r.get("event") == "decision"]) > direct_decisions
 
 
 def test_plugin_refusals_after_a_quarantine_never_record_an_oversized_name(tmp_path, monkeypatch, capsys):
