@@ -752,6 +752,23 @@ console.log("every write path is bounded (shared with Python)");
       });
       eq(`refused-term records count as in Python (${q.principal} ${q.outcome})`, [rr.count, rr.unreadable], [q.count, q.unreadable]);
     }
+    // Every shape a refused-term or refused-principal record can take counts as
+    // in Python (tests/test_record_bounds.py reads the same fixture).
+    const cases = JSON.parse(fs.readFileSync(join(here, "..", "..", "tests", "fixtures", "counters-refusal-cases.json"), "utf8"));
+    const caseDir = dirOf();
+    const mismatched = [];
+    for (const c of cases.cases) {
+      const p = join(caseDir, `${c.name}.jsonl`);
+      fs.writeFileSync(p, JSON.stringify(c.record) + "\n");
+      for (const q of c.expected) {
+        const opts = { principal: q.principal, window: cases.window, outcome: q.outcome, now: cases.now };
+        if (q.intent !== null) opts.intent = q.intent;
+        if (q.resource !== null) opts.resource = q.resource;
+        const got = countAuditRecords(p, opts).count;
+        if (got !== q.count) mismatched.push(`${c.name} ${q.principal} ${q.intent} ${q.resource} ${q.outcome}: ${got} != ${q.count}`);
+      }
+    }
+    eq(`refusal record cases count as in Python (${cases.cases.length} cases)`, mismatched, []);
     for (const spec of ["1h\n", "١h", "１h", "1١"]) {
       throws(`the window grammar is ASCII-only (${JSON.stringify(spec)})`, () => parseWindowSeconds(spec), RangeError);
     }

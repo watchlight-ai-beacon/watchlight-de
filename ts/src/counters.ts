@@ -17,6 +17,10 @@
 //     "Allow"`, including approved ones; `denied` = every decision that did not
 //     let the body run (`Deny` and `NeedsApproval` holds); `all` = both. So
 //     `allowed + denied == all`.
+//   * a `Deny` marked `refused_principal: true` — written by a Python framework
+//     plugin for a call whose principal broke a name rule — counts as a denied
+//     decision of every principal, inside its window like any other: it never
+//     counts as allowed, and a marker field matches every filter on that field.
 //   * a `Deny` marked `refused_term: true` — written by a Python framework
 //     plugin for a call whose action, resource or execution id broke a name
 //     rule, with a value-free marker in place of the refused term — is a denied
@@ -48,8 +52,8 @@
 //     because it was too long (`boundedLine` in audit.ts) — counts toward every
 //     query, like a line that cannot be read, since a field it replaced might
 //     be the one a query matches on;
-//   * a decision marked `refused_term: true` that is not a `Deny` with a string
-//     principal (one the SDK never writes) counts the same way.
+//   * a decision marked `refused_term: true` or `refused_principal: true` that
+//     is not what the SDK writes (see `malformedRefusal`) counts the same way.
 // All four are counted in `unreadable` (so `count - unreadable` is the number of
 // well-formed matching decisions) and in `skipped`. A well-formed object that
 // is not a decision — a framework run's lifecycle line, or another record kind
@@ -401,7 +405,7 @@ export const UNREADABLE_REASONS = {
   "not-an-object": "not a JSON object",
   "unreadable-ts": "a decision whose ts cannot be read",
   "oversized-record": "a record the SDK shortened because it was too long",
-  "malformed-refusal": "a refused-term record that is not a Deny naming its principal",
+  "malformed-refusal": "a refused-term or refused-principal record the SDK does not write",
 } as const;
 
 /** A reason code from {@link UNREADABLE_REASONS}. */
@@ -537,11 +541,16 @@ function tallyLine(bytes: Buffer | null, filter: Filter, t: Tally): void {
   // name. It matches by its principal like any decision, and its marker field
   // matches every filter on that field, since the refused term might have been
   // the one a query names.
-  const refused = r.refused_term === true;
+  // A refused-principal record (`refused_principal: true`) is the same for a
+  // call whose principal broke a rule: whose decision it was cannot be read, so
+  // it matches every principal — still only as a denied decision, and only
+  // inside its window.
+  const anyPrincipal = r.refused_principal === true;
+  const refused = anyPrincipal || r.refused_term === true;
   const field = (value: unknown, f: FilterKey | undefined): boolean =>
     f === undefined || names(value, f) || (refused && typeof value !== "string");
   const matches =
-    names(r.principal, filter.principal) &&
+    (anyPrincipal || names(r.principal, filter.principal)) &&
     field(r.intent, filter.intent) &&
     field(r.resource, filter.resource) &&
     (filter.outcome === "allowed" ? allowed : filter.outcome === "denied" ? !allowed : true);
@@ -560,15 +569,23 @@ function tallyLine(bytes: Buffer | null, filter: Filter, t: Tally): void {
   if (matches && ts > filter.start && ts <= filter.end) t.count += 1;
 }
 
-/** A decision marked `refused_term: true` that is not what the SDK writes: a
- *  `Deny` whose principal is a string. Such a record cannot be matched to its
- *  principal, so it counts like a line that cannot be read. */
+/** A decision marked as a refusal the Python SDK recorded that is not what it
+ *  writes. `refused_term: true` must be a `Deny` whose principal is a string;
+ *  `refused_principal: true` must be a `Deny` whose principal is a value-free
+ *  marker (an object);
+ *  a record never carries both. Such a record counts like a line that cannot
+ *  be read. */
 function malformedRefusal(r: Record<string, unknown>): boolean {
-  return (
-    r.refused_term === true &&
-    (!("event" in r) || r.event === "decision") &&
-    (r.decision !== "Deny" || typeof r.principal !== "string")
-  );
+  if ("event" in r && r.event !== "decision") return false;
+  const term = r.refused_term === true;
+  const principal = r.refused_principal === true;
+  if (!term && !principal) return false;
+  if ((term && principal) || r.decision !== "Deny") return true;
+  if (principal) {
+    const p = r.principal;
+    return !(typeof p === "object" && p !== null && !Array.isArray(p));
+  }
+  return typeof r.principal !== "string";
 }
 
 /** The entity a filter names: its key, its bare type and the given text. */

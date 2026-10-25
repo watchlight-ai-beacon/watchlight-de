@@ -655,8 +655,15 @@ def test_no_plugin_decision_writes_an_unreadable_line(tmp_path, monkeypatch, cap
     # Every finding is a marked record; none is a line that cannot be read.
     assert {f["reason"] for f in found["findings"]} <= {"oversized-record"}, found
     records = [json.loads(line) for line in lines]
-    marked = [r for r in records if r.get("oversized") is True]
+    marked = [
+        r for r in records
+        if r.get("oversized") is True or r.get("refused_term") is True or r.get("refused_principal") is True
+    ]
     assert marked, "no handle refusal was recorded"
+    # A refused principal is recorded as such, never as a record that counts
+    # toward every query without a window.
+    assert any(r.get("refused_principal") is True for r in marked)
+    assert not [r for r in marked if r.get("oversized") is True]
     for record in marked:
         assert record["event"] == "decision" and record["decision"] == "Deny", record
         assert any(
@@ -769,3 +776,21 @@ def test_refused_term_records_count_as_in_typescript():
             window="1h", outcome=q["outcome"], now=expected["now"],
         )
         assert (r["count"], r["unreadable"]) == (q["count"], q["unreadable"]), q
+
+
+def test_refusal_record_cases_count_as_in_typescript(tmp_path):
+    """Every shape a refused-term or refused-principal record can take — the
+    ones the SDK writes and the ones it never does — counts the same in both
+    lanes. A refused principal is a denied decision of every principal, only
+    inside its window and never as allowed; anything the SDK does not write
+    counts toward every query. The TypeScript suite checks the same fixture."""
+    fixture = json.loads((FIXTURES / "counters-refusal-cases.json").read_text())
+    for case in fixture["cases"]:
+        trail = tmp_path / f"{case['name']}.jsonl"
+        trail.write_text(json.dumps(case["record"]) + "\n", encoding="utf-8")
+        for q in case["expected"]:
+            r = count_audit_records(
+                trail, q["principal"], q["intent"], q["resource"],
+                window=fixture["window"], outcome=q["outcome"], now=fixture["now"],
+            )
+            assert r["count"] == q["count"], (case["name"], q)

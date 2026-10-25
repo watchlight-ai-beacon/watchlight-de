@@ -110,9 +110,11 @@ How `counters()` counts the record depends on which term was refused:
   marker matches any `intent` or `resource` filter, because the refused term
   might have been the one the query names.
 - When the principal itself was refused, whose decision it was cannot be read
-  from the record. It is marked `"oversized": true`, and `counters()` counts it
-  toward every query, whatever the principal, outcome or window, until the
-  file is rotated.
+  from the record. It is marked `"refused_principal": true`, and `counters()`
+  counts it as a denied decision of every principal. It still counts only
+  inside its window, and never as allowed. A marker in its action or resource
+  matches any filter on that field; an intact action or resource is matched
+  as usual.
 
 If you call the backend's `authorize` directly instead of through a handle,
 the same term raises a `TypeError` and nothing is recorded, as on

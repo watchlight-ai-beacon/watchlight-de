@@ -1395,8 +1395,10 @@ def test_an_unhashable_refused_term_is_still_recorded_once(name, label, kwargs, 
     (record,) = _decisions(_lines(audit))
     assert record["decision"] == "Deny", label
     if "principal" in kwargs:
-        # Whose decision it was cannot be read: counted toward every query.
-        assert record["oversized"] is True and "refused_term" not in record
+        # Whose decision it was cannot be read: a denied decision of every
+        # principal, inside its window.
+        assert record["refused_principal"] is True and "oversized" not in record
+        assert record["principal"] == {"omitted": "refused"}
     else:
         assert record["refused_term"] is True and "oversized" not in record
 
@@ -1564,3 +1566,88 @@ def test_a_spawn_refused_by_the_handle_is_not_a_decision_record(tmp_path):
 
     asyncio.run(run())
     assert [(r["intent"], r["decision"]) for r in _decisions(_lines(audit))] == [('Action::"exfiltrate"', "Deny")]
+
+
+def test_a_refused_principal_is_a_windowed_denial_of_every_principal(tmp_path):
+    # Whose decision it was cannot be read from a record whose principal was
+    # refused, so it counts for every principal — but only as denied, only
+    # inside its window, and never as allowed.
+    import datetime
+
+    module = _plugin_module("langgraph")
+    audit = tmp_path / "audit.jsonl"
+    plugin = module.governed_plugin(POLICIES, audit_path=str(audit))
+
+    async def run():
+        async with await plugin.start_run("odd-agent") as handle:
+            assert await handle.authorize_action(*ALLOWED, principal='User::"a\nb"') is False
+
+    asyncio.run(run())
+    (record,) = _decisions(_lines(audit))
+    assert record["refused_principal"] is True and "oversized" not in record
+    assert record["principal"] == {"omitted": "refused", "bytes": len('User::"a\nb"')}
+    assert record["ts"]
+    later = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=2)).isoformat()
+    for principal in ('User::"alice"', 'User::"bob"'):
+        assert count_audit_records(audit, principal, window="1h", outcome="denied")["count"] == 1
+        assert count_audit_records(audit, principal, window="1h", outcome="all")["count"] == 1
+        assert count_audit_records(audit, principal, window="1h", outcome="allowed")["count"] == 0
+        assert count_audit_records(audit, principal, window="1h", outcome="denied", now=later)["count"] == 0
+    # The action is intact, so a filter on another action does not match it.
+    assert count_audit_records(audit, 'User::"alice"', 'Action::"write"', window="1h", outcome="denied")["count"] == 0
+
+
+@pytest.mark.parametrize("name", NAMES)
+def test_a_sink_that_raises_a_cancellation_leaves_exactly_one_record(name, tmp_path):
+    # A synchronous sink runs after the file line is written. If it raises a
+    # cancellation, the call already has its record: the wrapper must not add
+    # a second one while the cancellation goes on.
+    module = _plugin_module(name)
+    audit = tmp_path / "audit.jsonl"
+
+    def sink(record):
+        raise asyncio.CancelledError()
+
+    plugin = module.governed_plugin(POLICIES, audit_path=str(audit), audit_sink=sink)
+
+    async def run():
+        async with await plugin.start_run("sink-agent") as handle:
+            with pytest.raises(asyncio.CancelledError):
+                await handle.authorize_action(*ALLOWED)
+
+    asyncio.run(run())
+    decisions = _decisions(_lines(audit))
+    assert [(r["intent"], r["decision"]) for r in decisions] == [(ALLOWED[0], "Allow")]
+
+
+def test_a_nested_call_in_a_tool_body_never_stands_in_for_the_tools_record(tmp_path):
+    # The tool's guard decision is not recorded by the backend here (the
+    # decorator runs the body without asking), and the body makes its own
+    # audited calls. Those records belong to the body's calls; the tool's own
+    # call is still recorded, as an Allow, because its body ran.
+    module = _plugin_module("pydantic_ai")
+    audit = tmp_path / "audit.jsonl"
+    plugin = module.governed_plugin(POLICIES, audit_path=str(audit))
+
+    async def run():
+        async with await plugin.start_run("tool-agent") as handle:
+
+            async def body():
+                inner = await handle.authorize_action('Action::"read"', 'Tool::"inner"')
+                both = await asyncio.gather(
+                    handle.authorize_action('Action::"read"', 'Tool::"g1"'),
+                    handle.authorize_action('Action::"delete"', 'Tool::"g2"'),
+                )
+                return inner, both
+
+            tool = handle._wl_guarded_tool(lambda action="execute": (lambda fn: fn))(action='Action::"read"')(body)
+            assert await tool() == (True, [True, False])
+
+    asyncio.run(run())
+    rows = sorted((r["resource"], r["decision"]) for r in _decisions(_lines(audit)))
+    assert rows == sorted([
+        ('Tool::"inner"', "Allow"),
+        ('Tool::"g1"', "Allow"),
+        ('Tool::"g2"', "Deny"),
+        ("body", "Allow"),
+    ])

@@ -1,0 +1,3557 @@
+{
+ "now": "2026-01-15T12:00:00.000Z",
+ "window": "1h",
+ "cases": [
+  {
+   "name": "term_resource",
+   "record": {
+    "ts": "2026-01-15T11:59:00.000Z",
+    "agent": "a",
+    "event": "decision",
+    "principal": "User::\"mallory\"",
+    "intent": "Action::\"read\"",
+    "resource": {
+     "omitted": "refused",
+     "bytes": 3
+    },
+    "decision": "Deny",
+    "refused_term": true
+   },
+   "expected": [
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "all",
+     "count": 0
+    }
+   ]
+  },
+  {
+   "name": "term_intent",
+   "record": {
+    "ts": "2026-01-15T11:59:00.000Z",
+    "agent": "a",
+    "event": "decision",
+    "principal": "User::\"mallory\"",
+    "intent": {
+     "omitted": "refused",
+     "bytes": 3
+    },
+    "resource": "Tool::\"w\"",
+    "decision": "Deny",
+    "refused_term": true
+   },
+   "expected": [
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "all",
+     "count": 0
+    }
+   ]
+  },
+  {
+   "name": "term_allow",
+   "record": {
+    "ts": "2026-01-15T11:59:00.000Z",
+    "agent": "a",
+    "event": "decision",
+    "principal": "User::\"mallory\"",
+    "intent": "Action::\"read\"",
+    "resource": {
+     "omitted": "refused",
+     "bytes": 3
+    },
+    "decision": "Allow",
+    "refused_term": true
+   },
+   "expected": [
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "all",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "name": "term_lower_deny",
+   "record": {
+    "ts": "2026-01-15T11:59:00.000Z",
+    "agent": "a",
+    "event": "decision",
+    "principal": "User::\"mallory\"",
+    "intent": "Action::\"read\"",
+    "resource": {
+     "omitted": "refused",
+     "bytes": 3
+    },
+    "decision": "deny",
+    "refused_term": true
+   },
+   "expected": [
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "all",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "name": "term_needs_approval",
+   "record": {
+    "ts": "2026-01-15T11:59:00.000Z",
+    "agent": "a",
+    "event": "decision",
+    "principal": "User::\"mallory\"",
+    "intent": "Action::\"read\"",
+    "resource": {
+     "omitted": "refused",
+     "bytes": 3
+    },
+    "decision": "NeedsApproval",
+    "refused_term": true
+   },
+   "expected": [
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "all",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "name": "term_marker_principal",
+   "record": {
+    "ts": "2026-01-15T11:59:00.000Z",
+    "agent": "a",
+    "event": "decision",
+    "principal": {
+     "omitted": "refused",
+     "bytes": 3
+    },
+    "intent": "Action::\"read\"",
+    "resource": "Tool::\"w\"",
+    "decision": "Deny",
+    "refused_term": true
+   },
+   "expected": [
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "all",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "name": "term_no_principal",
+   "record": {
+    "ts": "2026-01-15T11:59:00.000Z",
+    "agent": "a",
+    "event": "decision",
+    "intent": "Action::\"read\"",
+    "resource": "Tool::\"w\"",
+    "decision": "Deny",
+    "refused_term": true
+   },
+   "expected": [
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "all",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "name": "term_string_true",
+   "record": {
+    "ts": "2026-01-15T11:59:00.000Z",
+    "agent": "a",
+    "event": "decision",
+    "principal": "User::\"mallory\"",
+    "intent": "Action::\"read\"",
+    "resource": {
+     "omitted": "refused",
+     "bytes": 3
+    },
+    "decision": "Deny",
+    "refused_term": "true"
+   },
+   "expected": [
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "all",
+     "count": 0
+    }
+   ]
+  },
+  {
+   "name": "term_one",
+   "record": {
+    "ts": "2026-01-15T11:59:00.000Z",
+    "agent": "a",
+    "event": "decision",
+    "principal": "User::\"mallory\"",
+    "intent": "Action::\"read\"",
+    "resource": {
+     "omitted": "refused",
+     "bytes": 3
+    },
+    "decision": "Deny",
+    "refused_term": 1
+   },
+   "expected": [
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "all",
+     "count": 0
+    }
+   ]
+  },
+  {
+   "name": "term_bare_principal",
+   "record": {
+    "ts": "2026-01-15T11:59:00.000Z",
+    "agent": "a",
+    "event": "decision",
+    "principal": "mallory",
+    "intent": "Action::\"read\"",
+    "resource": {
+     "omitted": "refused",
+     "bytes": 3
+    },
+    "decision": "Deny",
+    "refused_term": true
+   },
+   "expected": [
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "all",
+     "count": 0
+    }
+   ]
+  },
+  {
+   "name": "term_other_event",
+   "record": {
+    "ts": "2026-01-15T11:59:00.000Z",
+    "agent": "a",
+    "event": "egress",
+    "principal": "User::\"mallory\"",
+    "intent": "Action::\"read\"",
+    "resource": "Tool::\"w\"",
+    "decision": "Allow",
+    "refused_term": true
+   },
+   "expected": [
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "all",
+     "count": 0
+    }
+   ]
+  },
+  {
+   "name": "term_no_ts",
+   "record": {
+    "agent": "a",
+    "event": "decision",
+    "principal": "User::\"mallory\"",
+    "intent": "Action::\"read\"",
+    "resource": {
+     "omitted": "refused",
+     "bytes": 3
+    },
+    "decision": "Deny",
+    "refused_term": true
+   },
+   "expected": [
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "all",
+     "count": 0
+    }
+   ]
+  },
+  {
+   "name": "term_old_ts",
+   "record": {
+    "ts": "2020-01-01T00:00:00+00:00",
+    "agent": "a",
+    "event": "decision",
+    "principal": "User::\"mallory\"",
+    "intent": "Action::\"read\"",
+    "resource": {
+     "omitted": "refused",
+     "bytes": 3
+    },
+    "decision": "Deny",
+    "refused_term": true
+   },
+   "expected": [
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "all",
+     "count": 0
+    }
+   ]
+  },
+  {
+   "name": "term_and_oversized",
+   "record": {
+    "ts": "2026-01-15T11:59:00.000Z",
+    "agent": "a",
+    "event": "decision",
+    "principal": "User::\"mallory\"",
+    "intent": "Action::\"read\"",
+    "resource": {
+     "omitted": "refused",
+     "bytes": 3
+    },
+    "decision": "Deny",
+    "refused_term": true,
+    "oversized": true
+   },
+   "expected": [
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "all",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "name": "term_no_resource",
+   "record": {
+    "ts": "2026-01-15T11:59:00.000Z",
+    "agent": "a",
+    "event": "decision",
+    "principal": "User::\"mallory\"",
+    "intent": "Action::\"read\"",
+    "decision": "Deny",
+    "refused_term": true
+   },
+   "expected": [
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "all",
+     "count": 0
+    }
+   ]
+  },
+  {
+   "name": "term_list_resource",
+   "record": {
+    "ts": "2026-01-15T11:59:00.000Z",
+    "agent": "a",
+    "event": "decision",
+    "principal": "User::\"mallory\"",
+    "intent": "Action::\"read\"",
+    "resource": [
+     "Tool::\"w\""
+    ],
+    "decision": "Deny",
+    "refused_term": true
+   },
+   "expected": [
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "all",
+     "count": 0
+    }
+   ]
+  },
+  {
+   "name": "principal_ok",
+   "record": {
+    "ts": "2026-01-15T11:59:00.000Z",
+    "agent": "a",
+    "event": "decision",
+    "principal": {
+     "omitted": "refused",
+     "bytes": 3
+    },
+    "intent": "Action::\"read\"",
+    "resource": "Tool::\"w\"",
+    "decision": "Deny",
+    "refused_principal": true
+   },
+   "expected": [
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "all",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "name": "principal_ok_marker_resource",
+   "record": {
+    "ts": "2026-01-15T11:59:00.000Z",
+    "agent": "a",
+    "event": "decision",
+    "principal": {
+     "omitted": "refused",
+     "bytes": 3
+    },
+    "intent": "Action::\"read\"",
+    "resource": {
+     "omitted": "refused",
+     "bytes": 3
+    },
+    "decision": "Deny",
+    "refused_principal": true
+   },
+   "expected": [
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "all",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "name": "principal_allow",
+   "record": {
+    "ts": "2026-01-15T11:59:00.000Z",
+    "agent": "a",
+    "event": "decision",
+    "principal": {
+     "omitted": "refused",
+     "bytes": 3
+    },
+    "intent": "Action::\"read\"",
+    "resource": "Tool::\"w\"",
+    "decision": "Allow",
+    "refused_principal": true
+   },
+   "expected": [
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "all",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "name": "principal_string_principal",
+   "record": {
+    "ts": "2026-01-15T11:59:00.000Z",
+    "agent": "a",
+    "event": "decision",
+    "principal": "User::\"mallory\"",
+    "intent": "Action::\"read\"",
+    "resource": "Tool::\"w\"",
+    "decision": "Deny",
+    "refused_principal": true
+   },
+   "expected": [
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "all",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "name": "principal_no_principal",
+   "record": {
+    "ts": "2026-01-15T11:59:00.000Z",
+    "agent": "a",
+    "event": "decision",
+    "intent": "Action::\"read\"",
+    "resource": "Tool::\"w\"",
+    "decision": "Deny",
+    "refused_principal": true
+   },
+   "expected": [
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "all",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "name": "principal_list_principal",
+   "record": {
+    "ts": "2026-01-15T11:59:00.000Z",
+    "agent": "a",
+    "event": "decision",
+    "principal": [
+     "x"
+    ],
+    "intent": "Action::\"read\"",
+    "resource": "Tool::\"w\"",
+    "decision": "Deny",
+    "refused_principal": true
+   },
+   "expected": [
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "all",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "name": "principal_and_term",
+   "record": {
+    "ts": "2026-01-15T11:59:00.000Z",
+    "agent": "a",
+    "event": "decision",
+    "principal": {
+     "omitted": "refused",
+     "bytes": 3
+    },
+    "intent": "Action::\"read\"",
+    "resource": "Tool::\"w\"",
+    "decision": "Deny",
+    "refused_principal": true,
+    "refused_term": true
+   },
+   "expected": [
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "all",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "name": "principal_and_oversized",
+   "record": {
+    "ts": "2026-01-15T11:59:00.000Z",
+    "agent": "a",
+    "event": "decision",
+    "principal": {
+     "omitted": "refused",
+     "bytes": 3
+    },
+    "intent": "Action::\"read\"",
+    "resource": "Tool::\"w\"",
+    "decision": "Deny",
+    "refused_principal": true,
+    "oversized": true
+   },
+   "expected": [
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "allowed",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "all",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "name": "principal_old_ts",
+   "record": {
+    "ts": "2020-01-01T00:00:00+00:00",
+    "agent": "a",
+    "event": "decision",
+    "principal": {
+     "omitted": "refused",
+     "bytes": 3
+    },
+    "intent": "Action::\"read\"",
+    "resource": "Tool::\"w\"",
+    "decision": "Deny",
+    "refused_principal": true
+   },
+   "expected": [
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "all",
+     "count": 0
+    }
+   ]
+  },
+  {
+   "name": "principal_future_ts",
+   "record": {
+    "ts": "2026-01-15T12:30:00.000Z",
+    "agent": "a",
+    "event": "decision",
+    "principal": {
+     "omitted": "refused",
+     "bytes": 3
+    },
+    "intent": "Action::\"read\"",
+    "resource": "Tool::\"w\"",
+    "decision": "Deny",
+    "refused_principal": true
+   },
+   "expected": [
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "all",
+     "count": 0
+    }
+   ]
+  },
+  {
+   "name": "principal_no_ts",
+   "record": {
+    "agent": "a",
+    "event": "decision",
+    "principal": {
+     "omitted": "refused",
+     "bytes": 3
+    },
+    "intent": "Action::\"read\"",
+    "resource": "Tool::\"w\"",
+    "decision": "Deny",
+    "refused_principal": true
+   },
+   "expected": [
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "denied",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 1
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "all",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "name": "principal_string_true",
+   "record": {
+    "ts": "2026-01-15T11:59:00.000Z",
+    "agent": "a",
+    "event": "decision",
+    "principal": {
+     "omitted": "refused",
+     "bytes": 3
+    },
+    "intent": "Action::\"read\"",
+    "resource": "Tool::\"w\"",
+    "decision": "Deny",
+    "refused_principal": "true"
+   },
+   "expected": [
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "all",
+     "count": 0
+    }
+   ]
+  },
+  {
+   "name": "principal_other_event",
+   "record": {
+    "ts": "2026-01-15T11:59:00.000Z",
+    "agent": "a",
+    "event": "egress",
+    "principal": {
+     "omitted": "refused",
+     "bytes": 3
+    },
+    "intent": "Action::\"read\"",
+    "resource": "Tool::\"w\"",
+    "decision": "Allow",
+    "refused_principal": true
+   },
+   "expected": [
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "allowed",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "denied",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"other\"",
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"mallory\"",
+     "intent": "Action::\"write\"",
+     "resource": null,
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": null,
+     "resource": null,
+     "outcome": "all",
+     "count": 0
+    },
+    {
+     "principal": "User::\"alice\"",
+     "intent": "Action::\"read\"",
+     "resource": "Tool::\"w\"",
+     "outcome": "all",
+     "count": 0
+    }
+   ]
+  }
+ ]
+}

@@ -198,8 +198,9 @@ the engine sees it. Through the run handle, that refusal is a `Deny` and is
 recorded with a value-free marker in place of the term. When the principal is
 intact, the record is marked `"refused_term": true` and counts as a denied
 decision of that principal, inside its window. When the principal itself was
-refused, the record is marked `"oversized": true` and counts toward every
-quota. An agent name over its limit is recorded with a marker in a record
+refused, the record is marked `"refused_principal": true` and counts as a
+denied decision of every principal, but only inside its window and never as
+allowed. An agent name over its limit is recorded with a marker in a record
 marked `"oversized": true`. See
 [integrations](integrations.md#what-the-plugin-records).
 
@@ -277,8 +278,8 @@ in TypeScript, previews a child of a live scope the same way.
   trail shortened because it would have been longer than 512 KiB or nested
   deeper than the counters read: those fields hold only their length and a
   digest, and it counts toward every quota. A decision marked
-  `"refused_term": true` that is not a `Deny` with a string principal is not
-  one the SDK writes, and it counts toward every quota too. `watchlight audit
+  `"refused_term": true` or `"refused_principal": true` in a shape the SDK
+  does not write counts toward every quota too. `watchlight audit
   check` lists all four by line number.
 
 ## See also

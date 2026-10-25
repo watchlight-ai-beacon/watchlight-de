@@ -53,7 +53,7 @@ KINDS = {
 FIELDS = {
     "decision": (
         {"ts", "agent", "principal", "intent", "resource", "decision"},
-        {"event", "actor_chain", "decision_id", "approved", "execution_id", "refused_term"},
+        {"event", "actor_chain", "decision_id", "approved", "execution_id", "refused_term", "refused_principal"},
     ),
     "sanitization": (
         {"ts", "agent", "intent", "event", "resource", "mode", "detector", "counts", "total"},

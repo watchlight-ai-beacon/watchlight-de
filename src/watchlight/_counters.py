@@ -18,6 +18,10 @@ What counts (identical in the TypeScript package):
   "Allow"``, including approved ones; ``"denied"`` = every decision that did not
   let the body run (``Deny`` and ``NeedsApproval`` holds); ``"all"`` = both. So
   ``allowed + denied == all``.
+* a ``Deny`` marked ``"refused_principal": true`` — written by a framework
+  plugin for a call whose principal broke a name rule — counts as a denied
+  decision of every principal, inside its window like any other: it never
+  counts as allowed, and a marker field matches every filter on that field.
 * a ``Deny`` marked ``"refused_term": true`` — written by a framework plugin
   for a call whose action, resource or execution id broke a name rule, with a
   value-free marker in place of the refused term — is a denied decision of its
@@ -49,8 +53,9 @@ line the scan cannot fully read can never LOWER a count:
   because it was too long (``watchlight._audit.bounded_line``) — counts toward
   every query, like a line that cannot be read, since a field it replaced might
   be the one a query matches on;
-* a decision marked ``"refused_term": true`` that is not a ``Deny`` with a
-  string principal (one the SDK never writes) counts the same way.
+* a decision marked ``"refused_term": true`` or ``"refused_principal": true``
+  that is not what the SDK writes (see ``_malformed_refusal``) counts the same
+  way.
 
 All four are counted in ``unreadable`` (so ``count`` minus ``unreadable`` is the
 number of well-formed matching decisions) and in ``skipped``. A well-formed
@@ -336,7 +341,7 @@ UNREADABLE_REASONS = {
     "not-an-object": "not a JSON object",
     "unreadable-ts": "a decision whose ts cannot be read",
     "oversized-record": "a record the SDK shortened because it was too long",
-    "malformed-refusal": "a refused-term record that is not a Deny naming its principal",
+    "malformed-refusal": "a refused-term or refused-principal record the SDK does not write",
 }
 
 
@@ -366,14 +371,22 @@ def _classify(raw: Optional[bytes]) -> tuple[str, Optional[dict]]:
 
 
 def _malformed_refusal(rec: dict) -> bool:
-    """A decision marked ``"refused_term": true`` that is not what the SDK
-    writes: a ``Deny`` whose principal is a string. Such a record cannot be
-    matched to its principal, so it counts like a line that cannot be read."""
-    return (
-        rec.get("refused_term") is True
-        and rec.get("event", "decision") == "decision"
-        and (rec.get("decision") != "Deny" or not isinstance(rec.get("principal"), str))
-    )
+    """A decision marked as a refusal the SDK recorded that is not what the SDK
+    writes. ``"refused_term": true`` must be a ``Deny`` whose principal is a
+    string; ``"refused_principal": true`` must be a ``Deny`` whose principal is
+    a value-free marker (an object); a record never carries both. Such a record
+    counts like a line that cannot be read."""
+    if rec.get("event", "decision") != "decision":
+        return False
+    term = rec.get("refused_term") is True
+    principal = rec.get("refused_principal") is True
+    if not (term or principal):
+        return False
+    if term and principal or rec.get("decision") != "Deny":
+        return True
+    if principal:
+        return not isinstance(rec.get("principal"), dict)
+    return not isinstance(rec.get("principal"), str)
 
 
 def _is_decision(rec: dict) -> bool:
@@ -479,7 +492,12 @@ def _tally_line(raw: Optional[bytes], f: dict, t: _Tally) -> None:
     # its principal like any decision, and its marker field matches every
     # filter on that field, since the refused term might have been the one a
     # query names.
-    refused = rec.get("refused_term") is True
+    # A refused-principal record (`"refused_principal": true`) is the same for
+    # a call whose principal broke a rule: whose decision it was cannot be
+    # read, so it matches every principal — still only as a denied decision,
+    # and only inside its window.
+    any_principal = rec.get("refused_principal") is True
+    refused = any_principal or rec.get("refused_term") is True
 
     def field(value: Any, key: Optional[tuple], bare: str) -> bool:
         if key is None:
@@ -487,7 +505,7 @@ def _tally_line(raw: Optional[bytes], f: dict, t: _Tally) -> None:
         return _names(value, key, bare) or (refused and not isinstance(value, str))
 
     matches = (
-        _names(rec.get("principal"), f["principal"], principals.BARE_PRINCIPAL_TYPE)
+        (any_principal or _names(rec.get("principal"), f["principal"], principals.BARE_PRINCIPAL_TYPE))
         and field(rec.get("intent"), f["intent"], principals.BARE_ACTION_TYPE)
         and field(rec.get("resource"), f["resource"], principals.BARE_RESOURCE_TYPE)
         and ((outcome == "allowed" and allowed) or (outcome == "denied" and not allowed) or outcome == "all")

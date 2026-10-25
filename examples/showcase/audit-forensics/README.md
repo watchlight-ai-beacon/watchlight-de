@@ -122,6 +122,7 @@ Two fields ride along on every kind but `attenuation`:
 | `approved` | `true`, optional | only when an approval token downgraded a `NeedsApproval` |
 | `execution_id` | string, optional | only on a decision a Python framework plugin made inside a run: the run's id, which its `execution_started` and `execution_completed` lines carry too |
 | `refused_term` | `true`, optional | only on a `Deny` a Python framework plugin recorded for a call whose action, resource or execution id broke a name rule; that field then holds a value-free marker instead of a name, and `counters()` counts the record as a denied decision of its principal |
+| `refused_principal` | `true`, optional | only on a `Deny` a Python framework plugin recorded for a call whose principal broke a name rule; the principal then holds a value-free marker, and `counters()` counts the record as a denied decision of every principal, inside its window, never as allowed |
 
 An approved action is **two** records: the hold, then a second `Allow` with
 `approved: true` under a new `decision_id`. The deny reason is never written —

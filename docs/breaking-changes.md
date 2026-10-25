@@ -40,14 +40,17 @@ is never written: the record carries a value-free marker. When the principal
 is intact, the record is marked `"refused_term": true`, and `counters()` counts
 it as a denied decision of that principal, inside its window, never as
 allowed and never for another principal. When the principal itself was
-refused, the record is marked `"oversized": true` and counts toward every
-query until the file is rotated. This only moves in the closed direction. Code
+refused, the record is marked `"refused_principal": true`, and `counters()`
+counts it as a denied decision of every principal, because whose decision it
+was cannot be read, but only inside its window and never as allowed. This
+only moves in the closed direction. Code
 that caught the `TypeError` to detect a bad term should check the return value
 instead, and should fix the term: each such refusal counts toward that
 principal's denied quotas in its window. Calling the backend's `authorize`
 directly still raises `TypeError` and records nothing. If you read the trail
 yourself, a decision record can now carry `"refused_term": true`, with a
-marker object in its `intent`, `resource` or `execution_id`.
+marker object in its `intent`, `resource` or `execution_id`, or
+`"refused_principal": true`, with a marker object in its `principal`.
 
 **A plugin's handle records the refusals it makes after a Terminate or a
 Revoke, when it refuses a malformed intent, and when a call is cancelled

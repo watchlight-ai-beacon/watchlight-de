@@ -465,12 +465,15 @@ def _audited_client_class() -> Any:
             except Exception as exc:  # noqa: BLE001 — the trail is designed never to raise
                 self._wl_report_record_failure(exc, placeholder=False)
                 return
+            except BaseException:
+                # A synchronous sink that raises a cancellation or an interrupt
+                # does so after the file line is written: the call has its
+                # record, so it is marked before the exception goes on.
+                _mark_recorded()
+                raise
             # The wrapper's call (if any) now has its record, so it must not
             # write a second one. Set only once the record is written.
-            marker = _CALL_MARKER.get()
-            while marker is not None:
-                marker["recorded"] = True
-                marker = marker["parent"]
+            _mark_recorded()
 
         def _wl_build_record(
             self,
@@ -496,10 +499,14 @@ def _audited_client_class() -> Any:
             #   counters count it as a denied decision of that principal,
             #   inside its window, and let its marker match any filter on the
             #   refused field;
-            # * the principal or an agent name was refused, or the decision is
-            #   not a Deny: `"oversized": true`, which the counters count
-            #   toward every query, since whose decision it is (or that it was
-            #   a refusal) cannot be read from it.
+            # * the principal was refused, on a Deny: `"refused_principal":
+            #   true`. Whose decision it was cannot be read, so the counters
+            #   count it as a denied decision of EVERY principal — but only as
+            #   denied, and only inside its window;
+            # * an agent name was refused, or the decision is not a Deny:
+            #   `"oversized": true`, which the counters count toward every
+            #   query, since whose decision it is (or that it was a refusal)
+            #   cannot be read from it.
             broken: set = set()
 
             def bounded(value: Any, check: Any, field: str) -> Any:
@@ -541,10 +548,12 @@ def _audited_client_class() -> Any:
                 ),
             )
             if broken:
-                if decision == "Deny" and not broken & {"principal", "agent"}:
-                    record["refused_term"] = True
-                else:
+                if decision != "Deny" or "agent" in broken:
                     record["oversized"] = True
+                elif "principal" in broken:
+                    record["refused_principal"] = True
+                else:
+                    record["refused_term"] = True
             return record
 
         def _wl_report_record_failure(self, exc: BaseException, placeholder: bool = True) -> None:
@@ -562,6 +571,21 @@ def _audited_client_class() -> Any:
             )
 
     return AuditedInProcessClient
+
+
+def _mark_recorded() -> None:
+    """Mark the innermost wrapped call as recorded. The mark reaches an
+    enclosing call only while that call is a decorated tool whose body has not
+    started: a record written then is the tool's own guard decision (made
+    through a nested wrapped call). Once the body runs, its calls are separate
+    decisions, and their records never stand in for the tool's."""
+    marker = _CALL_MARKER.get()
+    while marker is not None:
+        marker["recorded"] = True
+        parent = marker["parent"]
+        if parent is None or parent["body"] is None or parent["body"].ran:
+            return
+        marker = parent
 
 
 def _placeholder_record(decision: str) -> Dict[str, Any]:
@@ -698,10 +722,14 @@ class _AuditedRunHandle:
         :class:`_BodyRan` that saw the decorated tool's body start. The only
         exception that is not recorded is a caller bug the SDK raises before
         anything is decided (see :func:`_not_a_decision_errors`)."""
-        # Nested calls (a decorated tool that authorizes through this wrapper,
-        # say) each get a marker; a record written for an inner call marks the
-        # outer ones too, so the outer call never adds a second record.
-        marker: Dict[str, Any] = {"recorded": False, "parent": _CALL_MARKER.get()}
+        # Each wrapped call has its own marker. A record written for an inner
+        # call marks an outer one only while the outer call is a decorated
+        # tool still deciding whether its body may run (see _mark_recorded).
+        marker: Dict[str, Any] = {
+            "recorded": False,
+            "parent": _CALL_MARKER.get(),
+            "body": outcome if isinstance(outcome, _BodyRan) else None,
+        }
         token = _CALL_MARKER.set(marker)
         try:
             result = await call

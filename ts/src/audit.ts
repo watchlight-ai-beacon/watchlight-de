@@ -91,6 +91,11 @@ export type DecisionRecord = AuditRecordBase &
      *  rule: that field holds a value-free marker instead of a name. The
      *  counters count it as a denied decision of its principal. */
     readonly refused_term?: true;
+    /** Present, and always `true`, only on a `Deny` a Python framework plugin
+     *  recorded for a call whose principal broke a name rule: the principal
+     *  holds a value-free marker. The counters count it as a denied decision
+     *  of every principal, inside its window, and never as allowed. */
+    readonly refused_principal?: true;
   };
 
 /** A PII redaction pass — written by `sanitize()`. Value-free: counts per type
