@@ -8,6 +8,48 @@ different verdict. Only some announce themselves; the rest surface as a denial
 that looks exactly like a policy of yours doing its job. Read every entry
 between the version you are on and the one you are moving to.
 
+## Unreleased
+
+**`sanitize` bounds the `known` dictionary, in Python and TypeScript.**
+`known` may hold at most `KNOWN_MAX_VALUES` (50,000) entries, each at most
+`KNOWN_VALUE_MAX_LENGTH` (512) characters, and at most
+`KNOWN_MAX_TOTAL_LENGTH` (500,000) characters in all. Characters are code
+points in Python and UTF-16 code units in TypeScript. A dictionary over any
+limit now raises or throws `SanitizeError` instead of being used. This fails closed: no
+text is returned. To fix it, split a larger dictionary across calls, or drop
+entries that are not exact values you need redacted. Case variants of one
+value (`Ada`, `ADA`) count as one value when the matcher is built, but every
+entry still counts toward the limits.
+
+**`sanitize` lets the longest `known` entry win at each position.** When two
+entries match at the same position, the longer one is redacted, whichever way
+the two are spelled. Before, entries that differ in case (`JOHN` and
+`john smith`) could make the shorter one win and leave the rest of the longer
+one (` Smith`) in the text. This fails safe: the only change is that more text
+is redacted, sometimes as one tag where there were two. Nothing to do unless a
+test pins the old output.
+
+**Python: a `known` entry next to non-Latin letters is now redacted.** The
+whole-word boundary is an ASCII letter, digit or `_` in both lanes. Python
+used to count any Unicode letter as part of the word, so `known=["张伟"]` left
+`我是张伟。` unchanged; it now gives `我是<KNOWN_1>。`, as TypeScript always did.
+This fails safe: more text is redacted. The flip side is that an entry now
+also matches when the character next to it is a non-ASCII letter:
+`known=["Ann"]` redacts the first three letters of `Annå`. If an entry is
+also the start of longer words written with non-ASCII letters, pass those
+longer words too.
+
+**`known` entries match in both Unicode normal forms, and share one tag.**
+Composed (`José` with U+00E9) and decomposed (`Jose` + U+0301) text both
+match an entry given in either form, and are tagged and hashed as one value.
+In Python, spellings that `re.IGNORECASE` equates (`Ross`, `Roſs`) also share
+one tag. The output changes only for non-ASCII text: more is redacted, and
+some spans that had separate tags now share one. A `hash` of an ASCII value
+is unchanged, but the hash of a non-ASCII value can change, because the key is
+now decomposed, folded the way matching folds, and recomposed: a final sigma
+`ς` is keyed as `σ`, so `λόγος` hashes as `λόγοσ` does, and `J` + U+030C
+hashes as `ǰ` does. Update anything that stores or compares those hashes.
+
 ## 0.15.0
 
 **A quota counts each principal once, however it is spelled.** `counters()`

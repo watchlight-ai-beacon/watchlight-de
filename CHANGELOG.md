@@ -15,6 +15,68 @@ Each entry links to its release, which carries the reasoning and the measurement
 
 **Security**
 - Hardening: the TypeScript SDK checks an entity type name (`entityRef`, `policyEntityRef`, `entityKey`) by splitting it on `::` and testing each part, instead of with one pattern that repeats a group. The check runs in linear time on any input, including a long type name built to make a backtracking matcher retry. It accepts and refuses exactly the same names as before.
+- Hardening: `sanitize` matches the `known` dictionary by walking a prefix tree
+  over the entries, in both the Python and TypeScript lanes, instead of
+  compiling one regex built from the dictionary. Nothing recursive is built
+  from the entries, so every dictionary within the limits below works on
+  Python 3.9 to 3.13 and Node 22 and later. Before, a long entry or a deep
+  chain of nested entries (`a`, `ab`, `abc`, ...) could exceed the
+  interpreter's recursion limit while the regex was built, and the call failed
+  with `SanitizeError`. The work at each position of the text is bounded by
+  the longest entry in its NFC or NFD form (up to about four times its
+  length), never by the number of entries. Characters still compare
+  the way each lane's case-insensitive regex compared them.
+- Hardening: at each position of the text, the longest `known` entry that
+  matches there as a whole word now wins, as documented, whichever way the
+  entries are spelled. Before, two entries that differ in case (`JOHN` and
+  `john smith`) could make a shorter entry win, which left the rest of the
+  longer entry (` Smith`) in the text. Output changes only where more text is
+  now redacted.
+- Hardening: in the Python lane, a `known` entry's whole-word boundary is now
+  an ASCII letter, digit or `_`, the same rule as the TypeScript lane. Before,
+  Python treated any Unicode letter as part of the word, so an entry written
+  next to CJK or other non-Latin text (`张伟` in `我是张伟。`, `Ann` in
+  `联系Ann获取`) was never redacted in Python while TypeScript redacted it.
+- Hardening: each `known` entry is also matched in its Unicode NFC and NFD
+  forms, in both lanes, so text with composed accents and text with combining
+  accents both match it. Before, an entry matched only text in the same
+  normal form.
+- Hardening: a redacted `known` span is tagged and hashed under a key that is
+  decomposed (NFD), folded the way matching folds, and recomposed (NFC), in
+  both lanes. Spellings that match one entry (`Ross` and `Roſs` in Python,
+  composed and decomposed `José`, `ǰ` and `J` + U+030C, `ς` and `σ`) now share
+  one tag and one hash instead of getting one each. ASCII keys are unchanged;
+  some non-ASCII hashes change.
+- Hardening: in Python, a `known` that is not iterable raises `SanitizeError`
+  instead of `TypeError`. In TypeScript, `known` is checked against the entry
+  limit before any entry is read, and each entry is read once into a copy that
+  is both validated and matched.
+
+**Changed**
+- Bounded and de-duplicated the known-values list in `sanitize`, in both the
+  Python and TypeScript lanes. Before the matcher is built, `known` keeps one
+  value per case-folded key (the first occurrence), folded the way each lane's
+  case-insensitive regex folds; the dropped variants match nothing the kept
+  value does not. `known` is now limited to `KNOWN_MAX_VALUES` (50,000) entries,
+  `KNOWN_VALUE_MAX_LENGTH` (512) characters per entry and
+  `KNOWN_MAX_TOTAL_LENGTH` (500,000) characters in all; a dictionary over any
+  limit raises `SanitizeError` with a message that names the limit and never
+  an entry. The three limits are exported from `watchlight` and
+  `@watchlight/sdk`. Python reads at most one entry past the entry limit from
+  an iterable. A shared fixture holds both lanes to the same results,
+  including an entry at the length limit, a 512-deep chain of nested
+  prefixes, and dictionaries at the full count and total-length limits.
+- `FrameworkIntegration` checks its `name`, `extra`, `plugin_module` and
+  `plugin_class` with `re.fullmatch`, and each pattern is also anchored with
+  `\A` and `\Z`, so a value with a trailing newline is refused with the same
+  `ValueError` as any other malformed value.
+- `examples/governed_mcp_server.py` calls its PEP with an
+  `http.client.HTTPConnection` to `127.0.0.1` and a 10-second timeout, instead
+  of `urllib.request.urlopen`, so the demo client can only reach the loopback
+  PEP and never goes through a proxy set in the environment. It stops with an
+  error on any response that is not HTTP 200 with a JSON body. It notes that its
+  plain-HTTP URLs are loopback-only and that a real upstream should use
+  `https://` with certificate verification.
 
 ## 0.15.0 — 2026-10-18
 

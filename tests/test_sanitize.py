@@ -1,9 +1,14 @@
 """sanitize (Python) — de-rules-2 detector set, mirroring ts/test/sanitize.test.mjs:
 PASSPORT / DOB structured detectors, the application-supplied KNOWN dictionary,
 the opt-in PERSON / ADDRESS heuristics, value-free reports, and regex safety."""
+import inspect
 import json
+import pathlib
+import random
 import re
+import sys
 import time
+import unicodedata
 
 import pytest
 
@@ -405,3 +410,247 @@ def test_phone_does_not_swallow_other_shapes(text, expected):
     assert "PHONE" not in counts, f"{text} became a phone number: {counts}"
     if expected:
         assert expected in counts, f"{text} lost its own detector: {counts}"
+
+
+# ── KNOWN: case variants collapse to one value; the dictionary is bounded ──
+# tests/fixtures/sanitize_known_parity.json is shared with ts/test/sanitize.test.mjs,
+# so both lanes give the same text and accept or refuse the same dictionaries.
+KNOWN_PARITY = json.loads(
+    (pathlib.Path(__file__).parent / "fixtures" / "sanitize_known_parity.json").read_text(encoding="utf-8")
+)
+
+
+def _fixture_known(entries):
+    # Entry k of a group: value*repeat, then grow*k, then k zero-padded to
+    # index_width digits when index_width is given (see the fixture's comment).
+    return [
+        e["value"] * e["repeat"]
+        + e.get("grow", "") * k
+        + (str(k).zfill(e["index_width"]) if "index_width" in e else "")
+        for e in entries
+        for k in range(e["count"])
+    ]
+
+
+def _fixture_parts(parts):
+    return "".join(p["value"] * p["repeat"] for p in parts)
+
+
+def test_known_limits_are_exported_and_match_the_shared_fixture():
+    assert {
+        "KNOWN_MAX_VALUES": watchlight.KNOWN_MAX_VALUES,
+        "KNOWN_VALUE_MAX_LENGTH": watchlight.KNOWN_VALUE_MAX_LENGTH,
+        "KNOWN_MAX_TOTAL_LENGTH": watchlight.KNOWN_MAX_TOTAL_LENGTH,
+    } == KNOWN_PARITY["limits"] == {
+        "KNOWN_MAX_VALUES": 50_000,
+        "KNOWN_VALUE_MAX_LENGTH": 512,
+        "KNOWN_MAX_TOTAL_LENGTH": 500_000,
+    }
+
+
+@pytest.mark.parametrize("case", KNOWN_PARITY["cases"], ids=lambda c: c["name"])
+def test_known_parity_cases(case):
+    assert sanitize(case["text"], known=case["known"], mode=case["mode"])["text"] == case["expect"]
+
+
+@pytest.mark.parametrize("case", KNOWN_PARITY["generated_cases"], ids=lambda c: c["name"])
+def test_known_parity_generated_cases(case):
+    # The adversarial shapes: an entry at the length limit, a 512-deep chain of
+    # nested prefixes, and dictionaries at the full count and total-length limits.
+    text = _fixture_parts(case["text"])
+    got = sanitize(text, known=_fixture_known(case["known"]), mode=case["mode"])["text"]
+    assert got == _fixture_parts(case["expect"])
+
+
+@pytest.mark.parametrize("case", KNOWN_PARITY["limit_cases"], ids=lambda c: c["name"])
+def test_known_parity_limits(case):
+    known = _fixture_known(case["entries"])
+    if case["error"] is None:
+        assert sanitize("x", known=known)["text"] == "x"
+    else:
+        with pytest.raises(SanitizeError) as exc:
+            sanitize("x", known=known)
+        assert case["error"] in str(exc.value)
+
+
+def test_known_case_variants_match_the_single_word():
+    word = "lovelacelovela"
+    variants = [
+        "".join(ch.upper() if mask & (1 << i) else ch for i, ch in enumerate(word))
+        for mask in range(1 << len(word))
+    ]
+    doc = "Ada LOVELACElovela met lovelaceLOVELA; lovelacelovela-x, and Lovelacelovelas. " * 500
+    single = sanitize(doc, known=[word], mode="mask")
+    many = sanitize(doc, known=variants, mode="mask")
+    assert many["text"] == single["text"] and single["report"]["total"] == many["report"]["total"] == 1500
+    assert sanitize("ADA ada", known=["Ada", "ADA", "ada"])["text"] == "<KNOWN_1> <KNOWN_1>"
+    # Generous bound: a slow CI runner must not fail it.
+    t = time.perf_counter()
+    sanitize(doc, known=variants, mode="mask")
+    assert time.perf_counter() - t < 10
+
+
+def test_known_fold_keeps_values_the_regex_does_not_merge():
+    # U+0130 lowercases to two characters, so it is never merged with "i".
+    assert sanitize("İ i", known=["İ", "i"], mode="mask")["text"] == "[KNOWN] [KNOWN]"
+
+
+def test_known_any_dictionary_within_the_limits_works_on_a_shallow_stack():
+    # Nothing recursive is built from the dictionary: the deepest shapes the
+    # limits allow still work with only a few frames left before the
+    # interpreter's recursion limit.
+    chain = ["a" * k for k in range(1, watchlight.KNOWN_VALUE_MAX_LENGTH + 1)]
+    comb = ["a" * k + "b" for k in range(watchlight.KNOWN_VALUE_MAX_LENGTH)]
+    text = "x " + "A" * 512 + " " + "a" * 511 + "b y"
+
+    def at_depth(depth):
+        if depth > 0:
+            return at_depth(depth - 1)
+        return sanitize(text, known=chain, mode="mask")["text"], sanitize(text, known=comb, mode="mask")["text"]
+
+    used = len(inspect.stack())
+    assert at_depth(sys.getrecursionlimit() - used - 60) == ("x [KNOWN] " + "a" * 511 + "b y", "x " + "A" * 512 + " [KNOWN] y")
+
+
+def test_known_longest_entry_wins_whatever_the_case():
+    # At each position the longest entry that matches as a whole word wins,
+    # whichever way the entries are spelled, so no part of a longer entry is
+    # left in the text because a shorter entry also matched there.
+    assert sanitize("John Smith x", known=["JOHN", "john smith"], mode="mask")["text"] == "[KNOWN] x"
+    assert sanitize("a-b-c", known=["A", "a-b-c"], mode="mask")["text"] == "[KNOWN]"
+
+
+_EXOTIC = ["a", "A", "b", " ", "-", "_", "1", "ı", "İ", "i", "I", "ſ", "s", "S", "K", "\u212a", "k", "σ", "ς",
+           "Σ", "ß", "ẞ", "ΐ", "\u1fd3", "\ufb05", "\ufb06", "é", "É", "\u0345", "ι", "Ι", "\U0001f600", "ǅ", "ǆ", "Ǆ"]
+
+
+def _reference_known(text, known):
+    # One regex per entry, tried at every position: the longest whole-word
+    # match at each start, overlapping matches merged. Slow, and obviously
+    # what the dictionary matcher promises: ASCII word characters as the
+    # boundary, and each value in its given, NFC and NFD forms.
+    word = re.compile(r"[A-Za-z0-9_]")
+    values = [f for v in known if v.strip() for f in {v, unicodedata.normalize("NFC", v), unicodedata.normalize("NFD", v)}]
+    covered, out = [], []
+    for i in range(len(text)):
+        if i and word.match(text, i - 1):
+            continue
+        ends = [
+            i + len(v) for v in values
+            if re.fullmatch(re.escape(v), text[i:i + len(v)], re.IGNORECASE)
+            and (i + len(v) == len(text) or not word.match(text, i + len(v)))
+        ]
+        if ends:
+            if covered and i < covered[-1][1]:
+                covered[-1][1] = max(covered[-1][1], max(ends))
+            else:
+                covered.append([i, max(ends)])
+    cursor = 0
+    for s, e in covered:
+        out.append(text[cursor:s] + "[KNOWN]")
+        cursor = e
+    return "".join(out) + text[cursor:]
+
+
+def test_known_matches_a_regex_per_entry_reference():
+    rnd = random.Random(222)
+    for _ in range(1500):
+        alphabet = rnd.sample(_EXOTIC, rnd.randint(2, 8))
+
+        def word():
+            return "".join(rnd.choice(alphabet) for _ in range(rnd.randint(1, 6)))
+
+        base = [word() for _ in range(rnd.randint(1, 6))]
+        known = base + [b.swapcase() for b in base if rnd.random() < 0.5] + [b + rnd.choice(alphabet) + b for b in base if rnd.random() < 0.3]
+        text = rnd.choice([" ", "", "-"]).join(rnd.choice(base + [word(), rnd.choice(base).swapcase()]) for _ in range(rnd.randint(1, 10)))
+        assert sanitize(text, known=known, mode="mask", types=[])["text"] == _reference_known(text, known), (text, known)
+
+
+def test_known_character_folding_agrees_with_the_regex_engine():
+    # The matcher folds each character to one representative; two characters
+    # share it exactly when a case-insensitive regex literal of one matches the
+    # other on this interpreter. Every cased character, and its case images.
+    from watchlight import _match_char
+
+    def cased(c):
+        return c != c.lower()[0] or c != c.upper()[0]
+
+    chars = {
+        x
+        for i in range(0x110000)
+        if not 0xD800 <= i < 0xE000 and cased(chr(i))
+        for x in (chr(i), chr(i).lower()[0], chr(i).upper()[0])
+    }
+    blob = "".join(sorted(chars))
+    by_rep: dict = {}
+    for c in chars:
+        by_rep.setdefault(_match_char(c), set()).add(c)
+    for p in chars:
+        matched = {m.group() for m in re.compile(re.escape(p), re.IGNORECASE).finditer(blob)}
+        assert matched == by_rep[_match_char(p)], hex(ord(p))
+    assert all(_match_char(c) == c for c in map(chr, range(0x3000, 0x4000)) if not cased(c))
+
+
+def test_known_pathological_dictionary_stays_bounded():
+    # A dictionary of nested word prefixes over text made of the same word: the
+    # walk from every word start runs to the longest entry, the most work any
+    # position can cost. Generous bound: a slow CI runner must not fail it.
+    chain = [" ".join(["a"] * k) for k in range(1, 257)]
+    t = time.perf_counter()
+    out = sanitize("x " + "a " * 10_000 + "y", known=chain, mode="mask")
+    assert out["text"] == "x [KNOWN] y"
+    assert time.perf_counter() - t < 10
+
+
+def test_known_boundaries_are_ascii_word_characters():
+    # A letter of another script is a boundary, as in the TypeScript lane: a
+    # value written next to CJK text is still redacted.
+    assert sanitize("我是张伟。", known=["张伟"], mode="mask", types=[])["text"] == "我是[KNOWN]。"
+    assert sanitize("联系Ann获取", known=["Ann"], mode="mask", types=[])["text"] == "联系[KNOWN]获取"
+    assert sanitize("Smithfield", known=["Smith"], mode="mask", types=[])["text"] == "Smithfield"
+    assert sanitize("Renée's", known=["René"], mode="mask", types=[])["text"] == "Renée's"
+
+
+def test_known_matches_composed_and_decomposed_text_under_one_tag():
+    composed, decomposed = "Jos\u00e9", "Jose\u0301"
+    text = f"{composed} and {decomposed} and {composed.upper()}"
+    for entry in (composed, decomposed):
+        assert sanitize(text, known=[entry], types=[])["text"] == "<KNOWN_1> and <KNOWN_1> and <KNOWN_1>"
+        hashed = sanitize(text, known=[entry], mode="hash", types=[])["text"].split(" and ")
+        assert len(set(hashed)) == 1
+
+
+def test_known_tag_key_folds_like_matching():
+    # ſ matches s, so both spellings of one value share a tag and a hash.
+    assert sanitize("Ross and Ro\u017fs and Kim and kim", known=["ross", "kim"], types=[])["text"] == (
+        "<KNOWN_1> and <KNOWN_1> and <KNOWN_2> and <KNOWN_2>"
+    )
+    hashed = sanitize("Ross Ro\u017fs", known=["ross"], mode="hash", types=[])["text"].split(" ")
+    assert hashed[0] == hashed[1] == sanitize("ross", known=["ross"], mode="hash")["text"]
+    # Letters with no precomposed capital: the capital is the base letter plus
+    # combining marks, and still shares the tag.
+    for small, capital in (("\u01f0", "J\u030c"), ("\u0390", "\u0399\u0308\u0301"), ("\u03b0", "\u03a5\u0308\u0301")):
+        text = f"{small} and {capital} and {small}"
+        assert sanitize(text, known=[small], types=[])["text"] == "<KNOWN_1> and <KNOWN_1> and <KNOWN_1>", ascii(small)
+
+
+@pytest.mark.parametrize("bad", [5, 1.5, object(), True])
+def test_known_that_is_not_iterable_is_a_sanitize_error(bad):
+    with pytest.raises(SanitizeError, match="known must be a sequence of strings"):
+        sanitize("x", known=bad)
+
+
+def test_known_limit_errors_are_value_free():
+    secretish = "z" * watchlight.KNOWN_VALUE_MAX_LENGTH + "SECRETVALUE"
+    with pytest.raises(SanitizeError) as exc:
+        sanitize("x", known=[secretish])
+    assert "SECRETVALUE" not in str(exc.value)
+
+
+def test_known_oversized_iterable_is_refused_without_reading_it_all():
+    def endless():
+        while True:
+            yield "a"
+
+    with pytest.raises(SanitizeError, match="more than 50000 entries"):
+        sanitize("x", known=endless())

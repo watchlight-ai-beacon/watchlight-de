@@ -177,10 +177,31 @@ only a complete `PERSON` candidate; email, SSN, and other enabled detectors
 still run. Exclusion values do not appear in the report or audit trail.
 
 A `known` value matches as a whole word, case-insensitively — `"Smith"` covers
-`Smith's` but not `Smithfield`. It cannot tell a name from the same word used
-ordinarily, so a single-token name that is also a common word (`Will`, `May`,
-`Grace`) redacts every use of that word. Pass the full name, and treat a bare
+`Smith's` but not `Smithfield`. A word character is an ASCII letter, digit or
+`_`; any other character, including an accented or non-Latin letter, is a
+boundary. So `"张伟"` matches in `我是张伟。`, and `"Ann"` also matches the start
+of `Annå`. Case-insensitive means the way a regex with the
+`i` flag and no `u` flag compares UTF-16 units, so non-ASCII letters fold too;
+the Python lane follows Python's rules, and a few non-ASCII equivalences
+differ. Each value is also matched in its Unicode NFC and NFD forms, so
+composed and decomposed accents both match; normalise text that mixes the two
+forms to NFC (`text.normalize("NFC")`) before you sanitize it.
+
+Matching cannot tell a name from the same word used ordinarily, so a
+single-token name that is also a common word (`Will`, `May`, `Grace`) redacts
+every use of that word. Pass the full name, and treat a bare
 first name as a deliberate choice.
+
+`known` is bounded so the matcher built from it has a predictable size. It may
+hold at most 50,000 entries (`KNOWN_MAX_VALUES`), each at most 512 characters
+long (`KNOWN_VALUE_MAX_LENGTH`), and at most 500,000 characters in all
+(`KNOWN_MAX_TOTAL_LENGTH`). A dictionary over any of these limits throws
+`SanitizeError`, and the message never includes an entry. Because matching is
+case-insensitive, case variants of one value are matched as that one value.
+Every dictionary within the limits works, and the work at each position of the
+text is bounded by the longest entry in its NFC or NFD form (up to about four
+times its length), not by how many entries there are. Where
+two entries match at the same position, the longer one wins.
 
 `decisionId` links the audit line to an authorization decision. `principal`
 records *whose* data it was. If you omit `principal`, the line names this agent
