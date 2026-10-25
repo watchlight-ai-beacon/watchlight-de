@@ -94,7 +94,14 @@ def _call(tool: str) -> dict:
                 "Watchlight-Execution-Id": f"exec_{tool}",
             },
         )
-        return json.loads(conn.getresponse().read())
+        resp = conn.getresponse()
+        payload = resp.read()
+        # A governed call answers 200 with a JSON-RPC result or error (a denial
+        # is a JSON-RPC error). Anything else means the PEP did not answer the
+        # call as expected: stop rather than read it as a result.
+        if resp.status != 200 or not resp.getheader("content-type", "").startswith("application/json"):
+            raise RuntimeError(f"unexpected response from the PEP: HTTP {resp.status}")
+        return json.loads(payload)
     finally:
         conn.close()
 
