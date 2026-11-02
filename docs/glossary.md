@@ -52,7 +52,7 @@ verifier — it authorizes the identity your application asserts.
 | **Obligation** | An obligation is a constraint attached to an Allow that the caller must honour, such as redacting named fields. | [allow but redact](../examples/patterns/allow-but-redact.md) |
 | **Policy** | A policy is one Cedar rule, `permit` or `forbid`, optionally guarded by a `when` clause over context. A **policy set** is what one governor holds; a **policy suite** is a JSON file of policies *and* their golden tests. | [testing your policies](testing-policies.md) |
 | **Principal** | The principal is the field the subject is passed in, and it is always typed: `User::"db:4412"`, `Agent::"flight-booker"`. | |
-| **Quarantine** | A quarantine is a policy you flip to stop an agent's next action. | [kill switch](../examples/patterns/kill-switch.md) |
+| **Quarantine** | A quarantine is a policy you flip to refuse an agent's next governed action. | [kill switch](../examples/patterns/kill-switch.md) |
 | **Quota** | A quota is a limit on how often something may happen in a window, enforced by reading counters from the trail. | [quotas](../examples/patterns/quotas.md) |
 | **Resource** | The resource is what the action is taken on. You choose the string, such as `trip/AX8821`. | |
 | **Rotation** | Rotation replaces a signing secret without breaking tokens in flight: pass an ordered list, newest first, then drop the old value one deploy later. | [the signing secret](signing-secret.md) |
