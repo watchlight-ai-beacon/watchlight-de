@@ -1,148 +1,184 @@
 #!/usr/bin/env python3
-"""Govern a deepagents deep agent with sub-agent scope attenuation.
+"""Govern a deepagents deep agent: every tool call and every sub-agent.
 
-A deep agent delegates to sub-agents. Watchlight makes every sub-agent's authority
-a **strict subset** of the parent's — validated by the real engine — so a sub-agent
-can only ever *narrow* what it may do, never widen it. The tree is bounded by
-``max_delegation_depth`` (default 8). Config-only: no deepagents source is touched.
+The deep agent is built with ``create_governed_deep_agent`` from the
+``watchlight-deepagents`` plugin, wired to the in-process engine by
+``watchlight.deepagents.governed_plugin``. Every tool call is authorized by your
+Cedar policy BEFORE it runs. Each ``task`` sub-agent runs under its own
+attenuated run and may call only the tools its spawn granted; a sub-agent with
+no grant may call no tool at all. No deepagents source is touched.
 
     pip install "watchlight[deepagents]"
     python examples/governed_deepagents.py
-    watchlight dev --audit .watchlight/audit.jsonl   # watch the sub-agent tree attenuate
+    watchlight dev --audit examples/.watchlight/audit.jsonl
 
-Runs **without an API key** — it builds and governs the sub-agent tree offline.
-Set a model key (e.g. ANTHROPIC_API_KEY) to also invoke the deep agent for real.
+Runs **without an API key**: a scripted model replays fixed turns so you can
+see every decision offline. Set ANTHROPIC_API_KEY (and
+``pip install langchain-anthropic``) to drive the same governed agent with a
+real model.
 
-Expected output (no API key):
+Expected output (no API key; the notes in parentheses are not printed):
 
-    deep agent authority : ['web_search', 'read_file', 'write_file', 'send_email']
+    agent                  tool           decision
+    research-orchestrator  search_web     Allow
+    research-orchestrator  send_email     Deny     (the policy permits no "execute")
+    researcher             search_web     Allow
+    researcher             write_report   Deny     (not in its grant, though the policy permits "write")
+    reporter               get_filing     Deny     (it was granted no tools)
+    research-orchestrator  write_report   Allow
 
-      ✓ researcher       tools = ['web_search', 'read_file']  (depth 1)
-      ✓ reporter         tools = ['read_file', 'write_file']  (depth 1)
-      ✗ over_privileged  refused — ['AllowedTools']: cannot exceed the parent
-
-    nesting deeper — each level attenuates from the one above:
-        → depth 1: ['read_file']
-        ...
-        → depth 8: ['read_file']
-
-    ── max_delegation_depth ──
-    DELEGATION_DEPTH_EXCEEDED: delegation depth 9 exceeds max_delegation_depth 8
-
-    set a model key (e.g. ANTHROPIC_API_KEY) to invoke the deep agent for real.
-    wiring is one line:
-      create_deep_agent(tools=..., subagents=<the governed sub-agents above>)
-
-    watch the attenuation tree:  watchlight dev --audit .watchlight/audit.jsonl
+    tools that ran: search_web, search_web, write_report
 """
+
+import asyncio
+import json
 import os
 
-from watchlight import AttenuationDenied, DelegationDepthExceeded, Watchlight
+from langchain_core.tools import tool
+
+from watchlight.deepagents import governed_plugin
+from watchlight_deepagents import create_governed_deep_agent
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
+# The policy: an agent may read and write; anything else (here, sending email)
+# is denied. The principal is the running agent, Agent::"<uuid5 of its slug>".
+POLICIES = [
+    {"name": "read", "code": 'permit(principal is Agent, action == Action::"read", resource);'},
+    {"name": "write", "code": 'permit(principal is Agent, action == Action::"write", resource);'},
+]
 
-# ── the tools the top-level agent may use (its root authority) ──────────
-def web_search(query: str) -> str:
+# What each sub-agent may call. "reporter" is not listed, so it may call no tool.
+SUBAGENT_SCOPES = {
+    "researcher": {"allowed_tools": ["search_web", "get_filing"], "max_depth": 0},
+}
+
+RAN = []
+
+
+# The action is read from the tool name: search_*/get_* → read,
+# write_* → write, anything else → execute.
+@tool
+def search_web(query: str) -> str:
     """Search the web for a query."""
+    RAN.append("search_web")
     return f"results for {query!r}"
 
 
-def read_file(path: str) -> str:
-    """Read a file from disk."""
-    return f"contents of {path}"
+@tool
+def get_filing(company: str) -> str:
+    """Fetch a company's latest filing."""
+    RAN.append("get_filing")
+    return f"filing for {company}"
 
 
-def write_file(path: str, content: str) -> str:
-    """Write content to a file."""
-    return f"wrote {path}"
+@tool
+def write_report(title: str, body: str) -> str:
+    """Write a report."""
+    RAN.append("write_report")
+    return f"wrote {title!r}"
 
 
+@tool
 def send_email(to: str, body: str) -> str:
     """Send an email."""
+    RAN.append("send_email")
     return f"sent to {to}"
 
 
-TOOLS = {t.__name__: t for t in (web_search, read_file, write_file, send_email)}
+TOOLS = [search_web, get_filing, write_report, send_email]
 
 
-def _has_model_key() -> bool:
-    return any(os.environ.get(k) for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"))
+def _scripted(*turns):
+    """A chat model that replays fixed turns, so the example runs offline."""
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+    from langchain_core.messages import AIMessage
+
+    class ScriptedModel(GenericFakeChatModel):
+        def bind_tools(self, tools, **kwargs):
+            return self
+
+    messages = []
+    for i, turn in enumerate(turns):
+        if isinstance(turn, str):
+            messages.append(AIMessage(content=turn))
+        else:
+            calls = [{"name": n, "args": a, "id": f"{n}-{i}"} for n, a in turn]
+            messages.append(AIMessage(content="", tool_calls=calls))
+    return ScriptedModel(messages=iter(messages))
 
 
-def main() -> None:
-    gov = Watchlight(agent="deep-orchestrator", audit_dir=os.path.join(HERE, ".watchlight"))
+def _models():
+    """The root model and one model per sub-agent: a real model when a key is
+    set, otherwise scripted turns that exercise every decision."""
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        model = "anthropic:claude-sonnet-5-5"
+        return model, model, model
+    root = _scripted(
+        [("search_web", {"query": "Q3 filings"}), ("send_email", {"to": "cfo@example.com", "body": "hi"})],
+        [("task", {"description": "research the filings", "subagent_type": "researcher"})],
+        [("task", {"description": "draft the report", "subagent_type": "reporter"})],
+        [("write_report", {"title": "Q3", "body": "summary"})],
+        "done",
+    )
+    researcher = _scripted(
+        [("search_web", {"query": "Q3"}), ("write_report", {"title": "draft", "body": "..."})],
+        "research done",
+    )
+    reporter = _scripted([("get_filing", {"company": "ACME"})], "report done")
+    return root, researcher, reporter
 
-    # The top-level agent's authority — the root of the attenuation tree.
-    root = gov.scope(tools=list(TOOLS), intents=["research"])
-    print("deep agent authority :", root.allowed_tools, "\n")
 
-    # ── 1. Govern the deep agent's sub-agents ──────────────────────────
-    # Each sub-agent declares the tools it needs; Watchlight validates that as a
-    # STRICT SUBSET of the parent and hands back the clamped set. A sub-agent that
-    # asks for a tool the parent lacks is REFUSED — you cannot build one that
-    # out-scopes its parent.
-    specs = [
-        {"name": "researcher", "description": "Research a topic from the web and files",
-         "tools": ["web_search", "read_file"]},
-        {"name": "reporter", "description": "Summarize findings into a file",
-         "tools": ["read_file", "write_file"]},
-        {"name": "over_privileged", "description": "Asks for a tool the parent lacks",
-         "tools": ["read_file", "delete_everything"]},  # ← refused by the engine
-    ]
+AUDIT = os.path.join(HERE, ".watchlight", "audit.jsonl")
+AGENTS = ("research-orchestrator", "researcher", "reporter")
 
-    governed_subagents = []
-    for spec in specs:
-        try:
-            scope = root.attenuate(tools=spec["tools"])
-        except AttenuationDenied as denied:
-            print(f"  ✗ {spec['name']:16} refused — {denied.violations}: cannot exceed the parent")
-            continue
-        print(f"  ✓ {spec['name']:16} tools = {scope.allowed_tools}  (depth {scope.depth})")
-        governed_subagents.append(
-            {
-                "name": spec["name"],
-                "description": spec["description"],
-                "system_prompt": f"You are the {spec['name']} sub-agent. {spec['description']}.",
-                # Hand the sub-agent ONLY its attenuated tools.
-                "tools": [TOOLS[name] for name in scope.allowed_tools],
-            }
-        )
 
-    # ── 2. A deep agent nests sub-agents, bounded by max_delegation_depth ──
-    print("\nnesting deeper — each level attenuates from the one above:")
-    scope = root
-    try:
-        while True:
-            scope = scope.attenuate(tools=["read_file"])
-            print(f"    → depth {scope.depth}: {scope.allowed_tools}")
-    except DelegationDepthExceeded as exceeded:
-        print("\n── max_delegation_depth ──")
-        print(f"{exceeded.code}: {exceeded.reason}")
+async def main() -> None:
+    plugin = governed_plugin(POLICIES, audit_path=AUDIT)
+    root_model, researcher_model, reporter_model = _models()
+    agent = create_governed_deep_agent(
+        model=root_model,
+        tools=TOOLS,
+        system_prompt="You orchestrate research using your sub-agents.",
+        subagents=[
+            {"name": "researcher", "description": "Research a topic",
+             "system_prompt": "You research topics.", "tools": TOOLS, "model": researcher_model},
+            {"name": "reporter", "description": "Write the report",
+             "system_prompt": "You write reports.", "tools": TOOLS, "model": reporter_model},
+        ],
+        subagent_scopes=SUBAGENT_SCOPES,
+        agent_slug=AGENTS[0],
+        plugin=plugin,
+    )
+    seen = os.path.getsize(AUDIT) if os.path.exists(AUDIT) else 0
+    # deepagents runs on the async LangGraph runtime; a synchronous invoke is refused.
+    result = await agent.ainvoke(
+        {"messages": [{"role": "user", "content": "Research the Q3 filings and write a report."}]}
+    )
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        print(result["messages"][-1].content[:400], "\n")
+    await _print_decisions(plugin, seen)
+    print("\ntools that ran:", ", ".join(RAN) or "none")
+    print(f"\nwatch the decisions:  watchlight dev --audit {AUDIT}")
 
-    # ── 3. Build the real deep agent with the governed sub-agents ──────
-    print()
-    if _has_model_key():
-        from deepagents import create_deep_agent
 
-        agent = create_deep_agent(
-            tools=list(TOOLS.values()),
-            system_prompt="You orchestrate research using your sub-agents.",
-            subagents=governed_subagents,  # ← Watchlight-attenuated sub-agents
-        )
-        print("deep agent built with governed sub-agents; invoking…")
-        result = agent.invoke(
-            {"messages": [{"role": "user", "content": "Research Watchlight and write a summary."}]}
-        )
-        print(result["messages"][-1].content[:400])
-    else:
-        print("set a model key (e.g. ANTHROPIC_API_KEY) to invoke the deep agent for real.")
-        print("wiring is one line:")
-        print("  create_deep_agent(tools=..., subagents=<the governed sub-agents above>)")
-
-    audit = os.path.join(HERE, ".watchlight", "audit.jsonl")
-    print(f"\nwatch the attenuation tree:  watchlight dev --audit {audit}")
+async def _print_decisions(plugin, offset: int) -> None:
+    """Every tool call this run made, read back from the audit trail."""
+    names = {}
+    for slug in AGENTS:
+        names[(await plugin.apdp.resolve_agent(slug))["id"]] = slug
+    print(f"{'agent':22} {'tool':14} decision")
+    with open(AUDIT, encoding="utf-8") as trail:
+        trail.seek(offset)
+        for line in trail:
+            event = json.loads(line)
+            if event.get("event_type") != "tool_call_observed":
+                continue
+            payload = event.get("payload", {})
+            agent = names.get(event.get("agent_id"), event.get("agent_id"))
+            tool_name = (payload.get("tool") or {}).get("identifier")
+            print(f"{agent:22} {tool_name:14} {payload.get('decision')}")
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
