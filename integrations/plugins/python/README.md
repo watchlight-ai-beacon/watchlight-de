@@ -22,16 +22,38 @@ any other name.
 
 ## How CI installs a package
 
-For every package except `watchlight-core`, CI first installs
-`watchlight-core` from this directory in editable mode, then the package itself.
-A plugin is therefore always tested against the SDK source in the same commit,
-not against the last SDK release. A change to the SDK that breaks a plugin fails
-that plugin's job in the same pull request.
+CI installs every third-party package from the hash-pinned lock in
+[`ci/plugins.txt`](ci/plugins.txt): wheels only, every hash checked, nothing
+resolved at install time. It then installs `watchlight-core`, the test doubles
+in `watchlight-agent-sdk-testing` and the package itself from this directory,
+editable and without dependencies, and runs `pip check`. A plugin is therefore
+always tested against the SDK source in the same commit, not against the last
+SDK release, and a change to the SDK that breaks a plugin fails that plugin's
+job in the same pull request. The compiled engine comes from its own lock,
+[`ci/engine.txt`](ci/engine.txt), and a test that needs it fails rather than
+skipping.
+
+CI tests each package on the Python versions its `requires-python` accepts
+from the lock's floor up. `watchlight-adk` runs a second time at its declared
+minimum `google-adk` ([`ci/adk-min.txt`](ci/adk-min.txt)), and every published
+package is built and its wheel and sdist scanned by
+[`ci/check_dist.py`](ci/check_dist.py).
+
+A new package directory must be added to the list of open package roots in
+`.github/workflows/plugins.yml`, with the name it is released under; CI refuses
+any other directory.
 
 ## Working on a package
 
 ```bash
 .venv/bin/pip install -e integrations/plugins/python/watchlight-core
+.venv/bin/pip install -e integrations/plugins/python/watchlight-agent-sdk-testing
 .venv/bin/pip install -e 'integrations/plugins/python/<package>[dev]'
 cd integrations/plugins/python/<package> && ../../../../.venv/bin/python -m pytest
+```
+
+To test against exactly what CI installs:
+
+```bash
+.venv/bin/pip install --require-hashes --only-binary :all: --no-deps -r integrations/plugins/python/ci/plugins.txt
 ```

@@ -1,0 +1,12 @@
+{
+  "description": "report connection port zero",
+  "direction": "client",
+  "frame": {
+    "id": 1,
+    "method": "report_connection",
+    "params": {
+      "src_port": 0,
+      "run": "rrrrrrAbc_-0123456789xyz"
+    }
+  }
+}

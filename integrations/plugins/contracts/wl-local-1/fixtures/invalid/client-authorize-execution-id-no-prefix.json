@@ -1,0 +1,14 @@
+{
+  "description": "authorize execution id no prefix",
+  "direction": "client",
+  "frame": {
+    "id": 1,
+    "method": "authorize",
+    "params": {
+      "principal": "p",
+      "action": "a",
+      "resource": "r",
+      "execution_id": "123e4567-e89b-42d3-a456-426614174000"
+    }
+  }
+}

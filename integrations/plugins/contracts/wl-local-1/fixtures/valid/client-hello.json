@@ -1,0 +1,15 @@
+{
+  "description": "Unix-socket hello.",
+  "direction": "client",
+  "transport": "unix",
+  "frame": {
+    "id": 0,
+    "method": "hello",
+    "params": {
+      "proto": "wl-local/1",
+      "lang": "python",
+      "sdk_version": "0.9.3",
+      "pid": 4242
+    }
+  }
+}

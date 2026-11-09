@@ -1,0 +1,10 @@
+{
+  "description": "unavailable without retry",
+  "direction": "server",
+  "frame": {
+    "id": 1,
+    "error": {
+      "code": "unavailable"
+    }
+  }
+}

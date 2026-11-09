@@ -1,0 +1,11 @@
+{
+  "description": "health with params",
+  "direction": "client",
+  "frame": {
+    "id": 1,
+    "method": "health",
+    "params": {
+      "x": 1
+    }
+  }
+}

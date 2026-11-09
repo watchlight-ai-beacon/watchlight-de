@@ -1,0 +1,14 @@
+{
+  "description": "push with id",
+  "direction": "server",
+  "frame": {
+    "id": 3,
+    "push": true,
+    "event": "kill",
+    "data": {
+      "run": "rrrrrrAbc_-0123456789xyz",
+      "reason": "x",
+      "source": "local"
+    }
+  }
+}

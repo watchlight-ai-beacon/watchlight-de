@@ -1,0 +1,9 @@
+{
+  "description": "Above 2^53 - 1.",
+  "direction": "client",
+  "frame": {
+    "id": 9007199254740992,
+    "method": "health",
+    "params": {}
+  }
+}

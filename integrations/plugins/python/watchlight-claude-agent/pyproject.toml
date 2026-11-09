@@ -1,0 +1,79 @@
+[build-system]
+requires = ["setuptools>=77.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+# Distribution name is ``watchlight-claude-agent`` — deliberately NOT
+# ``watchlight-claude-agent-sdk``, which would shadow the upstream PyPI
+# ``claude-agent-sdk`` distribution this plugin wraps. The importable
+# package is ``watchlight_claude_agent``. This matches the naming of
+# the other framework plugins (watchlight-adk / -bedrock / -langgraph /
+# -msaf): one canonical SDK (``watchlight-agent-sdk``) + per-framework
+# drop-in plugins that depend on it.
+name = "watchlight-claude-agent"
+version = "0.3.2"
+description = "Watchlight governance hooks for Claude Agent SDK agents: authorize every tool call and sub-agent spawn before it runs, fail-closed. Model turns are not authorized. Independent plugin, not affiliated with Anthropic."
+readme = "README.md"
+# SPDX licence expression (PEP 639; setuptools 77 or later).
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [
+    {name = "Watchlight AI", email = "team@watchlight.ai"},
+]
+keywords = [
+    "watchlight",
+    "claude-agent-sdk",
+    "claude-code",
+    "ai-agent",
+    "agent-governance",
+    "authorization",
+    "lineage",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+    "Topic :: Software Development :: Libraries",
+]
+
+# Hard dependency on the canonical Watchlight SDK. The upstream
+# framework (`claude-agent-sdk`) is an OPTIONAL extra so the plugin can
+# be installed for tests without the upstream SDK present (pattern
+# matches the watchlight-openclaw plugin's optional `openclaw` peer
+# dep).
+dependencies = [
+    "watchlight-agent-sdk>=0.10.1,<0.11",
+]
+
+[project.optional-dependencies]
+# Floor 0.2.140: governed_options passes a `can_use_tool` callback,
+# which releases before 0.2.140 refuse with a plain string prompt. Those
+# earlier than 0.2.121 also pass `resume` to the Claude CLI unvalidated, so
+# a value starting with `-` injects CLI flags (CVE-2026-96620). Floors are
+# audited in CI.
+claude = ["claude-agent-sdk>=0.2.140"]
+# The tests drive the real Claude Code CLI that claude-agent-sdk bundles,
+# so dev installs it too.
+dev = ["pytest>=7", "pytest-asyncio>=0.21", "mypy>=1.8", "claude-agent-sdk>=0.2.140"]
+
+[project.urls]
+Homepage = "https://watchlight.ai"
+Documentation = "https://docs.watchlight.ai/de"
+Repository = "https://github.com/watchlight-ai-beacon/watchlight-de"
+Issues = "https://github.com/watchlight-ai-beacon/watchlight-de/issues"
+
+[tool.setuptools.packages.find]
+include = ["watchlight_claude_agent*"]
+
+[tool.setuptools.package-data]
+watchlight_claude_agent = ["py.typed"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "strict"
+addopts = "-ra -q"
+testpaths = ["tests"]

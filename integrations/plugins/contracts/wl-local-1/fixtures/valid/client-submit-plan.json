@@ -1,0 +1,19 @@
+{
+  "description": "submit plan",
+  "direction": "client",
+  "frame": {
+    "id": 8,
+    "method": "submit_plan",
+    "params": {
+      "run": "rrrrrrAbc_-0123456789xyz",
+      "plan": [
+        {
+          "tool": "search"
+        },
+        {
+          "tool": "write"
+        }
+      ]
+    }
+  }
+}

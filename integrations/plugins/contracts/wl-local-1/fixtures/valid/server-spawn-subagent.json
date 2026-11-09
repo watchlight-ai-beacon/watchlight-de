@@ -1,0 +1,16 @@
+{
+  "description": "spawn subagent",
+  "direction": "server",
+  "in_reply_to": "spawn_subagent",
+  "frame": {
+    "id": 9,
+    "ok": {
+      "child_run": "rrrrrrAbc_-0123456789xyz",
+      "session_id": "ses_c",
+      "execution_id": "exec_2",
+      "scope": {},
+      "child_marker": "MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMw",
+      "child_key": "MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMw"
+    }
+  }
+}

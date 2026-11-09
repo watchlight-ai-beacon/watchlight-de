@@ -1,0 +1,19 @@
+{
+  "description": "Loopback-TCP hello: a client nonce, never the secret.",
+  "direction": "client",
+  "transport": "tcp",
+  "frame": {
+    "id": 0,
+    "method": "hello",
+    "params": {
+      "proto": "wl-local/1",
+      "nonce_c": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+      "lang": "typescript",
+      "sdk_version": "0.4.0",
+      "pid": 1,
+      "required_features": [
+        "kill_push"
+      ]
+    }
+  }
+}

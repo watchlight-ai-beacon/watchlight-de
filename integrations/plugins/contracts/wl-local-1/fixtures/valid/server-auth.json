@@ -1,0 +1,15 @@
+{
+  "description": "The handshake answer on TCP.",
+  "direction": "server",
+  "in_reply_to": "auth",
+  "frame": {
+    "id": 1,
+    "ok": {
+      "proto": "wl-local/1",
+      "connector_version": "0.2.0",
+      "features": [
+        "kill_push"
+      ]
+    }
+  }
+}

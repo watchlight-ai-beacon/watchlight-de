@@ -1,0 +1,12 @@
+{
+  "description": "ok and error",
+  "direction": "server",
+  "in_reply_to": "close",
+  "frame": {
+    "id": 1,
+    "ok": {},
+    "error": {
+      "code": "internal"
+    }
+  }
+}

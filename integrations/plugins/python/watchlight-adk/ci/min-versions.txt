@@ -1,0 +1,5 @@
+# pip constraints: watchlight-adk's DECLARED MINIMUM framework version.
+# CI runs the plugin's tests a second
+# time under these constraints. tests/test_min_versions.py keeps the pin
+# equal to the floor in pyproject.toml.
+google-adk==2.5.0

@@ -1,0 +1,12 @@
+{
+  "description": "authorize missing resource",
+  "direction": "client",
+  "frame": {
+    "id": 1,
+    "method": "authorize",
+    "params": {
+      "principal": "p",
+      "action": "a"
+    }
+  }
+}

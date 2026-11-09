@@ -1,0 +1,11 @@
+{
+  "description": "complete session",
+  "direction": "client",
+  "frame": {
+    "id": 11,
+    "method": "complete_session",
+    "params": {
+      "run": "rrrrrrAbc_-0123456789xyz"
+    }
+  }
+}

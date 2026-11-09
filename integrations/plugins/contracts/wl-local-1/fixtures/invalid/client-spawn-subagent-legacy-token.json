@@ -1,0 +1,13 @@
+{
+  "description": "The parent is named by run, never by token.",
+  "direction": "client",
+  "frame": {
+    "id": 1,
+    "method": "spawn_subagent",
+    "params": {
+      "parent_run": "rrrrrrAbc_-0123456789xyz",
+      "request": {},
+      "session_token": "sst_x"
+    }
+  }
+}

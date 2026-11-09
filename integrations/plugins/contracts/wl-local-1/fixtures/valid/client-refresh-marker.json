@@ -1,0 +1,11 @@
+{
+  "description": "refresh marker",
+  "direction": "client",
+  "frame": {
+    "id": 14,
+    "method": "session.refresh_marker",
+    "params": {
+      "run": "rrrrrrAbc_-0123456789xyz"
+    }
+  }
+}

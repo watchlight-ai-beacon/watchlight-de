@@ -1,0 +1,11 @@
+{
+  "description": "error unavailable",
+  "direction": "server",
+  "frame": {
+    "id": 5,
+    "error": {
+      "code": "unavailable",
+      "retry_after_ms": 250
+    }
+  }
+}

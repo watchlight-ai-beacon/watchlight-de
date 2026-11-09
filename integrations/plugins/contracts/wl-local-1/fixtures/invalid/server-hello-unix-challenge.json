@@ -1,0 +1,13 @@
+{
+  "description": "On the Unix socket there is no challenge.",
+  "direction": "server",
+  "in_reply_to": "hello",
+  "transport": "unix",
+  "frame": {
+    "id": 0,
+    "ok": {
+      "nonce_s": "ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100",
+      "server_proof": "f80c0b6922e6070d4523caa6858d6aea7969cf9ac6aa58b116a126b5089c924d"
+    }
+  }
+}

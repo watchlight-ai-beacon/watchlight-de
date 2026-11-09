@@ -1,0 +1,11 @@
+{
+  "description": "marker wrong length",
+  "direction": "server",
+  "in_reply_to": "session.refresh_marker",
+  "frame": {
+    "id": 14,
+    "ok": {
+      "marker": "MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMwx"
+    }
+  }
+}

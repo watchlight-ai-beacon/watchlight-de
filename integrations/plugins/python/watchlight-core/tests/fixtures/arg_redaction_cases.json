@@ -1,0 +1,350 @@
+{
+  "_comment": "Value-free tool-argument descriptions, shared by the Python and TypeScript lanes. For each `args` (a JSON tool-argument value): `input_summary` = redacted_input_summary / redactedInputSummary, `arg_key_summary` = summarize_arg_keys / summarizeArgKeys, `tool_args` = arg_metadata / argMetadata, the authorization context's value-free argument metadata (_arg_metadata / argMetadata). null = the helper returns None / undefined. No value may appear in any output. Checked by watchlight-core/tests/test_arg_redaction_fixture.py, watchlight-claude-agent/tests/test_arg_metadata_fixture.py and watchlight-agent-sdk-ts/tests/redaction.test.ts. Integers and floats are both `number`; `bool` stays `bool`. An argument name longer than 128 UTF-8 bytes is cut at the last whole character within 128 bytes, with no marker. `arg_count` is always the full count; `arg_names_truncated: true` is present only when there are more than 32 arguments. Two names that cap to the same string appear once in `arg_names`, and the first one's type is the one in `arg_types`.",
+  "cases": [
+    {
+      "name": "credential values never appear",
+      "args": {
+        "token": "sk-live-SECRET",
+        "n": 3
+      },
+      "input_summary": "2 args: token(str), n(number)",
+      "arg_key_summary": "n,token",
+      "tool_args": {
+        "arg_count": 2,
+        "arg_names": [
+          "n",
+          "token"
+        ],
+        "arg_types": {
+          "token": "str",
+          "n": "number"
+        }
+      }
+    },
+    {
+      "name": "every JSON type",
+      "args": {
+        "s": "x",
+        "i": 7,
+        "f": 1.5,
+        "b": true,
+        "z": null,
+        "l": [
+          1,
+          "sk-SECRET"
+        ],
+        "d": {
+          "password": "hunter2"
+        }
+      },
+      "input_summary": "7 args: s(str), i(number), f(number), b(bool), z(NoneType), l(list), d(dict)",
+      "arg_key_summary": "b,d,f,i,l,s,z",
+      "tool_args": {
+        "arg_count": 7,
+        "arg_names": [
+          "b",
+          "d",
+          "f",
+          "i",
+          "l",
+          "s",
+          "z"
+        ],
+        "arg_types": {
+          "s": "str",
+          "i": "number",
+          "f": "number",
+          "b": "bool",
+          "z": "NoneType",
+          "l": "list",
+          "d": "dict"
+        }
+      }
+    },
+    {
+      "name": "argument order is kept in the summary, sorted in keys",
+      "args": {
+        "zeta": "a",
+        "alpha": "b",
+        "Mid": "c"
+      },
+      "input_summary": "3 args: zeta(str), alpha(str), Mid(str)",
+      "arg_key_summary": "Mid,alpha,zeta",
+      "tool_args": {
+        "arg_count": 3,
+        "arg_names": [
+          "Mid",
+          "alpha",
+          "zeta"
+        ],
+        "arg_types": {
+          "zeta": "str",
+          "alpha": "str",
+          "Mid": "str"
+        }
+      }
+    },
+    {
+      "name": "empty mapping",
+      "args": {},
+      "input_summary": "0 args",
+      "arg_key_summary": null,
+      "tool_args": {
+        "arg_count": 0,
+        "arg_names": [],
+        "arg_types": {}
+      }
+    },
+    {
+      "name": "no arguments",
+      "args": null,
+      "input_summary": null,
+      "arg_key_summary": null,
+      "tool_args": {
+        "arg_count": 0,
+        "arg_names": []
+      }
+    },
+    {
+      "name": "a bare string",
+      "args": "curl -H 'Authorization: Bearer sk-live-SECRET123'",
+      "input_summary": "1 arg: (str)",
+      "arg_key_summary": null,
+      "tool_args": {
+        "arg_count": 1,
+        "arg_names": []
+      }
+    },
+    {
+      "name": "a bare number",
+      "args": 42,
+      "input_summary": "1 arg: (number)",
+      "arg_key_summary": null,
+      "tool_args": {
+        "arg_count": 1,
+        "arg_names": []
+      }
+    },
+    {
+      "name": "a bare list",
+      "args": [
+        "sk-SECRET"
+      ],
+      "input_summary": "1 arg: (list)",
+      "arg_key_summary": null,
+      "tool_args": {
+        "arg_count": 1,
+        "arg_names": []
+      }
+    },
+    {
+      "name": "more than 32 arguments",
+      "args": {
+        "k00": 0,
+        "k01": 1,
+        "k02": 2,
+        "k03": 3,
+        "k04": 4,
+        "k05": 5,
+        "k06": 6,
+        "k07": 7,
+        "k08": 8,
+        "k09": 9,
+        "k10": 10,
+        "k11": 11,
+        "k12": 12,
+        "k13": 13,
+        "k14": 14,
+        "k15": 15,
+        "k16": 16,
+        "k17": 17,
+        "k18": 18,
+        "k19": 19,
+        "k20": 20,
+        "k21": 21,
+        "k22": 22,
+        "k23": 23,
+        "k24": 24,
+        "k25": 25,
+        "k26": 26,
+        "k27": 27,
+        "k28": 28,
+        "k29": 29,
+        "k30": 30,
+        "k31": 31,
+        "k32": 32,
+        "k33": 33,
+        "k34": 34,
+        "k35": 35,
+        "k36": 36,
+        "k37": 37,
+        "k38": 38,
+        "k39": 39
+      },
+      "input_summary": "40 args: k00(number), k01(number), k02(number), k03(number), k04(number), k05(number), k06(number), k07(number), k08(num",
+      "arg_key_summary": "k00,k01,k02,k03,k04,k05,k06,k07,k08,k09,k10,k11,k12,k13,k14,k15,k16,k17,k18,k19,k20,k21,k22,k23,k24,k25,k26,k27,k28,k29,",
+      "tool_args": {
+        "arg_count": 40,
+        "arg_names": [
+          "k00",
+          "k01",
+          "k02",
+          "k03",
+          "k04",
+          "k05",
+          "k06",
+          "k07",
+          "k08",
+          "k09",
+          "k10",
+          "k11",
+          "k12",
+          "k13",
+          "k14",
+          "k15",
+          "k16",
+          "k17",
+          "k18",
+          "k19",
+          "k20",
+          "k21",
+          "k22",
+          "k23",
+          "k24",
+          "k25",
+          "k26",
+          "k27",
+          "k28",
+          "k29",
+          "k30",
+          "k31"
+        ],
+        "arg_types": {
+          "k00": "number",
+          "k01": "number",
+          "k02": "number",
+          "k03": "number",
+          "k04": "number",
+          "k05": "number",
+          "k06": "number",
+          "k07": "number",
+          "k08": "number",
+          "k09": "number",
+          "k10": "number",
+          "k11": "number",
+          "k12": "number",
+          "k13": "number",
+          "k14": "number",
+          "k15": "number",
+          "k16": "number",
+          "k17": "number",
+          "k18": "number",
+          "k19": "number",
+          "k20": "number",
+          "k21": "number",
+          "k22": "number",
+          "k23": "number",
+          "k24": "number",
+          "k25": "number",
+          "k26": "number",
+          "k27": "number",
+          "k28": "number",
+          "k29": "number",
+          "k30": "number",
+          "k31": "number"
+        },
+        "arg_names_truncated": true
+      }
+    },
+    {
+      "name": "long key names are bounded",
+      "args": {
+        "key_0_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx": "v",
+        "key_1_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx": "v",
+        "key_2_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx": "v",
+        "key_3_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx": "v",
+        "key_4_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx": "v",
+        "key_5_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx": "v"
+      },
+      "input_summary": "6 args: key_0_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx(str), key_1_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx(str), key_2_xxxxxxxxxxxxxxxxxxxx",
+      "arg_key_summary": "key_0_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx,key_1_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx,key_2_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx,key_3_xxx",
+      "tool_args": {
+        "arg_count": 6,
+        "arg_names": [
+          "key_0_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "key_1_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "key_2_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "key_3_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "key_4_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "key_5_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        ],
+        "arg_types": {
+          "key_0_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx": "str",
+          "key_1_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx": "str",
+          "key_2_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx": "str",
+          "key_3_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx": "str",
+          "key_4_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx": "str",
+          "key_5_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx": "str"
+        }
+      }
+    },
+    {
+      "name": "an argument name is capped at 128 UTF-8 bytes on a character boundary",
+      "args": {
+        "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk": 1,
+        "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé": "x"
+      },
+      "input_summary": "2 args: kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+      "arg_key_summary": "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+      "tool_args": {
+        "arg_count": 2,
+        "arg_names": [
+          "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+          "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé"
+        ],
+        "arg_types": {
+          "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk": "number",
+          "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé": "str"
+        }
+      }
+    },
+    {
+      "name": "a key like __proto__ is kept as a name",
+      "args": {
+        "__proto__": "x",
+        "constructor": 2
+      },
+      "input_summary": "2 args: __proto__(str), constructor(number)",
+      "arg_key_summary": "__proto__,constructor",
+      "tool_args": {
+        "arg_count": 2,
+        "arg_names": [
+          "__proto__",
+          "constructor"
+        ],
+        "arg_types": {
+          "__proto__": "str",
+          "constructor": "number"
+        }
+      }
+    },
+    {
+      "name": "two names that cap to the same 128 bytes appear once; the first type wins",
+      "args": {
+        "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkA": 1,
+        "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkB": "x"
+      },
+      "input_summary": "2 args: kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+      "arg_key_summary": "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+      "tool_args": {
+        "arg_count": 2,
+        "arg_names": [
+          "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk"
+        ],
+        "arg_types": {
+          "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk": "number"
+        }
+      }
+    }
+  ]
+}

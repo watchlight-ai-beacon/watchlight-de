@@ -1,0 +1,10 @@
+{
+  "description": "extra envelope field",
+  "direction": "client",
+  "frame": {
+    "id": 1,
+    "method": "health",
+    "params": {},
+    "admin": true
+  }
+}

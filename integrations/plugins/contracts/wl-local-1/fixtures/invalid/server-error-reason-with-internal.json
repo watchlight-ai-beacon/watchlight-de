@@ -1,0 +1,11 @@
+{
+  "description": "A reason only with denied or run_ended.",
+  "direction": "server",
+  "frame": {
+    "id": 1,
+    "error": {
+      "code": "internal",
+      "reason": "quarantined"
+    }
+  }
+}

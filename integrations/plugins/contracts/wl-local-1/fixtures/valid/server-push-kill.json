@@ -1,0 +1,13 @@
+{
+  "description": "push kill",
+  "direction": "server",
+  "frame": {
+    "push": true,
+    "event": "kill",
+    "data": {
+      "run": "rrrrrrAbc_-0123456789xyz",
+      "reason": "egress token refresh refused",
+      "source": "refresh"
+    }
+  }
+}

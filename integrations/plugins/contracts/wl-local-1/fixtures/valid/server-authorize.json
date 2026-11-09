@@ -1,0 +1,14 @@
+{
+  "description": "wl-apdp's decision, unchanged.",
+  "direction": "server",
+  "in_reply_to": "authorize",
+  "frame": {
+    "id": 5,
+    "ok": {
+      "decision": {
+        "decision": "Deny",
+        "reason": "opaque"
+      }
+    }
+  }
+}

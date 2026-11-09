@@ -1,0 +1,18 @@
+{
+  "description": "A response never carries a credential.",
+  "direction": "server",
+  "in_reply_to": "create_session",
+  "frame": {
+    "id": 2,
+    "ok": {
+      "run": "rrrrrrAbc_-0123456789xyz",
+      "session_id": "s",
+      "execution_id": "e",
+      "root_execution_id": "e",
+      "scope": {},
+      "marker": "MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMw",
+      "child_key": "MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMw",
+      "proxy_token": "x"
+    }
+  }
+}

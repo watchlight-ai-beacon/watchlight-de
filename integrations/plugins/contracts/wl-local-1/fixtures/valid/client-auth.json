@@ -1,0 +1,11 @@
+{
+  "description": "The SDK's proof, after it verified the connector's.",
+  "direction": "client",
+  "frame": {
+    "id": 1,
+    "method": "auth",
+    "params": {
+      "client_proof": "025d6f872791921cca28a98dceb346e67e48003c6935c99186a560727feaa953"
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "description": "drain too long",
+  "direction": "client",
+  "frame": {
+    "id": 1,
+    "method": "drain",
+    "params": {
+      "run": "rrrrrrAbc_-0123456789xyz",
+      "timeout_ms": 60001
+    }
+  }
+}

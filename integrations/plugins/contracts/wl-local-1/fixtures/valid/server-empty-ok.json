@@ -1,0 +1,9 @@
+{
+  "description": "empty ok",
+  "direction": "server",
+  "in_reply_to": "complete_session",
+  "frame": {
+    "id": 11,
+    "ok": {}
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "description": "Also the heartbeat.",
+  "direction": "client",
+  "frame": {
+    "id": 9007199254740991,
+    "method": "health",
+    "params": {}
+  }
+}

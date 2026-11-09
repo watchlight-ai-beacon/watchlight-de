@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=77.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "watchlight-pydantic-ai"
+version = "0.4.1"
+description = "Watchlight governance for Pydantic AI agents: authorize the tools you wrap with guarded_tool() and open every Agent.run as a governed run (nested runs as attenuated sub-agents), fail-closed. Undecorated tools and model turns are not authorized."
+readme = "README.md"
+# SPDX licence expression (PEP 639; setuptools 77 or later).
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+authors = [
+    {name = "Watchlight AI", email = "team@watchlight.ai"},
+]
+keywords = [
+    "watchlight",
+    "pydantic-ai",
+    "ai-agents",
+    "ai-governance",
+    "agent-runtime",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+
+# pydantic-ai is the framework this plugin wraps. The floor is 2.61,
+# the release CI tests: it refuses nested sync runs inside a
+# sync tool, and the plugin's tests rely on that. Future major bumps
+# that break the monkey-patched API (covered in
+# ``watchlight_pydantic_ai.instrumentation``) require an explicit
+# version range update + a HARDENING.md follow-up entry; the
+# instrumentation patch surface is the single load-bearing
+# external API contract we depend on.
+dependencies = [
+    "watchlight-agent-sdk>=0.10.1,<0.11",
+    "pydantic-ai>=2.61,<3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "pytest-asyncio>=0.21", "mypy>=1.8"]
+
+[project.urls]
+Homepage = "https://watchlight.ai"
+Documentation = "https://docs.watchlight.ai/de"
+Repository = "https://github.com/watchlight-ai-beacon/watchlight-de"
+Issues = "https://github.com/watchlight-ai-beacon/watchlight-de/issues"
+"Pydantic AI" = "https://github.com/pydantic/pydantic-ai"
+
+[tool.setuptools.packages.find]
+include = ["watchlight_pydantic_ai*"]
+
+[tool.setuptools.package-data]
+watchlight_pydantic_ai = ["py.typed"]

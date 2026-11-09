@@ -1,0 +1,12 @@
+{
+  "description": "terminate session",
+  "direction": "client",
+  "frame": {
+    "id": 12,
+    "method": "terminate_session",
+    "params": {
+      "run": "rrrrrrAbc_-0123456789xyz",
+      "reason": "user cancelled"
+    }
+  }
+}

@@ -36,6 +36,7 @@ The Python packages:
 | `python/watchlight-msaf/` | `watchlight-msaf` | `watchlight_msaf` |
 | `python/watchlight-deepagents/` | `watchlight-deepagents` | `watchlight_deepagents` |
 | `python/watchlight-strands/` | `watchlight-strands` | `watchlight_strands` |
+| `python/watchlight-agent-sdk-testing/` | `watchlight-agent-sdk-testing` | `watchlight_core_testing`, the test doubles and the conformance runner |
 | `python/plugin-template/` | not released | `watchlight_template`, a starting point for a new plugin |
 
 Note the first row. The SDK's directory is `watchlight-core` and it imports as

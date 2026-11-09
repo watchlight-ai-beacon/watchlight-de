@@ -1,0 +1,73 @@
+[build-system]
+requires = ["setuptools>=77.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "watchlight-msaf"
+version = "0.1.1"
+description = "Translate Microsoft Agent Framework lifecycle events into Watchlight lineage events (no enforcement)"
+readme = "README.md"
+# SPDX licence expression (PEP 639; setuptools 77 or later).
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [
+    {name = "Watchlight AI", email = "team@watchlight.ai"},
+]
+keywords = [
+    "watchlight",
+    "microsoft-agent-framework",
+    "ai-agents",
+    "ai-governance",
+    "agent-runtime",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+
+# The plugin's translator is *pure-function* and doesn't import MAF
+# itself. No middleware shim ships yet; the caller builds the captures. This lets the translator be unit-tested
+# without the framework dependency, and lets operators on different
+# MAF release cadences pin compatible versions.
+dependencies = [
+    "watchlight-agent-sdk>=0.10,<0.11",
+]
+
+[project.optional-dependencies]
+# Wire the translator into Microsoft Agent Framework's middleware
+# hooks. The actual MAF SDK dep lands in EN.8 follow-up once the
+# post-GA hook API stabilises.
+msaf = [
+    "agent-framework>=1.0",
+]
+# OTel exporter (parity with EN.6.2/EN.6.3 across the other plugins).
+# Floor 1.45.1: earlier opentelemetry-api releases parse an inbound W3C
+# `tracestate` header in quadratic time (CVE-2026-114603). The SDK, API and
+# exporters release in lockstep, so all three share the floor. Floors are
+# audited in CI.
+otlp = [
+    "opentelemetry-api>=1.45.1",
+    "opentelemetry-sdk>=1.45.1",
+    "opentelemetry-exporter-otlp>=1.45.1",
+]
+nats = ["nats-py>=2.0"]
+dev = ["pytest>=7", "pytest-asyncio>=0.21"]
+
+[project.urls]
+Homepage = "https://watchlight.ai"
+Documentation = "https://docs.watchlight.ai/de"
+Repository = "https://github.com/watchlight-ai-beacon/watchlight-de"
+Issues = "https://github.com/watchlight-ai-beacon/watchlight-de/issues"
+
+[tool.setuptools.packages.find]
+include = ["watchlight_msaf*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

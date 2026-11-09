@@ -1,0 +1,4032 @@
+{
+  "_comment": "How the tools of a model call are read as provider-hosted tools, and the /authorize requests the hosted-tool gate makes for them. Shared by the Python and TypeScript SDKs: the Python SDK's tests/test_hosted_tools.py and the TypeScript SDK's tests/hosted-tools.test.ts both check every case. `normalize` cases list the expected HostedTool values (with the resolved action) for a tools list; `requests` cases the same for a whole model request; `mcp_urls` the canonical form of each MCP server URL (null: refused); `registry_refused` lists registries the gate refuses; `requests_refused` values the request normalizer refuses with a type error; `requests_refused_as_instance` requests it refuses with a type error once the value at `path` (`[]`: the request) is made a class instance with the same attributes; `requests_refused_hidden` requests it refuses with a type error once the container at `path` (an object, or a list when `key` is null) hides `key` (or its entries) in each way the language allows a reader to miss what a serializer sends; `gate` cases run against a run handle that allows everything (a case with a `request` goes through the request gate) and list the requests it received. `requests_refused_callable` plants a function in each container of `requests_refused_hidden`, by `variant`: `to_json` drops the hosted key and adds a `toJSON` function that returns the container with it (what JavaScript's `JSON.stringify` sends); `function_value` replaces the hosted key's value with a function; `function_entry_to_json` (TypeScript only, `ts_only`) replaces the first list entry with a function whose own `toJSON` returns that entry. Both lanes expect `TypeError`. Python serializers never call `toJSON` and read a function list entry as a Gemini callable or not at all, so the list variant has no Python counterpart. `callable_names` lists the name of a bare function in a Gemini config and the kind it is read as: `callable:<name>` when the name follows the provider's function-name rule (a letter or underscore, then letters, digits, `_`, `.`, `:` or `-`, at most 64 characters), else `callable` (unknown). `prototype_to_json` (TypeScript only: Python serializers have no such hook) lists the prototypes whose `toJSON` makes the TypeScript lane refuse every request, by `how` it got there: `own` defines it on the prototype, `inherited` gives the prototype another prototype that has it, and `proxy` gives it a `Proxy` as prototype that hides `toJSON` from `has` but returns it from `get` (`Object.prototype`'s prototype cannot be changed). The lane refuses an own `toJSON` on any of the four, and any prototype for `Array.prototype`, `Function.prototype` or `BigInt.prototype` other than `Object.prototype`. The lane checks when it reads the request and again after the decisions, before the gate returns.",
+  "normalize": [
+    {
+      "name": "openai_responses_builtins",
+      "provider": null,
+      "tools": [
+        {
+          "type": "function",
+          "name": "lookup",
+          "parameters": {
+            "type": "object"
+          }
+        },
+        {
+          "type": "web_search_preview",
+          "search_context_size": "high"
+        },
+        {
+          "type": "web_search"
+        },
+        {
+          "type": "file_search",
+          "vector_store_ids": [
+            "vs_1",
+            "vs_2"
+          ],
+          "filters": {
+            "key": "secret-value"
+          }
+        },
+        {
+          "type": "code_interpreter",
+          "container": {
+            "type": "auto"
+          }
+        },
+        {
+          "type": "image_generation"
+        },
+        {
+          "type": "computer_use_preview",
+          "display_width": 1024,
+          "display_height": 768,
+          "environment": "browser"
+        },
+        {
+          "type": "custom",
+          "name": "grammar_tool"
+        }
+      ],
+      "expected": [
+        {
+          "provider": "openai",
+          "kind": "web_search",
+          "name": "web_search_preview",
+          "summary": "openai:web_search name=web_search_preview fields=1",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "openai",
+          "kind": "web_search",
+          "name": "web_search",
+          "summary": "openai:web_search fields=0",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "openai",
+          "kind": "file_search",
+          "name": "file_search",
+          "summary": "openai:file_search fields=2",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "openai",
+          "kind": "code_interpreter",
+          "name": "code_interpreter",
+          "summary": "openai:code_interpreter fields=1",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "openai",
+          "kind": "image_generation",
+          "name": "image_generation",
+          "summary": "openai:image_generation fields=0",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "openai",
+          "kind": "computer_use",
+          "name": "computer_use_preview",
+          "summary": "openai:computer_use name=computer_use_preview fields=3",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        }
+      ]
+    },
+    {
+      "name": "openai_remote_mcp",
+      "provider": null,
+      "tools": [
+        {
+          "type": "mcp",
+          "server_label": "deepwiki",
+          "server_url": "https://MCP.Example.com/sse/?token=abc#frag",
+          "allowed_tools": [
+            "ask_question",
+            "read_wiki_structure"
+          ],
+          "headers": {
+            "Authorization": "Bearer sk-secret"
+          },
+          "require_approval": "never"
+        },
+        {
+          "type": "mcp",
+          "server_label": "gmail",
+          "connector_id": "connector_gmail",
+          "authorization": "tok-secret"
+        },
+        {
+          "type": "mcp",
+          "server_label": "filtered",
+          "server_url": "https://tools.example.org/mcp",
+          "allowed_tools": {
+            "tool_names": [
+              "search"
+            ],
+            "read_only": true
+          }
+        }
+      ],
+      "expected": [
+        {
+          "provider": "openai",
+          "kind": "mcp",
+          "name": "mcp",
+          "summary": "openai:mcp server_label=deepwiki server_host=mcp.example.com allowed_tools=2:ask_question,read_wiki_structure",
+          "server_origin": "https://mcp.example.com",
+          "server_label": "deepwiki",
+          "allowed_tools": [
+            "ask_question",
+            "read_wiki_structure"
+          ],
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "openai",
+          "kind": "mcp",
+          "name": "mcp",
+          "summary": "openai:mcp server_label=gmail connector=connector_gmail",
+          "server_origin": "connector:connector_gmail",
+          "server_label": "gmail",
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "openai",
+          "kind": "mcp",
+          "name": "mcp",
+          "summary": "openai:mcp server_label=filtered server_host=tools.example.org allowed_tools=1:search",
+          "server_origin": "https://tools.example.org",
+          "server_label": "filtered",
+          "allowed_tools": [
+            "search"
+          ],
+          "problem": null,
+          "action": "execute"
+        }
+      ]
+    },
+    {
+      "name": "anthropic_server_tools",
+      "provider": null,
+      "tools": [
+        {
+          "name": "get_weather",
+          "description": "Weather",
+          "input_schema": {
+            "type": "object"
+          }
+        },
+        {
+          "type": "web_search_20250305",
+          "name": "web_search",
+          "max_uses": 5,
+          "allowed_domains": [
+            "example.com"
+          ]
+        },
+        {
+          "type": "code_execution_20250522",
+          "name": "code_execution"
+        },
+        {
+          "type": "bash_20250124",
+          "name": "bash"
+        },
+        {
+          "type": "text_editor_20250728",
+          "name": "str_replace_based_edit_tool"
+        },
+        {
+          "type": "web_fetch_20250910",
+          "name": "web_fetch"
+        },
+        {
+          "type": "custom",
+          "name": "custom_tool",
+          "input_schema": {
+            "type": "object"
+          }
+        }
+      ],
+      "expected": [
+        {
+          "provider": "anthropic",
+          "kind": "web_search",
+          "name": "web_search_20250305",
+          "summary": "anthropic:web_search name=web_search_20250305 fields=3",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "anthropic",
+          "kind": "code_execution",
+          "name": "code_execution_20250522",
+          "summary": "anthropic:code_execution name=code_execution_20250522 fields=1",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "anthropic",
+          "kind": "bash",
+          "name": "bash_20250124",
+          "summary": "anthropic:bash name=bash_20250124 fields=1",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "anthropic",
+          "kind": "text_editor",
+          "name": "text_editor_20250728",
+          "summary": "anthropic:text_editor name=text_editor_20250728 fields=1",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "anthropic",
+          "kind": "web_fetch",
+          "name": "web_fetch_20250910",
+          "summary": "anthropic:web_fetch name=web_fetch_20250910 fields=1",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        }
+      ]
+    },
+    {
+      "name": "anthropic_mcp_connector",
+      "provider": null,
+      "tools": [
+        {
+          "type": "url",
+          "url": "https://mcp.example.com/sse",
+          "name": "example",
+          "authorization_token": "secret-token",
+          "tool_configuration": {
+            "allowed_tools": [
+              "echo"
+            ]
+          }
+        },
+        {
+          "type": "mcp_toolset",
+          "mcp_server_name": "example"
+        },
+        {
+          "type": "mcp_toolset",
+          "mcp_server_name": "other"
+        }
+      ],
+      "expected": [
+        {
+          "provider": "anthropic",
+          "kind": "mcp",
+          "name": "url",
+          "summary": "anthropic:mcp name=url server_label=example server_host=mcp.example.com allowed_tools=1:echo",
+          "server_origin": "https://mcp.example.com",
+          "server_label": "example",
+          "allowed_tools": [
+            "echo"
+          ],
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "anthropic",
+          "kind": "mcp",
+          "name": "mcp_toolset",
+          "summary": "anthropic:mcp name=mcp_toolset server_label=example server_host=mcp.example.com",
+          "server_origin": "https://mcp.example.com",
+          "server_label": "example",
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "anthropic",
+          "kind": "mcp",
+          "name": "mcp_toolset",
+          "summary": "anthropic:mcp name=mcp_toolset server_label=other",
+          "server_origin": null,
+          "server_label": "other",
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        }
+      ]
+    },
+    {
+      "name": "gemini_tool_dicts",
+      "provider": null,
+      "tools": [
+        {
+          "function_declarations": [
+            {
+              "name": "lookup"
+            }
+          ]
+        },
+        {
+          "google_search": {}
+        },
+        {
+          "codeExecution": {}
+        },
+        {
+          "url_context": {},
+          "google_maps": null
+        }
+      ],
+      "expected": [
+        {
+          "provider": "gemini",
+          "kind": "google_search",
+          "name": "google_search",
+          "summary": "gemini:google_search",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "gemini",
+          "kind": "code_execution",
+          "name": "code_execution",
+          "summary": "gemini:code_execution",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "gemini",
+          "kind": "url_context",
+          "name": "url_context",
+          "summary": "gemini:url_context",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        }
+      ]
+    },
+    {
+      "name": "gemini_mcp_servers_and_new_fields",
+      "provider": null,
+      "tools": [
+        {
+          "mcp_servers": [
+            {
+              "name": "docs",
+              "streamable_http_transport": {
+                "url": "https://Docs.Example.com:443/mcp/",
+                "headers": {
+                  "Authorization": "Bearer sk-secret"
+                }
+              }
+            },
+            {
+              "name": "nourl"
+            }
+          ],
+          "parallel_ai_search": {}
+        },
+        {
+          "mcpServers": [
+            {
+              "name": "camel",
+              "streamableHttpTransport": {
+                "url": "https://camel.example.com/mcp"
+              }
+            }
+          ],
+          "parallelAiSearch": {
+            "apiKey": "sk-secret"
+          },
+          "exaAiSearch": {}
+        },
+        {
+          "mcp_servers": []
+        }
+      ],
+      "expected": [
+        {
+          "provider": "gemini",
+          "kind": "mcp",
+          "name": "mcp_servers",
+          "summary": "gemini:mcp name=mcp_servers server_label=docs server_host=docs.example.com",
+          "server_origin": "https://docs.example.com",
+          "server_label": "docs",
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "gemini",
+          "kind": "mcp",
+          "name": "mcp_servers",
+          "summary": "gemini:mcp name=mcp_servers server_label=nourl",
+          "server_origin": null,
+          "server_label": "nourl",
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "gemini",
+          "kind": "parallel_ai_search",
+          "name": "parallel_ai_search",
+          "summary": "gemini:parallel_ai_search",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "gemini",
+          "kind": "mcp",
+          "name": "mcp_servers",
+          "summary": "gemini:mcp name=mcp_servers server_label=camel server_host=camel.example.com",
+          "server_origin": "https://camel.example.com",
+          "server_label": "camel",
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "gemini",
+          "kind": "exa_ai_search",
+          "name": "exa_ai_search",
+          "summary": "gemini:exa_ai_search",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        }
+      ]
+    },
+    {
+      "name": "xai_with_hint",
+      "provider": "xai",
+      "tools": [
+        {
+          "type": "web_search",
+          "allowed_domains": [
+            "example.com"
+          ]
+        },
+        {
+          "type": "x_search",
+          "allowed_x_handles": [
+            "someone"
+          ]
+        },
+        {
+          "type": "code_interpreter"
+        },
+        {
+          "type": "mcp",
+          "server_url": "https://mcp.deepwiki.com/mcp",
+          "server_label": "deepwiki"
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "lookup"
+          }
+        }
+      ],
+      "expected": [
+        {
+          "provider": "xai",
+          "kind": "web_search",
+          "name": "web_search",
+          "summary": "xai:web_search fields=1",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "xai",
+          "kind": "x_search",
+          "name": "x_search",
+          "summary": "xai:x_search fields=1",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "xai",
+          "kind": "code_interpreter",
+          "name": "code_interpreter",
+          "summary": "xai:code_interpreter fields=0",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "xai",
+          "kind": "mcp",
+          "name": "mcp",
+          "summary": "xai:mcp server_label=deepwiki server_host=mcp.deepwiki.com",
+          "server_origin": "https://mcp.deepwiki.com",
+          "server_label": "deepwiki",
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        }
+      ]
+    },
+    {
+      "name": "xai_without_hint",
+      "provider": null,
+      "tools": [
+        {
+          "type": "x_search"
+        },
+        {
+          "type": "collections_search",
+          "collection_ids": [
+            "col_1"
+          ]
+        }
+      ],
+      "expected": [
+        {
+          "provider": "xai",
+          "kind": "x_search",
+          "name": "x_search",
+          "summary": "xai:x_search fields=0",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "xai",
+          "kind": "collections_search",
+          "name": "collections_search",
+          "summary": "xai:collections_search fields=1",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        }
+      ]
+    },
+    {
+      "name": "openai_shell_tools",
+      "provider": null,
+      "tools": [
+        {
+          "type": "local_shell"
+        },
+        {
+          "type": "shell"
+        },
+        {
+          "type": "apply_patch"
+        }
+      ],
+      "expected": [
+        {
+          "provider": "openai",
+          "kind": "local_shell",
+          "name": "local_shell",
+          "summary": "openai:local_shell fields=0",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "openai",
+          "kind": "shell",
+          "name": "shell",
+          "summary": "openai:shell fields=0",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "openai",
+          "kind": "apply_patch",
+          "name": "apply_patch",
+          "summary": "openai:apply_patch fields=0",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        }
+      ]
+    },
+    {
+      "name": "bedrock_converse",
+      "provider": null,
+      "tools": [
+        {
+          "toolSpec": {
+            "name": "lookup",
+            "inputSchema": {
+              "json": {}
+            }
+          }
+        },
+        {
+          "systemTool": {
+            "name": "nova_grounding"
+          }
+        },
+        {
+          "cachePoint": {
+            "type": "default"
+          }
+        },
+        {
+          "systemTool": {}
+        }
+      ],
+      "expected": [
+        {
+          "provider": "bedrock",
+          "kind": "nova_grounding",
+          "name": "nova_grounding",
+          "summary": "bedrock:nova_grounding fields=0",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "bedrock",
+          "kind": "system_tool",
+          "name": "system_tool",
+          "summary": "bedrock:system_tool fields=0",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        }
+      ]
+    },
+    {
+      "name": "allowed_tools_refused_not_truncated",
+      "provider": null,
+      "tools": [
+        {
+          "type": "mcp",
+          "server_label": "many",
+          "server_url": "https://a.example.com/mcp",
+          "allowed_tools": [
+            "t0",
+            "t1",
+            "t2",
+            "t3",
+            "t4",
+            "t5",
+            "t6",
+            "t7",
+            "t8",
+            "t9",
+            "t10",
+            "t11",
+            "t12",
+            "t13",
+            "t14",
+            "t15",
+            "t16",
+            "t17",
+            "t18",
+            "t19",
+            "t20",
+            "t21",
+            "t22",
+            "t23",
+            "t24",
+            "t25",
+            "t26",
+            "t27",
+            "t28",
+            "t29",
+            "t30",
+            "t31",
+            "t32",
+            "t33",
+            "t34",
+            "t35",
+            "t36",
+            "t37",
+            "t38",
+            "t39",
+            "t40",
+            "t41",
+            "t42",
+            "t43",
+            "t44",
+            "t45",
+            "t46",
+            "t47",
+            "t48",
+            "t49",
+            "t50",
+            "t51",
+            "t52",
+            "t53",
+            "t54",
+            "t55",
+            "t56",
+            "t57",
+            "t58",
+            "t59",
+            "t60",
+            "t61",
+            "t62",
+            "t63",
+            "t64"
+          ]
+        },
+        {
+          "type": "mcp",
+          "server_label": "nonstr",
+          "server_url": "https://b.example.com/mcp",
+          "allowed_tools": [
+            "ok",
+            7
+          ]
+        },
+        {
+          "type": "mcp",
+          "server_label": "rewritten",
+          "server_url": "https://c.example.com/mcp",
+          "allowed_tools": [
+            "bad name"
+          ]
+        },
+        {
+          "type": "mcp",
+          "server_label": "shape",
+          "server_url": "https://d.example.com/mcp",
+          "allowed_tools": "search"
+        },
+        {
+          "type": "mcp",
+          "server_label": "sixtyfour",
+          "server_url": "https://e.example.com/mcp",
+          "allowed_tools": [
+            "t0",
+            "t1",
+            "t2",
+            "t3",
+            "t4",
+            "t5",
+            "t6",
+            "t7",
+            "t8",
+            "t9",
+            "t10",
+            "t11",
+            "t12",
+            "t13",
+            "t14",
+            "t15",
+            "t16",
+            "t17",
+            "t18",
+            "t19",
+            "t20",
+            "t21",
+            "t22",
+            "t23",
+            "t24",
+            "t25",
+            "t26",
+            "t27",
+            "t28",
+            "t29",
+            "t30",
+            "t31",
+            "t32",
+            "t33",
+            "t34",
+            "t35",
+            "t36",
+            "t37",
+            "t38",
+            "t39",
+            "t40",
+            "t41",
+            "t42",
+            "t43",
+            "t44",
+            "t45",
+            "t46",
+            "t47",
+            "t48",
+            "t49",
+            "t50",
+            "t51",
+            "t52",
+            "t53",
+            "t54",
+            "t55",
+            "t56",
+            "t57",
+            "t58",
+            "t59",
+            "t60",
+            "t61",
+            "t62",
+            "t63"
+          ]
+        }
+      ],
+      "expected": [
+        {
+          "provider": "openai",
+          "kind": "mcp",
+          "name": "mcp",
+          "summary": "openai:mcp server_label=many server_host=a.example.com problem=allowed_tools_invalid",
+          "server_origin": "https://a.example.com",
+          "server_label": "many",
+          "allowed_tools": null,
+          "problem": "allowed_tools_invalid",
+          "action": "execute"
+        },
+        {
+          "provider": "openai",
+          "kind": "mcp",
+          "name": "mcp",
+          "summary": "openai:mcp server_label=nonstr server_host=b.example.com problem=allowed_tools_invalid",
+          "server_origin": "https://b.example.com",
+          "server_label": "nonstr",
+          "allowed_tools": null,
+          "problem": "allowed_tools_invalid",
+          "action": "execute"
+        },
+        {
+          "provider": "openai",
+          "kind": "mcp",
+          "name": "mcp",
+          "summary": "openai:mcp server_label=rewritten server_host=c.example.com problem=allowed_tools_invalid",
+          "server_origin": "https://c.example.com",
+          "server_label": "rewritten",
+          "allowed_tools": null,
+          "problem": "allowed_tools_invalid",
+          "action": "execute"
+        },
+        {
+          "provider": "openai",
+          "kind": "mcp",
+          "name": "mcp",
+          "summary": "openai:mcp server_label=shape server_host=d.example.com problem=allowed_tools_invalid",
+          "server_origin": "https://d.example.com",
+          "server_label": "shape",
+          "allowed_tools": null,
+          "problem": "allowed_tools_invalid",
+          "action": "execute"
+        },
+        {
+          "provider": "openai",
+          "kind": "mcp",
+          "name": "mcp",
+          "summary": "openai:mcp server_label=sixtyfour server_host=e.example.com allowed_tools=64:t0,t1,t2,t3,t4,t5,t6,t7,t8,t9,t10,t11,t12,t",
+          "server_origin": "https://e.example.com",
+          "server_label": "sixtyfour",
+          "allowed_tools": [
+            "t0",
+            "t1",
+            "t2",
+            "t3",
+            "t4",
+            "t5",
+            "t6",
+            "t7",
+            "t8",
+            "t9",
+            "t10",
+            "t11",
+            "t12",
+            "t13",
+            "t14",
+            "t15",
+            "t16",
+            "t17",
+            "t18",
+            "t19",
+            "t20",
+            "t21",
+            "t22",
+            "t23",
+            "t24",
+            "t25",
+            "t26",
+            "t27",
+            "t28",
+            "t29",
+            "t30",
+            "t31",
+            "t32",
+            "t33",
+            "t34",
+            "t35",
+            "t36",
+            "t37",
+            "t38",
+            "t39",
+            "t40",
+            "t41",
+            "t42",
+            "t43",
+            "t44",
+            "t45",
+            "t46",
+            "t47",
+            "t48",
+            "t49",
+            "t50",
+            "t51",
+            "t52",
+            "t53",
+            "t54",
+            "t55",
+            "t56",
+            "t57",
+            "t58",
+            "t59",
+            "t60",
+            "t61",
+            "t62",
+            "t63"
+          ],
+          "problem": null,
+          "action": "execute"
+        }
+      ]
+    },
+    {
+      "name": "mcp_url_refusals",
+      "provider": null,
+      "tools": [
+        {
+          "type": "mcp",
+          "server_label": "backslash",
+          "server_url": "https://attacker.com\\@good.com/mcp"
+        },
+        {
+          "type": "mcp",
+          "server_label": "userinfo",
+          "server_url": "https://user:pw@good.com/mcp"
+        },
+        {
+          "type": "mcp",
+          "server_label": "fullwidth",
+          "server_url": "https://\uff47ood.com/mcp"
+        },
+        {
+          "type": "mcp",
+          "server_label": "space",
+          "server_url": "https://good.com /mcp"
+        },
+        {
+          "type": "mcp",
+          "server_label": "control",
+          "server_url": "https://good.com\u0000.evil/mcp"
+        },
+        {
+          "type": "mcp",
+          "server_label": "badport",
+          "server_url": "https://good.com:99999/mcp"
+        },
+        {
+          "type": "mcp",
+          "server_label": "nonstr",
+          "server_url": 42
+        }
+      ],
+      "expected": [
+        {
+          "provider": "openai",
+          "kind": "mcp",
+          "name": "mcp",
+          "summary": "openai:mcp server_label=backslash",
+          "server_origin": null,
+          "server_label": "backslash",
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "openai",
+          "kind": "mcp",
+          "name": "mcp",
+          "summary": "openai:mcp server_label=userinfo",
+          "server_origin": null,
+          "server_label": "userinfo",
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "openai",
+          "kind": "mcp",
+          "name": "mcp",
+          "summary": "openai:mcp server_label=fullwidth",
+          "server_origin": null,
+          "server_label": "fullwidth",
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "openai",
+          "kind": "mcp",
+          "name": "mcp",
+          "summary": "openai:mcp server_label=space",
+          "server_origin": null,
+          "server_label": "space",
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "openai",
+          "kind": "mcp",
+          "name": "mcp",
+          "summary": "openai:mcp server_label=control",
+          "server_origin": null,
+          "server_label": "control",
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "openai",
+          "kind": "mcp",
+          "name": "mcp",
+          "summary": "openai:mcp server_label=badport",
+          "server_origin": null,
+          "server_label": "badport",
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "openai",
+          "kind": "mcp",
+          "name": "mcp",
+          "summary": "openai:mcp server_label=nonstr",
+          "server_origin": null,
+          "server_label": "nonstr",
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        }
+      ]
+    },
+    {
+      "name": "mcp_url_canonical",
+      "provider": null,
+      "tools": [
+        {
+          "type": "mcp",
+          "server_label": "p443",
+          "server_url": "https://good.com:443/mcp"
+        },
+        {
+          "type": "mcp",
+          "server_label": "dot",
+          "server_url": "HTTPS://Good.COM./mcp/"
+        },
+        {
+          "type": "mcp",
+          "server_label": "p80",
+          "server_url": "http://good.com:80/mcp"
+        },
+        {
+          "type": "mcp",
+          "server_label": "p8443",
+          "server_url": "https://good.com:8443/mcp?x=1#f"
+        },
+        {
+          "type": "mcp",
+          "server_label": "v6",
+          "server_url": "https://[::1]:443/mcp"
+        }
+      ],
+      "expected": [
+        {
+          "provider": "openai",
+          "kind": "mcp",
+          "name": "mcp",
+          "summary": "openai:mcp server_label=p443 server_host=good.com",
+          "server_origin": "https://good.com",
+          "server_label": "p443",
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "openai",
+          "kind": "mcp",
+          "name": "mcp",
+          "summary": "openai:mcp server_label=dot server_host=good.com",
+          "server_origin": "https://good.com",
+          "server_label": "dot",
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "openai",
+          "kind": "mcp",
+          "name": "mcp",
+          "summary": "openai:mcp server_label=p80 server_host=good.com",
+          "server_origin": "http://good.com",
+          "server_label": "p80",
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "openai",
+          "kind": "mcp",
+          "name": "mcp",
+          "summary": "openai:mcp server_label=p8443 server_host=good.com:8443",
+          "server_origin": "https://good.com:8443",
+          "server_label": "p8443",
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "openai",
+          "kind": "mcp",
+          "name": "mcp",
+          "summary": "openai:mcp server_label=v6 server_host=[::1]",
+          "server_origin": "https://[::1]",
+          "server_label": "v6",
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        }
+      ]
+    },
+    {
+      "name": "openai_mcp_url_and_connector_is_ambiguous",
+      "provider": null,
+      "tools": [
+        {
+          "type": "mcp",
+          "server_label": "both",
+          "server_url": "https://mcp.example.com/sse",
+          "connector_id": "connector_gmail"
+        }
+      ],
+      "expected": [
+        {
+          "provider": "openai",
+          "kind": "mcp",
+          "name": "mcp",
+          "summary": "openai:mcp server_label=both problem=mcp_server_ambiguous",
+          "server_origin": null,
+          "server_label": "both",
+          "allowed_tools": null,
+          "problem": "mcp_server_ambiguous",
+          "action": "execute"
+        }
+      ]
+    },
+    {
+      "name": "openai_mcp_connector_given_as_url_is_refused",
+      "provider": null,
+      "tools": [
+        {
+          "type": "mcp",
+          "server_label": "conn",
+          "server_url": "connector:connector_gmail"
+        }
+      ],
+      "expected": [
+        {
+          "provider": "openai",
+          "kind": "mcp",
+          "name": "mcp",
+          "summary": "openai:mcp server_label=conn",
+          "server_origin": null,
+          "server_label": "conn",
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        }
+      ]
+    },
+    {
+      "name": "mcp_summary_has_no_path",
+      "provider": null,
+      "tools": [
+        {
+          "type": "mcp",
+          "server_label": "pathy",
+          "server_url": "https://mcp.example.com/api/mcp/s/sk-secret-path-token/mcp"
+        }
+      ],
+      "expected": [
+        {
+          "provider": "openai",
+          "kind": "mcp",
+          "name": "mcp",
+          "summary": "openai:mcp server_label=pathy server_host=mcp.example.com",
+          "server_origin": "https://mcp.example.com",
+          "server_label": "pathy",
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        }
+      ]
+    },
+    {
+      "name": "unknown_shapes",
+      "provider": null,
+      "tools": [
+        {
+          "type": "brand_new_tool",
+          "api_key": "sk-secret"
+        },
+        {
+          "foo": "bar"
+        },
+        {},
+        {
+          "type": 7
+        },
+        {
+          "type": "weird\"type with spaces"
+        }
+      ],
+      "expected": [
+        {
+          "provider": "unknown",
+          "kind": "brand_new_tool",
+          "name": "brand_new_tool",
+          "summary": "unknown:brand_new_tool fields=1",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "unknown",
+          "kind": "dict",
+          "name": "dict",
+          "summary": "unknown:dict",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "unknown",
+          "kind": "weird_type_with_spaces",
+          "name": "weird_type_with_spaces",
+          "summary": "unknown:weird_type_with_spaces fields=0",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        }
+      ]
+    },
+    {
+      "name": "unknown_json_types",
+      "provider": null,
+      "tools": [
+        "web_search",
+        null,
+        3,
+        1.5,
+        true,
+        []
+      ],
+      "expected": [
+        {
+          "provider": "unknown",
+          "kind": "str",
+          "name": "str",
+          "summary": "unknown:str",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "unknown",
+          "kind": "null",
+          "name": "null",
+          "summary": "unknown:null",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "unknown",
+          "kind": "int",
+          "name": "int",
+          "summary": "unknown:int",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "unknown",
+          "kind": "float",
+          "name": "float",
+          "summary": "unknown:float",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "unknown",
+          "kind": "bool",
+          "name": "bool",
+          "summary": "unknown:bool",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "unknown",
+          "kind": "list",
+          "name": "list",
+          "summary": "unknown:list",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        }
+      ]
+    },
+    {
+      "name": "duplicates_collapse",
+      "provider": null,
+      "tools": [
+        {
+          "type": "web_search"
+        },
+        {
+          "type": "web_search"
+        }
+      ],
+      "expected": [
+        {
+          "provider": "openai",
+          "kind": "web_search",
+          "name": "web_search",
+          "summary": "openai:web_search fields=0",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        }
+      ]
+    },
+    {
+      "name": "no_tools",
+      "provider": null,
+      "tools": null,
+      "expected": []
+    },
+    {
+      "name": "single_entry",
+      "provider": null,
+      "tools": {
+        "type": "code_interpreter"
+      },
+      "expected": [
+        {
+          "provider": "openai",
+          "kind": "code_interpreter",
+          "name": "code_interpreter",
+          "summary": "openai:code_interpreter fields=0",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        }
+      ]
+    }
+  ],
+  "requests": [
+    {
+      "name": "openai_chat_web_search_options",
+      "provider": null,
+      "request": {
+        "model": "gpt-x",
+        "messages": [
+          {
+            "role": "user",
+            "content": "secret question"
+          }
+        ],
+        "web_search_options": {
+          "search_context_size": "low"
+        }
+      },
+      "expected": [
+        {
+          "provider": "openai",
+          "kind": "web_search",
+          "name": "web_search_options",
+          "summary": "openai:web_search name=web_search_options",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        }
+      ]
+    },
+    {
+      "name": "openai_responses_stored_prompt",
+      "provider": null,
+      "request": {
+        "prompt": {
+          "id": "pmpt_secret",
+          "version": "2",
+          "variables": {
+            "x": "secret"
+          }
+        },
+        "tools": [
+          {
+            "type": "web_search"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "provider": "openai",
+          "kind": "web_search",
+          "name": "web_search",
+          "summary": "openai:web_search fields=0",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "openai",
+          "kind": "stored_prompt",
+          "name": "prompt",
+          "summary": "openai:stored_prompt name=prompt",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        }
+      ]
+    },
+    {
+      "name": "plain_string_prompt_is_not_stored",
+      "provider": null,
+      "request": {
+        "prompt": "secret text",
+        "tools": []
+      },
+      "expected": []
+    },
+    {
+      "name": "anthropic_top_level_mcp_servers",
+      "provider": null,
+      "request": {
+        "mcp_servers": [
+          {
+            "type": "url",
+            "url": "https://mcp.example.com/sse",
+            "name": "example",
+            "authorization_token": "secret-token"
+          },
+          {
+            "type": "url",
+            "url": "https://second.example.com/mcp",
+            "name": "second",
+            "tool_configuration": {
+              "allowed_tools": [
+                "echo"
+              ]
+            }
+          }
+        ],
+        "tools": [
+          {
+            "type": "mcp_toolset",
+            "mcp_server_name": "example"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "provider": "anthropic",
+          "kind": "mcp",
+          "name": "mcp_toolset",
+          "summary": "anthropic:mcp name=mcp_toolset server_label=example server_host=mcp.example.com",
+          "server_origin": "https://mcp.example.com",
+          "server_label": "example",
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "anthropic",
+          "kind": "mcp",
+          "name": "mcp_servers",
+          "summary": "anthropic:mcp name=mcp_servers server_label=example server_host=mcp.example.com",
+          "server_origin": "https://mcp.example.com",
+          "server_label": "example",
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "anthropic",
+          "kind": "mcp",
+          "name": "mcp_servers",
+          "summary": "anthropic:mcp name=mcp_servers server_label=second server_host=second.example.com allowed_tools=1:echo",
+          "server_origin": "https://second.example.com",
+          "server_label": "second",
+          "allowed_tools": [
+            "echo"
+          ],
+          "problem": null,
+          "action": "execute"
+        }
+      ]
+    },
+    {
+      "name": "gemini_config_cached_content_and_tools",
+      "provider": "gemini",
+      "request": {
+        "model": "gemini-x",
+        "config": {
+          "cached_content": "cachedContents/secret",
+          "tools": [
+            {
+              "google_search": {}
+            }
+          ]
+        }
+      },
+      "expected": [
+        {
+          "provider": "gemini",
+          "kind": "google_search",
+          "name": "google_search",
+          "summary": "gemini:google_search",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "gemini",
+          "kind": "cached_content",
+          "name": "cached_content",
+          "summary": "gemini:cached_content",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        }
+      ]
+    },
+    {
+      "name": "gemini_camel_cached_content",
+      "provider": null,
+      "request": {
+        "config": {
+          "cachedContent": "cachedContents/secret"
+        }
+      },
+      "expected": [
+        {
+          "provider": "gemini",
+          "kind": "cached_content",
+          "name": "cached_content",
+          "summary": "gemini:cached_content",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        }
+      ]
+    },
+    {
+      "name": "xai_search_parameters",
+      "provider": null,
+      "request": {
+        "search_parameters": {
+          "mode": "auto"
+        },
+        "tools": [
+          {
+            "type": "x_search"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "provider": "xai",
+          "kind": "x_search",
+          "name": "x_search",
+          "summary": "xai:x_search fields=0",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "xai",
+          "kind": "live_search",
+          "name": "search_parameters",
+          "summary": "xai:live_search name=search_parameters",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        }
+      ]
+    },
+    {
+      "name": "bedrock_tool_config",
+      "provider": null,
+      "request": {
+        "toolConfig": {
+          "tools": [
+            {
+              "toolSpec": {
+                "name": "lookup",
+                "inputSchema": {
+                  "json": {}
+                }
+              }
+            },
+            {
+              "systemTool": {
+                "name": "nova_grounding"
+              }
+            }
+          ]
+        }
+      },
+      "expected": [
+        {
+          "provider": "bedrock",
+          "kind": "nova_grounding",
+          "name": "nova_grounding",
+          "summary": "bedrock:nova_grounding fields=0",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        }
+      ]
+    },
+    {
+      "name": "openai_extra_body",
+      "provider": null,
+      "request": {
+        "model": "gpt-x",
+        "extra_body": {
+          "web_search_options": {},
+          "tools": [
+            {
+              "type": "code_interpreter"
+            }
+          ]
+        }
+      },
+      "expected": [
+        {
+          "provider": "openai",
+          "kind": "code_interpreter",
+          "name": "code_interpreter",
+          "summary": "openai:code_interpreter fields=0",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "openai",
+          "kind": "web_search",
+          "name": "web_search_options",
+          "summary": "openai:web_search name=web_search_options",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        }
+      ]
+    },
+    {
+      "name": "nested_extra_body",
+      "provider": null,
+      "request": {
+        "extra_body": {
+          "extra_body": {
+            "search_parameters": {
+              "mode": "on"
+            }
+          }
+        }
+      },
+      "expected": [
+        {
+          "provider": "xai",
+          "kind": "live_search",
+          "name": "search_parameters",
+          "summary": "xai:live_search name=search_parameters",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        }
+      ]
+    },
+    {
+      "name": "bedrock_additional_model_request_fields",
+      "provider": null,
+      "request": {
+        "modelId": "anthropic.claude-x",
+        "toolConfig": {
+          "tools": [
+            {
+              "toolSpec": {
+                "name": "lookup",
+                "inputSchema": {
+                  "json": {}
+                }
+              }
+            }
+          ]
+        },
+        "additionalModelRequestFields": {
+          "tools": [
+            {
+              "type": "web_search_20250305",
+              "name": "web_search",
+              "max_uses": 3
+            }
+          ],
+          "mcp_servers": [
+            {
+              "type": "url",
+              "url": "https://mcp.example.com/sse",
+              "name": "example"
+            }
+          ]
+        }
+      },
+      "expected": [
+        {
+          "provider": "anthropic",
+          "kind": "web_search",
+          "name": "web_search_20250305",
+          "summary": "anthropic:web_search name=web_search_20250305 fields=2",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "anthropic",
+          "kind": "mcp",
+          "name": "mcp_servers",
+          "summary": "anthropic:mcp name=mcp_servers server_label=example server_host=mcp.example.com",
+          "server_origin": "https://mcp.example.com",
+          "server_label": "example",
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        }
+      ]
+    },
+    {
+      "name": "bedrock_additional_fields_snake_case",
+      "provider": null,
+      "request": {
+        "additional_model_request_fields": {
+          "tools": [
+            {
+              "type": "code_execution_20250522",
+              "name": "code_execution"
+            }
+          ]
+        }
+      },
+      "expected": [
+        {
+          "provider": "anthropic",
+          "kind": "code_execution",
+          "name": "code_execution_20250522",
+          "summary": "anthropic:code_execution name=code_execution_20250522 fields=1",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        }
+      ]
+    },
+    {
+      "name": "gemini_http_options_extra_body",
+      "provider": null,
+      "request": {
+        "model": "gemini-x",
+        "config": {
+          "http_options": {
+            "extra_body": {
+              "tools": [
+                {
+                  "google_search": {}
+                }
+              ],
+              "cachedContent": "c/1"
+            }
+          }
+        }
+      },
+      "expected": [
+        {
+          "provider": "gemini",
+          "kind": "google_search",
+          "name": "google_search",
+          "summary": "gemini:google_search",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "gemini",
+          "kind": "cached_content",
+          "name": "cached_content",
+          "summary": "gemini:cached_content",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        }
+      ]
+    },
+    {
+      "name": "gemini_top_level_http_options",
+      "provider": null,
+      "request": {
+        "http_options": {
+          "extra_body": {
+            "tools": [
+              {
+                "url_context": {}
+              }
+            ]
+          }
+        }
+      },
+      "expected": [
+        {
+          "provider": "gemini",
+          "kind": "url_context",
+          "name": "url_context",
+          "summary": "gemini:url_context",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        }
+      ]
+    },
+    {
+      "name": "null_scopes_are_absent",
+      "provider": null,
+      "request": {
+        "extra_body": null,
+        "config": null,
+        "toolConfig": null,
+        "tools": []
+      },
+      "expected": []
+    },
+    {
+      "name": "scopes_at_the_depth_limit_are_read",
+      "provider": null,
+      "request": {
+        "extra_body": {
+          "extra_body": {
+            "extra_body": {
+              "tools": [
+                {
+                  "type": "web_search"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "expected": [
+        {
+          "provider": "openai",
+          "kind": "web_search",
+          "name": "web_search",
+          "summary": "openai:web_search fields=0",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        }
+      ]
+    },
+    {
+      "name": "string_prompt_is_not_a_stored_prompt",
+      "provider": null,
+      "request": {
+        "prompt": "Hello",
+        "tools": []
+      },
+      "expected": []
+    },
+    {
+      "name": "non_string_prompt_is_a_stored_prompt",
+      "provider": null,
+      "request": {
+        "prompt": [
+          "p"
+        ],
+        "tools": []
+      },
+      "expected": [
+        {
+          "provider": "openai",
+          "kind": "stored_prompt",
+          "name": "prompt",
+          "summary": "openai:stored_prompt name=prompt",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        }
+      ]
+    },
+    {
+      "name": "anthropic_container_skills",
+      "provider": null,
+      "request": {
+        "model": "claude-x",
+        "container": {
+          "id": "container_1",
+          "skills": [
+            {
+              "type": "anthropic",
+              "skill_id": "pptx",
+              "version": "latest"
+            },
+            {
+              "type": "custom",
+              "skill_id": "skill_01abc"
+            }
+          ]
+        }
+      },
+      "expected": [
+        {
+          "provider": "anthropic",
+          "kind": "skill",
+          "name": "anthropic",
+          "summary": "anthropic:skill name=anthropic",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        },
+        {
+          "provider": "anthropic",
+          "kind": "skill",
+          "name": "custom",
+          "summary": "anthropic:skill name=custom",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": null,
+          "action": "execute"
+        }
+      ]
+    },
+    {
+      "name": "anthropic_container_id_only",
+      "provider": null,
+      "request": {
+        "model": "claude-x",
+        "container": "container_1"
+      },
+      "expected": []
+    },
+    {
+      "name": "file_search_store_ids_invalid",
+      "provider": null,
+      "request": {
+        "tools": [
+          {
+            "type": "file_search",
+            "vector_store_ids": "vs_a"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "provider": "openai",
+          "kind": "file_search",
+          "name": "file_search",
+          "summary": "openai:file_search fields=1 problem=vector_store_ids_invalid",
+          "server_origin": null,
+          "server_label": null,
+          "allowed_tools": null,
+          "problem": "vector_store_ids_invalid",
+          "action": "execute"
+        }
+      ]
+    }
+  ],
+  "mcp_urls": [
+    {
+      "url": "https://attacker.com\\@good.com/mcp",
+      "expected": null
+    },
+    {
+      "url": "https://user:pw@good.com/mcp",
+      "expected": null
+    },
+    {
+      "url": "https://user@good.com/mcp",
+      "expected": null
+    },
+    {
+      "url": "https://\uff47ood.com/mcp",
+      "expected": null
+    },
+    {
+      "url": "https://good.com /mcp",
+      "expected": null
+    },
+    {
+      "url": "https://good.com\t/mcp",
+      "expected": null
+    },
+    {
+      "url": " https://good.com/mcp",
+      "expected": null
+    },
+    {
+      "url": "https://good.com:443/mcp",
+      "expected": "https://good.com/mcp"
+    },
+    {
+      "url": "HTTPS://Good.COM./mcp/",
+      "expected": "https://good.com/mcp"
+    },
+    {
+      "url": "https://good.com../mcp",
+      "expected": null
+    },
+    {
+      "url": "https://.good.com/mcp",
+      "expected": null
+    },
+    {
+      "url": "http://good.com:80/mcp",
+      "expected": "http://good.com/mcp"
+    },
+    {
+      "url": "https://good.com:8443/mcp?x=1#f",
+      "expected": "https://good.com:8443/mcp"
+    },
+    {
+      "url": "https://good.com:0/mcp",
+      "expected": null
+    },
+    {
+      "url": "https://[::1]:443/mcp",
+      "expected": "https://[::1]/mcp"
+    },
+    {
+      "url": "https://good.com/caf\u00e9",
+      "expected": null
+    },
+    {
+      "url": "https://good.com/api/mcp/s/sk-secret-path-token/mcp",
+      "expected": "https://good.com/api/mcp/s/sk-secret-path-token/mcp"
+    },
+    {
+      "url": "connector:connector_gmail",
+      "expected": null
+    },
+    {
+      "url": "connector:bad id",
+      "expected": null
+    },
+    {
+      "url": "not a url",
+      "expected": null
+    },
+    {
+      "url": "",
+      "expected": null
+    }
+  ],
+  "registry_refused": [
+    {
+      "https://mcp.example.com/sse": "a",
+      "https://MCP.example.com:443/sse/": "b"
+    },
+    {
+      "connector:bad id": "a"
+    },
+    {
+      "connector:": "a"
+    },
+    {
+      "https://user@mcp.example.com/sse": "a"
+    },
+    {
+      "https://mcp.example.com/sse": "bad name"
+    }
+  ],
+  "requests_refused": [
+    null,
+    [],
+    "web_search",
+    3,
+    true,
+    {
+      "type": "web_search"
+    },
+    [
+      {
+        "type": "web_search"
+      }
+    ],
+    {
+      "extra_body": []
+    },
+    {
+      "extra_body": "x"
+    },
+    {
+      "extraBody": [
+        {
+          "tools": [
+            {
+              "type": "web_search"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "config": [
+        1
+      ]
+    },
+    {
+      "config": "x"
+    },
+    {
+      "additionalModelRequestFields": [
+        {
+          "tools": []
+        }
+      ]
+    },
+    {
+      "additional_model_request_fields": "x"
+    },
+    {
+      "http_options": 3
+    },
+    {
+      "httpOptions": {
+        "extraBody": []
+      }
+    },
+    {
+      "config": {
+        "http_options": {
+          "extra_body": "x"
+        }
+      }
+    },
+    {
+      "toolConfig": "x"
+    },
+    {
+      "tool_config": [
+        {
+          "tools": []
+        }
+      ]
+    },
+    {
+      "extra_body": {
+        "toolConfig": []
+      }
+    },
+    {
+      "extra_body": {
+        "extra_body": {
+          "extra_body": {
+            "extra_body": {
+              "tools": [
+                {
+                  "type": "web_search"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "config": {
+        "extra_body": {
+          "additionalModelRequestFields": {
+            "http_options": {
+              "extra_body": {}
+            }
+          }
+        }
+      }
+    },
+    {
+      "http_options": {},
+      "httpOptions": {
+        "extraBody": {
+          "tools": [
+            {
+              "url_context": {}
+            }
+          ]
+        }
+      }
+    },
+    {
+      "extra_body": {},
+      "extraBody": {
+        "tools": [
+          {
+            "type": "web_search"
+          }
+        ]
+      }
+    },
+    {
+      "extra_body": null,
+      "extraBody": {
+        "tools": [
+          {
+            "type": "web_search"
+          }
+        ]
+      }
+    },
+    {
+      "additional_model_request_fields": {},
+      "additionalModelRequestFields": {
+        "tools": []
+      }
+    },
+    {
+      "tool_config": {},
+      "toolConfig": {
+        "tools": [
+          {
+            "systemTool": {
+              "name": "nova_grounding"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "cached_content": "c/1",
+      "cachedContent": "c/2"
+    },
+    {
+      "config": {
+        "http_options": {
+          "extra_body": {},
+          "extraBody": {
+            "tools": [
+              {
+                "google_search": {}
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "extra_body": {
+        "toolConfig": {
+          "tools": []
+        },
+        "tool_config": {
+          "tools": []
+        }
+      }
+    },
+    {
+      "tools": [
+        {
+          "mcp_servers": [
+            {
+              "name": "docs",
+              "streamable_http_transport": {
+                "url": "https://docs.example.com/mcp"
+              },
+              "streamableHttpTransport": {
+                "url": "https://other.example/mcp"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "config": {
+        "tools": [
+          {
+            "mcpServers": [
+              {
+                "name": "docs",
+                "streamable_http_transport": null,
+                "streamableHttpTransport": {
+                  "url": "https://other.example/mcp"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "tools": [
+        {
+          "name": "lookup",
+          "description": "d",
+          "googleSearch": {}
+        }
+      ]
+    },
+    {
+      "tools": [
+        {
+          "type": "function",
+          "googleSearch": {}
+        }
+      ]
+    },
+    {
+      "tools": [
+        {
+          "toolSpec": {
+            "name": "lookup"
+          },
+          "googleSearch": {}
+        }
+      ]
+    },
+    {
+      "tools": [
+        {
+          "systemTool": {
+            "name": "nova_grounding"
+          },
+          "googleSearch": {}
+        }
+      ]
+    },
+    {
+      "tools": [
+        {
+          "name": "lookup",
+          "input_schema": {},
+          "mcpServers": [
+            {
+              "name": "m"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "f"
+          },
+          "codeExecution": {}
+        }
+      ]
+    },
+    {
+      "tools": [
+        {
+          "name": "lookup",
+          "parameters": {},
+          "code_execution": {}
+        }
+      ]
+    },
+    {
+      "tools": [
+        {
+          "type": "custom",
+          "name": "c",
+          "server_url": "https://mcp.example.com/mcp"
+        }
+      ]
+    },
+    {
+      "tools": [
+        {
+          "type": "web_search",
+          "urlContext": {}
+        }
+      ]
+    },
+    {
+      "tools": [
+        {
+          "type": "mcp",
+          "server_url": "https://mcp.example.com/mcp",
+          "server_label": "m",
+          "googleSearch": {}
+        }
+      ]
+    },
+    {
+      "tools": [
+        {
+          "type": "mcp_toolset",
+          "mcp_server_name": "m",
+          "systemTool": {
+            "name": "x"
+          }
+        }
+      ]
+    },
+    {
+      "tools": [
+        {
+          "toolSpec": {
+            "name": "lookup"
+          },
+          "systemTool": {
+            "name": "nova_grounding"
+          }
+        }
+      ]
+    },
+    {
+      "tools": [
+        {
+          "googleSearch": {},
+          "serverLabel": "m"
+        }
+      ]
+    },
+    {
+      "config": {
+        "tools": [
+          {
+            "name": "lookup",
+            "description": "d",
+            "enterpriseWebSearch": {}
+          }
+        ]
+      }
+    },
+    {
+      "container": 5
+    },
+    {
+      "container": [
+        "c"
+      ]
+    },
+    {
+      "container": "has space"
+    },
+    {
+      "container": ""
+    },
+    {
+      "container": {
+        "id": "c",
+        "files": [
+          "f"
+        ]
+      }
+    },
+    {
+      "container": {
+        "skills": "pptx"
+      }
+    },
+    {
+      "container": {
+        "skills": [
+          {
+            "type": "anthropic"
+          }
+        ]
+      }
+    },
+    {
+      "container": {
+        "skills": [
+          {
+            "type": "other",
+            "skill_id": "x"
+          }
+        ]
+      }
+    },
+    {
+      "container": {
+        "skills": [
+          {
+            "type": "custom",
+            "skill_id": "a b"
+          }
+        ]
+      }
+    },
+    {
+      "container": {
+        "skills": [
+          {
+            "type": "custom",
+            "skill_id": "a",
+            "code": "x"
+          }
+        ]
+      }
+    },
+    {
+      "container": {
+        "skills": [
+          {
+            "type": "custom",
+            "skill_id": "a",
+            "version": 1
+          }
+        ]
+      }
+    },
+    {
+      "container": {
+        "skills": [
+          "pptx"
+        ]
+      }
+    },
+    {
+      "extra_body": {
+        "container": {
+          "skills": [
+            {
+              "type": "anthropic",
+              "skill_id": "pptx",
+              "extra": true
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "requests_refused_as_instance": [
+    {
+      "request": {
+        "tools": [
+          {
+            "type": "web_search"
+          }
+        ]
+      },
+      "path": []
+    },
+    {
+      "request": {
+        "extra_body": {
+          "tools": [
+            {
+              "type": "web_search"
+            }
+          ]
+        }
+      },
+      "path": [
+        "extra_body"
+      ]
+    },
+    {
+      "request": {
+        "config": {
+          "tools": [
+            {
+              "google_search": {}
+            }
+          ]
+        }
+      },
+      "path": [
+        "config"
+      ]
+    },
+    {
+      "request": {
+        "toolConfig": {
+          "tools": []
+        }
+      },
+      "path": [
+        "toolConfig"
+      ]
+    },
+    {
+      "request": {
+        "additionalModelRequestFields": {
+          "tools": []
+        }
+      },
+      "path": [
+        "additionalModelRequestFields"
+      ]
+    },
+    {
+      "request": {
+        "http_options": {
+          "extra_body": {
+            "tools": []
+          }
+        }
+      },
+      "path": [
+        "http_options"
+      ]
+    },
+    {
+      "request": {
+        "http_options": {
+          "extra_body": {
+            "tools": []
+          }
+        }
+      },
+      "path": [
+        "http_options",
+        "extra_body"
+      ]
+    }
+  ],
+  "requests_refused_hidden": [
+    {
+      "name": "request_level_field",
+      "request": {
+        "web_search_options": {}
+      },
+      "path": [],
+      "key": "web_search_options"
+    },
+    {
+      "name": "hosted_key_on_function_entry",
+      "request": {
+        "tools": [
+          {
+            "type": "function",
+            "name": "lookup",
+            "parameters": {
+              "type": "object"
+            },
+            "googleSearch": {}
+          }
+        ]
+      },
+      "path": [
+        "tools",
+        "0"
+      ],
+      "key": "googleSearch"
+    },
+    {
+      "name": "typed_entry_type",
+      "request": {
+        "tools": [
+          {
+            "type": "web_search"
+          }
+        ]
+      },
+      "path": [
+        "tools",
+        "0"
+      ],
+      "key": "type"
+    },
+    {
+      "name": "gemini_config_tools",
+      "request": {
+        "config": {
+          "tools": [
+            {
+              "google_search": {}
+            }
+          ]
+        }
+      },
+      "path": [
+        "config"
+      ],
+      "key": "tools"
+    },
+    {
+      "name": "extra_body_tools",
+      "request": {
+        "extra_body": {
+          "tools": [
+            {
+              "type": "web_search"
+            }
+          ]
+        }
+      },
+      "path": [
+        "extra_body"
+      ],
+      "key": "tools"
+    },
+    {
+      "name": "bedrock_system_tool",
+      "request": {
+        "toolConfig": {
+          "tools": [
+            {
+              "systemTool": {
+                "name": "nova_grounding"
+              }
+            }
+          ]
+        }
+      },
+      "path": [
+        "toolConfig",
+        "tools",
+        "0"
+      ],
+      "key": "systemTool"
+    },
+    {
+      "name": "tools_list",
+      "request": {
+        "tools": [
+          {
+            "type": "web_search"
+          }
+        ]
+      },
+      "path": [
+        "tools"
+      ],
+      "key": null
+    },
+    {
+      "name": "gemini_config_tools_list",
+      "request": {
+        "config": {
+          "tools": [
+            {
+              "google_search": {}
+            }
+          ]
+        }
+      },
+      "path": [
+        "config",
+        "tools"
+      ],
+      "key": null
+    },
+    {
+      "name": "anthropic_mcp_servers_list",
+      "request": {
+        "mcp_servers": [
+          {
+            "type": "url",
+            "url": "https://mcp.example.com/mcp",
+            "name": "m"
+          }
+        ]
+      },
+      "path": [
+        "mcp_servers"
+      ],
+      "key": null
+    }
+  ],
+  "requests_refused_callable": [
+    {
+      "name": "request_level_field__to_json",
+      "request": {
+        "web_search_options": {}
+      },
+      "path": [],
+      "key": "web_search_options",
+      "variant": "to_json"
+    },
+    {
+      "name": "request_level_field__function_value",
+      "request": {
+        "web_search_options": {}
+      },
+      "path": [],
+      "key": "web_search_options",
+      "variant": "function_value"
+    },
+    {
+      "name": "hosted_key_on_function_entry__to_json",
+      "request": {
+        "tools": [
+          {
+            "type": "function",
+            "name": "lookup",
+            "parameters": {
+              "type": "object"
+            },
+            "googleSearch": {}
+          }
+        ]
+      },
+      "path": [
+        "tools",
+        "0"
+      ],
+      "key": "googleSearch",
+      "variant": "to_json"
+    },
+    {
+      "name": "hosted_key_on_function_entry__function_value",
+      "request": {
+        "tools": [
+          {
+            "type": "function",
+            "name": "lookup",
+            "parameters": {
+              "type": "object"
+            },
+            "googleSearch": {}
+          }
+        ]
+      },
+      "path": [
+        "tools",
+        "0"
+      ],
+      "key": "googleSearch",
+      "variant": "function_value"
+    },
+    {
+      "name": "typed_entry_type__to_json",
+      "request": {
+        "tools": [
+          {
+            "type": "web_search"
+          }
+        ]
+      },
+      "path": [
+        "tools",
+        "0"
+      ],
+      "key": "type",
+      "variant": "to_json"
+    },
+    {
+      "name": "typed_entry_type__function_value",
+      "request": {
+        "tools": [
+          {
+            "type": "web_search"
+          }
+        ]
+      },
+      "path": [
+        "tools",
+        "0"
+      ],
+      "key": "type",
+      "variant": "function_value"
+    },
+    {
+      "name": "gemini_config_tools__to_json",
+      "request": {
+        "config": {
+          "tools": [
+            {
+              "google_search": {}
+            }
+          ]
+        }
+      },
+      "path": [
+        "config"
+      ],
+      "key": "tools",
+      "variant": "to_json"
+    },
+    {
+      "name": "gemini_config_tools__function_value",
+      "request": {
+        "config": {
+          "tools": [
+            {
+              "google_search": {}
+            }
+          ]
+        }
+      },
+      "path": [
+        "config"
+      ],
+      "key": "tools",
+      "variant": "function_value"
+    },
+    {
+      "name": "extra_body_tools__to_json",
+      "request": {
+        "extra_body": {
+          "tools": [
+            {
+              "type": "web_search"
+            }
+          ]
+        }
+      },
+      "path": [
+        "extra_body"
+      ],
+      "key": "tools",
+      "variant": "to_json"
+    },
+    {
+      "name": "extra_body_tools__function_value",
+      "request": {
+        "extra_body": {
+          "tools": [
+            {
+              "type": "web_search"
+            }
+          ]
+        }
+      },
+      "path": [
+        "extra_body"
+      ],
+      "key": "tools",
+      "variant": "function_value"
+    },
+    {
+      "name": "bedrock_system_tool__to_json",
+      "request": {
+        "toolConfig": {
+          "tools": [
+            {
+              "systemTool": {
+                "name": "nova_grounding"
+              }
+            }
+          ]
+        }
+      },
+      "path": [
+        "toolConfig",
+        "tools",
+        "0"
+      ],
+      "key": "systemTool",
+      "variant": "to_json"
+    },
+    {
+      "name": "bedrock_system_tool__function_value",
+      "request": {
+        "toolConfig": {
+          "tools": [
+            {
+              "systemTool": {
+                "name": "nova_grounding"
+              }
+            }
+          ]
+        }
+      },
+      "path": [
+        "toolConfig",
+        "tools",
+        "0"
+      ],
+      "key": "systemTool",
+      "variant": "function_value"
+    },
+    {
+      "name": "tools_list__function_entry_to_json",
+      "request": {
+        "tools": [
+          {
+            "type": "web_search"
+          }
+        ]
+      },
+      "path": [
+        "tools"
+      ],
+      "key": null,
+      "variant": "function_entry_to_json",
+      "ts_only": true
+    },
+    {
+      "name": "gemini_config_tools_list__function_entry_to_json",
+      "request": {
+        "config": {
+          "tools": [
+            {
+              "google_search": {}
+            }
+          ]
+        }
+      },
+      "path": [
+        "config",
+        "tools"
+      ],
+      "key": null,
+      "variant": "function_entry_to_json",
+      "ts_only": true
+    },
+    {
+      "name": "anthropic_mcp_servers_list__function_entry_to_json",
+      "request": {
+        "mcp_servers": [
+          {
+            "type": "url",
+            "url": "https://mcp.example.com/mcp",
+            "name": "m"
+          }
+        ]
+      },
+      "path": [
+        "mcp_servers"
+      ],
+      "key": null,
+      "variant": "function_entry_to_json",
+      "ts_only": true
+    }
+  ],
+  "gate": [
+    {
+      "name": "one_decision_per_distinct_tool",
+      "provider": null,
+      "tools": [
+        {
+          "type": "web_search_preview"
+        },
+        {
+          "type": "web_search"
+        },
+        {
+          "type": "file_search",
+          "vector_store_ids": [
+            "vs_1"
+          ]
+        },
+        {
+          "type": "function",
+          "name": "f",
+          "parameters": {}
+        }
+      ],
+      "registered_mcp_servers": {},
+      "expected_requests": [
+        {
+          "action": "Action::\"execute\"",
+          "resource": "Tool::\"web_search\"",
+          "context": {
+            "builtin_tool": true,
+            "hosted_tool": {
+              "provider": "openai",
+              "kind": "web_search"
+            }
+          }
+        },
+        {
+          "action": "Action::\"execute\"",
+          "resource": "Tool::\"file_search\"",
+          "context": {
+            "builtin_tool": true,
+            "hosted_tool": {
+              "provider": "openai",
+              "kind": "file_search",
+              "vector_store_ids": [
+                "vs_1"
+              ]
+            }
+          }
+        }
+      ],
+      "expected_allowed": true,
+      "expected_reason": "",
+      "expected_refused_kind": null
+    },
+    {
+      "name": "registered_remote_mcp",
+      "provider": null,
+      "tools": [
+        {
+          "type": "mcp",
+          "server_label": "whatever-the-call-says",
+          "server_url": "https://MCP.example.com/sse/?k=v",
+          "allowed_tools": [
+            "echo"
+          ]
+        }
+      ],
+      "registered_mcp_servers": {
+        "https://mcp.example.com/sse": "example-mcp"
+      },
+      "expected_requests": [
+        {
+          "action": "Action::\"execute\"",
+          "resource": "Resource::\"mcp://example-mcp/\"",
+          "context": {
+            "builtin_tool": true,
+            "hosted_tool": {
+              "provider": "openai",
+              "kind": "mcp",
+              "server": "example-mcp",
+              "allowed_tools": [
+                "echo"
+              ]
+            }
+          }
+        }
+      ],
+      "expected_allowed": true,
+      "expected_reason": "",
+      "expected_refused_kind": null
+    },
+    {
+      "name": "unregistered_remote_mcp",
+      "provider": null,
+      "tools": [
+        {
+          "type": "web_search"
+        },
+        {
+          "type": "mcp",
+          "server_label": "x",
+          "server_url": "https://elsewhere.example.net/mcp"
+        }
+      ],
+      "registered_mcp_servers": {
+        "https://mcp.example.com/sse": "example-mcp"
+      },
+      "expected_requests": [],
+      "expected_allowed": false,
+      "expected_reason": "hosted_mcp_server_unregistered",
+      "expected_refused_kind": "mcp"
+    },
+    {
+      "name": "anthropic_toolset_resolves_server",
+      "provider": "anthropic",
+      "tools": [
+        {
+          "type": "url",
+          "url": "https://mcp.example.com/sse/",
+          "name": "ex"
+        },
+        {
+          "type": "mcp_toolset",
+          "mcp_server_name": "ex"
+        }
+      ],
+      "registered_mcp_servers": {
+        "https://mcp.example.com/sse": "example-mcp"
+      },
+      "expected_requests": [
+        {
+          "action": "Action::\"execute\"",
+          "resource": "Resource::\"mcp://example-mcp/\"",
+          "context": {
+            "builtin_tool": true,
+            "hosted_tool": {
+              "provider": "anthropic",
+              "kind": "mcp",
+              "server": "example-mcp"
+            }
+          }
+        }
+      ],
+      "expected_allowed": true,
+      "expected_reason": "",
+      "expected_refused_kind": null
+    },
+    {
+      "name": "gemini_builtins",
+      "provider": "gemini",
+      "tools": [
+        {
+          "google_search": {}
+        },
+        {
+          "code_execution": {}
+        }
+      ],
+      "registered_mcp_servers": {},
+      "expected_requests": [
+        {
+          "action": "Action::\"execute\"",
+          "resource": "Tool::\"google_search\"",
+          "context": {
+            "builtin_tool": true,
+            "hosted_tool": {
+              "provider": "gemini",
+              "kind": "google_search"
+            }
+          }
+        },
+        {
+          "action": "Action::\"execute\"",
+          "resource": "Tool::\"code_execution\"",
+          "context": {
+            "builtin_tool": true,
+            "hosted_tool": {
+              "provider": "gemini",
+              "kind": "code_execution"
+            }
+          }
+        }
+      ],
+      "expected_allowed": true,
+      "expected_reason": "",
+      "expected_refused_kind": null
+    },
+    {
+      "name": "gemini_mcp_registered",
+      "provider": null,
+      "tools": [
+        {
+          "mcp_servers": [
+            {
+              "name": "docs",
+              "streamable_http_transport": {
+                "url": "https://docs.example.com/mcp"
+              }
+            }
+          ]
+        }
+      ],
+      "registered_mcp_servers": {
+        "https://docs.example.com/mcp": "docs-mcp"
+      },
+      "expected_requests": [
+        {
+          "action": "Action::\"execute\"",
+          "resource": "Resource::\"mcp://docs-mcp/\"",
+          "context": {
+            "builtin_tool": true,
+            "hosted_tool": {
+              "provider": "gemini",
+              "kind": "mcp",
+              "server": "docs-mcp"
+            }
+          }
+        }
+      ],
+      "expected_allowed": true,
+      "expected_reason": "",
+      "expected_refused_kind": null
+    },
+    {
+      "name": "gemini_mcp_unregistered",
+      "provider": null,
+      "tools": [
+        {
+          "mcpServers": [
+            {
+              "name": "docs",
+              "streamableHttpTransport": {
+                "url": "https://other.example.com/mcp"
+              }
+            }
+          ]
+        }
+      ],
+      "registered_mcp_servers": {
+        "https://docs.example.com/mcp": "docs-mcp"
+      },
+      "expected_requests": [],
+      "expected_allowed": false,
+      "expected_reason": "hosted_mcp_server_unregistered",
+      "expected_refused_kind": "mcp"
+    },
+    {
+      "name": "gemini_mcp_without_url_refused",
+      "provider": null,
+      "tools": [
+        {
+          "mcp_servers": [
+            {
+              "name": "nourl"
+            }
+          ]
+        }
+      ],
+      "registered_mcp_servers": {},
+      "expected_requests": [],
+      "expected_allowed": false,
+      "expected_reason": "hosted_mcp_server_unregistered",
+      "expected_refused_kind": "mcp"
+    },
+    {
+      "name": "allowed_tools_invalid_refused_before_any_decision",
+      "provider": null,
+      "tools": [
+        {
+          "type": "web_search"
+        },
+        {
+          "type": "mcp",
+          "server_label": "x",
+          "server_url": "https://mcp.example.com/sse",
+          "allowed_tools": [
+            "bad name"
+          ]
+        }
+      ],
+      "registered_mcp_servers": {
+        "https://mcp.example.com/sse": "example-mcp"
+      },
+      "expected_requests": [],
+      "expected_allowed": false,
+      "expected_reason": "hosted_tool_config_invalid",
+      "expected_refused_kind": "mcp"
+    },
+    {
+      "name": "refused_url_is_unregistered",
+      "provider": null,
+      "tools": [
+        {
+          "type": "mcp",
+          "server_label": "x",
+          "server_url": "https://attacker.com\\@mcp.example.com/sse"
+        }
+      ],
+      "registered_mcp_servers": {
+        "https://mcp.example.com/sse": "example-mcp"
+      },
+      "expected_requests": [],
+      "expected_allowed": false,
+      "expected_reason": "hosted_mcp_server_unregistered",
+      "expected_refused_kind": "mcp"
+    },
+    {
+      "name": "registered_connector",
+      "provider": null,
+      "tools": [
+        {
+          "type": "mcp",
+          "server_label": "gmail",
+          "connector_id": "connector_gmail"
+        }
+      ],
+      "registered_mcp_servers": {
+        "connector:connector_gmail": "gmail-connector"
+      },
+      "expected_requests": [
+        {
+          "action": "Action::\"execute\"",
+          "resource": "Resource::\"mcp://gmail-connector/\"",
+          "context": {
+            "builtin_tool": true,
+            "hosted_tool": {
+              "provider": "openai",
+              "kind": "mcp",
+              "server": "gmail-connector"
+            }
+          }
+        }
+      ],
+      "expected_allowed": true,
+      "expected_reason": "",
+      "expected_refused_kind": null
+    },
+    {
+      "name": "ambiguous_mcp_refused_before_any_decision",
+      "provider": null,
+      "tools": [
+        {
+          "type": "web_search"
+        },
+        {
+          "type": "mcp",
+          "server_url": "https://mcp.example.com/sse",
+          "connector_id": "connector_gmail"
+        }
+      ],
+      "registered_mcp_servers": {
+        "https://mcp.example.com/sse": "example-mcp",
+        "connector:connector_gmail": "gmail-connector"
+      },
+      "expected_requests": [],
+      "expected_allowed": false,
+      "expected_reason": "hosted_tool_config_invalid",
+      "expected_refused_kind": "mcp"
+    },
+    {
+      "name": "default_port_matches_registration",
+      "provider": null,
+      "tools": [
+        {
+          "type": "mcp",
+          "server_label": "x",
+          "server_url": "https://mcp.example.com:443/sse"
+        }
+      ],
+      "registered_mcp_servers": {
+        "https://mcp.example.com/sse": "example-mcp"
+      },
+      "expected_requests": [
+        {
+          "action": "Action::\"execute\"",
+          "resource": "Resource::\"mcp://example-mcp/\"",
+          "context": {
+            "builtin_tool": true,
+            "hosted_tool": {
+              "provider": "openai",
+              "kind": "mcp",
+              "server": "example-mcp"
+            }
+          }
+        }
+      ],
+      "expected_allowed": true,
+      "expected_reason": "",
+      "expected_refused_kind": null
+    },
+    {
+      "name": "stored_prompt_needs_a_decision",
+      "provider": null,
+      "request": {
+        "prompt": {
+          "id": "pmpt_1"
+        }
+      },
+      "registered_mcp_servers": {},
+      "expected_requests": [
+        {
+          "action": "Action::\"execute\"",
+          "resource": "Tool::\"stored_prompt\"",
+          "context": {
+            "builtin_tool": true,
+            "hosted_tool": {
+              "provider": "openai",
+              "kind": "stored_prompt"
+            }
+          }
+        }
+      ],
+      "expected_allowed": true,
+      "expected_reason": "",
+      "expected_refused_kind": null
+    },
+    {
+      "name": "chat_web_search_options",
+      "provider": null,
+      "request": {
+        "web_search_options": {}
+      },
+      "registered_mcp_servers": {},
+      "expected_requests": [
+        {
+          "action": "Action::\"execute\"",
+          "resource": "Tool::\"web_search\"",
+          "context": {
+            "builtin_tool": true,
+            "hosted_tool": {
+              "provider": "openai",
+              "kind": "web_search"
+            }
+          }
+        }
+      ],
+      "expected_allowed": true,
+      "expected_reason": "",
+      "expected_refused_kind": null
+    },
+    {
+      "name": "anthropic_top_level_mcp_registered",
+      "provider": null,
+      "request": {
+        "mcp_servers": [
+          {
+            "type": "url",
+            "url": "https://mcp.example.com/sse",
+            "name": "ex"
+          }
+        ],
+        "tools": [
+          {
+            "type": "mcp_toolset",
+            "mcp_server_name": "ex"
+          }
+        ]
+      },
+      "registered_mcp_servers": {
+        "https://mcp.example.com/sse": "example-mcp"
+      },
+      "expected_requests": [
+        {
+          "action": "Action::\"execute\"",
+          "resource": "Resource::\"mcp://example-mcp/\"",
+          "context": {
+            "builtin_tool": true,
+            "hosted_tool": {
+              "provider": "anthropic",
+              "kind": "mcp",
+              "server": "example-mcp"
+            }
+          }
+        }
+      ],
+      "expected_allowed": true,
+      "expected_reason": "",
+      "expected_refused_kind": null
+    },
+    {
+      "name": "anthropic_top_level_mcp_unregistered",
+      "provider": null,
+      "request": {
+        "mcp_servers": [
+          {
+            "type": "url",
+            "url": "https://elsewhere.example.net/mcp",
+            "name": "ex"
+          }
+        ]
+      },
+      "registered_mcp_servers": {
+        "https://mcp.example.com/sse": "example-mcp"
+      },
+      "expected_requests": [],
+      "expected_allowed": false,
+      "expected_reason": "hosted_mcp_server_unregistered",
+      "expected_refused_kind": "mcp"
+    },
+    {
+      "name": "gemini_cached_content",
+      "provider": "gemini",
+      "request": {
+        "config": {
+          "cached_content": "cachedContents/1"
+        }
+      },
+      "registered_mcp_servers": {},
+      "expected_requests": [
+        {
+          "action": "Action::\"execute\"",
+          "resource": "Tool::\"cached_content\"",
+          "context": {
+            "builtin_tool": true,
+            "hosted_tool": {
+              "provider": "gemini",
+              "kind": "cached_content"
+            }
+          }
+        }
+      ],
+      "expected_allowed": true,
+      "expected_reason": "",
+      "expected_refused_kind": null
+    },
+    {
+      "name": "xai_live_search",
+      "provider": "xai",
+      "request": {
+        "search_parameters": {
+          "mode": "on"
+        }
+      },
+      "registered_mcp_servers": {},
+      "expected_requests": [
+        {
+          "action": "Action::\"execute\"",
+          "resource": "Tool::\"live_search\"",
+          "context": {
+            "builtin_tool": true,
+            "hosted_tool": {
+              "provider": "xai",
+              "kind": "live_search"
+            }
+          }
+        }
+      ],
+      "expected_allowed": true,
+      "expected_reason": "",
+      "expected_refused_kind": null
+    },
+    {
+      "name": "extra_body_is_gated",
+      "provider": null,
+      "request": {
+        "extra_body": {
+          "web_search_options": {}
+        }
+      },
+      "registered_mcp_servers": {},
+      "expected_requests": [
+        {
+          "action": "Action::\"execute\"",
+          "resource": "Tool::\"web_search\"",
+          "context": {
+            "builtin_tool": true,
+            "hosted_tool": {
+              "provider": "openai",
+              "kind": "web_search"
+            }
+          }
+        }
+      ],
+      "expected_allowed": true,
+      "expected_reason": "",
+      "expected_refused_kind": null
+    },
+    {
+      "name": "bedrock_additional_fields_are_gated",
+      "provider": null,
+      "request": {
+        "additionalModelRequestFields": {
+          "tools": [
+            {
+              "type": "web_search_20250305",
+              "name": "web_search"
+            }
+          ],
+          "mcp_servers": [
+            {
+              "type": "url",
+              "url": "https://elsewhere.example.net/mcp",
+              "name": "x"
+            }
+          ]
+        }
+      },
+      "registered_mcp_servers": {
+        "https://mcp.example.com/sse": "example-mcp"
+      },
+      "expected_requests": [],
+      "expected_allowed": false,
+      "expected_reason": "hosted_mcp_server_unregistered",
+      "expected_refused_kind": "mcp"
+    },
+    {
+      "name": "skills_decided_per_skill",
+      "provider": null,
+      "request": {
+        "container": {
+          "skills": [
+            {
+              "type": "anthropic",
+              "skill_id": "pptx"
+            },
+            {
+              "type": "custom",
+              "skill_id": "skill_01abc"
+            }
+          ]
+        }
+      },
+      "registered_mcp_servers": {},
+      "expected_requests": [
+        {
+          "action": "Action::\"execute\"",
+          "resource": "Tool::\"skill\"",
+          "context": {
+            "builtin_tool": true,
+            "hosted_tool": {
+              "provider": "anthropic",
+              "kind": "skill",
+              "skill_type": "anthropic",
+              "skill_id": "pptx"
+            }
+          }
+        },
+        {
+          "action": "Action::\"execute\"",
+          "resource": "Tool::\"skill\"",
+          "context": {
+            "builtin_tool": true,
+            "hosted_tool": {
+              "provider": "anthropic",
+              "kind": "skill",
+              "skill_type": "custom",
+              "skill_id": "skill_01abc"
+            }
+          }
+        }
+      ],
+      "expected_allowed": true,
+      "expected_reason": "",
+      "expected_refused_kind": null
+    },
+    {
+      "name": "file_search_decided_with_its_stores",
+      "provider": null,
+      "request": {
+        "tools": [
+          {
+            "type": "file_search",
+            "vector_store_ids": [
+              "vs_b",
+              "vs_a",
+              "vs_b"
+            ]
+          }
+        ]
+      },
+      "registered_mcp_servers": {},
+      "expected_requests": [
+        {
+          "action": "Action::\"execute\"",
+          "resource": "Tool::\"file_search\"",
+          "context": {
+            "builtin_tool": true,
+            "hosted_tool": {
+              "provider": "openai",
+              "kind": "file_search",
+              "vector_store_ids": [
+                "vs_a",
+                "vs_b"
+              ]
+            }
+          }
+        }
+      ],
+      "expected_allowed": true,
+      "expected_reason": "",
+      "expected_refused_kind": null
+    },
+    {
+      "name": "file_search_two_store_sets_two_decisions",
+      "provider": null,
+      "request": {
+        "tools": [
+          {
+            "type": "file_search",
+            "vector_store_ids": [
+              "vs_a"
+            ]
+          },
+          {
+            "type": "file_search",
+            "vector_store_ids": [
+              "vs_b"
+            ]
+          }
+        ]
+      },
+      "registered_mcp_servers": {},
+      "expected_requests": [
+        {
+          "action": "Action::\"execute\"",
+          "resource": "Tool::\"file_search\"",
+          "context": {
+            "builtin_tool": true,
+            "hosted_tool": {
+              "provider": "openai",
+              "kind": "file_search",
+              "vector_store_ids": [
+                "vs_a"
+              ]
+            }
+          }
+        },
+        {
+          "action": "Action::\"execute\"",
+          "resource": "Tool::\"file_search\"",
+          "context": {
+            "builtin_tool": true,
+            "hosted_tool": {
+              "provider": "openai",
+              "kind": "file_search",
+              "vector_store_ids": [
+                "vs_b"
+              ]
+            }
+          }
+        }
+      ],
+      "expected_allowed": true,
+      "expected_reason": "",
+      "expected_refused_kind": null
+    },
+    {
+      "name": "gemini_file_search_decided_with_its_stores",
+      "provider": null,
+      "request": {
+        "config": {
+          "tools": [
+            {
+              "fileSearch": {
+                "fileSearchStoreNames": [
+                  "fileSearchStores/docs"
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "registered_mcp_servers": {},
+      "expected_requests": [
+        {
+          "action": "Action::\"execute\"",
+          "resource": "Tool::\"file_search\"",
+          "context": {
+            "builtin_tool": true,
+            "hosted_tool": {
+              "provider": "gemini",
+              "kind": "file_search",
+              "vector_store_ids": [
+                "fileSearchStores/docs"
+              ]
+            }
+          }
+        }
+      ],
+      "expected_allowed": true,
+      "expected_reason": "",
+      "expected_refused_kind": null
+    },
+    {
+      "name": "file_search_invalid_stores_refused_before_any_decision",
+      "provider": null,
+      "request": {
+        "tools": [
+          {
+            "type": "file_search",
+            "vector_store_ids": [
+              "vs_a",
+              "bad id"
+            ]
+          }
+        ]
+      },
+      "registered_mcp_servers": {},
+      "expected_requests": [],
+      "expected_allowed": false,
+      "expected_reason": "hosted_tool_config_invalid",
+      "expected_refused_kind": "file_search"
+    }
+  ],
+  "callable_names": [
+    {"name": "lookup_weather", "kind": "callable:lookup_weather"},
+    {"name": "lookupWeather", "kind": "callable:lookupWeather"},
+    {"name": "_private", "kind": "callable:_private"},
+    {"name": "ns.tool:v-1", "kind": "callable:ns.tool:v-1"},
+    {"name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "kind": "callable:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+    {"name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "kind": "callable"},
+    {"name": "", "kind": "callable"},
+    {"name": "<lambda>", "kind": "callable"},
+    {"name": "a\"b", "kind": "callable"},
+    {"name": "a b", "kind": "callable"},
+    {"name": "1abc", "kind": "callable"},
+    {"name": "naïve", "kind": "callable"},
+    {"name": "a\n", "kind": "callable"},
+    {"name": "a/b", "kind": "callable"},
+    {"name": "-a", "kind": "callable"}
+  ],
+  "prototype_to_json": [
+    {"prototype": "Object", "how": "own"},
+    {"prototype": "Array", "how": "own"},
+    {"prototype": "Array", "how": "inherited"},
+    {"prototype": "Array", "how": "proxy"},
+    {"prototype": "Function", "how": "own"},
+    {"prototype": "Function", "how": "inherited"},
+    {"prototype": "Function", "how": "proxy"},
+    {"prototype": "BigInt", "how": "own"},
+    {"prototype": "BigInt", "how": "inherited"},
+    {"prototype": "BigInt", "how": "proxy"}
+  ]
+}

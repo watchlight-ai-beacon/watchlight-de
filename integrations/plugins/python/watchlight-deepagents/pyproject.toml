@@ -1,0 +1,71 @@
+[build-system]
+requires = ["setuptools>=77.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "watchlight-deepagents"
+version = "0.1.2"
+description = "Watchlight governance middleware for DeepAgents agents: authorize every tool and filesystem call and gate sub-agent spawns, fail-closed. Model turns are not authorized one by one. Independent plugin, not affiliated with or endorsed by LangChain."
+readme = "README.md"
+# SPDX licence expression (PEP 639; setuptools 77 or later).
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+authors = [
+    {name = "Watchlight AI", email = "team@watchlight.ai"},
+]
+keywords = [
+    "watchlight",
+    "deepagents",
+    "langchain",
+    "ai-agents",
+    "ai-governance",
+    "agent-runtime",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+
+# ``deepagents`` is the framework this plugin wraps. The load-bearing
+# external contract is the LangChain v1 ``AgentMiddleware`` hook surface
+# (``before_agent`` / ``after_agent`` / ``before_model`` /
+# ``wrap_model_call`` / ``wrap_tool_call`` + the ``tools`` /
+# ``state_schema`` / ``name`` attributes), the ``SubAgent.middleware``
+# field, and the ``task`` tool schema (``subagent_type``). LangChain v1
+# middleware is young (``wrap_model_call`` was renamed from
+# ``modify_model_request``); the pin below is deliberately tight and a
+# major bump that moves any of those needs an explicit range update +
+# a HARDENING.md follow-up. ``test_middleware_lifecycle.py`` asserts
+# the hook surface so drift breaks loudly in CI rather than silently
+# disabling governance. ``langchain`` / ``langchain-core`` / ``langgraph``
+# come transitively via ``deepagents``.
+dependencies = [
+    "watchlight-agent-sdk>=0.10.1,<0.11",
+    "deepagents>=0.7,<0.8",
+]
+
+[project.optional-dependencies]
+otlp = ["watchlight-agent-sdk[otlp]>=0.10.1,<0.11"]
+dev = ["pytest>=7", "pytest-asyncio>=0.21", "mypy>=1.8"]
+
+[project.urls]
+Homepage = "https://watchlight.ai"
+Documentation = "https://docs.watchlight.ai/de"
+Repository = "https://github.com/watchlight-ai-beacon/watchlight-de"
+Issues = "https://github.com/watchlight-ai-beacon/watchlight-de/issues"
+"DeepAgents" = "https://github.com/langchain-ai/deepagents"
+
+[tool.setuptools.packages.find]
+include = ["watchlight_deepagents*"]
+
+[tool.setuptools.package-data]
+watchlight_deepagents = ["py.typed"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

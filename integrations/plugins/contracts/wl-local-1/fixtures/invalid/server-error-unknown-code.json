@@ -1,0 +1,10 @@
+{
+  "description": "error unknown code",
+  "direction": "server",
+  "frame": {
+    "id": 1,
+    "error": {
+      "code": "teapot"
+    }
+  }
+}

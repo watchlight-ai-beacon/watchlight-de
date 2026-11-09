@@ -1,0 +1,9 @@
+{
+  "description": "push unknown event",
+  "direction": "server",
+  "frame": {
+    "push": true,
+    "event": "reboot",
+    "data": {}
+  }
+}

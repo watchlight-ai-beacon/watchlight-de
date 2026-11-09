@@ -1,0 +1,14 @@
+{
+  "description": "authorize execution id uppercase",
+  "direction": "client",
+  "frame": {
+    "id": 1,
+    "method": "authorize",
+    "params": {
+      "principal": "p",
+      "action": "a",
+      "resource": "r",
+      "execution_id": "exec_123E4567-E89B-42D3-A456-426614174000"
+    }
+  }
+}

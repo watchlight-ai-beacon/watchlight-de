@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+# RENAME ME: change to your framework, e.g. ``watchlight-myframework``.
+name = "watchlight-template-plugin"
+version = "0.1.0"
+# TODO: when filling this in, prefix the description with "Independent" and add "(not affiliated with <Vendor>)" — see README disclaimer.
+description = "Independent Watchlight plugin template — fork this, rename, fill the TODOs"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+authors = [
+    {name = "REPLACE ME", email = "you@example.com"},
+]
+keywords = ["watchlight", "ai-agent", "agent-governance"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Typing :: Typed",
+]
+
+# REPLACE ME: pin to your framework's package (e.g. ``pydantic-ai``,
+# ``mastra``, ``letta-client``, …). The SDK itself is the only
+# required dep.
+dependencies = [
+    "watchlight-agent-sdk>=0.10,<0.11",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "pytest-asyncio>=0.21", "mypy>=1.8"]
+
+[project.urls]
+# RENAME ME
+Repository = "https://github.com/your-org/watchlight-template-plugin"
+
+[tool.setuptools.packages.find]
+include = ["watchlight_template*"]
+
+[tool.setuptools.package-data]
+watchlight_template = ["py.typed"]

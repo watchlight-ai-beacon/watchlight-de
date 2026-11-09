@@ -1,0 +1,13 @@
+# An input of ci/regen.sh. The -e lines are this directory's packages, installed
+# editable without their dependencies; everything else comes from the hash-pinned
+# lock next to this file. Paths are relative to this file.
+# watchlight-adk at its declared minimum google-adk.
+setuptools>=77.0
+wheel
+-c ../../watchlight-adk/ci/min-versions.txt
+-e ../../watchlight-core[dev]
+-e ../../watchlight-agent-sdk-testing[dev]
+-e ../../watchlight-adk[dev]
+# Build requirements for a platform where cryptography builds from source.
+maturin>=1.14.1,<2
+cffi>=2.0.0

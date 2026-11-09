@@ -1,0 +1,6 @@
+{
+  "description": "Integers are written without a fraction. JSON Schema cannot express this; the connector refuses it.",
+  "direction": "client",
+  "schema_cannot_express": true,
+  "frame_text": "{\"id\":1,\"method\":\"drain\",\"params\":{\"run\":\"rrrrrrAbc_-0123456789xyz\",\"timeout_ms\":5.0}}"
+}

@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=77.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "watchlight-adk"
+version = "0.4.3"
+description = "Governed Google ADK agents with Watchlight: authorize every tool call, model turn, built-in tool and sub-agent spawn before it runs, fail-closed. Independent plugin, not affiliated with Google."
+readme = "README.md"
+# SPDX licence expression (PEP 639; setuptools 77 or later).
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [
+    {name = "Watchlight AI", email = "team@watchlight.ai"},
+]
+keywords = [
+    "watchlight",
+    "google-adk",
+    "ai-agents",
+    "ai-governance",
+    "agent-runtime",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+dependencies = [
+    "httpx>=0.27",
+    # Floor 2.5.0: the first google-adk with the plugin hooks
+    # on_run_error_callback / on_agent_error_callback and an
+    # after_run_callback that runs on early close. Without them a run that
+    # raises never records its terminal lineage event.
+    # Earlier floors it covers: AgentTool runs its agent in a child Runner
+    # WITH the parent's plugins (1.14.0; before it such an agent was never
+    # governed), and AgentTool(include_plugins=...) (1.20.0, default
+    # True; an app that sets it to False opts that agent out of
+    # governance). CI tests the plugin at this floor too
+    # (ci/min-versions.txt).
+    "google-adk>=2.5.0,<3",
+    # Floor 0.10.2: the shared hosted-tool gate.
+    "watchlight-agent-sdk>=0.10.2,<0.11",
+]
+
+[project.optional-dependencies]
+nats = ["nats-py>=2.0"]
+dev = ["pytest>=7", "pytest-asyncio>=0.21"]
+
+[project.urls]
+Homepage = "https://watchlight.ai"
+Documentation = "https://docs.watchlight.ai/de"
+Repository = "https://github.com/watchlight-ai-beacon/watchlight-de"
+Issues = "https://github.com/watchlight-ai-beacon/watchlight-de/issues"
+
+[tool.setuptools.packages.find]
+include = ["watchlight_adk*"]

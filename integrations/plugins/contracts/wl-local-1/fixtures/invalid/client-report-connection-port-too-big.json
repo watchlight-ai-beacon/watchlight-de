@@ -1,0 +1,12 @@
+{
+  "description": "report connection port too big",
+  "direction": "client",
+  "frame": {
+    "id": 1,
+    "method": "report_connection",
+    "params": {
+      "src_port": 70000,
+      "run": "rrrrrrAbc_-0123456789xyz"
+    }
+  }
+}

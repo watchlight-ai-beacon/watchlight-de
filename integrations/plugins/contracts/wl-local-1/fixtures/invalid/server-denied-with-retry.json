@@ -1,0 +1,11 @@
+{
+  "description": "denied with retry",
+  "direction": "server",
+  "frame": {
+    "id": 1,
+    "error": {
+      "code": "denied",
+      "retry_after_ms": 5
+    }
+  }
+}

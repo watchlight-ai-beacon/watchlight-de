@@ -1,0 +1,6 @@
+# The sdist ships the package, README.md, LICENSE and pyproject.toml, and
+# nothing else: the tests and CI files stay in the repository.
+# CI fails a build that ships anything more.
+prune tests
+prune ci
+global-exclude *.py[cod]

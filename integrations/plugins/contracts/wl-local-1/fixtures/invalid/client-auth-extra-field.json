@@ -1,0 +1,12 @@
+{
+  "description": "auth extra field",
+  "direction": "client",
+  "frame": {
+    "id": 1,
+    "method": "auth",
+    "params": {
+      "client_proof": "025d6f872791921cca28a98dceb346e67e48003c6935c99186a560727feaa953",
+      "secret": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    }
+  }
+}

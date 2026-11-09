@@ -1,0 +1,13 @@
+{
+  "description": "A credential is never passed in.",
+  "direction": "client",
+  "frame": {
+    "id": 1,
+    "method": "create_session",
+    "params": {
+      "agent_id": "a",
+      "ttl_seconds": 60,
+      "sst": "sst_x"
+    }
+  }
+}
