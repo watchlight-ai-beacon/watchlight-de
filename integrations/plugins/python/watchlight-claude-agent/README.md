@@ -15,7 +15,7 @@ The Python Claude Agent SDK has no plugin loader, so the plugin ships its enforc
 - **Every tool call** goes through a `PreToolUse` gate. The call is authorized on the handle of the agent that made it: a sub-agent's own handle for a sub-agent's call, the root handle otherwise. A deny, a needs-approval decision, an unreachable backend or any other error returns a `deny` decision, so the tool does not run. Only argument names and value types are sent for authorization, never argument values.
 - **Sub-agent launches** (the `Task` / `Agent` tool) perform the governed spawn in the same `PreToolUse` gate, before the tool runs. The child gets its own credential with a scope that the server narrows to a subset of the parent's. When the spawn is refused, the sub-agent type is not a registered agent, or anything else goes wrong, the tool call is denied: the sub-agent never starts and never gets a model turn.
 - A sub-agent that starts without a governed spawn, or a tool call from an agent the plugin cannot identify while a sub-agent is running, is denied.
-- **Tools that start work elsewhere, and unclassified tools**. Every Claude Code tool is classified against Claude Code 2.1.310 (the CLI the locked `claude-agent-sdk` bundles), from the same list the TypeScript plugin uses. `RemoteTrigger` creates, runs and schedules Claude Code sessions on Anthropic's cloud, whose tool calls never reach these hooks: it is never offered to the model (`disallowed_tools`), and a call that still reaches the gate is refused before any decision and recorded as a `Deny` (`remote_dispatch_refused`). A `Task` / `Agent` call with `isolation: "remote"` is refused the same way. A tool the plugin has not classified is refused (`unclassified_tool`), so a tool added by a later Claude Code release runs only once this plugin classifies it. Your own tools reach the agent through MCP servers (`mcp__<server>__<tool>`) and go to the policy decision.
+- **Tools that start work elsewhere, and unclassified tools**. Every Claude Code tool is classified against Claude Code 2.1.310 (the CLI the locked `claude-agent-sdk` bundles), from the same list the TypeScript plugin uses. `RemoteTrigger` creates, runs and schedules Claude Code sessions on Anthropic's cloud, whose tool calls never reach these hooks: it is never offered to the model (`disallowed_tools`), and a call that still reaches the gate is refused before any decision and recorded as a `Deny` (`remote_dispatch_refused`). A `Task` / `Agent` call with `isolation: "remote"` is refused the same way. A tool the plugin has not classified is refused (`unclassified_tool`), so a tool added by a later Claude Code release runs only once this plugin classifies it. **Breaking:** a host tool that is not served through MCP is refused the same way (`unclassified_tool`). Serve your own tools through an MCP server: their calls (`mcp__<server>__<tool>`) go to the policy decision (see [Your own tools](#your-own-tools)).
 - A starting sub-agent binds to its governed spawn by tool-use id when the SDK provides one, otherwise by sub-agent type. The SDK's `SubagentStart` input carries no tool-use id, so a second launch of a type that is still starting is denied (the two could not be told apart), including when both launches are gated at the same moment: the first one reserves its slot before the gate does any work. A launch that never starts (a later hook or a permission prompt refused it) is closed on `PostToolUse` / `PostToolUseFailure`, at `Stop`, or after 120 seconds.
 - **The gate must be live in every session.** Claude Code has modes and settings that switch SDK hooks off or move the settings Watchlight checks, for example its minimal ("bare") mode. So `governed_options` refuses, with `UngovernableSession`, a session that carries any Claude Code environment variable (names starting `CLAUDE_`, `ANTHROPIC_`, `DISABLE_`, `ENABLE_`, `CCR_` or `SELF_HOSTED_RUNNER_`), or runtime variable (names starting `BUN_` or `NODE_`), that is not on Watchlight's allowlist, wherever it is set: `options.env`, this process's environment, or the `env` of any settings source. The allowlist (`watchlight_claude_agent.cli_surface`) holds only what a session needs: the API key or token, model endpoints, model and provider choice, the output-token limit, `CLAUDE_CONFIG_DIR`, the switches that turn background traffic off, `NODE_ENV`, and `NODE_EXTRA_CA_CERTS`. The runtime variables matter because the compiled CLI runs `BUN_OPTIONS="--preload <file>"` as code in its own process, and `NODE_OPTIONS`, `NODE_PATH` and `NODE_REPL_EXTERNAL_MODULE` load code in any Node process it starts. `extra_args` flags are allowlisted the same way; only `debug-to-stderr` passes. `cli_path` is refused: a program in place of the Claude Code the SDK bundles could drop Watchlight's hooks from what reaches the CLI. A session started from inside Claude Code inherits its variables and is refused; start it from a clean environment.
 - **Every settings source is read.** Managed settings (the managed settings file and its `managed-settings.d` drop-ins, an MDM profile on macOS, the policy registry key on Windows or from WSL, and the cached server-managed settings), your user settings, the project and local settings of the working directory and its parents, and `options.settings`. Any of them setting `disableAllHooks`, `allowManagedHooksOnly` or `allowManagedPermissionRulesOnly`, or an environment variable not on the allowlist, is refused, and so is a source that exists but cannot be read. `permission_prompt_tool_name` is refused too: it replaces the permission callback.
@@ -73,6 +73,29 @@ async def run_agent(question: str):
 ```
 
 Each tool call is authorized as action `execute` on a resource named after the tool (for example `Read`, `Bash`, `mcp__server__tool`).
+
+### Your own tools
+
+Give the agent your own tools through an MCP server. The SDK's in-process server needs no separate process:
+
+```python
+from claude_agent_sdk import ClaudeAgentOptions, create_sdk_mcp_server, tool
+
+@tool("lookup_order", "Look up an order by id", {"order_id": str})
+async def lookup_order(args):
+    return {"content": [{"type": "text", "text": f"order {args['order_id']}: shipped"}]}
+
+orders = create_sdk_mcp_server(name="orders", tools=[lookup_order])
+
+options = ClaudeAgentOptions(
+    mcp_servers={"orders": orders},
+    # In the default permission mode a Watchlight allow never widens your
+    # configuration, so allow the tool here too.
+    allowed_tools=["mcp__orders__lookup_order"],
+)
+```
+
+Pass these options to `plugin.governed_query(handle, prompt=..., options=options)`. Each call is authorized as action `execute` on resource `mcp__orders__lookup_order`, so a policy names that resource. The same holds for a stdio or HTTP MCP server. A host tool that is not served through MCP is not classified and is refused (`unclassified_tool`).
 
 Sub-agents must be registered Watchlight agents (the `subagent_type` of the `Task` call is resolved to a registered agent). Their requested scope comes from `default_subagent_scope=` (or `WATCHLIGHT_DEFAULT_SUBAGENT_SCOPE`); when that is empty the sub-agent starts with no tools and its first tool call is denied.
 
