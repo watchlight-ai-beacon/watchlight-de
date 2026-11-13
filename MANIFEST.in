@@ -1,0 +1,4 @@
+# The plugins and SDKs under integrations/ are separate packages, each built and
+# released from its own directory. Keep them out of the `watchlight` sdist even
+# if a future build setting starts including every tracked file.
+prune integrations
