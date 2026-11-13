@@ -9,6 +9,23 @@ decorator, the framework plugin shims, the `watchlight dev` dashboard, and
 runnable examples. The authorization **engine** ships as a compiled wheel
 (`watchlight-engine`) — its source is not in this repository.
 
+The repository is laid out like this:
+
+| Path | What it holds |
+|---|---|
+| `src/watchlight/` | the `watchlight` Python package, including the framework wrappers in `src/watchlight/integrations/` |
+| `ts/` | the `@watchlight/sdk` npm package |
+| `integrations/plugins/python/` | the Python framework plugins and the agent SDK (`watchlight-agent-sdk`), one package per directory |
+| `integrations/plugins/ts/` | the TypeScript plugins and agent SDK, as one npm workspace |
+| `tests/` | the Python suite for `watchlight` |
+| `examples/` | runnable examples, patterns and showcases |
+| `docs/` | the Developer Edition documentation |
+| `scripts/` | the preflight and the adversarial harness |
+
+Each package under `integrations/plugins/` is built, tested and released on its
+own, and none of them is part of the `watchlight` package. See
+[Working on a plugin or SDK](#working-on-a-plugin-or-sdk) below.
+
 ## Ways to contribute
 
 - **File an issue** — bugs, rough edges, and ideas:
@@ -172,6 +189,32 @@ tests yourself. They catch the mistakes we know to look for (a missing refusal,
 a wrong signature, a misleading import error), but they are not a proof: a
 factory written by hand around the contract can still be wrong, so a new
 integration is reviewed against it.
+
+### Working on a plugin or SDK
+
+The framework plugins and the agent SDKs live under
+[`integrations/plugins/`](integrations/plugins/README.md). Each one is its own
+package, with its own `pyproject.toml` or `package.json`, version, tests and
+changelog. `scripts/preflight.sh` does not run their tests. The **Plugins**
+workflow does, on every pull request that touches `integrations/plugins/`: each
+Python package on every Python version from 3.10 to 3.13 that it supports, and
+the TypeScript workspace's build, type check and tests.
+
+To work on one alongside the Developer Edition, install it in editable mode into
+the same environment, the SDK first:
+
+```bash
+.venv/bin/pip install -e integrations/plugins/python/watchlight-core
+.venv/bin/pip install -e 'integrations/plugins/python/<package>[dev]'
+cd integrations/plugins/python/<package> && ../../../../.venv/bin/python -m pytest
+```
+
+The `watchlight` extras install the released plugins, not this source, and cap
+each one below its next minor release. A change that needs a new plugin release
+in `watchlight` therefore lands in two steps: the plugin release, then the
+change to the extra in `pyproject.toml`.
+[`integrations/plugins/README.md`](integrations/plugins/README.md) has the
+details, including the TypeScript workspace.
 
 ### Layering
 

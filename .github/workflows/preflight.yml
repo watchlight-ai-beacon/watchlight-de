@@ -41,8 +41,9 @@ jobs:
     name: preflight (python ${{ matrix.python }}${{ matrix.node != '22' && format(', node {0}', matrix.node) || '' }})
     # GitHub-hosted runners in this public repository. The private security
     # mirror sets the DE_RUNNER variable to run the same checks on its own
-    # runners; this repository never sets it.
-    runs-on: ${{ vars.DE_RUNNER || 'ubuntu-latest' }}
+    # runners; this repository never sets it. The 3.9 entry stays on Ubuntu
+    # 24.04: setup-python has no 3.9 build for 26.04, the ubuntu-latest image.
+    runs-on: ${{ vars.DE_RUNNER || (matrix.python == '3.9' && 'ubuntu-24.04' || 'ubuntu-latest') }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
