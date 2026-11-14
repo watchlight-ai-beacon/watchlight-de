@@ -34,6 +34,7 @@ import functools
 import hashlib
 import hmac
 import inspect
+import itertools
 import json
 import os
 import pathlib
@@ -41,6 +42,7 @@ import re
 import sys
 import threading
 import time
+import unicodedata
 from typing import Any, Awaitable, Callable, Optional, Sequence, TypeVar, Union
 
 import watchlight_engine as _engine
@@ -197,6 +199,9 @@ __all__ = [
     "sanitize",
     "SanitizeError",
     "DECISION_ID_MAX_LENGTH",
+    "KNOWN_MAX_VALUES",
+    "KNOWN_VALUE_MAX_LENGTH",
+    "KNOWN_MAX_TOTAL_LENGTH",
     "DETECTOR_VERSION",
     "DEFAULT_PII_TYPES",
     "register_detector",
@@ -1070,6 +1075,15 @@ class SanitizeError(RuntimeError):
 # interpreted. Length-capped and free of control characters so it can be written
 # to the audit line without letting the caller inject or bloat it.
 DECISION_ID_MAX_LENGTH = 128
+
+# Bounds on the ``known`` dictionary, so the matcher built from it has a
+# predictable size. Generous for an application dictionary (tens of thousands of
+# names and ids); a dictionary over any of them raises SanitizeError. Lengths are
+# in code points (UTF-16 code units in the TypeScript lane). Same names and
+# values as the TypeScript lane.
+KNOWN_MAX_VALUES = 50_000
+KNOWN_VALUE_MAX_LENGTH = 512
+KNOWN_MAX_TOTAL_LENGTH = 500_000
 # U+2028/U+2029 included for parity with the TypeScript lane, whose JSON
 # serializer emits them raw (line-oriented readers would split the record).
 _DECISION_ID_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
@@ -1542,48 +1556,215 @@ def _effective_detector_version() -> str:
     return f"{DETECTOR_VERSION}+custom.{digest}"
 
 
-_END = object()
+# A word character for the dictionary's whole-word check: ASCII letters, digits
+# and `_`, the same set as `\w` in the TypeScript lane's regexes. Any other
+# character, including an accented or non-Latin letter, is a boundary, so a
+# value written next to CJK text (`我是张伟。`) still matches; the check can only
+# make a match more likely, never hide one that the ASCII rule allows.
+_ASCII_WORD_CHAR = re.compile(r"[A-Za-z0-9_]")
 
 
-def _trie_regex(values: Sequence[str]) -> str:
-    """Escaped prefix-trie alternation over the values: at each position the
-    regex walks the trie (cost bounded by the trie's branching, not the
-    dictionary size) and prefers the longest value (children before the empty
-    branch)."""
+@functools.lru_cache(maxsize=None)
+def _regex_equates(lower: str, other: str) -> bool:
+    """Whether ``re.IGNORECASE`` treats ``lower`` and ``other`` as one
+    character. Asked only for the few lowercase letters that share an
+    uppercase with a different lowercase letter (``ı``/``i``, ``ſ``/``s``,
+    ``ς``/``σ``...), so the cache stays small. Asking the regex engine rather
+    than keeping a table means the answer always matches the running
+    interpreter, whose table has grown between Python versions."""
+    return re.fullmatch(re.escape(lower), other, re.IGNORECASE) is not None
+
+
+@functools.lru_cache(maxsize=1)
+def _multi_char_uppercase() -> dict:
+    """Every character whose uppercase is more than one character (``ß``,
+    ``ΐ``, ``ﬅ``...), grouped by that uppercase. Built once, the first time
+    such a character is folded: blocks whose uppercase keeps their length are
+    skipped whole, so only a few hundred characters are looked at one by one."""
+    groups: dict = {}
+    for base in range(0, 0x110000, 4096):
+        pending = [(base, base + 4096)]
+        while pending:
+            lo, hi = pending.pop()
+            block = "".join(map(chr, range(lo, hi)))
+            if len(block.upper()) == hi - lo:
+                continue  # every character in the block uppercases to one
+            if hi - lo > 64:
+                mid = (lo + hi) // 2
+                pending += [(lo, mid), (mid, hi)]
+                continue
+            for ch in block:
+                upper = ch.upper()
+                if len(upper) > 1:
+                    groups.setdefault(upper, []).append(ch)
+    return groups
+
+
+def _match_char(ch: str) -> str:
+    """The one character that stands for every character ``re.IGNORECASE``
+    treats as equal to ``ch``: two characters map to the same one exactly when
+    a case-insensitive regex literal of one matches the other.
+
+    The engine compares a cased character by its simple lowercase (the first
+    character of ``str.lower()``), and also equates the lowercase letters that
+    share one uppercase. A character that is not cased only ever matches itself.
+    """
+    lower = ch.lower()[0]
+    if lower == ch and ch.upper()[0] == ch:
+        return ch  # not cased: the engine matches it exactly
+    upper = lower.upper()
+    if len(upper) == 1:
+        rep = upper.lower()[0]
+        return rep if rep != lower and _regex_equates(lower, rep) else lower
+    # Letters whose uppercase is several characters (U+0390 and U+1FD3 share
+    # one): the smallest character of the group the engine equates with this
+    # one, which is the same answer from every member of the group.
+    best = lower
+    for other in _multi_char_uppercase().get(upper, ()):
+        if other < best and _regex_equates(lower, other):
+            best = other
+    return best
+
+
+def _match_key(value: str) -> str:
+    """``value`` with every character replaced by :func:`_match_char`. Same
+    length as ``value``, so positions in the key are positions in the value."""
+    if value.isascii():
+        return value.lower()
+    table = {}
+    for ch in set(value):
+        rep = _match_char(ch)
+        if rep != ch:
+            table[ord(ch)] = rep
+    return value.translate(table) if table else value
+
+
+def _dedupe_known(known: Sequence[str]) -> list[str]:
+    """One value per match key (:func:`_match_key`), the first occurrence kept.
+    Values with one key match exactly the same text, so the dropped values match
+    nothing the kept one does not, and the trie stays one branch per distinct
+    value."""
+    seen: set = set()
+    values: list[str] = []
+    for v in known:
+        if not v.strip():
+            continue
+        key = _match_key(v)
+        if key in seen:
+            continue
+        seen.add(key)
+        values.append(v)
+    return values
+
+
+def _known_trie(values: Sequence[str]) -> dict:
+    """A compressed prefix tree (radix tree) over the match keys of ``values``.
+
+    A node is a dict: a child is stored under the first character of the edge
+    that leads to it, as ``(edge, child)``, and ``""`` marks a node where a
+    value ends. Built with loops only, so no dictionary within the limits can
+    exhaust the stack, and it holds at most two nodes per value.
+    """
     root: dict = {}
+    for value in values:
+        key = _match_key(value)
+        node, pos = root, 0
+        while True:
+            if pos == len(key):
+                node[""] = True
+                break
+            entry = node.get(key[pos])
+            if entry is None:
+                node[key[pos]] = (key[pos:], {"": True})
+                break
+            edge, child = entry
+            shared = 1  # edge[0] == key[pos]: that is how the entry was found
+            limit = min(len(edge), len(key) - pos)
+            while shared < limit and edge[shared] == key[pos + shared]:
+                shared += 1
+            if shared == len(edge):
+                node, pos = child, pos + shared
+                continue
+            middle: dict = {edge[shared]: (edge[shared:], child)}
+            node[key[pos]] = (edge[:shared], middle)
+            node, pos = middle, pos + shared
+    return root
+
+
+def _normal_forms(values: Sequence[str]) -> list[str]:
+    """Each value as given, then in Unicode NFC and NFD form when those differ.
+    A value is then found in text written fully composed (``é`` as U+00E9) or
+    fully decomposed (``e`` + U+0301), whichever form the value was given in.
+    At most three forms per value, so the dictionary stays bounded."""
+    out: list[str] = []
     for v in values:
-        node = root
-        for ch in v:
-            node = node.setdefault(ch, {})
-        node[_END] = True
+        out.append(v)
+        if not v.isascii():
+            out.append(unicodedata.normalize("NFC", v))
+            out.append(unicodedata.normalize("NFD", v))
+    return out
 
-    def render(node: dict) -> str:
-        alts = [re.escape(ch) + render(node[ch]) for ch in sorted(k for k in node if k is not _END)]
-        if _END in node:
-            alts.append("")
-        return alts[0] if len(alts) == 1 and alts[0] != "" else "(?:" + "|".join(alts) + ")"
 
-    return render(root)
+def _known_tag_key(value: str) -> str:
+    """The key a redacted KNOWN span is tagged and hashed under, so the
+    spellings one value matches (``Ross``, ``ROSS``, ``Roſs``; composed or
+    decomposed) share one tag: decomposed (NFD) first, so a letter with no
+    precomposed capital (``ǰ``, whose capital is ``J`` + U+030C) folds like its
+    other spellings, then folded the way matching folds, then recomposed (NFC).
+    Lowercase for ASCII and common letters, as the TypeScript lane's key is."""
+    return unicodedata.normalize("NFC", _match_key(unicodedata.normalize("NFD", value)))
 
 
 def _detect_known(text: str, known: Sequence[str]) -> list[tuple[int, int, str, str]]:
     """Every occurrence of every known value, case-insensitive and matched as a
-    whole word; overlapping occurrences merge into one span. One escaped trie alternation compiled once
-    per call; at each position the longest value wins and the scan resumes one
-    character later, so every occurrence of every value is covered. Values are
-    never logged or raised."""
-    values = list(dict.fromkeys(v for v in known if v.strip()))
+    whole word; overlapping occurrences merge into one span. Values are never
+    logged or raised.
+
+    A walk of a prefix tree over the values, from every position where a word
+    can start; at each position the longest value that matches there as a
+    whole word wins, and the next position is tried, so every occurrence of
+    every value is covered. Characters compare the way ``re.IGNORECASE``
+    compares them (:func:`_match_char`); a word character is an ASCII letter,
+    digit or ``_``. Each value is also matched in its NFC and NFD forms
+    (:func:`_normal_forms`). The work at one position is bounded by the longest
+    of those forms (NFD can make an entry up to about four times longer), never
+    by the number of values, and nothing is compiled from the values, so no
+    dictionary within the limits can fail to build.
+    """
+    values = _dedupe_known(_normal_forms([str.__str__(v) for v in known]))
     if not values:
         return []
-    # Bounded so a value that is also an ordinary word does not rewrite prose:
-    # `known=["Will"]` must not blank every "will". `\w` boundaries rather than
-    # `\b` so a value whose own edge is punctuation still matches.
-    pat = re.compile(r"(?<!\w)(?:" + _trie_regex(values) + r")(?!\w)", re.IGNORECASE)
+    root = _known_trie(values)
+    folded = _match_key(text)
+    n = len(text)
+    # "w" exactly where `text` has an ASCII word character, the character
+    # itself elsewhere ("w" is one of them, so nothing else can be taken for
+    # one). One trailing space, so the end of the text is a word boundary.
+    word = _ASCII_WORD_CHAR.sub("w", text) + " "
     raw: list[tuple[int, int]] = []
-    pos = 0
-    while (m := pat.search(text, pos)) is not None:
-        raw.append((m.start(), m.end()))
-        pos = m.start() + 1  # also find overlapping occurrences
+    for i in range(n):
+        # Bounded so a value that is also an ordinary word does not rewrite
+        # prose: `known=["Will"]` must not blank every "will". Word-character
+        # boundaries rather than `\b` so a value whose own edge is punctuation
+        # still matches.
+        if folded[i] not in root or (i and word[i - 1] == "w"):
+            continue
+        node, j, end = root, i, -1
+        while True:
+            if "" in node and word[j] != "w":
+                end = j
+            if j == n:
+                break
+            entry = node.get(folded[j])
+            if entry is None:
+                break
+            edge, child = entry
+            if not folded.startswith(edge, j):
+                break
+            j += len(edge)
+            node = child
+        if end > i:
+            raw.append((i, end))
     merged: list[list[int]] = []
     for s, e in raw:
         if merged and s < merged[-1][1]:
@@ -1610,11 +1791,28 @@ def sanitize(
     ``tag`` (consistent ``<EMAIL_1>``), ``mask`` (``[EMAIL]``), or ``hash``.
     ``types`` restricts the detectors (default: every structured type; the
     heuristics ``PERSON`` / ``ADDRESS`` run only when listed). ``known`` is an
-    application-supplied dictionary of exact strings to redact — matched
-    case-insensitively as substrings, every occurrence covered, counted under
-    ``KNOWN``; the values never appear in the output, report, or audit trail.
-    Dictionary matching is simple (ASCII-style) case-insensitive; Unicode case
-    folding differs between the Python and TypeScript lanes.
+    application-supplied dictionary of exact strings to redact — every
+    occurrence covered, counted under ``KNOWN``; the values never appear in the
+    output, report, or audit trail. A value matches as a whole word: not where
+    an ASCII letter, digit or ``_`` touches either end of it. Any other
+    character, including an accented or non-Latin letter, is a boundary, so
+    ``张伟`` matches in ``我是张伟。``, and ``Ann`` also matches the start of
+    ``Annå``. Matching is case-insensitive the way ``re.IGNORECASE``
+    compares characters, non-ASCII letters included, with its extra
+    equivalences (``σ``/``ς``/``Σ``, ``ſ``/``s``, the Kelvin sign and ``k``,
+    ``ı``/``İ``/``i``); the TypeScript lane folds by JavaScript's rules, so a
+    few non-ASCII equivalences differ between the lanes. Each value is also
+    matched in its Unicode NFC and NFD forms, so composed and decomposed text
+    both match it; text that mixes the two forms inside one value does not, so
+    normalise such text to NFC first.
+    ``known`` holds at most :data:`KNOWN_MAX_VALUES` entries of at most
+    :data:`KNOWN_VALUE_MAX_LENGTH` characters each, and at most
+    :data:`KNOWN_MAX_TOTAL_LENGTH` characters in all; more raises
+    :class:`SanitizeError`. Case variants of one value count as one value.
+    Every dictionary within the limits works; at each position the longest
+    entry that matches as a whole word wins, and the work there is bounded by
+    the longest entry in its NFC or NFD form (up to about four times its
+    length), not by the number of entries.
     ``person_exclusions`` lists exact, case-insensitive values that the optional
     ``PERSON`` heuristic must leave untouched. It applies only to a complete
     ``PERSON`` candidate; other enabled detectors still run over the same text.
@@ -1647,10 +1845,27 @@ def sanitize(
     if known is not None and isinstance(known, (str, bytes)):
         # A bare string is a Sequence[str] of characters — never what was meant.
         raise SanitizeError("known must be a sequence of strings")
-    known_values = list(known) if known is not None else []
+    # Read at most one entry past the limit, so an oversized iterable is
+    # refused without being materialised.
+    try:
+        known_values = list(itertools.islice(known, KNOWN_MAX_VALUES + 1)) if known is not None else []
+    except TypeError:
+        # Not iterable: the same fail-closed, value-free error as a bad entry.
+        raise SanitizeError("known must be a sequence of strings") from None
     if not all(isinstance(v, str) for v in known_values):
         # Value-free by design: the message never echoes the offending entry.
         raise SanitizeError("known must be a sequence of strings")
+    # Bounded so the dictionary's cost is predictable. Value-free: the messages
+    # name the limit, never an entry.
+    if len(known_values) > KNOWN_MAX_VALUES:
+        raise SanitizeError(f"known holds more than {KNOWN_MAX_VALUES} entries")
+    known_total = 0
+    for v in known_values:
+        if str.__len__(v) > KNOWN_VALUE_MAX_LENGTH:
+            raise SanitizeError(f"known has an entry longer than {KNOWN_VALUE_MAX_LENGTH} characters")
+        known_total += str.__len__(v)
+    if known_total > KNOWN_MAX_TOTAL_LENGTH:
+        raise SanitizeError(f"known holds more than {KNOWN_MAX_TOTAL_LENGTH} characters in all")
     if person_exclusions is not None and isinstance(person_exclusions, (str, bytes)):
         raise SanitizeError("person_exclusions must be a sequence of strings")
     try:
@@ -1714,8 +1929,9 @@ def sanitize(
         out, cursor = [], 0
         for start, end, typ, val in kept:
             out.append(text[cursor:start])
-            # KNOWN values were matched case-insensitively, so hash and tag keys are too.
-            key_value = val.lower() if typ == "KNOWN" else val
+            # KNOWN values were matched case-insensitively and in either normal
+            # form, so hash and tag keys fold the same way.
+            key_value = _known_tag_key(val) if typ == "KNOWN" else val
             if mode == "mask":
                 rep = f"[{typ}]"
             elif mode == "hash":

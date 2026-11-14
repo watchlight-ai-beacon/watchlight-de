@@ -181,8 +181,33 @@ Proved by [`suites/pii-before-read.suite.json`](./suites/pii-before-read.suite.j
   hidden layers, annotations and metadata. Sanitize the extracted text.
 - Overlapping values merge into one span, so no fragment survives, and `known` is
   honoured even when `types` narrows the detectors.
-- `known` matching is simple case-insensitive. Unicode case folding differs
-  between the TypeScript and Python lanes.
+- A `known` value matches as a whole word: not where an ASCII letter, digit or
+  `_` touches either end of it. Any other character, including an accented
+  or non-Latin letter, is a boundary, so `张伟` matches in `我是张伟。` and `Ann`
+  in `联系Ann获取`, but `Smith` does not match in `Smithfield`. The same rule
+  lets `Ann` match the start of `Annå`, and lets a Cyrillic, Greek or CJK entry
+  match the start of a longer word in its own script, so pass the longer words
+  too when that matters. The rule is the same in both lanes.
+- `known` matching is case-insensitive, non-ASCII letters included. Python
+  compares characters the way `re.IGNORECASE` does, which also equates
+  `σ`/`ς`/`Σ`, `ſ`/`s`, the Kelvin sign and `k`, and `ı`/`İ`/`i`; TypeScript
+  compares them the way a regex with the `i` flag and no `u` flag does. So a few
+  non-ASCII equivalences differ between the lanes. Spellings that match one
+  value share one tag and one hash.
+- Each `known` value is also matched in its Unicode NFC and NFD forms, so text
+  written with composed accents (`José` as `Jos` + U+00E9) and text written
+  with combining accents (`Jose` + U+0301) both match. Text that mixes the two
+  forms inside one value does not match it; normalise such text to NFC before
+  you sanitize it (`unicodedata.normalize("NFC", text)` / `text.normalize("NFC")`).
+  `sanitize` does not normalise the text itself, because the redacted output
+  has to keep every other character exactly as it was.
+- `known` is bounded in both lanes, so the matcher built from it has a
+  predictable size: at most 50,000 entries (`KNOWN_MAX_VALUES`), each at most
+  512 characters (`KNOWN_VALUE_MAX_LENGTH`), and at most 500,000 characters in
+  all (`KNOWN_MAX_TOTAL_LENGTH`). A dictionary over a limit raises or throws
+  `SanitizeError`, and the message never includes an entry. Characters are
+  code points in Python and UTF-16 code units in TypeScript. Case variants of
+  one value are matched as that one value.
 - `PERSON` and `ADDRESS` are heuristics and off by default. Turn them on with
   `types: [...DEFAULT_PII_TYPES, "PERSON", "ADDRESS"]` — and see
   [`known` covers your subjects](#known-covers-your-subjects-person-covers-everyone-else)
