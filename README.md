@@ -205,7 +205,7 @@ second lists what only Enterprise does.
 | Capability | Developer Edition | Enterprise |
 |---|---|---|
 | Real-time enforcement effects — quarantine an agent, terminate a run, sever a delegation subtree, revoke authority | ❌ the policy loads and the call is denied; the containment action never fires | ✅ a contained agent's live connections are force-closed mid-run, server-side, with no cooperation from the agent; a sever durably collapses the delegation tree |
-| Drift detection | ❌ | ✅ an agent leaving its declared plan is quarantined automatically, and its live connections drop |
+| Drift detection | ❌ | ✅ detectors score runs against a baseline and raise anomalies, and a quarantine refuses the agent's next governed action |
 | Runtime enforcement proxy | ❌ governs in-process, plus a PEP in front of one MCP server | ✅ agent egress is mediated on the wire as well as in-process, so a call has to clear both |
 | Discovery and registry | ❌ | ✅ continuously scans your environments for agents and MCP servers, and tracks trust state |
 | Signed execution lineage | ❌ local JSONL, unsigned | ✅ each step is signed, persisted and verified fail-closed, over a hash-chained audit trail anyone can re-verify |

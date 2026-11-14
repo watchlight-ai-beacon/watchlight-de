@@ -140,8 +140,9 @@ cannot give:
   process. The control plane enforces that rule server-side, with a
   delegation-depth limit you can set per tenant and per agent, and it can
   durably sever a delegation subtree.
-- **Drift & anomaly detection → automatic quarantine** — a misbehaving agent is
-  stopped *before* its next action, not flagged after.
+- **Drift & anomaly detection, and quarantine** — detectors score runs against a
+  baseline and raise anomalies, and a quarantine refuses the agent's next
+  governed action.
 - **Signed, tamper-evident audit & lineage** — every decision cryptographically
   signed, so the trail is court-defensible.
 
