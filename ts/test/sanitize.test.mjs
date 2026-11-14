@@ -7,9 +7,10 @@ import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
+import { createHash } from "node:crypto";
 
 const require = createRequire(import.meta.url);
-const { sanitize, SanitizeError, Watchlight, DECISION_ID_MAX_LENGTH, DETECTOR_VERSION, DEFAULT_PII_TYPES, HEURISTIC_PII_TYPES, registerDetector, registeredDetectors, _clearCustomDetectors } = require("../dist/index.js");
+const { sanitize, SanitizeError, Watchlight, DECISION_ID_MAX_LENGTH, KNOWN_MAX_VALUES, KNOWN_VALUE_MAX_LENGTH, KNOWN_MAX_TOTAL_LENGTH, DETECTOR_VERSION, DEFAULT_PII_TYPES, HEURISTIC_PII_TYPES, registerDetector, registeredDetectors, _clearCustomDetectors } = require("../dist/index.js");
 const here = dirname(fileURLToPath(import.meta.url));
 
 let pass = 0, fail = 0;
@@ -180,6 +181,175 @@ async function main() {
   let badKnown = false;
   try { sanitize("x", { known: ["ok", 42] }); } catch (e) { badKnown = e instanceof SanitizeError && !String(e.message).includes("42"); }
   ok("KNOWN: non-string entry is fail-closed and value-free", badKnown);
+
+  // ── KNOWN: case variants collapse to one value; the dictionary is bounded ──
+  ok("KNOWN: limits are exported", KNOWN_MAX_VALUES === 50000 && KNOWN_VALUE_MAX_LENGTH === 512 && KNOWN_MAX_TOTAL_LENGTH === 500000);
+  {
+    // Every case variant of one word: 2^14 spellings of "lovelacelovel".
+    const word = "lovelacelovela";
+    const variants = Array.from({ length: 1 << word.length }, (_, mask) =>
+      Array.from(word, (ch, i) => (mask & (1 << i) ? ch.toUpperCase() : ch)).join(""));
+    const doc = "Ada LOVELACElovela met lovelaceLOVELA; lovelacelovela-x, and Lovelacelovelas. ".repeat(500);
+    const single = sanitize(doc, { known: [word], mode: "mask" });
+    const t = Date.now();
+    const many = sanitize(doc, { known: variants, mode: "mask" });
+    const ms = Date.now() - t;
+    ok("KNOWN: many case variants give the same output as the single word", many.text === single.text && many.report.total === single.report.total && single.report.total === 1500, `${many.report.total} vs ${single.report.total}`);
+    // Generous bound: a slow CI runner must not fail it.
+    ok("KNOWN: many case variants stay fast", ms < 10000, `${ms}ms`);
+    const tagged = sanitize("ADA ada", { known: ["Ada", "ADA", "ada"] });
+    ok("KNOWN: case-variant duplicates keep one tag", tagged.text === "<KNOWN_1> <KNOWN_1>", tagged.text);
+    // Folding matches the regex: "ß" and "ss" are distinct values and both still match.
+    const fold = sanitize("ß ss SS", { known: ["ß", "ss"], mode: "mask" });
+    ok("KNOWN: values that the regex does not fold together are both kept", fold.text === "[KNOWN] [KNOWN] [KNOWN]", fold.text);
+  }
+  const throwsSanitize = (fn, needle) => {
+    try { fn(); return false; } catch (e) { return e instanceof SanitizeError && String(e.message).includes(needle); }
+  };
+  ok("KNOWN: at the entry limit is accepted", (() => { sanitize("x", { known: Array(KNOWN_MAX_VALUES).fill("a") }); return true; })());
+  ok("KNOWN: over the entry limit throws SanitizeError", throwsSanitize(() => sanitize("x", { known: Array(KNOWN_MAX_VALUES + 1).fill("a") }), `more than ${KNOWN_MAX_VALUES} entries`));
+  ok("KNOWN: an entry at the length limit is accepted", sanitize("x", { known: ["q".repeat(KNOWN_VALUE_MAX_LENGTH)] }).text === "x");
+  // tests/fixtures/sanitize_known_parity.json is shared with tests/test_sanitize.py,
+  // so both lanes give the same text and accept or refuse the same dictionaries.
+  {
+    const parity = JSON.parse(fs.readFileSync(join(here, "..", "..", "tests", "fixtures", "sanitize_known_parity.json"), "utf8"));
+    ok("KNOWN parity: limits match the shared fixture",
+      parity.limits.KNOWN_MAX_VALUES === KNOWN_MAX_VALUES &&
+      parity.limits.KNOWN_VALUE_MAX_LENGTH === KNOWN_VALUE_MAX_LENGTH &&
+      parity.limits.KNOWN_MAX_TOTAL_LENGTH === KNOWN_MAX_TOTAL_LENGTH);
+    for (const c of parity.cases) {
+      const got = sanitize(c.text, { known: c.known, mode: c.mode }).text;
+      ok(`KNOWN parity: ${c.name}`, got === c.expect, `${got} !== ${c.expect}`);
+    }
+    // Entry k of a group: value*repeat, then grow*k, then k zero-padded to
+    // index_width digits when index_width is given (see the fixture's comment).
+    const fixtureKnown = (entries) => entries.flatMap((e) => Array.from({ length: e.count }, (_, k) =>
+      e.value.repeat(e.repeat) + (e.grow ?? "").repeat(k) + (e.index_width === undefined ? "" : String(k).padStart(e.index_width, "0"))));
+    const fixtureParts = (parts) => parts.map((p) => p.value.repeat(p.repeat)).join("");
+    // The adversarial shapes: an entry at the length limit, a 512-deep chain of
+    // nested prefixes, and dictionaries at the full count and total-length limits.
+    for (const c of parity.generated_cases) {
+      const got = sanitize(fixtureParts(c.text), { known: fixtureKnown(c.known), mode: c.mode }).text;
+      const want = fixtureParts(c.expect);
+      ok(`KNOWN parity: ${c.name}`, got === want, `${got.slice(0, 80)} !== ${want.slice(0, 80)}`);
+    }
+    for (const c of parity.limit_cases) {
+      const known = fixtureKnown(c.entries);
+      let got = null;
+      try { sanitize("x", { known }); } catch (e) { got = e instanceof SanitizeError ? String(e.message) : `other: ${e}`; }
+      ok(`KNOWN parity limit: ${c.name}`, c.error === null ? got === null : got !== null && got.includes(c.error), String(got));
+    }
+  }
+  {
+    // Nothing recursive is built from the dictionary: the deepest shapes the
+    // limits allow still work with little stack left.
+    const chain = Array.from({ length: KNOWN_VALUE_MAX_LENGTH }, (_, k) => "a".repeat(k + 1));
+    const comb = Array.from({ length: KNOWN_VALUE_MAX_LENGTH }, (_, k) => "a".repeat(k) + "b");
+    const text = "x " + "A".repeat(512) + " " + "a".repeat(511) + "b y";
+    const run = () => [sanitize(text, { known: chain, mode: "mask" }).text, sanitize(text, { known: comb, mode: "mask" }).text];
+    // Find (roughly) how deep this stack can go, then run with a margin left.
+    let max = 0;
+    const probe = (d) => { max = d; probe(d + 1); };
+    try { probe(0); } catch { /* stack exhausted: `max` is the depth reached */ }
+    const atDepth = (d) => (d > 0 ? atDepth(d - 1) : run());
+    let got = null;
+    try { got = atDepth(Math.max(0, max - 2000)); } catch (e) { got = [String(e)]; }
+    ok("KNOWN: deepest dictionaries work with little stack left",
+      got[0] === "x [KNOWN] " + "a".repeat(511) + "b y" && got[1] === "x " + "A".repeat(512) + " [KNOWN] y", String(got).slice(0, 120));
+  }
+  ok("KNOWN: the longest entry wins whatever the case",
+    sanitize("John Smith x", { known: ["JOHN", "john smith"], mode: "mask" }).text === "[KNOWN] x" &&
+    sanitize("a-b-c", { known: ["A", "a-b-c"], mode: "mask" }).text === "[KNOWN]");
+  {
+    // Every entry compared unit by unit at every position: the longest
+    // whole-word match at each start, overlapping matches merged. Slow, and
+    // obviously what the dictionary matcher promises.
+    // Two UTF-16 units are equal the way a regex with the `i` flag and no `u`
+    // flag compares them: a fixed pattern whose backreference repeats the first
+    // unit, so the regex engine's own case folding decides.
+    const sameUnit = (a, b) => /^([\s\S])\1$/i.test(a + b);
+    const sameText = (a, b) => a.length === b.length && Array.from({ length: a.length }, (_, k) => k).every((k) => sameUnit(a[k], b[k]));
+    const reference = (text, known) => {
+      // ASCII word characters as the boundary (`\w` without `u`), and each value
+      // in its given, NFC and NFD forms.
+      const values = known.filter((v) => v.trim().length > 0).flatMap((v) => [v, v.normalize("NFC"), v.normalize("NFD")]);
+      const spans = [];
+      for (let i = 0; i < text.length; i++) {
+        if (i > 0 && /\w/.test(text[i - 1])) continue;
+        let end = -1;
+        for (const v of values) {
+          const e = i + v.length;
+          if (e <= text.length && sameText(v, text.slice(i, e)) && (e === text.length || !/\w/.test(text[e]))) end = Math.max(end, e);
+        }
+        if (end < 0) continue;
+        const last = spans[spans.length - 1];
+        if (last && i < last[1]) last[1] = Math.max(last[1], end); else spans.push([i, end]);
+      }
+      let out = "", cursor = 0;
+      for (const [s, e] of spans) { out += text.slice(cursor, s) + "[KNOWN]"; cursor = e; }
+      return out + text.slice(cursor);
+    };
+    const exotic = [..."aAb -_1"].concat(["ı", "İ", "i", "I", "ſ", "s", "S", "K", "K", "k", "σ", "ς", "Σ", "ß", "ẞ", "é", "É", "ͅ", "ι", "Ι", "\u{1F600}", "\ud800", "ǅ", "ǆ", "Ǆ", "µ", "Μ", "μ"]);
+    let seed = 222;
+    const rnd = () => { seed = (seed * 48271) % 2147483647; return seed / 2147483647; };
+    const pick = (a) => a[Math.floor(rnd() * a.length)];
+    const swap = (v) => Array.from(v, (c) => (c === c.toUpperCase() ? c.toLowerCase() : c.toUpperCase())).join("");
+    let mismatch = null;
+    for (let n = 0; n < 1500 && mismatch === null; n++) {
+      const alphabet = Array.from({ length: 2 + Math.floor(rnd() * 7) }, () => pick(exotic));
+      const word = () => Array.from({ length: 1 + Math.floor(rnd() * 6) }, () => pick(alphabet)).join("");
+      const base = Array.from({ length: 1 + Math.floor(rnd() * 6) }, word);
+      const known = base.concat(base.filter(() => rnd() < 0.5).map(swap), base.filter(() => rnd() < 0.3).map((b) => b + pick(alphabet) + b));
+      const text = Array.from({ length: 1 + Math.floor(rnd() * 10) }, () => pick(base.concat([word(), swap(pick(base))]))).join(pick([" ", "", "-"]));
+      const got = sanitize(text, { known, mode: "mask", types: [] }).text;
+      if (got !== reference(text, known)) mismatch = JSON.stringify({ text, known, got });
+    }
+    ok("KNOWN: matches an entry-by-entry reference", mismatch === null, mismatch ?? "");
+  }
+  {
+    // A dictionary of nested word prefixes over text made of the same word: the
+    // walk from every word start runs to the longest entry, the most work any
+    // position can cost. Generous bound: a slow CI runner must not fail it.
+    const chain = Array.from({ length: 256 }, (_, k) => Array(k + 1).fill("a").join(" "));
+    const t = Date.now();
+    const out = sanitize("x " + "a ".repeat(10000) + "y", { known: chain, mode: "mask" }).text;
+    const ms = Date.now() - t;
+    ok("KNOWN: a pathological dictionary stays bounded", out === "x [KNOWN] y" && ms < 10000, `${out.slice(0, 40)} ${ms}ms`);
+  }
+  {
+    const composed = "Jos\u00e9", decomposed = "Jose\u0301";
+    const text = `${composed} and ${decomposed} and ${composed.toUpperCase()}`;
+    ok("KNOWN: composed and decomposed text match under one tag",
+      [composed, decomposed].every((e) => sanitize(text, { known: [e], types: [] }).text === "<KNOWN_1> and <KNOWN_1> and <KNOWN_1>" &&
+        new Set(sanitize(text, { known: [e], mode: "hash", types: [] }).text.split(" and ")).size === 1));
+    ok("KNOWN: a letter of another script is a word boundary",
+      sanitize("我是张伟。", { known: ["张伟"], mode: "mask", types: [] }).text === "我是[KNOWN]。" &&
+      sanitize("联系Ann获取", { known: ["Ann"], mode: "mask", types: [] }).text === "联系[KNOWN]获取");
+    ok("KNOWN: a letter with no precomposed capital shares one tag",
+      [["\u01f0", "J\u030c"], ["\u0390", "\u0399\u0308\u0301"], ["\u03b0", "\u03a5\u0308\u0301"]].every(([small, capital]) =>
+        sanitize(`${small} and ${capital} and ${small}`, { known: [small], types: [] }).text === "<KNOWN_1> and <KNOWN_1> and <KNOWN_1>"));
+    ok("KNOWN: tag and hash keys of ASCII values are their lowercase",
+      sanitize("Ada", { known: ["ADA"], mode: "hash" }).text === "<KNOWN_" + createHash("sha256").update("ada").digest("hex").slice(0, 8) + ">");
+    // The count is checked before any entry is read: a huge sparse array is
+    // refused at once.
+    const huge = []; huge.length = 2 ** 31;
+    const t = Date.now();
+    ok("KNOWN: a huge sparse array is refused by its length, at once",
+      throwsSanitize(() => sanitize("x", { known: huge }), `more than ${KNOWN_MAX_VALUES} entries`) && Date.now() - t < 1000);
+    // Each entry is read once: a getter cannot pass the checks with one value
+    // and be matched with another.
+    let reads = 0;
+    const tricky = ["x"];
+    Object.defineProperty(tricky, 0, { get() { reads++; return reads === 1 ? "Ada" : "z".repeat(KNOWN_VALUE_MAX_LENGTH + 1); } });
+    const once = sanitize("Ada", { known: tricky, mode: "mask" }).text;
+    ok("KNOWN: each entry is read once", reads === 1 && once === "[KNOWN]", `${reads} ${once}`);
+  }
+  const sparse = ["Ada"]; sparse[3] = "Grace";
+  ok("KNOWN: a sparse array still works (holes skipped)", sanitize("Ada and Grace", { known: sparse, mode: "mask" }).text === "[KNOWN] and [KNOWN]");
+  const overTotal = Array(Math.floor(KNOWN_MAX_TOTAL_LENGTH / KNOWN_VALUE_MAX_LENGTH) + 1).fill("w".repeat(KNOWN_VALUE_MAX_LENGTH));
+  ok("KNOWN: over the total-length limit throws SanitizeError", throwsSanitize(() => sanitize("x", { known: overTotal }), `more than ${KNOWN_MAX_TOTAL_LENGTH} characters in all`));
+  const secretish = "z".repeat(KNOWN_VALUE_MAX_LENGTH) + "SECRETVALUE";
+  ok("KNOWN: an over-long entry throws SanitizeError, value-free", throwsSanitize(() => sanitize("x", { known: [secretish] }), `longer than ${KNOWN_VALUE_MAX_LENGTH} characters`) && (() => { try { sanitize("x", { known: [secretish] }); } catch (e) { return !String(e.message).includes("SECRETVALUE"); } return false; })());
 
   // ── PERSON / ADDRESS: opt-in heuristics, OFF by default ──
   const people = "Dr. Ada Lovelace met Patient: Grace Hopper and ATTN: Alan M. Turing. Alan Turing wrote it. The Cedar is neat.";

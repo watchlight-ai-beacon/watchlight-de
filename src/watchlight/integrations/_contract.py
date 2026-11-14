@@ -42,13 +42,17 @@ from typing import Any, Dict, FrozenSet, Optional
 
 from ..inprocess import Policies, _audited_plugin_class, _select_backend_kwargs
 
-_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
-_EXTRA = re.compile(r"^[a-z][a-z0-9-]*$")
+# Every pattern below is applied with ``fullmatch`` and is also anchored with
+# ``\A`` and ``\Z`` (never ``$``, which also accepts a value ending in a
+# newline), so a caller that uses ``match`` or ``search`` still checks the whole
+# value.
+_NAME = re.compile(r"\A[a-z][a-z0-9_]*\Z")
+_EXTRA = re.compile(r"\A[a-z][a-z0-9-]*\Z")
 #: A published Watchlight framework plugin package: a top-level ``watchlight_*``
 #: module. Never one of the packages below, which are not framework plugins.
-PLUGIN_MODULE = re.compile(r"^watchlight_[a-z0-9_]+$")
+PLUGIN_MODULE = re.compile(r"\Awatchlight_[a-z0-9_]+\Z")
 NOT_A_PLUGIN: FrozenSet[str] = frozenset({"watchlight_engine", "watchlight_core"})
-_CLASS = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_CLASS = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*\Z")
 
 #: Keywords that select the governance backend. The backend is chosen by
 #: ``_select_backend_kwargs`` (``WATCHLIGHT_APDP_URL`` or the in-process engine);
@@ -82,22 +86,22 @@ class FrameworkIntegration:
     def __post_init__(self) -> None:
         # Validated where it is declared: a typo here would otherwise surface
         # only when a user calls the factory.
-        if not (isinstance(self.name, str) and _NAME.match(self.name) and not keyword.iskeyword(self.name)):
+        if not (isinstance(self.name, str) and _NAME.fullmatch(self.name) and not keyword.iskeyword(self.name)):
             raise ValueError(f"integration name must be a lowercase identifier, got {self.name!r}")
-        if not (isinstance(self.extra, str) and _EXTRA.match(self.extra)):
+        if not (isinstance(self.extra, str) and _EXTRA.fullmatch(self.extra)):
             raise ValueError(f"integration extra must be a lowercase pip extra name, got {self.extra!r}")
         if not (isinstance(self.display_name, str) and self.display_name.strip()):
             raise ValueError("integration display_name must be a non-empty string")
         if not (
             isinstance(self.plugin_module, str)
-            and PLUGIN_MODULE.match(self.plugin_module)
+            and PLUGIN_MODULE.fullmatch(self.plugin_module)
             and self.plugin_module not in NOT_A_PLUGIN
         ):
             raise ValueError(
                 "integration plugin_module must be a top-level watchlight_* plugin package "
                 f"(not {sorted(NOT_A_PLUGIN)}), got {self.plugin_module!r}"
             )
-        if not (isinstance(self.plugin_class, str) and _CLASS.match(self.plugin_class)):
+        if not (isinstance(self.plugin_class, str) and _CLASS.fullmatch(self.plugin_class)):
             raise ValueError(f"integration plugin_class must be an identifier, got {self.plugin_class!r}")
 
     @property

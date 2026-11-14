@@ -36,11 +36,11 @@ Point a real MCP client at http://127.0.0.1:9700/mcp instead of the server.
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import threading
 import time
-import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import watchlight_mcp
@@ -75,19 +75,35 @@ def _call(tool: str) -> dict:
     body = json.dumps(
         {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": {}}}
     ).encode()
-    req = urllib.request.Request(
-        f"http://127.0.0.1:{PEP_PORT}/mcp",
-        data=body,
-        headers={
-            "content-type": "application/json",
-            "MCP-Protocol-Version": "2026-07-28",
-            "Mcp-Method": "tools/call",
-            "Mcp-Name": tool,
-            "Watchlight-Agent-Id": "demo-agent",
-            "Watchlight-Execution-Id": f"exec_{tool}",
-        },
-    )
-    return json.loads(urllib.request.urlopen(req).read())
+    # A connection to the PEP on the loopback interface, by fixed host and port:
+    # it cannot be pointed at another scheme or host, and it does not go through
+    # a proxy from the environment. Plain HTTP is fine for a loopback demo; a
+    # real deployment should use HTTPS with certificate verification.
+    conn = http.client.HTTPConnection("127.0.0.1", PEP_PORT, timeout=10)
+    try:
+        conn.request(
+            "POST",
+            "/mcp",
+            body=body,
+            headers={
+                "content-type": "application/json",
+                "MCP-Protocol-Version": "2026-07-28",
+                "Mcp-Method": "tools/call",
+                "Mcp-Name": tool,
+                "Watchlight-Agent-Id": "demo-agent",
+                "Watchlight-Execution-Id": f"exec_{tool}",
+            },
+        )
+        resp = conn.getresponse()
+        payload = resp.read()
+        # A governed call answers 200 with a JSON-RPC result or error (a denial
+        # is a JSON-RPC error). Anything else means the PEP did not answer the
+        # call as expected: stop rather than read it as a result.
+        if resp.status != 200 or not resp.getheader("content-type", "").startswith("application/json"):
+            raise RuntimeError(f"unexpected response from the PEP: HTTP {resp.status}")
+        return json.loads(payload)
+    finally:
+        conn.close()
 
 
 def main() -> None:
@@ -103,6 +119,8 @@ def main() -> None:
     threading.Thread(
         target=lambda: watchlight_mcp.serve(
             listen_addr=f"127.0.0.1:{PEP_PORT}",
+            # Loopback demo server only; a real upstream should be an
+            # https:// URL with certificate verification.
             upstream_url=f"http://127.0.0.1:{UPSTREAM_PORT}/mcp",
             upstream_server="github",
             policy_files=[os.path.join(HERE, "mcp.policy.json")],

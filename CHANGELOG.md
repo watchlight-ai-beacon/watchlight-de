@@ -18,12 +18,72 @@ Each entry links to its release, which carries the reasoning and the measurement
 - Hardening: with `in_process_backend()`, every authorize and preflight a sub-agent makes is checked against the scope its spawn granted (tools, resources, intents and deadline), with the engine's own membership check (`watchlight-engine` 0.2.4). A call outside the grant is denied (`scope_attenuation_violation`), and the denial invalidates the sub-agent's run handle: every later call on it, or on a handle spawned under it, is denied, and it cannot spawn. A call that names another run's sub-agent handle is refused before any scope check. This comes from `watchlight-agent-sdk` 0.10.1, which the extras now require.
 - Hardening: an authorize answer that is malformed or contradicts itself (an Allow that also carries an `error`, say) is a deny; a malformed intent is refused instead of being dropped; and a sub-agent spawn that cannot complete is refused with `GovernanceUnavailable` before the child runs (`watchlight-agent-sdk` 0.10.1).
 - Hardening: every `authorize_action` or `authorize_action_detailed` call on a run handle from `governed_plugin()`, and every call of a tool decorated with its `guarded_tool`, that ends without a record from the engine is recorded by the handle, exactly once. That adds the refusals after a Terminate or a Revoke (only those after a quarantine or a sever were recorded before), a malformed intent the handle refuses before sending anything, a term the engine refused before deciding, and a call cancelled before the engine answered. Each is one value-free `Deny` record; a decorated tool's call is an `Allow` only when the tool's body started. A refused spawn, and a refusal a framework makes before it reaches a handle, are not authorize calls and write no decision record. The backend now reduces the engine's answer with the SDK's own functions, so the record always says what the handle acted on: an answer the SDK will not trust (an Allow carrying an `error`, or a padded verdict such as `" Allow"`) is recorded as a `Deny`. A decision whose record cannot be built is still written, as a value-free placeholder.
+- Hardening: `sanitize` matches the `known` dictionary by walking a prefix tree
+  over the entries, in both the Python and TypeScript lanes, instead of
+  compiling one regex built from the dictionary. Nothing recursive is built
+  from the entries, so every dictionary within the limits below works on
+  Python 3.9 to 3.13 and Node 22 and later. Before, a long entry or a deep
+  chain of nested entries (`a`, `ab`, `abc`, ...) could exceed the
+  interpreter's recursion limit while the regex was built, and the call failed
+  with `SanitizeError`. The work at each position of the text is bounded by
+  the longest entry in its NFC or NFD form (up to about four times its
+  length), never by the number of entries. Characters still compare
+  the way each lane's case-insensitive regex compared them.
+- Hardening: at each position of the text, the longest `known` entry that
+  matches there as a whole word now wins, as documented, whichever way the
+  entries are spelled. Before, two entries that differ in case (`JOHN` and
+  `john smith`) could make a shorter entry win, which left the rest of the
+  longer entry (` Smith`) in the text. Output changes only where more text is
+  now redacted.
+- Hardening: in the Python lane, a `known` entry's whole-word boundary is now
+  an ASCII letter, digit or `_`, the same rule as the TypeScript lane. Before,
+  Python treated any Unicode letter as part of the word, so an entry written
+  next to CJK or other non-Latin text (`张伟` in `我是张伟。`, `Ann` in
+  `联系Ann获取`) was never redacted in Python while TypeScript redacted it.
+- Hardening: each `known` entry is also matched in its Unicode NFC and NFD
+  forms, in both lanes, so text with composed accents and text with combining
+  accents both match it. Before, an entry matched only text in the same
+  normal form.
+- Hardening: a redacted `known` span is tagged and hashed under a key that is
+  decomposed (NFD), folded the way matching folds, and recomposed (NFC), in
+  both lanes. Spellings that match one entry (`Ross` and `Roſs` in Python,
+  composed and decomposed `José`, `ǰ` and `J` + U+030C, `ς` and `σ`) now share
+  one tag and one hash instead of getting one each. ASCII keys are unchanged;
+  some non-ASCII hashes change.
+- Hardening: in Python, a `known` that is not iterable raises `SanitizeError`
+  instead of `TypeError`. In TypeScript, `known` is checked against the entry
+  limit before any entry is read, and each entry is read once into a copy that
+  is both validated and matched.
 
 **Changed**
 - The package requires `watchlight-engine>=0.2.4,<0.3`. The `langgraph`, `pydantic-ai`, `claude-agent`, `sdk` and `all` extras require `watchlight-agent-sdk>=0.10.1,<0.11`, `watchlight-langgraph>=0.5.1,<0.6`, `watchlight-pydantic-ai>=0.4.1,<0.5` and `watchlight-claude-agent>=0.3.1,<0.4`.
 - The `watchlight.declare_intent` tool the framework plugins give an agent requires a `category` (`watchlight-agent-sdk` 0.10.1), and an authorize request carries only a typed intent (objective and category).
 - Through a plugin's run handle, a principal, action, resource or `execution_id` that breaks a name limit is a denial (`authorize_action` returns `False`) instead of a `TypeError`, because `watchlight-agent-sdk` 0.10.1 turns any backend error into a deny. The refusal is recorded with a value-free marker in place of the term. When only the action, resource or `execution_id` was refused, the record is marked `"refused_term": true` and `counters()` (Python and TypeScript) counts it as a denied decision of its principal, inside its window, with the marker matching any filter on the refused field. When the principal was refused, it is marked `"refused_principal": true` and the counters count it as a denied decision of every principal, inside its window, never as allowed. Calling the backend's `authorize` directly still raises `TypeError` and records nothing.
 - Decision records gain optional `refused_term` and `refused_principal` fields (always `true`), described above. `watchlight audit check` reports a record carrying either in a shape the SDK does not write (not a `Deny`, both flags, or a principal of the wrong kind) as `malformed-refusal`, and the counters count such a record toward every query.
+- Bounded and de-duplicated the known-values list in `sanitize`, in both the
+  Python and TypeScript lanes. Before the matcher is built, `known` keeps one
+  value per case-folded key (the first occurrence), folded the way each lane's
+  case-insensitive regex folds; the dropped variants match nothing the kept
+  value does not. `known` is now limited to `KNOWN_MAX_VALUES` (50,000) entries,
+  `KNOWN_VALUE_MAX_LENGTH` (512) characters per entry and
+  `KNOWN_MAX_TOTAL_LENGTH` (500,000) characters in all; a dictionary over any
+  limit raises `SanitizeError` with a message that names the limit and never
+  an entry. The three limits are exported from `watchlight` and
+  `@watchlight/sdk`. Python reads at most one entry past the entry limit from
+  an iterable. A shared fixture holds both lanes to the same results,
+  including an entry at the length limit, a 512-deep chain of nested
+  prefixes, and dictionaries at the full count and total-length limits.
+- `FrameworkIntegration` checks its `name`, `extra`, `plugin_module` and
+  `plugin_class` with `re.fullmatch`, and each pattern is also anchored with
+  `\A` and `\Z`, so a value with a trailing newline is refused with the same
+  `ValueError` as any other malformed value.
+- `examples/governed_mcp_server.py` calls its PEP with an
+  `http.client.HTTPConnection` to `127.0.0.1` and a 10-second timeout, instead
+  of `urllib.request.urlopen`, so the demo client can only reach the loopback
+  PEP and never goes through a proxy set in the environment. It stops with an
+  error on any response that is not HTTP 200 with a JSON body. It notes that its
+  plain-HTTP URLs are loopback-only and that a real upstream should use
+  `https://` with certificate verification.
 
 ## 0.15.0 — 2026-10-18
 
