@@ -19,7 +19,7 @@ what a pattern claims and what the engine does cannot drift.
 | [Data egress](./data-egress.md) | May this classification of data cross this boundary? | [suite](./suites/data-egress.suite.json) |
 | [Egress after read](./egress-after-read.md) | Govern what a tool *returns*, once its classification is known. | [suite](./suites/egress-after-read.suite.json) + [script](./scripts/egress-after-read.mjs) |
 | [Allow, but redact](./allow-but-redact.md) | Say "yes, but…" in the policy — `@obligate_*` rides on the `Allow`. | [suite](./suites/allow-but-redact.suite.json) |
-| [Kill-switch / quarantine](./kill-switch.md) | Stop a suspect agent cold, with one flag that beats every grant. | [suite](./suites/kill-switch.suite.json) |
+| [Kill-switch / quarantine](./kill-switch.md) | Refuse a suspect agent's next governed action, with one flag that beats every grant. | [suite](./suites/kill-switch.suite.json) |
 | [Per-user attribution](./per-user-attribution.md) | Attribute the decision to the acting end-user, and scope policy to them. | [suite](./suites/per-user-attribution.suite.json) |
 | [Context through an adapter](./context-through-an-adapter.md) | Does a policy reading Cedar `context` hold through a framework adapter? | [script](./scripts/context-through-an-adapter.mjs) |
 | [PII before read](./pii-before-read.md) | Strip PII from a document before the agent ever sees it. | [suite](./suites/pii-before-read.suite.json) + [script](./scripts/pii-before-read.mjs) |

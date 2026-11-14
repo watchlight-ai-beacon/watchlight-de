@@ -239,6 +239,6 @@ issue before users can upgrade. Report it privately as described in
 
 ## Enterprise / production
 
-Governing a fleet, or need signed audit, drift→quarantine, SSO, air-gapped
+Governing a fleet, or need signed audit, drift detection, quarantine, SSO, air-gapped
 deployment, or the engine source? → **sales@watchlight.ai** ·
 [watchlight.ai](https://www.watchlight.ai)
