@@ -18,6 +18,16 @@ What counts (identical in the TypeScript package):
   "Allow"``, including approved ones; ``"denied"`` = every decision that did not
   let the body run (``Deny`` and ``NeedsApproval`` holds); ``"all"`` = both. So
   ``allowed + denied == all``.
+* a ``Deny`` marked ``"refused_principal": true`` — written by a framework
+  plugin for a call whose principal broke a name rule — counts as a denied
+  decision of every principal, inside its window like any other: it never
+  counts as allowed, and a marker field matches every filter on that field.
+* a ``Deny`` marked ``"refused_term": true`` — written by a framework plugin
+  for a call whose action, resource or execution id broke a name rule, with a
+  value-free marker in place of the refused term — is a denied decision of its
+  principal, inside the window like any other: it never counts as allowed, and
+  its marker field matches every ``intent`` or ``resource`` filter, since the
+  refused term might have been the one a query names.
 * ``principal`` (required), ``intent`` and ``resource`` (optional) match the
   record's fields by the entity they name — no prefixes, no globs. A bare name
   is read as the engine reads it, so ``u1`` and ``User::"u1"`` are one
@@ -42,9 +52,12 @@ line the scan cannot fully read can never LOWER a count:
 * a record carrying ``"oversized": true`` — one the audit funnel shortened
   because it was too long (``watchlight._audit.bounded_line``) — counts toward
   every query, like a line that cannot be read, since a field it replaced might
-  be the one a query matches on.
+  be the one a query matches on;
+* a decision marked ``"refused_term": true`` or ``"refused_principal": true``
+  that is not what the SDK writes (see ``_malformed_refusal``) counts the same
+  way.
 
-All three are counted in ``unreadable`` (so ``count`` minus ``unreadable`` is the
+All four are counted in ``unreadable`` (so ``count`` minus ``unreadable`` is the
 number of well-formed matching decisions) and in ``skipped``. A well-formed
 object that is not a decision — a framework run's lifecycle line, or another
 record kind — is counted in ``records`` and never counts; one that has a
@@ -328,6 +341,7 @@ UNREADABLE_REASONS = {
     "not-an-object": "not a JSON object",
     "unreadable-ts": "a decision whose ts cannot be read",
     "oversized-record": "a record the SDK shortened because it was too long",
+    "malformed-refusal": "a refused-term or refused-principal record the SDK does not write",
 }
 
 
@@ -354,6 +368,25 @@ def _classify(raw: Optional[bytes]) -> tuple[str, Optional[dict]]:
     if not isinstance(rec, dict):
         return "not-an-object", None
     return "record", rec
+
+
+def _malformed_refusal(rec: dict) -> bool:
+    """A decision marked as a refusal the SDK recorded that is not what the SDK
+    writes. ``"refused_term": true`` must be a ``Deny`` whose principal is a
+    string; ``"refused_principal": true`` must be a ``Deny`` whose principal is
+    a value-free marker (an object); a record never carries both. Such a record
+    counts like a line that cannot be read."""
+    if rec.get("event", "decision") != "decision":
+        return False
+    term = rec.get("refused_term") is True
+    principal = rec.get("refused_principal") is True
+    if not (term or principal):
+        return False
+    if term and principal or rec.get("decision") != "Deny":
+        return True
+    if principal:
+        return not isinstance(rec.get("principal"), dict)
+    return not isinstance(rec.get("principal"), str)
 
 
 def _is_decision(rec: dict) -> bool:
@@ -423,7 +456,7 @@ def _tally_line(raw: Optional[bytes], f: dict, t: _Tally) -> None:
     kind, rec = _classify(raw)
     if kind == "blank":
         return
-    if rec is None or rec.get("oversized") is True:
+    if rec is None or rec.get("oversized") is True or _malformed_refusal(rec):
         # A line that cannot be read at all might be any record, including a
         # matching Allow: it counts toward every query (fail-closed). So does a
         # record the audit funnel shortened (`"oversized": true`): a field it
@@ -453,10 +486,28 @@ def _tally_line(raw: Optional[bytes], f: dict, t: _Tally) -> None:
         return
     outcome = f["outcome"]
     allowed = decision == "Allow"
+    # A refused-term record (`"refused_term": true`) is a Deny the SDK recorded
+    # for a call whose action, resource or execution id broke a name rule; the
+    # refused field holds a value-free marker instead of a name. It matches by
+    # its principal like any decision, and its marker field matches every
+    # filter on that field, since the refused term might have been the one a
+    # query names.
+    # A refused-principal record (`"refused_principal": true`) is the same for
+    # a call whose principal broke a rule: whose decision it was cannot be
+    # read, so it matches every principal — still only as a denied decision,
+    # and only inside its window.
+    any_principal = rec.get("refused_principal") is True
+    refused = any_principal or rec.get("refused_term") is True
+
+    def field(value: Any, key: Optional[tuple], bare: str) -> bool:
+        if key is None:
+            return True
+        return _names(value, key, bare) or (refused and not isinstance(value, str))
+
     matches = (
-        _names(rec.get("principal"), f["principal"], principals.BARE_PRINCIPAL_TYPE)
-        and (f["intent"] is None or _names(rec.get("intent"), f["intent"], principals.BARE_ACTION_TYPE))
-        and (f["resource"] is None or _names(rec.get("resource"), f["resource"], principals.BARE_RESOURCE_TYPE))
+        (any_principal or _names(rec.get("principal"), f["principal"], principals.BARE_PRINCIPAL_TYPE))
+        and field(rec.get("intent"), f["intent"], principals.BARE_ACTION_TYPE)
+        and field(rec.get("resource"), f["resource"], principals.BARE_RESOURCE_TYPE)
         and ((outcome == "allowed" and allowed) or (outcome == "denied" and not allowed) or outcome == "all")
     )
     ts = _parse_iso_millis(rec.get("ts"))
@@ -742,6 +793,8 @@ def find_unreadable_lines(
                 if rec is not None:
                     if rec.get("oversized") is True:
                         kind = "oversized-record"
+                    elif _malformed_refusal(rec):
+                        kind = "malformed-refusal"
                     elif not _is_decision(rec) or _parse_iso_millis(rec.get("ts")) is not None:
                         continue
                     else:

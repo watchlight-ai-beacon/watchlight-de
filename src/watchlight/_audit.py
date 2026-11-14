@@ -137,6 +137,17 @@ class DecisionRecord(_DecisionRequired, total=False):
     #: ``execution_completed`` lifecycle lines carry, so the decision joins the
     #: run it belongs to.
     execution_id: str
+    #: Present, and always ``True``, only on a ``Deny`` a framework plugin
+    #: recorded for a call whose action, resource or execution id broke a name
+    #: rule: that field holds a value-free marker (``{"omitted": "refused",
+    #: "bytes": …}``) instead of a name. ``counters()`` counts it as a denied
+    #: decision of its principal.
+    refused_term: Literal[True]
+    #: Present, and always ``True``, only on a ``Deny`` a framework plugin
+    #: recorded for a call whose principal broke a name rule: the principal
+    #: holds a value-free marker. ``counters()`` counts it as a denied decision
+    #: of every principal, inside its window, and never as allowed.
+    refused_principal: Literal[True]
 
 
 class _SanitizationRequired(AuditRecordBase):

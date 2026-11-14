@@ -604,10 +604,15 @@ async def _attempt_async(fn):
         pass
 
 
-def test_no_plugin_decision_writes_an_unreadable_or_oversized_line(tmp_path, monkeypatch, capsys):
+def test_no_plugin_decision_writes_an_unreadable_line(tmp_path, monkeypatch, capsys):
     """The plugin path applies the direct path's bounds at the decision: an odd
-    principal, action, resource or execution id is refused before the engine,
-    and nothing it writes is unreadable or shortened."""
+    principal, action, resource or execution id is refused before the engine.
+    Called directly, the backend raises and writes nothing, as the direct path
+    does. Through a run handle the refusal comes back as a deny (the SDK turns
+    any backend error into one since watchlight-agent-sdk 0.10.1), so it is
+    recorded: the odd term is replaced by a value-free marker and the record is
+    marked oversized. Nothing either path writes is unreadable, and no odd value
+    is ever written."""
     pytest.importorskip("watchlight_core")
     from watchlight.inprocess import in_process_backend
 
@@ -616,13 +621,21 @@ def test_no_plugin_decision_writes_an_unreadable_or_oversized_line(tmp_path, mon
     backend = in_process_backend(PLUGIN_POLICIES, audit_path=str(audit))
     odd = [x for x in ODD if x is not None] + [Sneaky("y" * (2 * MAX_COUNTERS_LINE_BYTES)), Sneaky("ok")]
 
-    async def drive():
+    async def direct():
         assert (await backend.authorize('Agent::"a"', 'Action::"read"', 'Tool::"x"'))["decision"] == "Allow"
         for x in odd:
             await _attempt_async(lambda: backend.authorize(x, 'Action::"read"', 'Tool::"x"'))
             await _attempt_async(lambda: backend.authorize('Agent::"a"', x, 'Tool::"x"'))
             await _attempt_async(lambda: backend.authorize('Agent::"a"', 'Action::"read"', x))
             await _attempt_async(lambda: backend.authorize('Agent::"a"', 'Action::"read"', 'Tool::"x"', execution_id=x))
+
+    asyncio.run(direct())
+    capsys.readouterr()
+    assert trail_lines(tmp_path)
+    assert_every_line_readable(tmp_path)
+    direct_decisions = len([line for line in trail_lines(tmp_path) if b'"event": "decision"' in line])
+
+    async def handles():
         for module in _plugin_modules():
             plugin = module.governed_plugin(PLUGIN_POLICIES, audit_path=str(audit))
             async with await plugin.start_run("battery-agent") as handle:
@@ -632,17 +645,40 @@ def test_no_plugin_decision_writes_an_unreadable_or_oversized_line(tmp_path, mon
                     await _attempt_async(lambda: handle.authorize_action('Action::"read"', 'Tool::"x"', principal=x))
                     await _attempt_async(lambda: handle.authorize_action_detailed(x, x, principal=x))
 
-    asyncio.run(drive())
+    asyncio.run(handles())
     capsys.readouterr()
-    assert trail_lines(tmp_path)
-    assert_every_line_readable(tmp_path)
+    lines = trail_lines(tmp_path)
+    assert max(len(line) for line in lines) < MAX_COUNTERS_LINE_BYTES
+    raw = audit.read_bytes()
+    assert b"y" * 64 not in raw and HUGE[:64].encode() not in raw
+    found = find_unreadable_lines(audit)
+    # Every finding is a marked record; none is a line that cannot be read.
+    assert {f["reason"] for f in found["findings"]} <= {"oversized-record"}, found
+    records = [json.loads(line) for line in lines]
+    marked = [
+        r for r in records
+        if r.get("oversized") is True or r.get("refused_term") is True or r.get("refused_principal") is True
+    ]
+    assert marked, "no handle refusal was recorded"
+    # A refused principal is recorded as such, never as a record that counts
+    # toward every query without a window.
+    assert any(r.get("refused_principal") is True for r in marked)
+    assert not [r for r in marked if r.get("oversized") is True]
+    for record in marked:
+        assert record["event"] == "decision" and record["decision"] == "Deny", record
+        assert any(
+            isinstance(record.get(field), dict) and record[field].get("omitted") == "refused"
+            for field in ("principal", "intent", "resource")
+        ), record
+    assert len([r for r in records if r.get("event") == "decision"]) > direct_decisions
 
 
 def test_plugin_refusals_after_a_quarantine_never_record_an_oversized_name(tmp_path, monkeypatch, capsys):
     """After a quarantine the handle refuses calls itself, without asking the
     backend; those refusals are recorded from the call's own terms. A term that
-    breaks the bounds is replaced by a value-free marker and the record is
-    marked oversized, so it counts toward every quota and is never written."""
+    breaks the bounds is never written: it is replaced by a value-free marker,
+    and the record is marked `refused_term`, so it counts as a denied decision
+    of its (intact) principal, matching any filter on the refused field."""
     pytest.importorskip("watchlight_core")
     from watchlight_core import AgentQuarantinedError, SubtreeSeveredError
 
@@ -667,17 +703,26 @@ def test_plugin_refusals_after_a_quarantine_never_record_an_oversized_name(tmp_p
     lines = trail_lines(tmp_path)
     assert all(len(line) < 64 * 1024 for line in lines)
     decisions = [json.loads(line) for line in lines if b'"event": "decision"' in line]
-    assert [d.get("oversized") for d in decisions] == [None, True, True, True]
+    assert [d.get("oversized") for d in decisions] == [None, None, None, None]
+    assert [d.get("refused_term") for d in decisions] == [None, True, True, True]
     assert huge[:64].encode() not in audit.read_bytes()
     # A short refused term carries only its length — never a digest — like the
     # small fields the audit funnel keeps; a long one also carries a digest.
     tab = decisions[3]["resource"]
     assert tab == {"omitted": "refused", "bytes": len('Tool::"a\nb"')}
     assert decisions[1]["intent"]["omitted"] == "refused" and "sha256" in decisions[1]["intent"]
-    # Each marked refusal counts toward every quota (fail-closed), so a refusal
-    # with a refused name can never make a denied-count under-count.
-    r = count_audit_records(audit, 'User::"anyone"', outcome="denied")
-    assert (r["count"], r["unreadable"]) == (3, 3)
+    # Each marked refusal is a denied decision of the run's agent, and its
+    # marker matches any filter on the refused field, so a refusal with a
+    # refused name can never make that principal's denied-count under-count.
+    # It never counts for another principal, and never as allowed.
+    agent = decisions[0]["principal"]
+    r = count_audit_records(audit, agent, intent='Action::"read"', resource='Tool::"x"', outcome="denied")
+    assert (r["count"], r["unreadable"]) == (3, 0)
+    r = count_audit_records(audit, agent, intent='Action::"anything"', outcome="denied")
+    assert r["count"] == 1
+    assert count_audit_records(audit, agent, outcome="denied")["count"] == 4
+    assert count_audit_records(audit, agent, outcome="allowed")["count"] == 0
+    assert count_audit_records(audit, 'User::"anyone"', outcome="all")["count"] == 0
 
 
 def test_a_plugin_agent_name_is_never_refused_and_never_written_oversized(tmp_path, monkeypatch, capsys):
@@ -713,3 +758,39 @@ def test_the_shortened_line_is_checked_like_the_fast_path(monkeypatch):
     monkeypatch.setattr(_audit, "_fits", lambda line: False)
     out = json.loads(_audit.bounded_line({"ts": "t", "event": "decision", "x": "y" * (600 * 1024)}))
     assert out == {"ts": "t", "event": "decision", "oversized": True, "fields": 3}
+
+
+def test_refused_term_records_count_as_in_typescript():
+    """A `refused_term` Deny counts for its own principal, as denied, inside its
+    window, and its marker field matches any filter on that field. One that is
+    not a Deny with a string principal counts toward every query. The same
+    fixture and expectations are checked by the TypeScript suite."""
+    trail = FIXTURES / "counters-refused-term.jsonl"
+    expected = json.loads((FIXTURES / "counters-refused-term.expected.json").read_text())
+    found = find_unreadable_lines(trail)
+    assert found["lines"] == expected["lines"]
+    assert found["findings"] == expected["findings"]
+    for q in expected["queries"]:
+        r = count_audit_records(
+            trail, q["principal"], q.get("intent"), q.get("resource"),
+            window="1h", outcome=q["outcome"], now=expected["now"],
+        )
+        assert (r["count"], r["unreadable"]) == (q["count"], q["unreadable"]), q
+
+
+def test_refusal_record_cases_count_as_in_typescript(tmp_path):
+    """Every shape a refused-term or refused-principal record can take — the
+    ones the SDK writes and the ones it never does — counts the same in both
+    lanes. A refused principal is a denied decision of every principal, only
+    inside its window and never as allowed; anything the SDK does not write
+    counts toward every query. The TypeScript suite checks the same fixture."""
+    fixture = json.loads((FIXTURES / "counters-refusal-cases.json").read_text())
+    for case in fixture["cases"]:
+        trail = tmp_path / f"{case['name']}.jsonl"
+        trail.write_text(json.dumps(case["record"]) + "\n", encoding="utf-8")
+        for q in case["expected"]:
+            r = count_audit_records(
+                trail, q["principal"], q["intent"], q["resource"],
+                window=fixture["window"], outcome=q["outcome"], now=fixture["now"],
+            )
+            assert r["count"] == q["count"], (case["name"], q)

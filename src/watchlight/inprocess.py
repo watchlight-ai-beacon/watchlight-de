@@ -26,14 +26,17 @@ file, as before. A ``preflight_step`` is an advisory, read-only what-if (it does
 not count toward the run's budget and gates nothing) and writes no record; the
 gate is ``authorize_action``.
 
-Once a run is quarantined or severed, the plugin's handle refuses every later
-call itself, without asking the backend. A plugin built by ``governed_plugin``
-hands out run handles that record those refusals too (:class:`_AuditedRunHandle`),
-including the children it spawns and the Claude Agent SDK's native Task
-sub-agents. Two routes do not record those self-made refusals: a handle read
-from ``watchlight_core.current_subagent_handle()`` (the SDK's own handle), and a
-plugin you construct yourself around :func:`in_process_backend`. Both still
-record every decision the backend makes.
+The plugin's handle refuses some calls itself, without a decision record from
+the backend: every call after the run is quarantined, severed, terminated or
+revoked; a call whose intent is not a typed intent (an objective and a
+category), refused before any request; and a call with a term the backend
+refused before deciding, which the handle turns into a deny. A plugin built by
+``governed_plugin`` hands out run handles that record those refusals too
+(:class:`_AuditedRunHandle`), including the children it spawns and the Claude
+Agent SDK's native Task sub-agents. Two routes do not record those self-made
+refusals: a handle read from ``watchlight_core.current_subagent_handle()`` (the
+SDK's own handle), and a plugin you construct yourself around
+:func:`in_process_backend`. Both still record every decision the backend makes.
 
     from watchlight.inprocess import in_process_backend
     from watchlight_langgraph import WatchlightLangGraphPlugin
@@ -145,12 +148,15 @@ def _agent_reference(agent_id: str) -> str:
         return agent_id
 
 
-@functools.lru_cache(maxsize=None)
 def _refused_marker(value: Any) -> Dict[str, Any]:
     """The value-free stand-in for a plugin term that broke a name rule: its
     length in bytes and, as the audit funnel does, a digest only for a value
     longer than 256 bytes — a short name is never digested. A non-string has
-    neither."""
+    neither.
+
+    Not cached: a cache would keep every distinct refused term in memory, and
+    would need the term to be hashable, which a list, a dict or a ``str``
+    subclass with a failing ``__hash__`` is not."""
     if not isinstance(value, str):
         return {"omitted": "refused"}
     size = len(str.encode(value, "utf-8", "surrogatepass"))
@@ -159,17 +165,46 @@ def _refused_marker(value: Any) -> Dict[str, Any]:
     return _marker(value, "refused")
 
 
-def _short_circuit_errors() -> Tuple[type, ...]:
-    """The refusals a plugin's handle makes WITHOUT asking the backend: a handle
-    that is quarantined or severed refuses every later call itself. The handle
-    wrapper records each one (see :class:`_AuditedRunHandle`)."""
-    from watchlight_core import AgentQuarantinedError, SubtreeSeveredError
+def _not_a_decision_errors() -> Tuple[type, ...]:
+    """The exceptions a governed call can raise that are NOT a decision: a
+    caller bug the SDK refuses before anything is decided (an authorize outside
+    ``async with``), raised as itself and never recorded, exactly as on the
+    direct path. Every other way a governed call ends without the backend
+    having recorded it is a refusal the handle made itself, and is recorded
+    (see :class:`_AuditedRunHandle`)."""
+    from watchlight_core import WatchlightContractError
 
-    return (AgentQuarantinedError, SubtreeSeveredError)
+    return (WatchlightContractError,)
 
-#: Set by the handle wrapper for the duration of one call; the backend marks it
-#: when it answers. A short-circuit refusal is one the backend never saw.
-_CALL_MARKER: "contextvars.ContextVar[Optional[Dict[str, bool]]]" = contextvars.ContextVar(
+#: The decisions the SDK's handle acts on as a halt, whatever the answer's
+#: ``decision`` string says.
+_HALTING_KINDS = frozenset({"quarantine", "terminate", "sever_subtree", "revoke"})
+
+
+def _sdk_allows(result: Any) -> bool:
+    """Whether the SDK's handle lets the action proceed on this backend answer,
+    decided by the SDK's own functions in the order the handle applies them:
+    the answer must pass ``authorize_response_problem``, parse with
+    ``parse_authorization_decision`` into a decision that is not a halt, and
+    reduce with ``AuthorizeResult.from_apdp`` to exactly ``allow``. Any doubt
+    (an exception included) is ``False``: the record then says Deny."""
+    try:
+        from watchlight_core.decision import parse_authorization_decision
+        from watchlight_core.results import AuthorizeResult, authorize_response_problem
+
+        if authorize_response_problem(result) is not None:
+            return False
+        if parse_authorization_decision(result).kind in _HALTING_KINDS:
+            return False
+        return AuthorizeResult.from_apdp(result).is_allow()
+    except Exception:  # noqa: BLE001 — an answer that cannot be read is a refusal
+        return False
+
+
+#: Set by the handle wrapper for the duration of one call. The backend marks
+#: it when it writes the call's decision record; a call that ends with no
+#: record written is one the handle decided itself, and the wrapper records it.
+_CALL_MARKER: "contextvars.ContextVar[Optional[Dict[str, Any]]]" = contextvars.ContextVar(
     "watchlight_plugin_call", default=None
 )
 
@@ -320,15 +355,14 @@ def _audited_client_class() -> Any:
             intent: Optional[Dict[str, Any]] = None,
             run: Any = None,
         ) -> Dict[str, Any]:
-            marker = _CALL_MARKER.get()
-            if marker is not None:
-                marker["reached"] = True
             # The direct path's bounds (see watchlight.principals), applied
             # before the engine and before the trail: a term that breaks a rule
-            # raises TypeError (value-free) and nothing is decided or recorded,
-            # exactly as Watchlight.authorize does. Only here, at the decision —
-            # never in start_run or resolve_agent, where a framework's
-            # instrumentation could swallow the error.
+            # raises TypeError (value-free) and nothing is decided or recorded
+            # here, exactly as Watchlight.authorize does. Only here, at the
+            # decision — never in start_run or resolve_agent, where a
+            # framework's instrumentation could swallow the error. The SDK's
+            # handle turns that error into a deny, and the handle wrapper
+            # records the deny with a value-free marker (see _AuditedRunHandle).
             principal = principals.assert_principal(principal)
             action = principals.assert_name(action, "action")
             resource = principals.assert_name(resource, "resource")
@@ -354,19 +388,29 @@ def _audited_client_class() -> Any:
                 # is a refusal like any other — recorded, then raised as itself.
                 self._wl_record(record_session, None, principal, action, resource, "Deny", execution_id)
                 raise
-            # The verdict the plugin acts on. The SDK reads it the same way —
-            # case- and space-insensitively — and anything but an Allow is a
-            # refusal (a Deny, a Quarantine, a Terminate, a SeverSubtree, …).
-            verdict = result.get("decision") if isinstance(result, dict) else None
-            allowed = str(verdict).strip().lower() == "allow"
+            # The verdict the plugin acts on, reduced exactly as the SDK's
+            # handle reduces it (see _sdk_allows): anything but an Allow there
+            # is a refusal (a Deny, a Quarantine, a Terminate, a SeverSubtree,
+            # an answer the SDK will not trust, …), and is recorded as a Deny.
+            allowed = _sdk_allows(result)
             self._wl_record(
                 record_session, None, principal, action, resource,
                 "Allow" if allowed else "Deny", execution_id,
             )
             return result
 
-        def _wl_record_refusal(self, handle: Any, action: Any, resource: Any, principal: Any) -> None:
-            """Record a refusal the plugin's handle made without asking us."""
+        def _wl_record_refusal(
+            self,
+            handle: Any,
+            action: Any,
+            resource: Any,
+            principal: Any,
+            decision: str = "Deny",
+        ) -> None:
+            """Record a decision the plugin's handle made without a record
+            from us: a refusal (the default), or, should a handle ever let an
+            action proceed without asking, that Allow, so no decision escapes
+            the trail."""
             try:
                 agent_id = str(getattr(handle, "agent_uuid", "") or "")
                 run = getattr(handle, "run", None)
@@ -377,15 +421,17 @@ def _audited_client_class() -> Any:
                 )
                 execution_id = getattr(handle, "execution_id", None)
             except Exception as exc:  # noqa: BLE001
-                self._wl_report_record_failure(exc)
-                return
+                # The handle could not be read: the decision is still recorded,
+                # under no run (the record then names no agent).
+                self._wl_report_record_failure(exc, placeholder=False)
+                agent_id, session_id, execution_id = "", None, None
             self._wl_record(
                 session_id,
                 agent_id or None,
                 principal or (_agent_reference(agent_id) if agent_id else ""),
                 action,
                 resource,
-                "Deny",
+                "Allow" if decision == "Allow" else "Deny",
                 execution_id,
             )
 
@@ -405,84 +451,190 @@ def _audited_client_class() -> Any:
             # Everything, the lookups included, is inside the try: building the
             # record must never alter, delay or replace a decision.
             try:
-                chain = self._wl_chain_of(session_id) or ((agent_id,) if agent_id else ())
-                # Stored IN FULL, as the direct path stores them: a quota
-                # matches these fields exactly, so a cut or rewritten term
-                # would be a decision no count could find. A term that breaks
-                # the direct path's bounds is never written: it is replaced by
-                # a value-free marker and the record is marked oversized, which
-                # the counters count toward every query — so it can never make
-                # a quota under-count. (`authorize` refuses such terms before
-                # deciding; this covers the refusals the handle makes itself.)
-                broken = False
-
-                def bounded(value: Any, check: Any) -> Any:
-                    nonlocal broken
-                    try:
-                        return check(value)
-                    except Exception:  # noqa: BLE001 — any rule broken
-                        broken = True
-                        return _refused_marker(value)
-
-                # Agent names come from `start_run` / `spawn_subagent` and are
-                # never refused (a framework's instrumentation could swallow
-                # the error); they are recorded as given, JSON escaping what
-                # needs escaping, and only bounded in length.
-                names = [
-                    bounded(
-                        str(self._wl_agent_names.get(a, a)),
-                        lambda v: principals.assert_name_length(
-                            v, "agent", TypeError, principals.MAX_AGENT_NAME_BYTES
-                        ),
-                    )
-                    for a in chain
-                ]
-                record = decision_record(
-                    agent=names[-1] if names else UNCONFIGURED_AGENT,
-                    actor_chain=names if len(names) > 1 else None,
-                    principal=bounded(principal, principals.assert_principal),
-                    intent=bounded(action, lambda v: principals.assert_name(v, "action")),
-                    resource=bounded(resource, lambda v: principals.assert_name(v, "resource")),
-                    decision=decision,
-                    execution_id=(
-                        bounded(execution_id, lambda v: principals.assert_name(v, "execution_id"))
-                        if execution_id
-                        else None
-                    ),
+                record = self._wl_build_record(
+                    session_id, agent_id, principal, action, resource, decision, execution_id
                 )
-                if broken:
-                    record["oversized"] = True
             except Exception as exc:  # noqa: BLE001 — never let auditing alter a decision
                 self._wl_report_record_failure(exc)
+                # The decision is still recorded: a placeholder that holds no
+                # name at all, marked oversized, so it counts toward every
+                # query (whose decision it was cannot be read from it).
+                record = _placeholder_record(decision)
+            try:
+                self._wl_trail.write(record)
+            except Exception as exc:  # noqa: BLE001 — the trail is designed never to raise
+                self._wl_report_record_failure(exc, placeholder=False)
                 return
-            self._wl_trail.write(record)
+            except BaseException:
+                # A synchronous sink that raises a cancellation or an interrupt
+                # does so after the file line is written: the call has its
+                # record, so it is marked before the exception goes on.
+                _mark_recorded()
+                raise
+            # The wrapper's call (if any) now has its record, so it must not
+            # write a second one. Set only once the record is written.
+            _mark_recorded()
 
-        def _wl_report_record_failure(self, exc: BaseException) -> None:
+        def _wl_build_record(
+            self,
+            session_id: Optional[str],
+            agent_id: Optional[str],
+            principal: Any,
+            action: Any,
+            resource: Any,
+            decision: str,
+            execution_id: Optional[str],
+        ) -> Dict[str, Any]:
+            chain = self._wl_chain_of(session_id) or ((agent_id,) if agent_id else ())
+            # Stored IN FULL, as the direct path stores them: a quota matches
+            # these fields exactly, so a cut or rewritten term would be a
+            # decision no count could find. A term that breaks the direct
+            # path's bounds is never written: it is replaced by a value-free
+            # marker. (`authorize` refuses such terms before deciding; this
+            # covers the refusals the handle records itself.) How the record is
+            # then marked decides how the counters treat it:
+            #
+            # * only the action, resource or execution id was refused, on a
+            #   Deny: `"refused_term": true`. The principal is intact, so the
+            #   counters count it as a denied decision of that principal,
+            #   inside its window, and let its marker match any filter on the
+            #   refused field;
+            # * the principal was refused, on a Deny: `"refused_principal":
+            #   true`. Whose decision it was cannot be read, so the counters
+            #   count it as a denied decision of EVERY principal — but only as
+            #   denied, and only inside its window;
+            # * an agent name was refused, or the decision is not a Deny:
+            #   `"oversized": true`, which the counters count toward every
+            #   query, since whose decision it is (or that it was a refusal)
+            #   cannot be read from it.
+            broken: set = set()
+
+            def bounded(value: Any, check: Any, field: str) -> Any:
+                try:
+                    return check(value)
+                except Exception:  # noqa: BLE001 — any rule broken
+                    broken.add(field)
+                    return _refused_marker(value)
+
+            # Agent names come from `start_run` / `spawn_subagent` and are
+            # never refused (a framework's instrumentation could swallow the
+            # error); they are recorded as given, JSON escaping what needs
+            # escaping, and only bounded in length.
+            names = [
+                bounded(
+                    str(self._wl_agent_names.get(a, a)),
+                    lambda v: principals.assert_name_length(
+                        v, "agent", TypeError, principals.MAX_AGENT_NAME_BYTES
+                    ),
+                    "agent",
+                )
+                for a in chain
+            ]
+            record = decision_record(
+                agent=names[-1] if names else UNCONFIGURED_AGENT,
+                actor_chain=names if len(names) > 1 else None,
+                principal=bounded(principal, principals.assert_principal, "principal"),
+                intent=bounded(action, lambda v: principals.assert_name(v, "action"), "action"),
+                resource=bounded(resource, lambda v: principals.assert_name(v, "resource"), "resource"),
+                decision=decision,
+                execution_id=(
+                    bounded(
+                        execution_id,
+                        lambda v: principals.assert_name(v, "execution_id"),
+                        "execution_id",
+                    )
+                    if execution_id
+                    else None
+                ),
+            )
+            if broken:
+                if decision != "Deny" or "agent" in broken:
+                    record["oversized"] = True
+                elif "principal" in broken:
+                    record["refused_principal"] = True
+                else:
+                    record["refused_term"] = True
+            return record
+
+        def _wl_report_record_failure(self, exc: BaseException, placeholder: bool = True) -> None:
             # A record that could not be built is a hole in the trail; said
             # once, by error type only, the way a failing sink is reported.
             if self._wl_warned_record:
                 return
             self._wl_warned_record = True
             print(
-                f"watchlight: a framework-plugin decision could not be recorded ({_error_kind(exc)}); "
-                "further failures are suppressed",
+                f"watchlight: a framework-plugin decision could not be recorded in full "
+                f"({_error_kind(exc)})"
+                + ("; a value-free placeholder was written in its place" if placeholder else "")
+                + "; further failures are suppressed",
                 file=sys.stderr,
             )
 
     return AuditedInProcessClient
 
 
+def _mark_recorded() -> None:
+    """Mark the innermost wrapped call as recorded. The mark reaches an
+    enclosing call only while that call is a decorated tool whose body has not
+    started: a record written then is the tool's own guard decision (made
+    through a nested wrapped call). Once the body runs, its calls are separate
+    decisions, and their records never stand in for the tool's."""
+    marker = _CALL_MARKER.get()
+    while marker is not None:
+        marker["recorded"] = True
+        parent = marker["parent"]
+        if parent is None or parent["body"] is None or parent["body"].ran:
+            return
+        marker = parent
+
+
+def _placeholder_record(decision: str) -> Dict[str, Any]:
+    """The record written when a decision's own record cannot be built: no
+    name at all, only the verdict, marked oversized so the counters count it
+    toward every query. Built here, by hand, so it does not depend on the code
+    that just failed."""
+    import datetime
+
+    unrecorded = {"omitted": "unrecorded"}
+    return {
+        "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "agent": UNCONFIGURED_AGENT,
+        "principal": dict(unrecorded),
+        "intent": dict(unrecorded),
+        "event": "decision",
+        "resource": dict(unrecorded),
+        "decision": "Allow" if decision == "Allow" else "Deny",
+        "oversized": True,
+    }
+
+
+def _bool_outcome(result: Any) -> bool:
+    """``authorize_action``'s result: only ``True`` lets the action proceed."""
+    return result is True
+
+
+def _detailed_outcome(result: Any) -> bool:
+    """``authorize_action_detailed``'s result: only an ``allow`` lets the
+    action proceed (``deny`` and ``needs_approval`` do not)."""
+    return str(getattr(result, "decision", "")).strip().lower() == "allow"
+
+
 class _AuditedRunHandle:
     """The run handle a governed plugin hands out, recording every refusal.
 
-    A plugin's handle refuses some calls ITSELF, without asking the backend: once
-    a run is quarantined or severed, every later ``authorize_action`` raises at
-    once. Those refusals never reach :class:`AuditedInProcessClient`, so this
+    A plugin's handle refuses some calls ITSELF, without a decision record from
+    the backend: once a run is quarantined, severed, terminated or revoked,
+    every later ``authorize_action`` raises at once; an intent that is not a
+    typed intent (an objective and a category) is refused before any request;
+    and a term the backend refused before deciding comes back as a deny. Those
+    refusals are not recorded by :class:`AuditedInProcessClient`, so this
     wrapper records them. Everything else is the SDK's handle, unchanged: every
     attribute and method is delegated, and the decision is always the handle's.
 
-    A refusal is recorded here only when the backend did NOT answer the call —
-    one it answered is already recorded — so each decision is recorded once.
+    A decision is recorded here only when the backend wrote no record for the
+    call — one it answered is already recorded — so each decision is recorded
+    once. The rule does not depend on knowing each refusal path in advance, so
+    a path a later SDK release adds is recorded too.
 
     It is a wrapper, not a subclass: ``isinstance(handle, BaseRunHandle)`` is
     ``False`` for a handle a governed plugin hands out. The SDK's own handle is
@@ -521,17 +673,17 @@ class _AuditedRunHandle:
 
     async def authorize_action(self, *args: Any, **kwargs: Any) -> Any:
         method = self._wl_inner.authorize_action
-        return await self._wl_watch(method, args, kwargs)
+        return await self._wl_watch(method, args, kwargs, _bool_outcome)
 
     async def authorize_action_detailed(self, *args: Any, **kwargs: Any) -> Any:
         method = self._wl_inner.authorize_action_detailed
-        return await self._wl_watch(method, args, kwargs)
+        return await self._wl_watch(method, args, kwargs, _detailed_outcome)
 
     async def spawn_subagent(self, *args: Any, **kwargs: Any) -> Any:
         child = await self._wl_inner.spawn_subagent(*args, **kwargs)
         return _AuditedRunHandle(child, self._wl_backend)
 
-    async def _wl_watch(self, method: Any, args: tuple, kwargs: dict) -> Any:
+    async def _wl_watch(self, method: Any, args: tuple, kwargs: dict, outcome: Any) -> Any:
         try:
             bound = inspect.signature(method).bind(*args, **kwargs).arguments
         except (TypeError, ValueError):
@@ -541,24 +693,75 @@ class _AuditedRunHandle:
             bound.get("action"),
             bound.get("resource"),
             bound.get("principal"),
+            outcome,
         )
 
-    async def _wl_run(self, call: Any, action: Any, resource: Any, principal: Any) -> Any:
-        marker: Dict[str, bool] = {"reached": False}
+    async def _wl_run(
+        self,
+        call: Any,
+        action: Any,
+        resource: Any,
+        principal: Any,
+        outcome: Any,
+    ) -> Any:
+        """Run one governed call and record it if the backend did not.
+
+        The backend records every call it answers, and marks the call when the
+        record is written. A call that ends with no record written was decided
+        by the handle itself, and is recorded here, once: as an Allow only when
+        the call let the action proceed, and as a Deny otherwise. That covers
+        every refusal the SDK's handle makes without a backend record: after a
+        quarantine, a sever, a Terminate or a Revoke; a malformed intent
+        refused locally (``intent_refused``); a term the backend refused before
+        deciding, which the handle turns into a deny; a call that is cancelled
+        (an ``asyncio.wait_for`` timeout, say) or interrupted before the
+        backend answered; and any such path a later SDK release adds.
+
+        ``outcome(result)`` says whether the call let the action proceed. When
+        the call raises, it did not, unless ``outcome`` is a
+        :class:`_BodyRan` that saw the decorated tool's body start. The only
+        exception that is not recorded is a caller bug the SDK raises before
+        anything is decided (see :func:`_not_a_decision_errors`)."""
+        # Each wrapped call has its own marker. A record written for an inner
+        # call marks an outer one only while the outer call is a decorated
+        # tool still deciding whether its body may run (see _mark_recorded).
+        marker: Dict[str, Any] = {
+            "recorded": False,
+            "parent": _CALL_MARKER.get(),
+            "body": outcome if isinstance(outcome, _BodyRan) else None,
+        }
         token = _CALL_MARKER.set(marker)
         try:
-            return await call
-        except Exception as exc:
-            if not marker["reached"] and isinstance(exc, _short_circuit_errors()):
-                self._wl_backend._wl_record_refusal(self._wl_inner, action, resource, principal)
+            result = await call
+        except BaseException as exc:
+            # BaseException: a cancelled call (asyncio.CancelledError) is a
+            # refusal too — the action did not run on this call's decision.
+            if not marker["recorded"] and not isinstance(exc, _not_a_decision_errors()):
+                ran = isinstance(outcome, _BodyRan) and outcome.ran
+                self._wl_backend._wl_record_refusal(
+                    self._wl_inner, action, resource, principal,
+                    decision="Allow" if ran else "Deny",
+                )
             raise
         finally:
             _CALL_MARKER.reset(token)
+        if not marker["recorded"]:
+            try:
+                allowed = outcome(result) is True
+            except Exception:  # noqa: BLE001 — an unreadable outcome is a refusal
+                allowed = False
+            self._wl_backend._wl_record_refusal(
+                self._wl_inner, action, resource, principal,
+                decision="Allow" if allowed else "Deny",
+            )
+        return result
 
     def _wl_guarded_tool(self, guarded_tool: Any) -> Any:
         """A framework's tool decorator (Pydantic AI's ``guarded_tool``) calls
         the SDK handle's own ``authorize_action``, not this wrapper's, so the
-        decorated tool is watched here instead."""
+        decorated tool is watched here instead. Whether the call was allowed
+        is read from whether the tool's body started, never guessed from its
+        return value."""
 
         @functools.wraps(guarded_tool)
         def factory(*args: Any, **kwargs: Any) -> Any:
@@ -571,18 +774,51 @@ class _AuditedRunHandle:
             inner_decorator = guarded_tool(*args, **kwargs)
 
             def decorator(fn: Any) -> Any:
-                governed = inner_decorator(fn)
+                @functools.wraps(fn)
+                async def body(*a: Any, **k: Any) -> Any:
+                    state = _BODY_RAN.get()
+                    if state is not None:
+                        state.ran = True
+                    value = fn(*a, **k)
+                    if inspect.isawaitable(value):
+                        value = await value
+                    return value
+
+                governed = inner_decorator(body)
                 resource = getattr(fn, "__name__", None)
 
                 @functools.wraps(governed)
                 async def watched(*a: Any, **k: Any) -> Any:
-                    return await self._wl_run(governed(*a, **k), action, resource, None)
+                    state = _BodyRan()
+                    token = _BODY_RAN.set(state)
+                    try:
+                        return await self._wl_run(governed(*a, **k), action, resource, None, state)
+                    finally:
+                        _BODY_RAN.reset(token)
 
                 return watched
 
             return decorator
 
         return factory
+
+
+class _BodyRan:
+    """Whether a decorated tool's body started on this call: the decorator ran
+    it, so the call was allowed. Read as the call's outcome."""
+
+    __slots__ = ("ran",)
+
+    def __init__(self) -> None:
+        self.ran = False
+
+    def __call__(self, _result: Any) -> bool:
+        return self.ran
+
+
+_BODY_RAN: "contextvars.ContextVar[Optional[_BodyRan]]" = contextvars.ContextVar(
+    "watchlight_tool_body", default=None
+)
 
 
 def _rebind_subagent_registry(inner: Any, wrapped: "_AuditedRunHandle") -> None:
