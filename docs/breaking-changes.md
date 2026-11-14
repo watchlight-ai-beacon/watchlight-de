@@ -8,6 +8,58 @@ different verdict. Only some announce themselves; the rest surface as a denial
 that looks exactly like a policy of yours doing its job. Read every entry
 between the version you are on and the one you are moving to.
 
+## Unreleased
+
+**A sub-agent's call outside the scope its spawn granted is denied, in process.**
+With `in_process_backend()`, a sub-agent granted `[web_search]` (or nothing)
+could call any tool your policies allowed its principal. Now every authorize
+and preflight it makes is checked against the tools, resources, intents and
+deadline its spawn granted, and a call outside them is denied with
+`scope_attenuation_violation`. The first such denial also invalidates the
+sub-agent's run handle, so every later call on it, or on a sub-agent spawned
+under it, is denied too. This only moves in the closed direction. To fix a
+denial, grant the tool or resource in the spawn's scope. Root runs are
+unaffected. A nested agent that Pydantic AI's automatic instrumentation opens
+is spawned with no tools granted, so every call it authorizes is now denied;
+govern that agent's tools on a run that grants them.
+
+**`watchlight.declare_intent` requires a category.** A declaration without
+`category` (one of the engine's intent categories, or `custom:<name>`) is
+rejected, and an authorize request carries only a typed intent with both an
+objective and a category. If your agent's prompt or code calls
+`declare_intent` with an objective alone, add the category.
+
+**Through a plugin's run handle, a term that breaks a name limit is a denial,
+not a `TypeError`.** A principal, action, resource or `execution_id` that is
+not a string, holds a control character or is longer than 4096 bytes used to
+raise a `TypeError` from `handle.authorize_action`, and nothing was recorded.
+`watchlight-agent-sdk` 0.10.1 turns any error from the backend into a deny, so
+the call now returns `False` (or a `deny` result from
+`authorize_action_detailed`), and the refusal is recorded as a `Deny`. The term
+is never written: the record carries a value-free marker. When the principal
+is intact, the record is marked `"refused_term": true`, and `counters()` counts
+it as a denied decision of that principal, inside its window, never as
+allowed and never for another principal. When the principal itself was
+refused, the record is marked `"refused_principal": true`, and `counters()`
+counts it as a denied decision of every principal, because whose decision it
+was cannot be read, but only inside its window and never as allowed. This
+only moves in the closed direction. Code
+that caught the `TypeError` to detect a bad term should check the return value
+instead, and should fix the term: each such refusal counts toward that
+principal's denied quotas in its window. Calling the backend's `authorize`
+directly still raises `TypeError` and records nothing. If you read the trail
+yourself, a decision record can now carry `"refused_term": true`, with a
+marker object in its `intent`, `resource` or `execution_id`, or
+`"refused_principal": true`, with a marker object in its `principal`.
+
+**A plugin's handle records the refusals it makes after a Terminate or a
+Revoke, when it refuses a malformed intent, and when a call is cancelled
+before the engine answers.** Each is a new `Deny` record in the audit trail,
+so a quota that counts denials can count higher than before. Nothing that was
+allowed is now denied by this change. A record now also always says what the
+handle acted on: an engine answer the SDK will not trust, such as a padded
+verdict (`" Allow"`), is recorded as a `Deny`.
+
 ## 0.15.0
 
 **A quota counts each principal once, however it is spelled.** `counters()`
