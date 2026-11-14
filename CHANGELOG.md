@@ -25,6 +25,12 @@ Each entry links to its release, which carries the reasoning and the measurement
 - Through a plugin's run handle, a principal, action, resource or `execution_id` that breaks a name limit is a denial (`authorize_action` returns `False`) instead of a `TypeError`, because `watchlight-agent-sdk` 0.10.1 turns any backend error into a deny. The refusal is recorded with a value-free marker in place of the term. When only the action, resource or `execution_id` was refused, the record is marked `"refused_term": true` and `counters()` (Python and TypeScript) counts it as a denied decision of its principal, inside its window, with the marker matching any filter on the refused field. When the principal was refused, it is marked `"refused_principal": true` and the counters count it as a denied decision of every principal, inside its window, never as allowed. Calling the backend's `authorize` directly still raises `TypeError` and records nothing.
 - Decision records gain optional `refused_term` and `refused_principal` fields (always `true`), described above. `watchlight audit check` reports a record carrying either in a shape the SDK does not write (not a `Deny`, both flags, or a principal of the wrong kind) as `malformed-refusal`, and the counters count such a record toward every query.
 
+**Added**
+- A test reads every Cedar policy in the README, `docs/` and `examples/` and decides it against the scenario its page describes: a `permit` must allow it and a `forbid` must deny it. A policy whose principal, action or condition never matches its own example now fails the suite (`tests/test_doc_policy_examples.py`).
+
+**Changed**
+- `docs/integrations.md` says which principal a framework plugin call has: `Agent::"<agent id>"`, the id the in-process backend resolves from the agent's name, never the name itself.
+
 ## 0.15.0 — 2026-10-18
 
 A quota now counts each principal once however it is spelled, and
