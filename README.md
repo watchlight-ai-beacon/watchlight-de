@@ -33,7 +33,46 @@ pip install watchlight        # Python 3.9+, prebuilt wheels
 npm install @watchlight/sdk   # Node 22+, the compiled engine comes with it
 ```
 
-## Quickstart
+## The fastest start: govern a server you didn't write
+
+You don't have to own the tool code to govern it. The MCP policy enforcement
+point sits in front of any MCP server and decides every `tools/call` against
+your policy before the server sees it. No change to the server, no change to
+the client beyond one header:
+
+```bash
+pip install 'watchlight[mcp]'
+```
+
+```python
+# pep.py — run it, then point your MCP client at http://127.0.0.1:9700/mcp
+import watchlight_mcp
+
+watchlight_mcp.serve(
+    listen_addr="127.0.0.1:9700",
+    upstream_url="http://localhost:3000/mcp",   # the server you're governing
+    upstream_server="github",
+    policy_files=["mcp.policy.json"],
+    audit_path=".watchlight/audit.jsonl",       # watchlight dev tails this
+)
+```
+
+A denied call never reaches the server. The client says who it is with a
+`Watchlight-Agent-Id` header; the PEP refuses a governed call without one.
+Keep the listener on loopback, or put it behind something that authenticates
+the caller (see [the identity note](#a-note-on-identity)). For an MCP server
+your client launches as a local process, `serve_stdio(...)` does the same job
+over standard input and output.
+
+[`examples/governed_mcp_server.py`](examples/governed_mcp_server.py) is the
+runnable proof: it fires one allowed and one denied call at a real server and
+shows the denied tool never executed.
+
+The policy file is the part you keep. `govern.load()` reads the same shape, so
+the file that governs this server also governs the agent you write next — which
+is the rest of this page.
+
+## Quickstart: govern your own tools
 
 **Python** — save as `agent.py`, run `python agent.py`:
 
@@ -159,6 +198,13 @@ Runnable programs live in [`examples/`](examples/) — start with
 the high-stakes decisions — spending money, deleting things, messaging the
 outside world, stopping a runaway agent — are in
 [`examples/patterns/`](examples/patterns/), each one run through the real engine.
+
+Running an agent unattended, in CI?
+[**Watchlight AI Enclave**](https://github.com/watchlight-ai-beacon/watchlight-enclave)
+runs it in a sandbox whose only network route is a recording guard, seals the
+digests of the same policy files into a hash-chained evidence bundle, and
+gates the job on that bundle verifying `ok` — offline, by anyone you hand it
+to. Policies written here carry over unchanged.
 
 ## A note on identity
 

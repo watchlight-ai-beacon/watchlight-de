@@ -8,7 +8,7 @@ compiled engine in-process, as WebAssembly.
 npm install @watchlight/sdk     # Node >= 22, no native toolchain
 ```
 
-The five-minute `DENY` is in the [repository README](../README.md#quickstart),
+The five-minute `DENY` is in the [repository README](../README.md#quickstart-govern-your-own-tools),
 side by side with Python. This page is what the lane gives you after that.
 
 Everything below has a Python equivalent under a `snake_case` name.
