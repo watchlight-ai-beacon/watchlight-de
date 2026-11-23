@@ -50,7 +50,7 @@ import watchlight_mcp
 
 watchlight_mcp.serve(
     listen_addr="127.0.0.1:9700",
-    upstream_url="http://localhost:3000/mcp",   # the server you're governing
+    upstream_url="http://localhost:3000/mcp",   # https works too; a private CA goes in upstream_ca=
     upstream_server="github",
     policy_files=["mcp.policy.json"],
     audit_path=".watchlight/audit.jsonl",       # watchlight dev tails this
