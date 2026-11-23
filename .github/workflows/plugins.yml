@@ -205,8 +205,18 @@ jobs:
           fi
           "${pip[@]}" --require-hashes --only-binary :all: --no-deps -r "$base/ci/engine.txt"
           # This commit's packages, editable and without dependencies, so no
-          # install can replace one with a release.
-          for dir in watchlight-core watchlight-agent-sdk-testing "$PACKAGE"; do
+          # install can replace one with a release. The SDK's suite also runs
+          # every plugin against the SDK (a required plugin that cannot load
+          # fails), so its job installs every package of this directory; their
+          # third-party dependencies are already in the lock.
+          dirs=(watchlight-core watchlight-agent-sdk-testing "$PACKAGE")
+          if [ "$PACKAGE" = "watchlight-core" ]; then
+            for d in "$base"/*/pyproject.toml; do
+              d=$(basename "$(dirname "$d")")
+              case "$d" in watchlight-core | watchlight-agent-sdk-testing) ;; *) dirs+=("$d") ;; esac
+            done
+          fi
+          for dir in "${dirs[@]}"; do
             if [ -f "$base/$dir/pyproject.toml" ]; then
               "${pip[@]}" --no-deps --no-build-isolation -e "$base/$dir"
             fi
