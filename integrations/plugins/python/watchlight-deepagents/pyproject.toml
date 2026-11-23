@@ -41,7 +41,7 @@ classifiers = [
 # middleware is young (``wrap_model_call`` was renamed from
 # ``modify_model_request``); the pin below is deliberately tight and a
 # major bump that moves any of those needs an explicit range update +
-# a HARDENING.md follow-up. ``test_middleware_lifecycle.py`` asserts
+# a security review of the change. ``test_middleware_lifecycle.py`` asserts
 # the hook surface so drift breaks loudly in CI rather than silently
 # disabling governance. ``langchain`` / ``langchain-core`` / ``langgraph``
 # come transitively via ``deepagents``.

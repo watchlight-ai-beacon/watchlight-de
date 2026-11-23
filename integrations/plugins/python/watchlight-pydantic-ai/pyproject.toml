@@ -36,7 +36,7 @@ classifiers = [
 # sync tool, and the plugin's tests rely on that. Future major bumps
 # that break the monkey-patched API (covered in
 # ``watchlight_pydantic_ai.instrumentation``) require an explicit
-# version range update + a HARDENING.md follow-up entry; the
+# version range update + a security review of the change; the
 # instrumentation patch surface is the single load-bearing
 # external API contract we depend on.
 dependencies = [

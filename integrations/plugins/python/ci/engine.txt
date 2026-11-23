@@ -1,0 +1,11 @@
+# The hash-pinned lock of engine.in (Python 3.12 and later, every platform):
+# the compiled policy engine's wheels from PyPI. Generated with
+# uv pip compile --universal --python-version 3.12 --generate-hashes;
+# do not edit by hand.
+watchlight-engine==0.2.5 \
+    --hash=sha256:110410cc0e18ea744d0ef1ee6f237724ef500c33dc07377c27af629ec0d00d47 \
+    --hash=sha256:30d60ef86aa3edb0c6c265534eb98a6023b53a350481e8205164f705a9ac8b92 \
+    --hash=sha256:444fc8d4f2c335e32d3c5960218b4d899522e2928bf4e463dfa8b49b75ce3174 \
+    --hash=sha256:974f7c2bca85fb005f8dd2bea92a38f301ef5939e1de55baec3c31d69196afa2 \
+    --hash=sha256:aeba36355a4299f34bb4dc0eb06025f5cf3f82b95127fbe2a22bc65acddc0c87
+    # via -r engine.in
