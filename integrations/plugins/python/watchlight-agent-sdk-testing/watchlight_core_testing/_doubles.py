@@ -28,7 +28,7 @@ from __future__ import annotations
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional, Sequence
 
 from watchlight_core.backend import (
     EgressBinding,
@@ -138,6 +138,14 @@ class MockApdpClient:
         self.credential_agent: Optional[str] = None
         self.subagent_label_map: Dict[str, str] = {}
         self.probe_succeeds: bool = True
+        # Declared roots. Every ``create_session`` that declared one
+        # appends its ``live_execution_ids`` here. ``declared_root_echo``
+        # False plays an older server that ignores the field (no
+        # ``declared_root: true`` in the answer); ``declared_root_error``
+        # is raised instead of opening the session (a policy refusal).
+        self.declared_root_calls: List[List[str]] = []
+        self.declared_root_echo: bool = True
+        self.declared_root_error: Optional[Exception] = None
         self.published_events: List[Dict[str, Any]] = []
         # Execution-lineage integrity. Records every
         # ``publish_events`` batch as ``(session_token, [events])``: the
@@ -351,6 +359,7 @@ class MockApdpClient:
         metadata: Optional[Dict[str, Any]] = None,
         subject_token: Optional[str] = None,
         application_id: Optional[str] = None,
+        declared_root: Optional[Sequence[str]] = None,
     ) -> Optional[SessionInfo]:
         # The credential-bound root, as wl-apdp decides it: no agent named
         # runs as the credential's agent; a credential bound to none is a
@@ -367,6 +376,10 @@ class MockApdpClient:
             agent_id = self.credential_agent
         elif self.credential_agent is not None and agent_id != self.credential_agent:
             return None
+        if declared_root is not None:
+            self.declared_root_calls.append(list(declared_root))
+            if self.declared_root_error is not None:
+                raise self.declared_root_error
         session_id = f"ses_{uuid.uuid4()}"
         # Execution-lineage integrity. Surface a per-run
         # ``session_token`` and the server-minted canonical
@@ -401,6 +414,7 @@ class MockApdpClient:
                     "application_id": application_id,
                 }
             ),
+            declared_root=declared_root is not None and self.declared_root_echo,
         )
 
     async def get_manifest(
