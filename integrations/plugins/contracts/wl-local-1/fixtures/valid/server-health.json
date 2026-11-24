@@ -1,0 +1,11 @@
+{
+  "description": "health",
+  "direction": "server",
+  "in_reply_to": "health",
+  "frame": {
+    "id": 19,
+    "ok": {
+      "status": "degraded"
+    }
+  }
+}

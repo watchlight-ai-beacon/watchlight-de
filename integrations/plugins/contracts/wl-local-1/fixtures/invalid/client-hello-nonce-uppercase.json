@@ -1,0 +1,15 @@
+{
+  "description": "hello nonce uppercase",
+  "direction": "client",
+  "frame": {
+    "id": 0,
+    "method": "hello",
+    "params": {
+      "proto": "wl-local/1",
+      "nonce_c": "00112233445566778899AABBCCDDEEFF00112233445566778899AABBCCDDEEFF",
+      "lang": "python",
+      "sdk_version": "1",
+      "pid": 1
+    }
+  }
+}

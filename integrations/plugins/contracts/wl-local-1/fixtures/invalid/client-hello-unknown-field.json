@@ -1,0 +1,15 @@
+{
+  "description": "hello unknown field",
+  "direction": "client",
+  "frame": {
+    "id": 0,
+    "method": "hello",
+    "params": {
+      "proto": "wl-local/1",
+      "lang": "python",
+      "sdk_version": "1",
+      "pid": 1,
+      "uid": 0
+    }
+  }
+}

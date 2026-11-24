@@ -1,0 +1,11 @@
+{
+  "description": "run bad chars",
+  "direction": "client",
+  "frame": {
+    "id": 1,
+    "method": "get_manifest",
+    "params": {
+      "run": "aaaaaaaaaaaaaaaaaaaa/../"
+    }
+  }
+}

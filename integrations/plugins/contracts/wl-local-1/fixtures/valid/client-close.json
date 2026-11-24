@@ -1,0 +1,9 @@
+{
+  "description": "close",
+  "direction": "client",
+  "frame": {
+    "id": 20,
+    "method": "close",
+    "params": {}
+  }
+}

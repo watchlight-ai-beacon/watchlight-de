@@ -1,0 +1,14 @@
+{
+  "description": "authorize execution id free text",
+  "direction": "client",
+  "frame": {
+    "id": 1,
+    "method": "authorize",
+    "params": {
+      "principal": "p",
+      "action": "a",
+      "resource": "r",
+      "execution_id": "exec_../../etc/passwd"
+    }
+  }
+}

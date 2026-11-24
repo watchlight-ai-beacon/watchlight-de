@@ -1,0 +1,11 @@
+{
+  "description": "Errors carry no text.",
+  "direction": "server",
+  "frame": {
+    "id": 1,
+    "error": {
+      "code": "internal",
+      "message": "db timeout at 10.0.0.3"
+    }
+  }
+}

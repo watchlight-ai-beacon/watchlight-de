@@ -1,0 +1,15 @@
+{
+  "description": "The old single-message answer shape.",
+  "direction": "server",
+  "in_reply_to": "hello",
+  "transport": "tcp",
+  "frame": {
+    "id": 0,
+    "ok": {
+      "proto": "wl-local/1",
+      "connector_version": "0.2.0",
+      "features": [],
+      "server_proof": "f80c0b6922e6070d4523caa6858d6aea7969cf9ac6aa58b116a126b5089c924d"
+    }
+  }
+}

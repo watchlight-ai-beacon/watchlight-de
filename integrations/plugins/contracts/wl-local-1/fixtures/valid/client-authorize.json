@@ -1,0 +1,20 @@
+{
+  "description": "authorize",
+  "direction": "client",
+  "frame": {
+    "id": 5,
+    "method": "authorize",
+    "params": {
+      "run": "rrrrrrAbc_-0123456789xyz",
+      "principal": "Agent::\"a\"",
+      "action": "Action::\"call_tool\"",
+      "resource": "Tool::\"search\"",
+      "context": {
+        "q": "x"
+      },
+      "intent": {
+        "purpose": "research"
+      }
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "description": "Loopback TCP: the connector's nonce and proof. `binding` records the secret and the addresses (IP and port) the proofs were computed with.",
+  "direction": "server",
+  "in_reply_to": "hello",
+  "binding": {
+    "secret": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "client": "127.0.0.1:50000",
+    "server": "127.0.0.1:41000"
+  },
+  "transport": "tcp",
+  "frame": {
+    "id": 0,
+    "ok": {
+      "nonce_s": "ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100",
+      "server_proof": "f80c0b6922e6070d4523caa6858d6aea7969cf9ac6aa58b116a126b5089c924d"
+    }
+  }
+}

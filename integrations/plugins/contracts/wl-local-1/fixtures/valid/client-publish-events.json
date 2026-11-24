@@ -1,0 +1,16 @@
+{
+  "description": "publish events",
+  "direction": "client",
+  "frame": {
+    "id": 10,
+    "method": "publish_events",
+    "params": {
+      "run": "rrrrrrAbc_-0123456789xyz",
+      "events": [
+        {
+          "type": "tool_call"
+        }
+      ]
+    }
+  }
+}

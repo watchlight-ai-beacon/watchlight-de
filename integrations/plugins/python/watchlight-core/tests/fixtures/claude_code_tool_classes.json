@@ -1,0 +1,65 @@
+{
+  "_comment": [
+    "How each Claude Code tool is governed, shared by watchlight-claude-agent (Python) and",
+    "@watchlight-ai/agent-plugin-for-claude (TypeScript); each package's copy is tested equal to this file.",
+    "governed: decided by Watchlight policy. spawn: a local sub-agent, governed as a spawn. refused: starts",
+    "work outside the plugin's hooks; refused before any decision and never offered to the model.",
+    "A name not listed here, and not an MCP tool (mcp_tool_pattern), is refused (unclassified_tool).",
+    "classified_cli_versions: the Claude Code release each package's locked SDK bundles; an SDK upgrade",
+    "fails the pin tests until this list is reviewed against the new release.",
+    "local_isolation: the sub-agent isolation values that run in this process; any other value is refused."
+  ],
+  "classified_cli_versions": {
+    "python": "2.1.310",
+    "typescript": "2.1.316"
+  },
+  "mcp_tool_pattern": "^mcp__.+__.+$",
+  "refusal_reasons": {
+    "refused": "remote_dispatch_refused",
+    "unclassified": "unclassified_tool",
+    "unknown_isolation": "unknown_isolation"
+  },
+  "tools": {
+    "Agent": "spawn",
+    "AskUserQuestion": "governed",
+    "Bash": "governed",
+    "CronCreate": "governed",
+    "CronDelete": "governed",
+    "CronList": "governed",
+    "Edit": "governed",
+    "EnterPlanMode": "governed",
+    "EnterWorktree": "governed",
+    "ExitPlanMode": "governed",
+    "ExitWorktree": "governed",
+    "Glob": "governed",
+    "Grep": "governed",
+    "ListAgents": "governed",
+    "ListMcpResourcesTool": "governed",
+    "Monitor": "governed",
+    "NotebookEdit": "governed",
+    "PushNotification": "governed",
+    "Read": "governed",
+    "ReadMcpResourceDirTool": "governed",
+    "ReadMcpResourceTool": "governed",
+    "RemoteTrigger": "refused",
+    "ReportFindings": "governed",
+    "ScheduleWakeup": "governed",
+    "SendMessage": "governed",
+    "Skill": "governed",
+    "Task": "spawn",
+    "TaskCreate": "governed",
+    "TaskGet": "governed",
+    "TaskList": "governed",
+    "TaskStop": "governed",
+    "TaskUpdate": "governed",
+    "TodoWrite": "governed",
+    "ToolSearch": "governed",
+    "WebFetch": "governed",
+    "WebSearch": "governed",
+    "Workflow": "governed",
+    "Write": "governed"
+  },
+  "local_isolation": [
+    "worktree"
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "description": "unknown method",
+  "direction": "client",
+  "frame": {
+    "id": 1,
+    "method": "become_admin",
+    "params": {}
+  }
+}

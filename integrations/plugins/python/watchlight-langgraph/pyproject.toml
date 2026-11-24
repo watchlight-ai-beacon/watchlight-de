@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=77.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "watchlight-langgraph"
+version = "0.5.1"
+description = "Governance primitives for LangGraph agents with Watchlight: authorize gated actions, validate plans, spawn attenuated sub-agents."
+readme = "README.md"
+# SPDX licence expression (PEP 639; setuptools 77 or later).
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [
+    {name = "Watchlight AI", email = "team@watchlight.ai"},
+]
+classifiers = [
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+]
+
+# Floor 1.0.10: earlier langgraph releases carry CVE-2026-28277 (a
+# checkpoint store an attacker can write to deserializes arbitrary objects)
+# and CVE-2026-48776 (unsanitized identifiers in SDK request paths, fixed in
+# 0.3.15). Floors are audited in CI.
+# langchain-core 1.3.3: earlier releases carry known advisories (the last
+# one fixed is PYSEC-2026-2564).
+dependencies = [
+    "httpx>=0.27",
+    "langchain-core>=1.3.3,<2",
+    "langgraph>=1.0.10",
+    "watchlight-agent-sdk>=0.10.1,<0.11",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "pytest-asyncio>=0.21"]
+
+[project.urls]
+Homepage = "https://watchlight.ai"
+Documentation = "https://docs.watchlight.ai/de"
+Repository = "https://github.com/watchlight-ai-beacon/watchlight-de"
+Issues = "https://github.com/watchlight-ai-beacon/watchlight-de/issues"
+
+[tool.setuptools.packages.find]
+include = ["watchlight_langgraph*"]

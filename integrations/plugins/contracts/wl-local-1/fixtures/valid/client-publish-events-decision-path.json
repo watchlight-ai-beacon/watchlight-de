@@ -1,0 +1,17 @@
+{
+  "description": "Decision-path delivery.",
+  "direction": "client",
+  "frame": {
+    "id": 21,
+    "method": "publish_events",
+    "params": {
+      "run": "rrrrrrAbc_-0123456789xyz",
+      "events": [
+        {
+          "type": "decision"
+        }
+      ],
+      "mode": "decision_path"
+    }
+  }
+}

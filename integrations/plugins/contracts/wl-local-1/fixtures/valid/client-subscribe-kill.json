@@ -1,0 +1,11 @@
+{
+  "description": "subscribe kill",
+  "direction": "client",
+  "frame": {
+    "id": 18,
+    "method": "subscribe_kill",
+    "params": {
+      "run": "rrrrrrAbc_-0123456789xyz"
+    }
+  }
+}

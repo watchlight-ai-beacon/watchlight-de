@@ -1,0 +1,5 @@
+{
+  "description": "Not JSON.",
+  "direction": "client",
+  "frame_text": "{\"id\":1,"
+}

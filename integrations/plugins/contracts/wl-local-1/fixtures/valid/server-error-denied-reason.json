@@ -1,0 +1,11 @@
+{
+  "description": "A refused spawn with its reason.",
+  "direction": "server",
+  "frame": {
+    "id": 9,
+    "error": {
+      "code": "denied",
+      "reason": "scope_attenuation_violation"
+    }
+  }
+}

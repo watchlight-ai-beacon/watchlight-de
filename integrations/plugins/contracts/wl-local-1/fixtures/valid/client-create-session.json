@@ -1,0 +1,12 @@
+{
+  "description": "Minimal.",
+  "direction": "client",
+  "frame": {
+    "id": 2,
+    "method": "create_session",
+    "params": {
+      "agent_id": "agent-1",
+      "ttl_seconds": 3600
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "description": "error run ended reason",
+  "direction": "server",
+  "frame": {
+    "id": 4,
+    "error": {
+      "code": "run_ended",
+      "reason": "revoked"
+    }
+  }
+}

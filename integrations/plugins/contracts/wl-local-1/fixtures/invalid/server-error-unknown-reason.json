@@ -1,0 +1,11 @@
+{
+  "description": "Reasons are a closed list; never free text.",
+  "direction": "server",
+  "frame": {
+    "id": 1,
+    "error": {
+      "code": "denied",
+      "reason": "the database at 10.0.0.3 timed out"
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "description": "egress for",
+  "direction": "client",
+  "frame": {
+    "id": 17,
+    "method": "egress_for",
+    "params": {
+      "run": "rrrrrrAbc_-0123456789xyz"
+    }
+  }
+}

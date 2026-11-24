@@ -1,0 +1,249 @@
+{
+  "_comment": "How an /authorize response is read, shared by the Python and TypeScript SDKs. Precedence: Quarantine / Terminate / SeverSubtree / Revoke first (a Quarantine whose payload is missing or malformed, or in the legacy flattened `details` shape, is still a quarantine that ends the run); then Deny + escalation_required (a literal true) + a non-empty approval_request_id, both under details or both at the top level, is needs_approval; then only a literal `allow` allows; everything else is deny. Checked by watchlight-core/tests/test_decision_precedence_fixture.py and watchlight-agent-sdk-ts/tests/decision-order.test.ts.",
+  "cases": [
+    {
+      "name": "allow",
+      "response": {
+        "decision": "Allow"
+      },
+      "kind": "allow"
+    },
+    {
+      "name": "allow, any case",
+      "response": {
+        "decision": "allow"
+      },
+      "kind": "allow"
+    },
+    {
+      "name": "a padded allow is not allow",
+      "response": {
+        "decision": " allow "
+      },
+      "kind": "deny"
+    },
+    {
+      "name": "permit is not allow",
+      "response": {
+        "decision": "Permit"
+      },
+      "kind": "deny"
+    },
+    {
+      "name": "deny",
+      "response": {
+        "decision": "Deny",
+        "reason": "r"
+      },
+      "kind": "deny"
+    },
+    {
+      "name": "missing decision",
+      "response": {},
+      "kind": "deny"
+    },
+    {
+      "name": "unknown decision",
+      "response": {
+        "decision": "Maybe"
+      },
+      "kind": "deny"
+    },
+    {
+      "name": "a bare NeedsApproval string is not a wl-apdp decision",
+      "response": {
+        "decision": "NeedsApproval"
+      },
+      "kind": "deny"
+    },
+    {
+      "name": "deny + escalation + approval id (details)",
+      "response": {
+        "decision": "Deny",
+        "details": {
+          "escalation_required": true,
+          "approval_request_id": "apr_1"
+        }
+      },
+      "kind": "needs_approval"
+    },
+    {
+      "name": "deny + escalation without an approval id",
+      "response": {
+        "decision": "Deny",
+        "details": {
+          "escalation_required": true
+        }
+      },
+      "kind": "deny"
+    },
+    {
+      "name": "deny + escalation + empty approval id",
+      "response": {
+        "decision": "Deny",
+        "details": {
+          "escalation_required": true,
+          "approval_request_id": ""
+        }
+      },
+      "kind": "deny"
+    },
+    {
+      "name": "allow + escalation stays allow",
+      "response": {
+        "decision": "Allow",
+        "details": {
+          "escalation_required": true,
+          "approval_request_id": "apr_1"
+        }
+      },
+      "kind": "allow"
+    },
+    {
+      "name": "terminate",
+      "response": {
+        "decision": "Terminate"
+      },
+      "kind": "terminate"
+    },
+    {
+      "name": "terminate + escalation stays terminate",
+      "response": {
+        "decision": "Terminate",
+        "details": {
+          "escalation_required": true,
+          "approval_request_id": "apr_1"
+        }
+      },
+      "kind": "terminate"
+    },
+    {
+      "name": "revoke + escalation stays revoke",
+      "response": {
+        "decision": "Revoke",
+        "details": {
+          "escalation_required": true,
+          "approval_request_id": "apr_1",
+          "enforcement": {
+            "effect": "revoke"
+          }
+        }
+      },
+      "kind": "revoke"
+    },
+    {
+      "name": "sever subtree + escalation stays sever",
+      "response": {
+        "decision": "SeverSubtree",
+        "details": {
+          "escalation_required": true,
+          "approval_request_id": "apr_1"
+        }
+      },
+      "kind": "sever_subtree"
+    },
+    {
+      "name": "quarantine + escalation stays quarantine",
+      "response": {
+        "decision": "Quarantine",
+        "details": {
+          "escalation_required": true,
+          "approval_request_id": "apr_1",
+          "quarantine": {
+            "reason": "anomaly",
+            "anomaly_score": 0.9,
+            "contributing_features": [],
+            "model_version": "00000000-0000-4000-8000-000000000001",
+            "policy_id": "pol-q"
+          }
+        }
+      },
+      "kind": "quarantine"
+    },
+    {
+      "name": "deny + escalation + approval id (top level)",
+      "response": {
+        "decision": "Deny",
+        "escalation_required": true,
+        "approval_request_id": "apr_1"
+      },
+      "kind": "needs_approval"
+    },
+    {
+      "name": "escalation_required must be literal true (string)",
+      "response": {
+        "decision": "Deny",
+        "details": {
+          "escalation_required": "yes",
+          "approval_request_id": "apr_1"
+        }
+      },
+      "kind": "deny"
+    },
+    {
+      "name": "escalation_required must be literal true (number)",
+      "response": {
+        "decision": "Deny",
+        "escalation_required": 1,
+        "approval_request_id": "apr_1"
+      },
+      "kind": "deny"
+    },
+    {
+      "name": "terminate + top-level escalation stays terminate",
+      "response": {
+        "decision": "Terminate",
+        "escalation_required": true,
+        "approval_request_id": "apr_1"
+      },
+      "kind": "terminate"
+    },
+    {
+      "name": "quarantine with no payload still quarantines",
+      "response": {
+        "decision": "Quarantine"
+      },
+      "kind": "quarantine"
+    },
+    {
+      "name": "quarantine with a malformed payload still quarantines",
+      "response": {
+        "decision": "Quarantine",
+        "details": {
+          "quarantine": {
+            "reason": "x",
+            "anomaly_score": "high",
+            "policy_id": "pol-q"
+          }
+        }
+      },
+      "kind": "quarantine"
+    },
+    {
+      "name": "quarantine with an out-of-range score still quarantines",
+      "response": {
+        "decision": "Quarantine",
+        "details": {
+          "quarantine": {
+            "reason": "x",
+            "anomaly_score": 7,
+            "policy_id": "pol-q"
+          }
+        }
+      },
+      "kind": "quarantine"
+    },
+    {
+      "name": "quarantine, legacy flattened details shape",
+      "response": {
+        "decision": "Quarantine",
+        "details": {
+          "reason": "legacy",
+          "anomaly_score": 0.8,
+          "policy_id": "pol-q"
+        }
+      },
+      "kind": "quarantine"
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "description": "Every optional field.",
+  "direction": "client",
+  "frame": {
+    "id": 3,
+    "method": "create_session",
+    "params": {
+      "agent_id": "agent-1",
+      "goal_id": "goal:42",
+      "max_actions": 50,
+      "ttl_seconds": 86400,
+      "metadata": {
+        "k": [
+          "v",
+          1
+        ]
+      },
+      "subject_token": "eyJhbGciOiJSUzI1NiJ9.e30.c2ln",
+      "application_id": "app-7",
+      "workload_ref": {
+        "kind": "openshell"
+      }
+    }
+  }
+}

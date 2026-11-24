@@ -1,0 +1,13 @@
+{
+  "description": "authorize control char",
+  "direction": "client",
+  "frame": {
+    "id": 1,
+    "method": "authorize",
+    "params": {
+      "principal": "p\u0000",
+      "action": "a",
+      "resource": "r"
+    }
+  }
+}

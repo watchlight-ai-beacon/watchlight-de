@@ -1,0 +1,10 @@
+{
+  "description": "A refused spawn.",
+  "direction": "server",
+  "frame": {
+    "id": 9,
+    "error": {
+      "code": "denied"
+    }
+  }
+}

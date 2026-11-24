@@ -1,0 +1,11 @@
+{
+  "description": "revoke",
+  "direction": "client",
+  "frame": {
+    "id": 15,
+    "method": "session.revoke",
+    "params": {
+      "run": "rrrrrrAbc_-0123456789xyz"
+    }
+  }
+}

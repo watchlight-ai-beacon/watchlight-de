@@ -1,0 +1,12 @@
+{
+  "description": "A challenge without server_proof.",
+  "direction": "server",
+  "in_reply_to": "hello",
+  "transport": "tcp",
+  "frame": {
+    "id": 0,
+    "ok": {
+      "nonce_s": "ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100"
+    }
+  }
+}

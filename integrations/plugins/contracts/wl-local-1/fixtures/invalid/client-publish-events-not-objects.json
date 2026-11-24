@@ -1,0 +1,14 @@
+{
+  "description": "publish events not objects",
+  "direction": "client",
+  "frame": {
+    "id": 1,
+    "method": "publish_events",
+    "params": {
+      "run": "rrrrrrAbc_-0123456789xyz",
+      "events": [
+        "x"
+      ]
+    }
+  }
+}

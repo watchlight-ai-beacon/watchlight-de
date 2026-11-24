@@ -1,0 +1,13 @@
+{
+  "description": "push false",
+  "direction": "server",
+  "frame": {
+    "push": false,
+    "event": "kill",
+    "data": {
+      "run": "rrrrrrAbc_-0123456789xyz",
+      "reason": "x",
+      "source": "local"
+    }
+  }
+}

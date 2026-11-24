@@ -1,0 +1,15 @@
+{
+  "description": "The connector never hands out a trust bundle.",
+  "direction": "server",
+  "in_reply_to": "egress_for",
+  "frame": {
+    "id": 17,
+    "ok": {
+      "proxy_url": "http://127.0.0.1:41000",
+      "marker_header": "Watchlight-Run-Marker",
+      "marker": "MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMw",
+      "child_proxy_url": "http://wl:MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMw@127.0.0.1:41000",
+      "ca_bundle_path": "/run/watchlight/ca.pem"
+    }
+  }
+}

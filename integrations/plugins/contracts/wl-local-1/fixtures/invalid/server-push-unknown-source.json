@@ -1,0 +1,13 @@
+{
+  "description": "push unknown source",
+  "direction": "server",
+  "frame": {
+    "push": true,
+    "event": "kill",
+    "data": {
+      "run": "rrrrrrAbc_-0123456789xyz",
+      "reason": "x",
+      "source": "moon"
+    }
+  }
+}

@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=77.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+# Test-only companion to watchlight-agent-sdk: the MockApdpClient test
+# double, the pytest helpers and the conformance runner. It depends on
+# the SDK; the SDK never depends on it, so none of it ships in the SDK
+# wheel. Published from watchlight-de only, like the SDK.
+name = "watchlight-agent-sdk-testing"
+version = "0.1.0"
+description = "Test doubles and the conformance runner for Watchlight Agent SDK plugins (tests only)"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [
+    {name = "Watchlight AI", email = "team@watchlight.ai"},
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Framework :: Pytest",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Testing",
+    "Typing :: Typed",
+]
+dependencies = [
+    "watchlight-agent-sdk>=0.10.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
+    "pytest-asyncio>=0.21",
+]
+
+[project.scripts]
+# ``watchlight-conformance my_plugin`` is an alias for
+# ``python -m watchlight_core_testing.conformance my_plugin``.
+watchlight-conformance = "watchlight_core_testing.conformance:_main"
+
+[tool.setuptools.packages.find]
+include = ["watchlight_core_testing*"]
+
+[tool.setuptools.package-data]
+watchlight_core_testing = ["py.typed"]

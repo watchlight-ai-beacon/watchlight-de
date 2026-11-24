@@ -1,0 +1,21 @@
+{
+  "description": "No credential of any kind.",
+  "direction": "server",
+  "in_reply_to": "create_session",
+  "frame": {
+    "id": 2,
+    "ok": {
+      "run": "rrrrrrAbc_-0123456789xyz",
+      "session_id": "ses_1",
+      "execution_id": "exec_1",
+      "root_execution_id": "exec_1",
+      "scope": {
+        "tools": [
+          "search"
+        ]
+      },
+      "marker": "MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMw",
+      "child_key": "MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMw"
+    }
+  }
+}

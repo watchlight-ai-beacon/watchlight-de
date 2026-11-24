@@ -1,0 +1,83 @@
+[build-system]
+requires = ["setuptools>=77.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "watchlight-strands"
+version = "0.1.2"
+description = "Watchlight governance for Strands Agents, installed once at the root: authorize every tool call (Python, MCP and agents used as tools) before it runs, open every invocation as a governed run, and attach automatically to every sub-agent, Swarm and Graph node beneath the root as an attenuated governed spawn, fail-closed. Model turns are not authorized one by one. Independent plugin, not affiliated with or endorsed by Amazon Web Services."
+readme = "README.md"
+# SPDX licence expression (PEP 639; setuptools 77 or later).
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [
+    {name = "Watchlight AI", email = "team@watchlight.ai"},
+]
+keywords = [
+    "watchlight",
+    "strands-agents",
+    "ai-agents",
+    "ai-governance",
+    "agent-runtime",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+
+# ``strands-agents`` is the framework this plugin governs. The load-bearing
+# external contract is the documented hook surface: ``HookProvider`` /
+# ``HookRegistry.add_callback(..., order=)``, ``BeforeInvocationEvent`` and
+# ``AfterInvocationEvent``, ``BeforeToolCallEvent.cancel_tool`` (plus its
+# ``interrupt``), ``AfterToolCallEvent``, ``BeforeModelCallEvent``, the public
+# ``agent.hooks`` registry it attaches itself to on every child, the
+# multi-agent ``BeforeMultiAgentInvocationEvent`` / ``BeforeNodeCallEvent.
+# cancel_node`` / ``AfterMultiAgentInvocationEvent``, and the ``Plugin`` /
+# ``MultiAgentPlugin`` attach points. The floor is the oldest release this
+# plugin is tested against; ``tests/test_strands_surface.py`` asserts the
+# surface so an upstream change breaks loudly in CI instead of silently
+# disabling governance.
+#
+# The hosted-tool gate (``watchlight_strands/hosted_tools.py``) also runs
+# inside Strands' invoke-model middleware: ``InvokeModelStage`` (public from
+# 1.62, ``strands._middleware`` before) and the agent's private
+# ``_middleware_registry``. A private API can change in any release, so the
+# ceiling is the release after the newest one tested (1.62); raise it only
+# after the suite passes on the new release. The plugin refuses model calls
+# if the middleware it needs is missing or reshaped.
+#
+# ``mcp`` is Strands' own dependency (its MCP client), constrained here
+# because the plugin governs MCP tools: Strands accepts ``mcp<2.2``, and
+# every release in that range except 1.30.x carries CVE-2026-59951 (fixed
+# in 1.30.0 and 2.2.0). Raise the ceiling once Strands accepts mcp 2.2.
+dependencies = [
+    "watchlight-agent-sdk>=0.10.2,<0.11",
+    "strands-agents>=1.55,<1.63",
+    "mcp>=1.30,<2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "pytest-asyncio>=0.21"]
+
+[project.urls]
+Homepage = "https://watchlight.ai"
+Documentation = "https://docs.watchlight.ai/de"
+Repository = "https://github.com/watchlight-ai-beacon/watchlight-de"
+Issues = "https://github.com/watchlight-ai-beacon/watchlight-de/issues"
+"Strands Agents" = "https://github.com/strands-agents/sdk-python"
+
+[tool.setuptools.packages.find]
+include = ["watchlight_strands*"]
+
+[tool.setuptools.package-data]
+watchlight_strands = ["py.typed"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

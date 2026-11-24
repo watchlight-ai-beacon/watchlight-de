@@ -1,0 +1,11 @@
+{
+  "description": "get manifest",
+  "direction": "client",
+  "frame": {
+    "id": 4,
+    "method": "get_manifest",
+    "params": {
+      "run": "rrrrrrAbc_-0123456789xyz"
+    }
+  }
+}

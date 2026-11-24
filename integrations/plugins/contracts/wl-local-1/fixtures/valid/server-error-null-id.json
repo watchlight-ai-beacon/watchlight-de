@@ -1,0 +1,10 @@
+{
+  "description": "Answer to a frame with no usable id; the connection closes.",
+  "direction": "server",
+  "frame": {
+    "id": null,
+    "error": {
+      "code": "invalid"
+    }
+  }
+}

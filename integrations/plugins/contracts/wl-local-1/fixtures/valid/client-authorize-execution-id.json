@@ -1,0 +1,15 @@
+{
+  "description": "An execution_id override.",
+  "direction": "client",
+  "frame": {
+    "id": 22,
+    "method": "authorize",
+    "params": {
+      "run": "rrrrrrAbc_-0123456789xyz",
+      "principal": "p",
+      "action": "a",
+      "resource": "r",
+      "execution_id": "exec_123e4567-e89b-42d3-a456-426614174000"
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "description": "spawn subagent",
+  "direction": "client",
+  "frame": {
+    "id": 9,
+    "method": "spawn_subagent",
+    "params": {
+      "parent_run": "rrrrrrAbc_-0123456789xyz",
+      "request": {
+        "tools": [
+          "search"
+        ]
+      }
+    }
+  }
+}

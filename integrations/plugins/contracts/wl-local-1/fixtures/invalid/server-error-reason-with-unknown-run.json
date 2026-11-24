@@ -1,0 +1,11 @@
+{
+  "description": "error reason with unknown run",
+  "direction": "server",
+  "frame": {
+    "id": 1,
+    "error": {
+      "code": "unknown_run",
+      "reason": "revoked"
+    }
+  }
+}

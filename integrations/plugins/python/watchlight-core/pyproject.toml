@@ -1,0 +1,104 @@
+[build-system]
+requires = ["setuptools>=77.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+# PyPI distribution name. The IMPORTABLE name stays ``watchlight_core``
+# (see [tool.setuptools.packages.find] below) — keeping it preserves
+# every existing plugin's import path. The distribution name is what
+# customers `pip install` and what surfaces on the PyPI listing.
+name = "watchlight-agent-sdk"
+version = "0.10.2"
+description = "Watchlight Agent SDK — build governed AI-agent plugins for any framework"
+readme = "README.md"
+# SPDX licence expression (PEP 639; setuptools 77 or later).
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [
+    {name = "Watchlight AI", email = "team@watchlight.ai"},
+]
+keywords = [
+    "watchlight",
+    "ai-governance",
+    "agent-runtime",
+    "ai-agents",
+    "agent-sdk",
+    "policy-decision-point",
+    "cedar-policy",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Monitoring",
+    "Topic :: Security",
+    "Typing :: Typed",
+]
+
+# Strictly minimal. Pydantic v2 is required (events_schema mirror); the
+# floor is 2.4.0, the first v2 release without CVE-2024-3772 (a ReDoS in
+# email validation). Floors are audited in CI.
+# Framework plugins add their own deps (langgraph, google-adk, boto3,
+# pydantic-ai, …).
+dependencies = [
+    "httpx>=0.27",
+    "pydantic>=2.4",
+    "typing-extensions>=4.5; python_version<'3.12'",
+]
+
+[project.optional-dependencies]
+# `aws`: read the agent's Beacon credential in-process from AWS Secrets
+# Manager (WATCHLIGHT_CREDENTIAL_AWS_SECRET_ID) instead of an env var or file.
+aws = [
+    "boto3>=1.34",
+]
+# `cryptography` is used only to issue throwaway PEMs for the mTLS
+# round-trip test in test_core.py — it's not a runtime dep. The test
+# auto-skips if the package is missing, so any caller pip-installing
+# without [dev] still gets a working SDK, just without the
+# SSL-context load_cert_chain coverage on their machine.
+#
+# `requests` is used only by `tests/test_connect_proxy.py::
+# test_works_for_requests_library_too` — proves the local sidecar
+# CONNECT proxy intercepts BOTH httpx and requests (universal-
+# coverage claim). The test auto-skips when requests is missing,
+# but we include it in [dev] so CI always exercises the universal-
+# coverage path. Not a runtime dep of watchlight-core itself.
+dev = [
+    "pytest>=7",
+    "pytest-asyncio>=0.21",
+    "mypy>=1.8",
+    "cryptography>=42",
+    "requests>=2.32",
+]
+
+# OpenTelemetry export (EN.6) — opt-in customer-facing observability.
+# The OTel SDK is ~50MB installed; customers who don't want OTLP
+# (or run in cold-start-sensitive Lambda environments) install
+# without this extra. `WatchlightOtlpExporter` construction raises
+# ImportError at startup if a non-OFF profile is requested without
+# the extra installed — fail-loud, not silent-no-op.
+otlp = [
+    "opentelemetry-api>=1.20",
+    "opentelemetry-sdk>=1.20",
+    "opentelemetry-exporter-otlp-proto-http>=1.20",
+]
+
+[project.urls]
+Homepage = "https://www.watchlight.ai"
+Documentation = "https://docs.watchlight.ai/de"
+Repository = "https://github.com/watchlight-ai-beacon/watchlight-de"
+Issues = "https://github.com/watchlight-ai-beacon/watchlight-de/issues"
+"Plugin SDK Guide" = "https://docs.watchlight.ai"
+
+[tool.setuptools.packages.find]
+include = ["watchlight_core*"]
+
+[tool.setuptools.package-data]
+watchlight_core = ["py.typed"]

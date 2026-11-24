@@ -1,0 +1,11 @@
+{
+  "description": "resolve agent",
+  "direction": "client",
+  "frame": {
+    "id": 1,
+    "method": "resolve_agent",
+    "params": {
+      "slug": "research-agent"
+    }
+  }
+}

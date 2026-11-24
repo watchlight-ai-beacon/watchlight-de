@@ -7,9 +7,19 @@
 # kept here, so a new package is tested from the commit that adds it.
 #
 #   * python      one job per package and per Python version from 3.10 to 3.13
-#                 that the package's `requires-python` accepts. Every plugin is
-#                 installed on top of the SDK source in the same commit
-#                 (watchlight-core), never the last SDK release.
+#                 that both the package's `requires-python` and the
+#                 hash-pinned lock (python/ci/plugins.txt) accept. Third-party
+#                 packages come only from the lock; the SDK
+#                 (watchlight-core), the test doubles
+#                 (watchlight-agent-sdk-testing) and the package are installed
+#                 from this commit, never from a release. The compiled engine
+#                 comes from its own lock (python/ci/engine.txt) and is
+#                 required, never skipped.
+#   * adk-min     watchlight-adk again at its declared minimum google-adk
+#                 (python/ci/adk-min.txt): a floor the suite only passes above
+#                 is a wrong floor.
+#   * dist        every published Python package built offline and its wheel
+#                 and sdist scanned (python/ci/check_dist.py).
 #   * typescript  the whole npm workspace: npm ci, build, typecheck, test.
 #
 # While a directory holds no packages, its job says so in a notice and passes.
@@ -44,7 +54,9 @@ concurrency:
 jobs:
   discover:
     name: discover python packages
-    runs-on: ${{ vars.DE_RUNNER || 'ubuntu-latest' }}
+    # GitHub-hosted runners only: this repository is public, and a
+    # self-hosted runner never takes its jobs.
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       count: ${{ steps.find.outputs.count }}
@@ -80,11 +92,47 @@ jobs:
           VERSIONS = ["3.10", "3.11", "3.12", "3.13"]
           root = pathlib.Path("integrations/plugins/python")
 
+          # The lock states the lowest Python it resolves for; a version below
+          # it would install unlocked packages, so it is not tested.
+          lock = root / "ci" / "plugins.txt"
+          floor = re.search(r"\(Python (3\.\d+) and later", lock.read_text(encoding="utf-8").splitlines()[0])
+          if not floor:
+              raise SystemExit(f"::error::{lock}: the first line does not state the lock's Python floor")
+          floor = tuple(int(x) for x in floor.group(1).split("."))
+          VERSIONS = [v for v in VERSIONS if tuple(int(x) for x in v.split(".")) >= floor]
+
+          # The open package roots and the name each one is released under. A
+          # directory that is not listed, or a package that names itself
+          # anything else, fails the run: nothing is added to this tree, or
+          # released from it, under a name that was not reviewed.
+          ALLOWED = {
+              "plugin-template": "watchlight-template-plugin",
+              "watchlight-agent-sdk-testing": "watchlight-agent-sdk-testing",
+              "watchlight-adk": "watchlight-adk",
+              "watchlight-bedrock": "watchlight-bedrock",
+              "watchlight-claude-agent": "watchlight-claude-agent",
+              "watchlight-core": "watchlight-agent-sdk",
+              "watchlight-deepagents": "watchlight-deepagents",
+              "watchlight-langgraph": "watchlight-langgraph",
+              "watchlight-msaf": "watchlight-msaf",
+              "watchlight-pydantic-ai": "watchlight-pydantic-ai",
+              "watchlight-strands": "watchlight-strands",
+          }
+          #: Directories that hold no package.
+          SUPPORT = {"ci"}
+
           include, errors = [], []
+          for entry in sorted(p for p in root.iterdir() if p.is_dir()):
+              if entry.name not in ALLOWED and entry.name not in SUPPORT:
+                  errors.append(f"{entry.name}: not an open package root of this directory")
+              elif entry.name in ALLOWED and not (entry / "pyproject.toml").is_file():
+                  errors.append(f"{entry.name}: no pyproject.toml")
           for pyproject in sorted(root.glob("*/pyproject.toml")):
               name = pyproject.parent.name
               if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", name):
                   errors.append(f"{name!r}: directory names may use only a-z, 0-9, '.', '_' and '-'")
+                  continue
+              if name not in ALLOWED:
                   continue
               try:
                   project = tomllib.loads(pyproject.read_text(encoding="utf-8")).get("project", {})
@@ -92,9 +140,12 @@ jobs:
               except (tomllib.TOMLDecodeError, InvalidSpecifier, UnicodeDecodeError) as exc:
                   errors.append(f"{name}: cannot read pyproject.toml: {exc}")
                   continue
+              if project.get("name") != ALLOWED[name]:
+                  errors.append(f"{name}: package name {project.get('name')!r}, expected {ALLOWED[name]!r}")
+                  continue
               versions = [v for v in VERSIONS if spec.contains(v)]
               if not versions:
-                  errors.append(f"{name}: requires-python {str(spec)!r} accepts none of {', '.join(VERSIONS)}")
+                  errors.append(f"{name}: requires-python {str(spec)!r} accepts none of the locked {', '.join(VERSIONS)}")
                   continue
               include += [{"package": name, "python": v} for v in versions]
               print(f"{name}: Python {', '.join(versions)}")
@@ -118,7 +169,9 @@ jobs:
     # An empty matrix is an error in GitHub Actions, so the job is skipped,
     # with the discover job's notice saying why, when there is nothing to test.
     if: needs.discover.outputs.count != '0'
-    runs-on: ${{ vars.DE_RUNNER || 'ubuntu-latest' }}
+    # GitHub-hosted runners only: this repository is public, and a
+    # self-hosted runner never takes its jobs.
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -142,35 +195,53 @@ jobs:
           base="$GITHUB_WORKSPACE/integrations/plugins/python"
           python -m venv "$RUNNER_TEMP/venv"
           py="$RUNNER_TEMP/venv/bin/python"
-          "$py" -m pip install --disable-pip-version-check --quiet --upgrade pip
-          if [ "$PACKAGE" != "watchlight-core" ] && [ -f "$base/watchlight-core/pyproject.toml" ]; then
-            "$py" -m pip install --disable-pip-version-check -e "$base/watchlight-core"
+          pip=("$py" -m pip install --disable-pip-version-check --quiet)
+          # Third-party packages: wheels only, every one hash-checked, nothing
+          # resolved at install time.
+          "${pip[@]}" --require-hashes --only-binary :all: --no-deps -r "$base/ci/plugins.txt"
+          if [ ! -f "$base/ci/engine.txt" ]; then
+            echo "::error::$base/ci/engine.txt is missing: the engine is installed only from its lock"
+            exit 1
           fi
-          "$py" -m pip install --disable-pip-version-check -e "${base}/${PACKAGE}[dev]" pytest
-          # If the package's pin on watchlight-agent-sdk does not admit the SDK
-          # source in this commit, pip replaces it with a release, and the
-          # plugin would be tested against code that is not in this commit.
-          # Refuse that instead.
-          if [ -f "$base/watchlight-core/pyproject.toml" ]; then
-            "$py" - "$base/watchlight-core" <<'PY'
+          "${pip[@]}" --require-hashes --only-binary :all: --no-deps -r "$base/ci/engine.txt"
+          # This commit's packages, editable and without dependencies, so no
+          # install can replace one with a release. The SDK's suite also runs
+          # every plugin against the SDK (a required plugin that cannot load
+          # fails), so its job installs every package of this directory; their
+          # third-party dependencies are already in the lock.
+          dirs=(watchlight-core watchlight-agent-sdk-testing "$PACKAGE")
+          if [ "$PACKAGE" = "watchlight-core" ]; then
+            for d in "$base"/*/pyproject.toml; do
+              d=$(basename "$(dirname "$d")")
+              case "$d" in watchlight-core | watchlight-agent-sdk-testing) ;; *) dirs+=("$d") ;; esac
+            done
+          fi
+          for dir in "${dirs[@]}"; do
+            if [ -f "$base/$dir/pyproject.toml" ]; then
+              "${pip[@]}" --no-deps --no-build-isolation -e "$base/$dir"
+            fi
+          done
+          "$py" -m pip check --disable-pip-version-check
+          # Every package of this directory is imported from this commit.
+          "$py" - "$base" <<'PY'
+          import importlib
           import pathlib
           import sys
 
-          import watchlight_core
-
-          expected = pathlib.Path(sys.argv[1]).resolve()
-          actual = pathlib.Path(watchlight_core.__file__).resolve()
-          if expected not in actual.parents:
-              print(f"::error::watchlight_core was imported from {actual}, not from {expected}. "
-                    "The package's watchlight-agent-sdk requirement does not admit the SDK version in this commit.")
-              raise SystemExit(1)
-          print(f"watchlight_core from {actual}")
+          base = pathlib.Path(sys.argv[1]).resolve()
+          for module in ("watchlight_core", "watchlight_core_testing"):
+              actual = pathlib.Path(importlib.import_module(module).__file__).resolve()
+              if base not in actual.parents:
+                  print(f"::error::{module} was imported from {actual}, not from {base}.")
+                  raise SystemExit(1)
+              print(f"{module} from {actual}")
           PY
-          fi
 
       - name: Run the tests
         env:
           PACKAGE: ${{ matrix.package }}
+          # A test that needs the engine fails instead of skipping.
+          WATCHLIGHT_REQUIRE_ENGINE: "1"
         working-directory: integrations/plugins/python/${{ matrix.package }}
         run: |
           set -euo pipefail
@@ -178,9 +249,75 @@ jobs:
           # package with no tests never passes by default.
           "$RUNNER_TEMP/venv/bin/python" -m pytest -q
 
+  adk-min:
+    name: python (watchlight-adk at its minimum google-adk)
+    needs: discover
+    if: needs.discover.outputs.count != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install watchlight-adk at its floor
+        run: |
+          set -euo pipefail
+          base="$GITHUB_WORKSPACE/integrations/plugins/python"
+          python -m venv "$RUNNER_TEMP/venv"
+          py="$RUNNER_TEMP/venv/bin/python"
+          pip=("$py" -m pip install --disable-pip-version-check --quiet)
+          "${pip[@]}" --require-hashes --only-binary :all: --no-deps -r "$base/ci/adk-min.txt"
+          for dir in watchlight-core watchlight-agent-sdk-testing watchlight-adk; do
+            "${pip[@]}" --no-deps --no-build-isolation -e "$base/$dir"
+          done
+          "$py" -m pip check --disable-pip-version-check
+
+      - name: Run the tests
+        working-directory: integrations/plugins/python/watchlight-adk
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/venv/bin/python" -m pytest -q
+
+  dist:
+    name: python distributions
+    needs: discover
+    if: needs.discover.outputs.count != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # The check's own tests run first, so a bug in it fails here rather than
+      # passing the packages.
+      - name: Test the distribution check
+        working-directory: integrations/plugins/python/ci
+        run: python -m unittest -v test_check_dist
+
+      - name: Build and scan every published package
+        run: |
+          set -euo pipefail
+          base="$GITHUB_WORKSPACE/integrations/plugins/python"
+          python -m venv "$RUNNER_TEMP/venv"
+          py="$RUNNER_TEMP/venv/bin/python"
+          "$py" -m pip install --disable-pip-version-check --quiet --require-hashes --only-binary :all: --no-deps -r "$base/ci/dist.txt"
+          "$py" "$base/ci/check_dist.py" --build --python "$py"
+
   typescript:
     name: typescript (node ${{ matrix.node }})
-    runs-on: ${{ vars.DE_RUNNER || 'ubuntu-latest' }}
+    # GitHub-hosted runners only: this repository is public, and a
+    # self-hosted runner never takes its jobs.
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false

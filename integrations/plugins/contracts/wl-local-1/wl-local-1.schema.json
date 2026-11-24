@@ -1,0 +1,1368 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://watchlight.ai/schemas/wl-local-1.schema.json",
+  "title": "wl-local/1",
+  "description": "The local control protocol between a Watchlight SDK and the connector (wl-sidecar). Each frame on the wire is a 4-byte big-endian length followed by one UTF-8 JSON object of at most 1 MiB; this schema describes that object. String lengths are UTF-8 bytes in the connector (maxLength here counts characters, which is the same for ASCII). Integers must be sent as JSON integers, and duplicate object keys are refused.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/client_frame"
+    },
+    {
+      "$ref": "#/$defs/server_frame"
+    }
+  ],
+  "$defs": {
+    "request_id": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "description": "Matches a response to its request. 0 to 2^53 - 1."
+    },
+    "u32": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "ident": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9._:@/+-]+$",
+      "description": "An agent slug or id, a goal, session, execution or application id."
+    },
+    "run_ref": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "description": "Opaque run reference issued by the connector. Never parsed by the SDK."
+    },
+    "short_text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+    },
+    "cedar_ref": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+    },
+    "feature": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z0-9_.]+$"
+    },
+    "nonce_hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "32 fresh random bytes from the SDK, as 64 lowercase hex characters (TCP only)."
+    },
+    "proof_hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "An HMAC-SHA256 handshake proof as 64 lowercase hex characters. Inputs: the label (\"wl-local/1 server\" or \"wl-local/1 client\"), proto, the two nonces (32 bytes each; nonce_c then nonce_s for the server proof, nonce_s then nonce_c for the client proof), the client's IP address (4 or 16 bytes; IPv4-mapped IPv6 as IPv4) and TCP port (u16 big-endian), then the connector's IP address and port, each as that side sees the connection, each field prefixed by its length as a u32 big-endian. Compared in constant time."
+    },
+    "marker": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{43}$",
+      "description": "32 random bytes, base64url without padding."
+    },
+    "subject_token": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 16384,
+      "pattern": "^[\\u0021-\\u007e]+$"
+    },
+    "location": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+    },
+    "json_object": {
+      "type": "object",
+      "description": "Passed through to wl-apdp, which validates it. At most 32 levels deep."
+    },
+    "empty": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 0
+    },
+    "hello_answer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "proto",
+        "connector_version",
+        "features"
+      ],
+      "properties": {
+        "proto": {
+          "$ref": "#/$defs/short_text"
+        },
+        "connector_version": {
+          "$ref": "#/$defs/short_text"
+        },
+        "features": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/feature"
+          }
+        }
+      },
+      "description": "The answer that ends the handshake: to hello on the Unix socket, to auth on TCP. It carries no CA."
+    },
+    "result.hello.unix": {
+      "$ref": "#/$defs/hello_answer"
+    },
+    "result.hello.tcp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "nonce_s",
+        "server_proof"
+      ],
+      "properties": {
+        "nonce_s": {
+          "$ref": "#/$defs/nonce_hex"
+        },
+        "server_proof": {
+          "$ref": "#/$defs/proof_hex"
+        }
+      },
+      "description": "The TCP challenge. The SDK verifies server_proof before sending auth."
+    },
+    "params.hello": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "proto",
+        "lang",
+        "sdk_version",
+        "pid"
+      ],
+      "properties": {
+        "proto": {
+          "$ref": "#/$defs/short_text"
+        },
+        "nonce_c": {
+          "$ref": "#/$defs/nonce_hex"
+        },
+        "lang": {
+          "$ref": "#/$defs/short_text"
+        },
+        "sdk_version": {
+          "$ref": "#/$defs/short_text"
+        },
+        "pid": {
+          "$ref": "#/$defs/u32"
+        },
+        "required_features": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "$ref": "#/$defs/feature"
+          }
+        }
+      },
+      "description": "First frame on every connection. `proto` is `wl-local/<major>[.<minor>]`; `nonce_c` is required on loopback TCP (see params.hello.tcp). There is no secret field: the secret never crosses the connection."
+    },
+    "result.hello": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/result.hello.unix"
+        },
+        {
+          "$ref": "#/$defs/result.hello.tcp"
+        }
+      ],
+      "description": "On the Unix socket the hello answer; on loopback TCP the challenge."
+    },
+    "params.auth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "client_proof"
+      ],
+      "properties": {
+        "client_proof": {
+          "$ref": "#/$defs/proof_hex"
+        }
+      },
+      "description": "TCP only, the second frame: sent only after server_proof verified."
+    },
+    "result.auth": {
+      "$ref": "#/$defs/hello_answer"
+    },
+    "params.resolve_agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "slug"
+      ],
+      "properties": {
+        "slug": {
+          "$ref": "#/$defs/ident"
+        }
+      }
+    },
+    "result.resolve_agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agent"
+      ],
+      "properties": {
+        "agent": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/json_object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "params.create_session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agent_id",
+        "ttl_seconds"
+      ],
+      "properties": {
+        "agent_id": {
+          "$ref": "#/$defs/ident"
+        },
+        "goal_id": {
+          "$ref": "#/$defs/ident"
+        },
+        "max_actions": {
+          "$ref": "#/$defs/u32"
+        },
+        "ttl_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400
+        },
+        "metadata": {
+          "$ref": "#/$defs/json_object"
+        },
+        "subject_token": {
+          "$ref": "#/$defs/subject_token"
+        },
+        "application_id": {
+          "$ref": "#/$defs/ident"
+        },
+        "workload_ref": {
+          "$ref": "#/$defs/json_object"
+        }
+      }
+    },
+    "result.create_session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run",
+        "session_id",
+        "execution_id",
+        "root_execution_id",
+        "scope",
+        "marker",
+        "child_key"
+      ],
+      "properties": {
+        "run": {
+          "$ref": "#/$defs/run_ref"
+        },
+        "session_id": {
+          "$ref": "#/$defs/ident"
+        },
+        "execution_id": {
+          "$ref": "#/$defs/ident"
+        },
+        "root_execution_id": {
+          "$ref": "#/$defs/ident"
+        },
+        "scope": {
+          "$ref": "#/$defs/json_object"
+        },
+        "manifest": {
+          "$ref": "#/$defs/json_object"
+        },
+        "marker": {
+          "$ref": "#/$defs/marker"
+        },
+        "child_key": {
+          "$ref": "#/$defs/marker"
+        }
+      },
+      "description": "Never carries a run credential, proxy token or egress token."
+    },
+    "params.get_manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run"
+      ],
+      "properties": {
+        "run": {
+          "$ref": "#/$defs/run_ref"
+        }
+      }
+    },
+    "result.get_manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "manifest"
+      ],
+      "properties": {
+        "manifest": {
+          "$ref": "#/$defs/json_object"
+        }
+      }
+    },
+    "params.authorize": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "principal",
+        "action",
+        "resource"
+      ],
+      "properties": {
+        "run": {
+          "$ref": "#/$defs/run_ref"
+        },
+        "principal": {
+          "$ref": "#/$defs/cedar_ref"
+        },
+        "action": {
+          "$ref": "#/$defs/cedar_ref"
+        },
+        "resource": {
+          "$ref": "#/$defs/cedar_ref"
+        },
+        "context": {
+          "$ref": "#/$defs/json_object"
+        },
+        "intent": {
+          "$ref": "#/$defs/json_object"
+        },
+        "execution_id": {
+          "type": "string",
+          "pattern": "^exec_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "description": "Overrides the execution the decision is recorded under: exec_ and a lowercase UUID."
+        }
+      }
+    },
+    "result.authorize": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision"
+      ],
+      "properties": {
+        "decision": {
+          "$ref": "#/$defs/json_object"
+        }
+      }
+    },
+    "params.preflight_step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run",
+        "action",
+        "resource"
+      ],
+      "properties": {
+        "run": {
+          "$ref": "#/$defs/run_ref"
+        },
+        "action": {
+          "$ref": "#/$defs/cedar_ref"
+        },
+        "resource": {
+          "$ref": "#/$defs/cedar_ref"
+        },
+        "resource_type": {
+          "$ref": "#/$defs/cedar_ref"
+        },
+        "intent": {
+          "$ref": "#/$defs/json_object"
+        },
+        "context": {
+          "$ref": "#/$defs/json_object"
+        }
+      }
+    },
+    "result.preflight_step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result"
+      ],
+      "properties": {
+        "result": {
+          "$ref": "#/$defs/json_object"
+        }
+      }
+    },
+    "params.submit_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run",
+        "plan"
+      ],
+      "properties": {
+        "run": {
+          "$ref": "#/$defs/run_ref"
+        },
+        "plan": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "$ref": "#/$defs/json_object"
+          }
+        }
+      }
+    },
+    "result.submit_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result"
+      ],
+      "properties": {
+        "result": {
+          "$ref": "#/$defs/json_object"
+        }
+      }
+    },
+    "params.spawn_subagent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "parent_run",
+        "request"
+      ],
+      "properties": {
+        "parent_run": {
+          "$ref": "#/$defs/run_ref"
+        },
+        "request": {
+          "$ref": "#/$defs/json_object"
+        }
+      }
+    },
+    "result.spawn_subagent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "child_run",
+        "session_id",
+        "execution_id",
+        "scope",
+        "child_marker",
+        "child_key"
+      ],
+      "properties": {
+        "child_run": {
+          "$ref": "#/$defs/run_ref"
+        },
+        "session_id": {
+          "$ref": "#/$defs/ident"
+        },
+        "execution_id": {
+          "$ref": "#/$defs/ident"
+        },
+        "scope": {
+          "$ref": "#/$defs/json_object"
+        },
+        "child_marker": {
+          "$ref": "#/$defs/marker"
+        },
+        "child_key": {
+          "$ref": "#/$defs/marker"
+        }
+      }
+    },
+    "params.publish_events": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run",
+        "events"
+      ],
+      "properties": {
+        "run": {
+          "$ref": "#/$defs/run_ref"
+        },
+        "events": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {
+            "$ref": "#/$defs/json_object"
+          }
+        },
+        "mode": {
+          "enum": [
+            "decision_path",
+            "background"
+          ],
+          "description": "decision_path: delivered at once with a short, bounded retry budget. background (the default when absent): queued on the connector's retry lanes."
+        }
+      }
+    },
+    "result.publish_events": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "accepted"
+      ],
+      "properties": {
+        "accepted": {
+          "$ref": "#/$defs/u32"
+        }
+      }
+    },
+    "params.complete_session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run"
+      ],
+      "properties": {
+        "run": {
+          "$ref": "#/$defs/run_ref"
+        }
+      }
+    },
+    "result.complete_session": {
+      "$ref": "#/$defs/empty"
+    },
+    "params.terminate_session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run",
+        "reason"
+      ],
+      "properties": {
+        "run": {
+          "$ref": "#/$defs/run_ref"
+        },
+        "reason": {
+          "$ref": "#/$defs/short_text"
+        }
+      }
+    },
+    "result.terminate_session": {
+      "$ref": "#/$defs/empty"
+    },
+    "params.drain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run",
+        "timeout_ms"
+      ],
+      "properties": {
+        "run": {
+          "$ref": "#/$defs/run_ref"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 60000
+        }
+      }
+    },
+    "result.drain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "drained"
+      ],
+      "properties": {
+        "drained": {
+          "type": "boolean"
+        }
+      }
+    },
+    "params.session.refresh_marker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run"
+      ],
+      "properties": {
+        "run": {
+          "$ref": "#/$defs/run_ref"
+        }
+      }
+    },
+    "result.session.refresh_marker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "marker"
+      ],
+      "properties": {
+        "marker": {
+          "$ref": "#/$defs/marker"
+        }
+      }
+    },
+    "params.session.revoke": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run"
+      ],
+      "properties": {
+        "run": {
+          "$ref": "#/$defs/run_ref"
+        }
+      }
+    },
+    "result.session.revoke": {
+      "$ref": "#/$defs/empty"
+    },
+    "params.report_connection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "src_port",
+        "run"
+      ],
+      "properties": {
+        "src_port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "run": {
+          "$ref": "#/$defs/run_ref"
+        }
+      }
+    },
+    "result.report_connection": {
+      "$ref": "#/$defs/empty"
+    },
+    "params.egress_for": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run"
+      ],
+      "properties": {
+        "run": {
+          "$ref": "#/$defs/run_ref"
+        }
+      }
+    },
+    "result.egress_for": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "proxy_url",
+        "marker_header",
+        "marker",
+        "child_proxy_url"
+      ],
+      "properties": {
+        "proxy_url": {
+          "$ref": "#/$defs/location"
+        },
+        "marker_header": {
+          "$ref": "#/$defs/short_text"
+        },
+        "marker": {
+          "$ref": "#/$defs/marker"
+        },
+        "child_proxy_url": {
+          "$ref": "#/$defs/location"
+        }
+      },
+      "description": "No CA or trust bundle: trust for the customer's interception CA is the customer's."
+    },
+    "params.subscribe_kill": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run"
+      ],
+      "properties": {
+        "run": {
+          "$ref": "#/$defs/run_ref"
+        }
+      }
+    },
+    "result.subscribe_kill": {
+      "$ref": "#/$defs/empty"
+    },
+    "params.health": {
+      "$ref": "#/$defs/empty"
+    },
+    "result.health": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "ok",
+            "degraded"
+          ]
+        }
+      }
+    },
+    "params.close": {
+      "$ref": "#/$defs/empty"
+    },
+    "result.close": {
+      "$ref": "#/$defs/empty"
+    },
+    "params.hello.tcp": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/params.hello"
+        },
+        {
+          "required": [
+            "nonce_c"
+          ]
+        }
+      ],
+      "description": "A hello on loopback TCP."
+    },
+    "client_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/request_id"
+        },
+        "method": {
+          "enum": [
+            "hello",
+            "auth",
+            "resolve_agent",
+            "create_session",
+            "get_manifest",
+            "authorize",
+            "preflight_step",
+            "submit_plan",
+            "spawn_subagent",
+            "publish_events",
+            "complete_session",
+            "terminate_session",
+            "drain",
+            "session.refresh_marker",
+            "session.revoke",
+            "report_connection",
+            "egress_for",
+            "subscribe_kill",
+            "health",
+            "close"
+          ]
+        },
+        "params": {
+          "type": "object"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "hello"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "$ref": "#/$defs/params.hello"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "auth"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "$ref": "#/$defs/params.auth"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "resolve_agent"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "$ref": "#/$defs/params.resolve_agent"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "create_session"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "$ref": "#/$defs/params.create_session"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "get_manifest"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "$ref": "#/$defs/params.get_manifest"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "authorize"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "$ref": "#/$defs/params.authorize"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "preflight_step"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "$ref": "#/$defs/params.preflight_step"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "submit_plan"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "$ref": "#/$defs/params.submit_plan"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "spawn_subagent"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "$ref": "#/$defs/params.spawn_subagent"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "publish_events"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "$ref": "#/$defs/params.publish_events"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "complete_session"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "$ref": "#/$defs/params.complete_session"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "terminate_session"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "$ref": "#/$defs/params.terminate_session"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "drain"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "$ref": "#/$defs/params.drain"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "session.refresh_marker"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "$ref": "#/$defs/params.session.refresh_marker"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "session.revoke"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "$ref": "#/$defs/params.session.revoke"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "report_connection"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "$ref": "#/$defs/params.report_connection"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "egress_for"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "$ref": "#/$defs/params.egress_for"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "subscribe_kill"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "$ref": "#/$defs/params.subscribe_kill"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "health"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "$ref": "#/$defs/params.health"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "close"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "$ref": "#/$defs/params.close"
+              }
+            }
+          }
+        }
+      ],
+      "description": "A request from the SDK. Each gets exactly one response with the same id."
+    },
+    "error_code": {
+      "enum": [
+        "unauthenticated",
+        "unsupported_version",
+        "unknown_run",
+        "run_ended",
+        "denied",
+        "unavailable",
+        "invalid",
+        "internal"
+      ]
+    },
+    "error_reason": {
+      "enum": [
+        "scope_attenuation_violation",
+        "run_handle_invalidated",
+        "agent_not_registered",
+        "goal_not_found",
+        "quarantined",
+        "terminated",
+        "severed",
+        "revoked",
+        "agent_trust_revoked",
+        "agent_quarantined",
+        "agent_unverified",
+        "delegation_chain_not_trusted"
+      ],
+      "description": "A closed list of non-sensitive categories. Never server text."
+    },
+    "error_body": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code"
+      ],
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/error_code"
+        },
+        "retry_after_ms": {
+          "$ref": "#/$defs/u32"
+        },
+        "reason": {
+          "$ref": "#/$defs/error_reason"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "code": {
+                "const": "unavailable"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "retry_after_ms"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "retry_after_ms"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "code": {
+                "enum": [
+                  "denied",
+                  "run_ended"
+                ]
+              }
+            }
+          },
+          "else": {
+            "not": {
+              "required": [
+                "reason"
+              ]
+            }
+          }
+        }
+      ],
+      "description": "A code, plus retry_after_ms for unavailable and an optional reason for denied and run_ended. No message or other detail ever reaches the SDK."
+    },
+    "ok_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "ok"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/request_id"
+        },
+        "ok": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/result.hello"
+            },
+            {
+              "$ref": "#/$defs/result.auth"
+            },
+            {
+              "$ref": "#/$defs/result.resolve_agent"
+            },
+            {
+              "$ref": "#/$defs/result.create_session"
+            },
+            {
+              "$ref": "#/$defs/result.get_manifest"
+            },
+            {
+              "$ref": "#/$defs/result.authorize"
+            },
+            {
+              "$ref": "#/$defs/result.preflight_step"
+            },
+            {
+              "$ref": "#/$defs/result.submit_plan"
+            },
+            {
+              "$ref": "#/$defs/result.spawn_subagent"
+            },
+            {
+              "$ref": "#/$defs/result.publish_events"
+            },
+            {
+              "$ref": "#/$defs/result.complete_session"
+            },
+            {
+              "$ref": "#/$defs/result.terminate_session"
+            },
+            {
+              "$ref": "#/$defs/result.drain"
+            },
+            {
+              "$ref": "#/$defs/result.session.refresh_marker"
+            },
+            {
+              "$ref": "#/$defs/result.session.revoke"
+            },
+            {
+              "$ref": "#/$defs/result.report_connection"
+            },
+            {
+              "$ref": "#/$defs/result.egress_for"
+            },
+            {
+              "$ref": "#/$defs/result.subscribe_kill"
+            },
+            {
+              "$ref": "#/$defs/result.health"
+            },
+            {
+              "$ref": "#/$defs/result.close"
+            }
+          ]
+        }
+      },
+      "description": "A successful response. Its shape is `result.<method>` of the request with this id."
+    },
+    "error_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "error"
+      ],
+      "properties": {
+        "id": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/request_id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "$ref": "#/$defs/error_body"
+        }
+      },
+      "description": "A failed request. `id` is null when the frame it answers had no usable id; the connection then closes."
+    },
+    "kill_event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run",
+        "reason",
+        "source"
+      ],
+      "properties": {
+        "run": {
+          "$ref": "#/$defs/run_ref"
+        },
+        "reason": {
+          "$ref": "#/$defs/short_text"
+        },
+        "source": {
+          "enum": [
+            "refresh",
+            "authorize",
+            "forward_lane",
+            "local",
+            "operator"
+          ]
+        }
+      }
+    },
+    "push_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "push",
+        "event",
+        "data"
+      ],
+      "properties": {
+        "push": {
+          "const": true
+        },
+        "event": {
+          "const": "kill"
+        },
+        "data": {
+          "$ref": "#/$defs/kill_event"
+        }
+      },
+      "description": "A server push. The connector has ended `data.run` and refuses its traffic."
+    },
+    "server_frame": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ok_frame"
+        },
+        {
+          "$ref": "#/$defs/error_frame"
+        },
+        {
+          "$ref": "#/$defs/push_frame"
+        }
+      ]
+    }
+  }
+}

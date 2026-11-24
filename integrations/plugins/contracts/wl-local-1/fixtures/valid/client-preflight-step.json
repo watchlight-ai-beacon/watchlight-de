@@ -1,0 +1,14 @@
+{
+  "description": "preflight step",
+  "direction": "client",
+  "frame": {
+    "id": 7,
+    "method": "preflight_step",
+    "params": {
+      "run": "rrrrrrAbc_-0123456789xyz",
+      "action": "a",
+      "resource": "r",
+      "resource_type": "Tool"
+    }
+  }
+}

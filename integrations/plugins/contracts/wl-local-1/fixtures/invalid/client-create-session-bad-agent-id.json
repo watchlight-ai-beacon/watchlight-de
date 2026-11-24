@@ -1,0 +1,12 @@
+{
+  "description": "create session bad agent id",
+  "direction": "client",
+  "frame": {
+    "id": 1,
+    "method": "create_session",
+    "params": {
+      "agent_id": "a b",
+      "ttl_seconds": 60
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "description": "run too short",
+  "direction": "client",
+  "frame": {
+    "id": 1,
+    "method": "get_manifest",
+    "params": {
+      "run": "abc"
+    }
+  }
+}

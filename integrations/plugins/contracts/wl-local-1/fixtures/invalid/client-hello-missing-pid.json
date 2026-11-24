@@ -1,0 +1,13 @@
+{
+  "description": "hello missing pid",
+  "direction": "client",
+  "frame": {
+    "id": 0,
+    "method": "hello",
+    "params": {
+      "proto": "wl-local/1",
+      "lang": "python",
+      "sdk_version": "1"
+    }
+  }
+}

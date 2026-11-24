@@ -1,0 +1,9 @@
+{
+  "description": "params not object",
+  "direction": "client",
+  "frame": {
+    "id": 1,
+    "method": "health",
+    "params": []
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "description": "Unix socket: the hello answer.",
+  "direction": "server",
+  "in_reply_to": "hello",
+  "transport": "unix",
+  "frame": {
+    "id": 0,
+    "ok": {
+      "proto": "wl-local/1",
+      "connector_version": "0.2.0",
+      "features": [
+        "kill_push"
+      ]
+    }
+  }
+}

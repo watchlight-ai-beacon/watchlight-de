@@ -1,0 +1,9 @@
+{
+  "description": "id string",
+  "direction": "client",
+  "frame": {
+    "id": "1",
+    "method": "health",
+    "params": {}
+  }
+}
