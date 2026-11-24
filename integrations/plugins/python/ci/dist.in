@@ -1,5 +1,5 @@
-# The build tools for check_dist.py --build, installed from the hash-pinned
-# lock next to this file.
+# An input of ci/regen.sh: the build tools for check_dist.py --build,
+# installed from the hash-pinned lock next to this file.
 build
 setuptools>=77.0
 wheel
