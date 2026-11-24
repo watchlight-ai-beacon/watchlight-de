@@ -1,0 +1,141 @@
+# Publish one of the Python agent SDK packages to PyPI.
+#
+# The packages live under integrations/plugins/python/. Each run publishes one
+# package, chosen from the list below. Only packages whose release has been
+# reviewed are on the list.
+#
+# Manual trigger, dry-run by default. Trusted publishing (OIDC) — no stored token.
+#
+# ─── FAIL-CLOSED CHECKS (in this order, before anything is uploaded) ───
+#   1. ci/check_published_deps.py: every Watchlight package the selected one
+#      requires is already on PyPI at its stated floor. Publish order:
+#      watchlight-agent-sdk, then watchlight-agent-sdk-testing, then
+#      watchlight-claude-agent.
+#   2. ci/check_dist.py --build --out dist: the wheel and the sdist are built
+#      offline from the package's tracked files, with the build tools from the
+#      hash-pinned ci/dist.txt, and scanned (allowlisted contents, no internal
+#      or secret-like text, metadata naming this repository). The build job
+#      holds no publishing token.
+#   3. The publish job scans the downloaded files again (check_dist.py --dist)
+#      before it uploads them.
+#
+# ─── OPERATOR PREREQUISITES (one-time per package) ───
+#   Each package is its own PyPI project with its own PyPI Trusted Publisher:
+#        PyPI project name: the package (see the `package` input)
+#        Owner (GitHub):    watchlight-ai-beacon
+#        Repository:        watchlight-de
+#        Workflow name:     publish-plugins.yml
+#        Environment:       pypi
+#   A project that is not on PyPI yet needs a pending publisher with the same
+#   fields. The `pypi` GitHub Environment accepts deployments only from `main`
+#   and `v*` tags. Run a dry run first, then the real publish.
+
+name: Publish Python agent SDK packages (PyPI)
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: "Which package to publish"
+        type: choice
+        options:
+          - watchlight-agent-sdk
+          - watchlight-agent-sdk-testing
+          - watchlight-claude-agent
+      dry_run:
+        description: "Build + check dists but SKIP the upload"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: "Build and scan ${{ inputs.package }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      dir: ${{ steps.dir.outputs.dir }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Package directory
+        id: dir
+        env:
+          PACKAGE: ${{ inputs.package }}
+        run: |
+          set -euo pipefail
+          case "$PACKAGE" in
+            watchlight-agent-sdk) dir=watchlight-core ;;
+            watchlight-agent-sdk-testing) dir=watchlight-agent-sdk-testing ;;
+            watchlight-claude-agent) dir=watchlight-claude-agent ;;
+            *) echo "::error::$PACKAGE is not a reviewed package"; exit 1 ;;
+          esac
+          echo "dir=$dir" >>"$GITHUB_OUTPUT"
+
+      # The checks' own tests run first, so a bug in them fails here rather
+      # than passing the package.
+      - name: Test the checks
+        working-directory: integrations/plugins/python/ci
+        run: python -m unittest -v test_check_dist test_check_published_deps test_publish_workflow
+
+      - name: Its Watchlight dependencies are on PyPI
+        working-directory: integrations/plugins/python/ci
+        env:
+          DIR: ${{ steps.dir.outputs.dir }}
+        run: python check_published_deps.py "$DIR"
+
+      - name: Build and scan
+        env:
+          DIR: ${{ steps.dir.outputs.dir }}
+        run: |
+          set -euo pipefail
+          base="$GITHUB_WORKSPACE/integrations/plugins/python"
+          python -m venv "$RUNNER_TEMP/venv"
+          py="$RUNNER_TEMP/venv/bin/python"
+          "$py" -m pip install --disable-pip-version-check --quiet --require-hashes --only-binary :all: --no-deps -r "$base/ci/dist.txt"
+          "$py" "$base/ci/check_dist.py" --build --out "$GITHUB_WORKSPACE/dist" --plugin "$DIR" --python "$py"
+          ls -la "$GITHUB_WORKSPACE/dist"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: "Publish ${{ inputs.package }} to PyPI"
+    needs: [build]
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write # OIDC — trusted publishing mints a short-lived token
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - name: Scan the files about to be uploaded
+        env:
+          DIR: ${{ needs.build.outputs.dir }}
+        run: python3 integrations/plugins/python/ci/check_dist.py --dist dist --plugin "$DIR"
+      - name: Publish (trusted publishing / OIDC)
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
+        with:
+          packages-dir: dist
+          print-hash: true

@@ -18,7 +18,10 @@ Contents, against an allowlist. A wheel may hold the package's own modules
 file). An sdist may hold the same modules plus README.md, LICENSE,
 pyproject.toml, setup.cfg, MANIFEST.in, PKG-INFO and its `.egg-info`
 metadata. Anything else fails: tests, conftest.py, `.env`, keys and
-certificates, CI files.
+certificates, CI files. Test doubles and the conformance runner are test
+modules too, except in watchlight-agent-sdk-testing, the one distribution
+that exists to ship them (only its own modules; every other rule still
+applies to it).
 
 Text, in every member: no private address (192.168.*, 10.*, 172.16-31.*,
 a URL or e-mail at a .local / .internal / .lan / .corp host), no absolute
@@ -41,6 +44,10 @@ USAGE
     # wheel and sdist offline (python -m build --no-isolation, with the tools
     # from the hash-pinned ci/dist.txt), and scan them.
     python3 integrations/plugins/python/ci/check_dist.py --build [--plugin watchlight-adk ...]
+
+    # Publish workflow, build job: the same build and scan, keeping the files
+    # in DIR (which must not exist yet) for the upload.
+    python3 integrations/plugins/python/ci/check_dist.py --build --out DIR --plugin watchlight-core
 
     # Publish workflow: scan the files that are about to be uploaded. Every
     # file in DIR must belong to a published package. Standard library only.
@@ -78,6 +85,7 @@ PACKAGES_REL = "integrations/plugins/python"
 #: The published Python packages: directory -> (PyPI name, import package).
 PUBLISHED_PLUGINS: dict[str, tuple[str, str]] = {
     "watchlight-core": ("watchlight-agent-sdk", "watchlight_core"),
+    "watchlight-agent-sdk-testing": ("watchlight-agent-sdk-testing", "watchlight_core_testing"),
     "watchlight-adk": ("watchlight-adk", "watchlight_adk"),
     "watchlight-langgraph": ("watchlight-langgraph", "watchlight_langgraph"),
     "watchlight-bedrock": ("watchlight-bedrock", "watchlight_bedrock"),
@@ -176,9 +184,12 @@ TEST_ONLY_LEAVES = ("testing.py", "conformance.py", "_doubles.py")
 #: package (a docstring that names it is fine).
 TEST_ONLY_CODE = re.compile(
     r"(?m)^[ \t]*(?:class[ \t]+MockApdpClient\b|(?:from|import)[ \t]+watchlight_core_testing\b)")
+#: The distributions whose own modules are test doubles by design. Every
+#: other check (contents, text, metadata) still applies to them.
+TEST_DOUBLE_DISTS = frozenset({"watchlight-agent-sdk-testing"})
 
 
-def text_findings(artifact: str, member: str, data: bytes) -> list[Finding]:
+def text_findings(artifact: str, member: str, data: bytes, *, doubles: bool = False) -> list[Finding]:
     if len(data) > MAX_SCAN:
         return [Finding(artifact, member, f"{len(data)} bytes, over the {MAX_SCAN}-byte scan limit: "
                                           "not scanned, so it cannot ship")]
@@ -192,7 +203,7 @@ def text_findings(artifact: str, member: str, data: bytes) -> list[Finding]:
     reason = committed_secret_reason(os.path.basename(member), text)
     if reason:
         out.append(Finding(artifact, member, reason))
-    if member.endswith(".py"):
+    if member.endswith(".py") and not doubles:
         m = TEST_ONLY_CODE.search(text)
         if m:
             line = text.count("\n", 0, m.start()) + 1
@@ -200,9 +211,9 @@ def text_findings(artifact: str, member: str, data: bytes) -> list[Finding]:
     return out
 
 
-def _module_member(rel: str, module: str) -> bool:
+def _module_member(rel: str, module: str, *, doubles: bool = False) -> bool:
     """A file of the package itself: <module>/**.py or <module>/py.typed,
-    never a test module."""
+    never a test module (a test double only when `doubles`)."""
     parts = rel.split("/")
     if parts[0] != module or len(parts) < 2:
         return False
@@ -211,7 +222,7 @@ def _module_member(rel: str, module: str) -> bool:
     leaf = parts[-1]
     if leaf == "conftest.py" or leaf.startswith("test_") or leaf.endswith("_test.py"):
         return False
-    if leaf in TEST_ONLY_LEAVES or (leaf.endswith(".py") and "mock" in leaf.lower()):
+    if not doubles and (leaf in TEST_ONLY_LEAVES or (leaf.endswith(".py") and "mock" in leaf.lower())):
         return False
     return leaf == "py.typed" or leaf.endswith(".py")
 
@@ -242,6 +253,7 @@ def scan_wheel(path: Path, dist: str, module: str, version: str) -> list[Finding
     art = path.name
     out: list[Finding] = []
     distinfo = f"{_underscored(dist)}-{version}.dist-info"
+    doubles = dist in TEST_DOUBLE_DISTS
     licence_seen = False
     metadata = None
     try:
@@ -258,12 +270,12 @@ def scan_wheel(path: Path, dist: str, module: str, version: str) -> list[Finding
                         licence_seen = True
                     else:
                         out.append(Finding(art, name, "not on the wheel allowlist"))
-                elif not _module_member(name, module):
+                elif not _module_member(name, module, doubles=doubles):
                     out.append(Finding(art, name, "not on the wheel allowlist"))
                 data = zf.read(info)
                 if name == f"{distinfo}/METADATA":
                     metadata = data
-                out.extend(text_findings(art, name, data))
+                out.extend(text_findings(art, name, data, doubles=doubles))
     except (OSError, zipfile.BadZipFile) as exc:
         raise ScanError(f"{path}: cannot read the wheel: {exc}") from exc
     if metadata is None:
@@ -280,6 +292,7 @@ def scan_sdist(path: Path, dist: str, module: str, version: str) -> list[Finding
     out: list[Finding] = []
     top = f"{_underscored(dist)}-{version}"
     egg = f"{_underscored(dist)}.egg-info"
+    doubles = dist in TEST_DOUBLE_DISTS
     pkg_info = None
     licence_seen = False
     try:
@@ -299,7 +312,7 @@ def scan_sdist(path: Path, dist: str, module: str, version: str) -> list[Finding
                     licence_seen = licence_seen or rel in LICENSE_NAMES
                 elif rel.startswith(egg + "/") and rel[len(egg) + 1:] in EGG_INFO:
                     pass
-                elif not _module_member(rel, module):
+                elif not _module_member(rel, module, doubles=doubles):
                     out.append(Finding(art, name, "not on the sdist allowlist"))
                 fh = tf.extractfile(m)
                 if fh is None:  # pragma: no cover - isfile() above
@@ -307,7 +320,7 @@ def scan_sdist(path: Path, dist: str, module: str, version: str) -> list[Finding
                 data = fh.read()
                 if rel == "PKG-INFO":
                     pkg_info = data
-                out.extend(text_findings(art, name, data))
+                out.extend(text_findings(art, name, data, doubles=doubles))
     except (OSError, tarfile.TarError) as exc:
         raise ScanError(f"{path}: cannot read the sdist: {exc}") from exc
     if pkg_info is None:
@@ -414,14 +427,29 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--plugin", action="append", default=[],
                     help="a package directory under integrations/plugins/python (repeatable; default: every published package)")
     ap.add_argument("--python", default=sys.executable, help="interpreter that runs `python -m build`")
+    ap.add_argument("--out", type=Path,
+                    help="with --build: keep the scanned distributions in this directory (must not exist)")
     args = ap.parse_args(argv)
+    if args.out is not None and not args.build:
+        print("check_dist: --out needs --build", file=sys.stderr)
+        return 2
     unknown = [p for p in args.plugin if p not in PUBLISHED_PLUGINS]
     if unknown:
         print(f"check_dist: not a published plugin: {', '.join(unknown)}", file=sys.stderr)
         return 2
     plugins = args.plugin or list(PUBLISHED_PLUGINS)
+    created = False
     try:
-        if args.build:
+        if args.build and args.out is not None:
+            if args.out.exists():
+                raise ScanError(f"{args.out}: already exists; --out needs a new directory")
+            args.out.mkdir(parents=True)
+            created = True
+            build_plugins(plugins, args.out, python=args.python)
+            findings = scan_dist_dir(args.out, expect=plugins)
+            if findings:
+                shutil.rmtree(args.out)  # nothing that failed is left to upload
+        elif args.build:
             with tempfile.TemporaryDirectory(prefix="plugin-dist-") as out:
                 build_plugins(plugins, Path(out), python=args.python)
                 findings = scan_dist_dir(Path(out), expect=plugins)
@@ -430,6 +458,8 @@ def main(argv: list[str]) -> int:
                 raise ScanError(f"{args.dist}: not a directory")
             findings = scan_dist_dir(args.dist, expect=args.plugin or None)
     except ScanError as exc:
+        if created:
+            shutil.rmtree(args.out)  # a partial build is never left to upload
         print(f"::error::check_dist could not run: {exc}", file=sys.stderr)
         return 2
     for f in findings:

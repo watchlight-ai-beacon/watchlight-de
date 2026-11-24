@@ -10,6 +10,16 @@ between the version you are on and the one you are moving to.
 
 ## Unreleased
 
+**The SDK's test doubles move to `watchlight-agent-sdk-testing`.**
+`watchlight-agent-sdk` 0.10.2 no longer ships `watchlight_core.testing`
+(`MockApdpClient` and the other doubles) or `watchlight_core.conformance`,
+and no longer installs the `watchlight-conformance` command. An old import
+raises `ModuleNotFoundError`. Add `watchlight-agent-sdk-testing` to your test
+dependencies and import `from watchlight_core_testing import MockApdpClient`
+and `from watchlight_core_testing import conformance`. `MockApdpClient` now
+denies by default: pass `default_decision="Allow"` for an allow-everything
+double. Your agent's runtime code is unaffected.
+
 **A sub-agent's call outside the scope its spawn granted is denied, in process.**
 With `in_process_backend()`, a sub-agent granted `[web_search]` (or nothing)
 could call any tool your policies allowed its principal. Now every authorize
