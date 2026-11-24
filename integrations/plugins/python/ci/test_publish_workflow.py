@@ -72,6 +72,15 @@ class TestPublishWorkflow(unittest.TestCase):
         self.assertTrue(_before(self.jobs["publish"], 'check_dist.py --dist dist --plugin "$DIR"',
                                 "pypa/gh-action-pypi-publish@"))
 
+    def test_the_publish_job_first_refuses_any_ref_but_main(self) -> None:
+        publish = self.jobs["publish"]
+        steps = publish.split("\n    steps:\n", 1)[1]
+        first = re.split(r"(?m)^      - ", steps)[1]
+        self.assertIn('if [ "$GITHUB_REF" != "refs/heads/main" ]; then', first)
+        self.assertIn("exit 1", first)
+        self.assertNotIn("uses:", first)
+        self.assertTrue(_before(publish, '"$GITHUB_REF" != "refs/heads/main"', "pypa/gh-action-pypi-publish@"))
+
     def test_every_action_is_pinned_to_a_commit(self) -> None:
         uses = re.findall(r"(?m)^\s*(?:- )?uses: (\S+)", self.text)
         self.assertTrue(uses)

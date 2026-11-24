@@ -120,6 +120,14 @@ jobs:
       contents: read
       id-token: write # OIDC — trusted publishing mints a short-lived token
     steps:
+      # A step, not only an `if`: the job fails rather than skips, so a run
+      # from any other branch or a tag on an unmerged commit cannot publish.
+      - name: Refuse any ref but main
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::publishing runs only from refs/heads/main, not $GITHUB_REF"
+            exit 1
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false

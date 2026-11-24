@@ -13,8 +13,9 @@ WHAT IT CHECKS
 ==============
 Every dependency of the package that is itself a published package (see
 check_dist.PUBLISHED_PLUGINS) must state a `>=` floor, and that exact
-version must be on PyPI. A dependency without a floor, a floor that is not
-on PyPI, or an answer this check cannot read fails it.
+version must be on PyPI, with files, and not yanked. A dependency without a
+floor, a floor that is missing, yanked or has no files, or an answer this
+check cannot read fails it.
 
 USAGE
 =====
@@ -27,6 +28,7 @@ check could not run. Fail-closed: a check that cannot run has not passed.
 from __future__ import annotations
 
 import http.client
+import json
 import re
 import ssl
 import sys
@@ -46,28 +48,48 @@ class CheckError(Exception):
     pass
 
 
-def on_pypi(name: str, version: str) -> bool:
-    """True when PyPI has `name` at exactly `version`, False when it answers
-    404. Any other answer, a redirect included, cannot be read as either."""
+PRESENT, MISSING, YANKED, NO_FILES = "present", "missing", "yanked", "no files"
+
+
+def release_state(body: bytes) -> str:
+    """The state of one release from its PyPI JSON: yanked when the release
+    or any of its files is, no files when it has none, else present."""
+    try:
+        data = json.loads(body)
+        info, urls = data["info"], data["urls"]
+    except (ValueError, KeyError, TypeError) as exc:
+        raise CheckError(f"unreadable PyPI answer: {exc}") from exc
+    if not isinstance(info, dict) or not isinstance(urls, list):
+        raise CheckError("unreadable PyPI answer: info or urls has the wrong type")
+    if info.get("yanked") or any(isinstance(u, dict) and u.get("yanked") for u in urls):
+        return YANKED
+    return PRESENT if urls else NO_FILES
+
+
+def on_pypi(name: str, version: str) -> str:
+    """The state of `name` at exactly `version` on PyPI: MISSING on a 404,
+    else read from the release's JSON. Any other answer, a redirect
+    included, cannot be read as either."""
     path = f"/pypi/{quote(name, safe='')}/{quote(version, safe='')}/json"
     # nosemgrep: community.python.lang.security.audit.httpsconnection-detected the context verifies the certificate and the host name (Python 3.12, a fixed host)
     conn = http.client.HTTPSConnection(INDEX_HOST, timeout=30, context=ssl.create_default_context())
     try:
         conn.request("GET", path, headers={"Accept": "application/json"})
-        status = conn.getresponse().status
+        resp = conn.getresponse()
+        status, body = resp.status, resp.read(8 * 1024 * 1024)
     except (OSError, http.client.HTTPException) as exc:
         raise CheckError(f"https://{INDEX_HOST}{path}: {exc}") from exc
     finally:
         conn.close()
     if status == 200:
-        return True
+        return release_state(body)
     if status == 404:
-        return False
+        return MISSING
     raise CheckError(f"https://{INDEX_HOST}{path}: HTTP {status}")
 
 
 def findings(plugin: str, *, root: Path | None = None,
-             lookup: Callable[[str, str], bool] = on_pypi) -> list[str]:
+             lookup: Callable[[str, str], str] = on_pypi) -> list[str]:
     root = root or cd.ROOT
     path = root / cd.PACKAGES_REL / plugin / "pyproject.toml"
     try:
@@ -85,8 +107,13 @@ def findings(plugin: str, *, root: Path | None = None,
         floor = _FLOOR.search(m.group(2))
         if not floor:
             out.append(f"{plugin}: {req!r} states no >= floor, so its published version cannot be checked")
-        elif not lookup(name, floor.group(1)):
-            out.append(f"{plugin}: requires {name}>={floor.group(1)}, which is not on PyPI; publish it first")
+        else:
+            state = lookup(name, floor.group(1))
+            if state == MISSING:
+                out.append(f"{plugin}: requires {name}>={floor.group(1)}, which is not on PyPI; publish it first")
+            elif state != PRESENT:
+                out.append(f"{plugin}: requires {name}>={floor.group(1)}, which is on PyPI but {state}; "
+                           "raise the floor to a usable release")
     return out
 
 

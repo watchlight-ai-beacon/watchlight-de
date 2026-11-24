@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -21,14 +22,19 @@ def _root(tmp: str, deps: list[str]) -> Path:
     return Path(tmp)
 
 
-def _index(*published: tuple[str, str]):
+def _index(*published: tuple[str, str], state: str = cpd.PRESENT):
     asked: list[tuple[str, str]] = []
 
-    def lookup(name: str, version: str) -> bool:
+    def lookup(name: str, version: str) -> str:
         asked.append((name, version))
-        return (name, version) in published
+        return state if (name, version) in published else cpd.MISSING
 
     return lookup, asked
+
+
+def _release(yanked: bool = False, files: list[dict] | None = None) -> bytes:
+    urls = [{"filename": "x.whl", "yanked": False}] if files is None else files
+    return json.dumps({"info": {"version": "0.10.2", "yanked": yanked}, "urls": urls}).encode()
 
 
 class TestPublishedDeps(unittest.TestCase):
@@ -48,6 +54,24 @@ class TestPublishedDeps(unittest.TestCase):
         self.assertEqual(len(found), 1)
         self.assertIn("watchlight-agent-sdk>=0.10.2, which is not on PyPI", found[0])
 
+    def test_a_yanked_or_empty_floor_is_refused(self) -> None:
+        for state in (cpd.YANKED, cpd.NO_FILES):
+            lookup, _ = _index(("watchlight-agent-sdk", "0.10.2"), state=state)
+            with self.subTest(state=state), tempfile.TemporaryDirectory() as tmp:
+                root = _root(tmp, ["watchlight-agent-sdk>=0.10.2,<0.11"])
+                found = cpd.findings("watchlight-claude-agent", root=root, lookup=lookup)
+                self.assertEqual(len(found), 1, found)
+                self.assertIn(f"which is on PyPI but {state}", found[0])
+
+    def test_the_release_state_is_read_from_the_json(self) -> None:
+        self.assertEqual(cpd.release_state(_release()), cpd.PRESENT)
+        self.assertEqual(cpd.release_state(_release(yanked=True)), cpd.YANKED)
+        self.assertEqual(cpd.release_state(_release(files=[{"filename": "x.whl", "yanked": True}])), cpd.YANKED)
+        self.assertEqual(cpd.release_state(_release(files=[])), cpd.NO_FILES)
+        for body in (b"not json", b"{}", b'{"info": {}, "urls": {}}', b'{"info": [], "urls": []}', b"[]"):
+            with self.subTest(body=body), self.assertRaises(cpd.CheckError):
+                cpd.release_state(body)
+
     def test_a_watchlight_dependency_without_a_floor_is_refused(self) -> None:
         lookup, _ = _index()
         for req in ("watchlight-agent-sdk", "watchlight-agent-sdk<0.11", "watchlight_agent_sdk[otel]==0.10.2"):
@@ -57,7 +81,7 @@ class TestPublishedDeps(unittest.TestCase):
                 self.assertIn("no >= floor", found[0])
 
     def test_an_unreadable_answer_cannot_pass(self) -> None:
-        def lookup(name: str, version: str) -> bool:
+        def lookup(name: str, version: str) -> str:
             raise cpd.CheckError("HTTP 503")
 
         with tempfile.TemporaryDirectory() as tmp:
