@@ -20,3 +20,6 @@ maturin>=1.14.1,<2
 # connector).
 agent-framework-core>=1.19,<1.20
 -e ../watchlight-strands[dev]
+# watchlight-core's egress tests drive a real aiohttp client through the
+# outbound proxy, so they need it installed (they fail rather than skip without it).
+aiohttp

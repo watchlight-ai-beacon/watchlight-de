@@ -146,6 +146,12 @@ plugin.apdp = ApdpClient("https://apdp.your-org", credential=Credential.from_def
 
 `WatchlightPlugin(apdp_url="https://apdp.your-org")` also constructs an `ApdpClient` for you, so Enterprise deployments can simply pass the endpoint at construction time.
 
+## Python version
+
+`watchlight-adk` installs on Python 3.10 and later, but **use Python 3.11 or later**. google-adk 2.14.0 and later, which accept the fixed `opentelemetry-api` 1.45.2, need Python 3.11. On Python 3.10 the newest google-adk is 2.11.0, which holds `opentelemetry-api` at 1.42.1 or earlier. That version has two denial-of-service flaws: unbounded parsing of an inbound `tracestate` header (CVE-2026-114603), and quadratic-time parsing of a `traceparent` value in `TraceContextTextMapPropagator.extract()` (CVE-2026-126360).
+
+The plugin never parses inbound trace context. google-adk's own FastAPI server does in Gemini Enterprise mode: it passes the inbound `Google-Agent-Engine-Traceparent` header to `extract()`, so it reaches the `traceparent` flaw. It passes no `tracestate`, so it does not reach the other one. If you run that server, run it on Python 3.11 or later. Python 3.10 reached end of life in October 2026.
+
 ## Links
 
 - Documentation: https://docs.watchlight.ai/de
