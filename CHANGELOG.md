@@ -91,6 +91,14 @@ Each entry links to its release, which carries the reasoning and the measurement
 **Changed**
 - `docs/integrations.md` says which principal a framework plugin call has: `Agent::"<agent id>"`, the id the in-process backend resolves from the agent's name, never the name itself.
 
+**Added**
+- The Python agent SDK (`watchlight-agent-sdk`), its test doubles (`watchlight-agent-sdk-testing`) and the framework plugins are developed in this repository, under `integrations/plugins/python/`, and published from it.
+- `watchlight-agent-sdk-testing` 0.1.0: `MockApdpClient`, the pytest helpers and the conformance runner (`watchlight-conformance`), import root `watchlight_core_testing`. It is a test-only distribution: add it to your test dependencies, never to your runtime ones.
+
+**Changed**
+- `watchlight-agent-sdk` 0.10.2 no longer ships `watchlight_core.testing` or `watchlight_core.conformance`, and no longer installs the `watchlight-conformance` command; they move to `watchlight-agent-sdk-testing`. `MockApdpClient` denies by default. Read [breaking changes](docs/breaking-changes.md).
+- `watchlight-claude-agent` 0.3.2 requires `watchlight-agent-sdk>=0.10.2,<0.11`.
+
 ## 0.15.0 — 2026-10-18
 
 A quota now counts each principal once however it is spelled, and

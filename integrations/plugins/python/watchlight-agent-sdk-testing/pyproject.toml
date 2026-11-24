@@ -35,6 +35,12 @@ dev = [
     "pytest-asyncio>=0.21",
 ]
 
+[project.urls]
+Homepage = "https://www.watchlight.ai"
+Documentation = "https://docs.watchlight.ai/de"
+Repository = "https://github.com/watchlight-ai-beacon/watchlight-de"
+Issues = "https://github.com/watchlight-ai-beacon/watchlight-de/issues"
+
 [project.scripts]
 # ``watchlight-conformance my_plugin`` is an alias for
 # ``python -m watchlight_core_testing.conformance my_plugin``.

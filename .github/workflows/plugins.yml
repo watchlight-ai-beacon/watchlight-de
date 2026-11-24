@@ -36,11 +36,13 @@ on:
     paths:
       - "integrations/plugins/**"
       - ".github/workflows/plugins.yml"
+      - ".github/workflows/publish-plugins.yml"
   push:
     branches: [main]
     paths:
       - "integrations/plugins/**"
       - ".github/workflows/plugins.yml"
+      - ".github/workflows/publish-plugins.yml"
 
 # Least privilege: reading the checkout is the only thing this needs.
 permissions:
@@ -298,11 +300,12 @@ jobs:
         with:
           python-version: "3.12"
 
-      # The check's own tests run first, so a bug in it fails here rather than
-      # passing the packages.
-      - name: Test the distribution check
+      # The checks' own tests run first, so a bug in one fails here rather
+      # than passing the packages. test_publish_workflow pins the publish
+      # workflow's safety properties.
+      - name: Test the distribution checks
         working-directory: integrations/plugins/python/ci
-        run: python -m unittest -v test_check_dist
+        run: python -m unittest -v test_check_dist test_check_published_deps test_publish_workflow
 
       - name: Build and scan every published package
         run: |

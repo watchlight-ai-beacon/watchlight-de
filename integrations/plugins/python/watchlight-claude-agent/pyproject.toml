@@ -47,7 +47,7 @@ classifiers = [
 # matches the watchlight-openclaw plugin's optional `openclaw` peer
 # dep).
 dependencies = [
-    "watchlight-agent-sdk>=0.10.1,<0.11",
+    "watchlight-agent-sdk>=0.10.2,<0.11",
 ]
 
 [project.optional-dependencies]

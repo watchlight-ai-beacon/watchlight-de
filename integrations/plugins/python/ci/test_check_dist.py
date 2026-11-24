@@ -134,5 +134,74 @@ class TestDistDir(unittest.TestCase):
                 cd.scan_dist_dir(Path(tmp))
 
 
+def _named_wheel(tmp: str, dist: str, module: str, members: dict[str, str]) -> Path:
+    info = f"{dist.replace('-', '_')}-{VERSION}.dist-info"
+    path = Path(tmp) / f"{dist.replace('-', '_')}-{VERSION}-py3-none-any.whl"
+    base = {
+        f"{module}/__init__.py": "VALUE = 1\n",
+        f"{info}/METADATA": METADATA.replace(f"Name: {DIST}", f"Name: {dist}"),
+        f"{info}/WHEEL": "Wheel-Version: 1.0\n",
+        f"{info}/RECORD": "",
+        f"{info}/licenses/LICENSE": "Apache License\n",
+    }
+    base.update(members)
+    with zipfile.ZipFile(path, "w") as zf:
+        for name, text in base.items():
+            zf.writestr(name, text)
+    return path
+
+
+DOUBLES = {
+    "_doubles.py": "class MockApdpClient:\n    pass\n",
+    "conformance.py": "from watchlight_core_testing import MockApdpClient\n",
+}
+
+
+class TestTestDoubleDistribution(unittest.TestCase):
+    TESTING = ("watchlight-agent-sdk-testing", "watchlight_core_testing")
+
+    def test_only_the_testing_distribution_may_ship_doubles(self) -> None:
+        self.assertEqual(cd.TEST_DOUBLE_DISTS, frozenset({"watchlight-agent-sdk-testing"}))
+        self.assertEqual(cd.PUBLISHED_PLUGINS["watchlight-agent-sdk-testing"], self.TESTING)
+
+    def test_its_own_doubles_ship(self) -> None:
+        dist, module = self.TESTING
+        members = {f"{module}/{k}": v for k, v in DOUBLES.items()}
+        with tempfile.TemporaryDirectory() as tmp:
+            found = cd.scan_wheel(_named_wheel(tmp, dist, module, members), dist, module, VERSION)
+            self.assertEqual(_reasons(found), [])
+
+    def test_every_other_rule_still_applies_to_it(self) -> None:
+        dist, module = self.TESTING
+        for name, text in (
+            (f"{module}/tests/test_x.py", "x = 1\n"),
+            (f"{module}/leak.py", "KEY = 'AKIA" + "ABCDEFGHIJKLMNOP'\n"),
+            ("watchlight_core/__init__.py", "x = 1\n"),
+        ):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                found = cd.scan_wheel(_named_wheel(tmp, dist, module, {name: text}), dist, module, VERSION)
+                self.assertTrue(found, name)
+
+    def test_the_sdk_never_ships_them(self) -> None:
+        dist, module = "watchlight-agent-sdk", "watchlight_core"
+        for leaf, text in DOUBLES.items():
+            with self.subTest(leaf=leaf), tempfile.TemporaryDirectory() as tmp:
+                wheel = _named_wheel(tmp, dist, module, {f"{module}/{leaf}": text})
+                self.assertTrue(cd.scan_wheel(wheel, dist, module, VERSION), leaf)
+
+
+class TestOut(unittest.TestCase):
+    def test_out_needs_build(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(cd.main(["--dist", tmp, "--out", str(Path(tmp) / "o")]), 2)
+
+    def test_out_must_be_a_new_directory_and_is_left_alone(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            keep = Path(tmp) / "keep.txt"
+            keep.write_text("x")
+            self.assertEqual(cd.main(["--build", "--out", tmp, "--plugin", "watchlight-msaf"]), 2)
+            self.assertTrue(keep.exists())
+
+
 if __name__ == "__main__":
     unittest.main()
