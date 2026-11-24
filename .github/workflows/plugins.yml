@@ -20,6 +20,10 @@
 #                 is a wrong floor.
 #   * dist        every published Python package built offline and its wheel
 #                 and sdist scanned (python/ci/check_dist.py).
+#   * locks       every hash-pinned lock under python/ci/ regenerates from its
+#                 .in byte for byte (python/ci/regen.sh --check), after
+#                 positive controls show a lock edited by hand fails it
+#                 (python/ci/test_regen.sh).
 #   * typescript  the whole npm workspace: npm ci, build, typecheck, test.
 #
 # While a directory holds no packages, its job says so in a notice and passes.
@@ -315,6 +319,33 @@ jobs:
           py="$RUNNER_TEMP/venv/bin/python"
           "$py" -m pip install --disable-pip-version-check --quiet --require-hashes --only-binary :all: --no-deps -r "$base/ci/dist.txt"
           "$py" "$base/ci/check_dist.py" --build --python "$py"
+
+  locks:
+    name: locks reproduce
+    # GitHub-hosted runners only: this repository is public, and a
+    # self-hosted runner never takes its jobs.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # The uv regen.sh requires, from its own hash-pinned lock.
+      - name: Install the pinned uv
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/uv"
+          "$RUNNER_TEMP/uv/bin/python" -m pip install --disable-pip-version-check --quiet \
+            --require-hashes --only-binary :all: --no-deps -r integrations/plugins/python/ci/tools.txt
+          echo "$RUNNER_TEMP/uv/bin" >> "$GITHUB_PATH"
+
+      - name: Check every lock reproduces
+        run: integrations/plugins/python/ci/test_regen.sh
 
   typescript:
     name: typescript (node ${{ matrix.node }})

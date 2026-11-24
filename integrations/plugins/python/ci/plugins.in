@@ -6,17 +6,17 @@ setuptools>=77.0
 wheel
 # Build tools the packages' tests and builds use.
 maturin>=1.14.1,<2
--e ../../watchlight-core[dev]
--e ../../watchlight-agent-sdk-testing[dev]
--e ../../watchlight-adk[dev]
--e ../../watchlight-langgraph[dev]
--e ../../watchlight-bedrock[dev]
--e ../../watchlight-deepagents[dev]
--e ../../watchlight-pydantic-ai[dev]
--e ../../watchlight-claude-agent[dev]
--e ../../watchlight-msaf[dev]
+-e ../watchlight-core[dev]
+-e ../watchlight-agent-sdk-testing[dev]
+-e ../watchlight-adk[dev]
+-e ../watchlight-langgraph[dev]
+-e ../watchlight-bedrock[dev]
+-e ../watchlight-deepagents[dev]
+-e ../watchlight-pydantic-ai[dev]
+-e ../watchlight-claude-agent[dev]
+-e ../watchlight-msaf[dev]
 # watchlight-msaf's tests need the framework: its core package only, in the
 # range the plugin supports (the `agent-framework` meta package pulls every
 # connector).
 agent-framework-core>=1.19,<1.20
--e ../../watchlight-strands[dev]
+-e ../watchlight-strands[dev]

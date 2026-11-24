@@ -4,10 +4,10 @@
 # watchlight-adk at its declared minimum google-adk.
 setuptools>=77.0
 wheel
--c ../../watchlight-adk/ci/min-versions.txt
--e ../../watchlight-core[dev]
--e ../../watchlight-agent-sdk-testing[dev]
--e ../../watchlight-adk[dev]
+-c ../watchlight-adk/ci/min-versions.txt
+-e ../watchlight-core[dev]
+-e ../watchlight-agent-sdk-testing[dev]
+-e ../watchlight-adk[dev]
 # Build requirements for a platform where cryptography builds from source.
 maturin>=1.14.1,<2
 cffi>=2.0.0

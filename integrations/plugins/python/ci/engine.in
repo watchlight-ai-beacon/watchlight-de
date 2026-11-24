@@ -1,3 +1,3 @@
-# The compiled policy engine the in-process tests use, from PyPI. Its
-# hash-pinned lock (engine.txt) is generated from this file.
+# An input of ci/regen.sh: the compiled policy engine the in-process tests
+# use, from PyPI.
 watchlight-engine>=0.2.5,<0.3

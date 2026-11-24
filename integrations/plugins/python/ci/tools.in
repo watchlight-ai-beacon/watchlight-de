@@ -1,0 +1,3 @@
+# An input of ci/regen.sh: the uv that regenerates and checks these locks.
+# regen.sh refuses any other uv version, since its output can differ.
+uv==0.13.9

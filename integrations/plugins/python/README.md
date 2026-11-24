@@ -39,6 +39,23 @@ minimum `google-adk` ([`ci/adk-min.txt`](ci/adk-min.txt)), and every published
 package is built and its wheel and sdist scanned by
 [`ci/check_dist.py`](ci/check_dist.py).
 
+## Changing a lock
+
+Each lock in `ci/` is generated from the `.in` file next to it by
+[`ci/regen.sh`](ci/regen.sh), and CI checks that regenerating reproduces every
+committed lock byte for byte. Edit the `.in` (or a package's
+`pyproject.toml`), then regenerate and commit both:
+
+```bash
+python3 -m venv .venv-uv
+.venv-uv/bin/pip install --require-hashes --only-binary :all: --no-deps -r integrations/plugins/python/ci/tools.txt
+PATH="$PWD/.venv-uv/bin:$PATH" integrations/plugins/python/ci/regen.sh plugins
+```
+
+The compile keeps every pin the inputs still allow. To move one version on
+purpose, pass `UV_EXTRA="--upgrade-package <name>"`. Every hash is read from
+PyPI, never from the old lock.
+
 A new package directory must be added to the list of open package roots in
 `.github/workflows/plugins.yml`, with the name it is released under; CI refuses
 any other directory.
