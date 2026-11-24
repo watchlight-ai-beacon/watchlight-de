@@ -190,8 +190,10 @@ _GOVERNED_NAME = re.compile(
 
 
 def _governed_names(bundle: bytes) -> Set[str]:
-    """The governed variable names a Claude Code binary carries, the same on
-    every platform's build. A string in a length-prefixed table is cut to
+    """The governed variable names a Claude Code binary carries. The macOS
+    and Linux builds share them, except that the Linux builds also carry
+    Bun's Linux-only flags and SQLite's compile-option names; the Windows
+    build is not covered. A string in a length-prefixed table is cut to
     its length, since the bytes after it can read as more of the name: the
     32-bit little-endian length just before it, or, in the bytecode table,
     the one 8 bytes before it (flagged with its top bit)."""

@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import threading
-from typing import Any, Dict, List, Optional, TypedDict
+from typing import Any, Dict, List, Optional, Tuple, TypedDict
 
 import pytest
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
@@ -29,27 +29,40 @@ from .scripted_anthropic import ScriptedChat
 AGENT_UUID = "11111111-1111-4111-8111-111111111111"
 
 ran: List[str] = []
+#: Each tool body, with the phase of the test that started it. ``ToolNode``
+#: runs sync tools on worker threads, which carry the context they were
+#: started in; a tool a refused run started can finish after the next
+#: phase begins, so a phase reads only its own entries.
+_phase: contextvars.ContextVar[str] = contextvars.ContextVar("_phase", default="")
+ran_in: List[Tuple[str, str]] = []
+
+
+def _ran(entry: str) -> None:
+    ran.append(entry)
+    ran_in.append((_phase.get(), entry))
 
 
 @tool
 def lookup(q: str) -> str:
     """Look something up."""
-    ran.append(f"lookup:{q}")
+    _ran(f"lookup:{q}")
     return "found"
 
 
 @tool
 def send_email(to: str) -> str:
     """Send an email."""
-    ran.append(f"send_email:{to}")
+    _ran(f"send_email:{to}")
     return "sent"
 
 
 @pytest.fixture(autouse=True)
 def _clean() -> Any:
     ran.clear()
+    ran_in.clear()
     yield
     ran.clear()
+    ran_in.clear()
 
 
 def _calls(*names: str) -> AIMessage:
@@ -181,6 +194,7 @@ BUILDERS = [
 async def test_a_denied_tool_never_runs_and_an_allowed_one_does(
     name: str, build: Any
 ) -> None:
+    _phase.set("denied")
     apdp = _Apdp({"send_email": "Deny"})
     app = build(_model("lookup", "send_email"), [lookup, send_email])
     async with await _plugin(apdp).start_run(agent_slug="research-analyst"):
@@ -189,13 +203,16 @@ async def test_a_denied_tool_never_runs_and_an_allowed_one_does(
     assert "send_email:a@b" not in ran
     assert "send_email" in _decided(apdp)
 
-    ran.clear()
+    _phase.set("allowed")
     apdp = _Apdp()
     app = build(_model("lookup", "send_email"), [lookup, send_email])
     async with await _plugin(apdp).start_run(agent_slug="research-analyst"):
         await app.ainvoke({"messages": [HumanMessage("go")]})
-    assert sorted(ran) == ["lookup:x", "send_email:a@b"]
+    # The allowed run's tools ran once each, under one decision each.
+    assert sorted(e for p, e in ran_in if p == "allowed") == ["lookup:x", "send_email:a@b"]
     assert sorted(_decided(apdp)) == ["lookup", "send_email"]
+    # The refused run's send_email never ran, even late.
+    assert ("denied", "send_email:a@b") not in ran_in
 
 
 @pytest.mark.asyncio
