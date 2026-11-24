@@ -537,3 +537,12 @@ async def test_a_forked_child_does_not_inherit_the_parents_binding(base):
             assert got == b"\x00"
             # The parent keeps its binding.
             assert at.marker_headers()
+
+
+@pytest.mark.asyncio
+async def test_a_marker_holds_no_session_id_or_run(base: Path) -> None:
+    async with stack(base) as (_connector, backend, _listener, _log):
+        info = await backend.create_session("agent-1")
+        marker = (await backend.fetch_egress(info.run)).marker()
+        assert info.session_id not in marker
+        assert info.run not in marker

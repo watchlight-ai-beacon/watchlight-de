@@ -72,7 +72,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import secrets
 from collections import OrderedDict
-from typing import Any, Dict, List, Mapping, NoReturn, Optional, Set
+from typing import Any, Dict, List, Mapping, NoReturn, Optional, Sequence, Set
 
 from .backend import (
     EgressBinding,
@@ -87,7 +87,9 @@ from .backend import (
     public_session_record,
 )
 from .errors import (
+    DECLARED_ROOT_UNSUPPORTED,
     CredentialBindsNoAgent,
+    DeclaredRootRefused,
     EngineVersionUnsupported,
     GovernanceRefused,
     WatchlightContractError,
@@ -386,6 +388,7 @@ class InProcessClient:
         metadata: Optional[Dict[str, Any]] = None,
         subject_token: Optional[str] = None,
         application_id: Optional[str] = None,
+        declared_root: Optional[Sequence[str]] = None,
     ) -> Optional[Dict[str, Any]]:
         if application_id is not None:
             # Application attribution is decided by wl-apdp from the
@@ -396,6 +399,16 @@ class InProcessClient:
                 "application_id is not supported by the in-process engine: "
                 "run attribution to an AI application needs Watchlight "
                 "Enterprise (wl-apdp)"
+            )
+        if declared_root is not None:
+            # A declared root is decided by the server
+            # (``Action::"open_declared_root"``) and recorded server-side;
+            # the in-process engine has neither. Refuse rather than open an
+            # independent root nothing decided.
+            raise DeclaredRootRefused(
+                "a declared root run is not supported by the in-process engine: "
+                "it needs Watchlight Enterprise (wl-apdp open_declared_root)",
+                code=DECLARED_ROOT_UNSUPPORTED,
             )
         if subject_token is not None:
             # Subject ingress (a run acting for a verified end user) is an

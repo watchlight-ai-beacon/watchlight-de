@@ -54,7 +54,7 @@ import time
 import weakref
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Set, Tuple, TypeVar
+from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Sequence, Set, Tuple, TypeVar
 from urllib.parse import urlsplit
 
 from . import _wl_local as wire
@@ -70,7 +70,9 @@ from .backend import (
     public_session_record,
 )
 from .errors import (
+    DECLARED_ROOT_UNSUPPORTED,
     AgentNotRegistered,
+    DeclaredRootRefused,
     GovernanceRefused,
     GovernanceUnavailable,
     ParentRunUncredentialed,
@@ -92,6 +94,7 @@ __all__ = [
     "SidecarBackend",
     "SidecarEgress",
     "select_backend",
+    "connector_configured",
     "ENV_BACKEND",
     "ENV_SIDECAR_SOCKET",
     "ENV_SIDECAR_ADDR",
@@ -1327,6 +1330,7 @@ class SidecarBackend:
         metadata: Optional[Dict[str, Any]] = None,
         subject_token: Optional[str] = None,
         application_id: Optional[str] = None,
+        declared_root: Optional[Sequence[str]] = None,
     ) -> Optional[SessionInfo]:
         """Open a run on the connector. Returns its
         :class:`~watchlight_core.backend.SessionInfo` (no credential), or
@@ -1338,6 +1342,14 @@ class SidecarBackend:
         that names none (``agent_id=None``, the credential-bound root) is
         refused here with :class:`WatchlightContractError` before anything
         is sent: name the agent when the connector is the backend."""
+        if declared_root is not None:
+            # The connector protocol doesn't carry a declared root, so
+            # refuse rather than open an undeclared independent root.
+            raise DeclaredRootRefused(
+                "The Watchlight connector (wl-sidecar) cannot open a declared root "
+                "run yet; the agent was not started.",
+                code=DECLARED_ROOT_UNSUPPORTED,
+            )
         if agent_id is None:
             raise WatchlightContractError(
                 "agent_id is required: the Watchlight connector (wl-sidecar) opens a run "
@@ -2144,6 +2156,33 @@ class SidecarBackend:
 # ---------------------------------------------------------------------------
 # Backend selection
 # ---------------------------------------------------------------------------
+
+
+def connector_configured(env: Optional[Mapping[str, str]] = None) -> bool:
+    """Does this deployment's configuration put a plugin on the connector?
+
+    Only ``WATCHLIGHT_BACKEND=sidecar`` or the connector's own socket or
+    address says so. Unlike :func:`select_backend`, the other
+    :data:`ENTERPRISE_ENV_VARS` don't: an install with ``WATCHLIGHT_APDP_URL``
+    or ``WATCHLIGHT_PROXY_URL`` and no connector stays on the relay. A run
+    can't reach this: it reads the deployment's environment only.
+
+    ``WATCHLIGHT_BACKEND=in_process`` with a connector variable, or any
+    other value, raises :class:`GovernanceUnavailable`.
+    """
+    env = os.environ if env is None else env
+    choice = (env.get(ENV_BACKEND) or "").strip().lower()
+    if choice not in ("", "sidecar", "in_process"):
+        raise GovernanceUnavailable(
+            f"{ENV_BACKEND} must be 'sidecar' or 'in_process'; refusing to guess"
+        )
+    named = [n for n in (ENV_SIDECAR_SOCKET, ENV_SIDECAR_ADDR) if env.get(n)]
+    if choice == "in_process" and named:
+        raise GovernanceUnavailable(
+            f"{ENV_BACKEND}=in_process conflicts with {', '.join(named)}; "
+            "refusing to guess"
+        )
+    return choice == "sidecar" or bool(named)
 
 
 def select_backend(

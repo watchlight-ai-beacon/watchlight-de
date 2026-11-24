@@ -11,8 +11,9 @@ Three signals, all decided in the context of the code making the request:
 
 * **The marker** (primary). :func:`marker_headers` returns the header that
   names the current run. A plugin adds it to each request through a
-  supported framework hook. Every request names its run, so pooled
-  connections are safe.
+  supported framework hook, and ``provider_sdk_gate`` adds it to every
+  request of a supported provider SDK. Every request names its run, so
+  pooled connections are safe.
 * **The connection report** (fallback, where no hook exists). A
   ``socket.connect`` audit hook (PEP 578, an observation API, not a patch)
   fires in the thread and ``contextvars`` context of the code opening a
@@ -88,6 +89,7 @@ __all__ = [
     "bound_run",
     "current_egress",
     "resolve_run",
+    "connector_in_use",
     "marker_headers",
     "proxy_env",
     "register_egress_endpoint",
@@ -363,6 +365,13 @@ def marker_headers() -> Dict[str, str]:
     except GovernanceUnavailable:
         raise EgressRefused("run_not_live") from None
     return {egress.marker_header: marker}
+
+
+def connector_in_use() -> bool:
+    """Has this process issued a run on the connector? Its egress listener
+    is registered when such a run is bound, so a process on the relay or
+    with no governed egress answers ``False``."""
+    return bool(_endpoints)
 
 
 def proxy_env() -> Dict[str, str]:

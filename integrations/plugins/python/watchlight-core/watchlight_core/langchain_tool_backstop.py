@@ -314,6 +314,12 @@ def _body_handle() -> Any:
     return body.handle if body is not None else None
 
 
+def tool_body_handle() -> Any:
+    """The governed run whose authorized tool body this context is in, or
+    ``None`` outside one."""
+    return _body_handle()
+
+
 #: Holds the handler; its default is the handler itself once installed, so
 #: every context, a new thread's included, carries it.
 _HANDLER_VAR: Optional[contextvars.ContextVar[Optional[BaseCallbackHandler]]] = None
