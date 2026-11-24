@@ -2,6 +2,14 @@
 # editable without their dependencies; everything else comes from the hash-pinned
 # lock next to this file. Paths are relative to this file.
 # watchlight-adk at its declared minimum google-adk.
+# On purpose, this lock tests the oldest google-adk the package accepts, so
+# it keeps that release's opentelemetry (1.42.1), below the versions that fix
+# its trace-header parsing advisories. watchlight-adk never parses trace
+# headers, and the main lock (plugins.txt) tests opentelemetry 1.45.2. The
+# package README tells users who run google-adk's FastAPI server to use
+# Python 3.11 or later, where google-adk accepts 1.45.2. Revisit if
+# watchlight-adk ever extracts trace context, or if plugins.txt cannot carry
+# 1.45.2.
 setuptools>=77.0
 wheel
 -c ../watchlight-adk/ci/min-versions.txt

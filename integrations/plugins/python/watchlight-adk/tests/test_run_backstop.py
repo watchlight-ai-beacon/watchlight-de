@@ -234,15 +234,21 @@ async def test_an_inner_agent_under_the_runs_own_context_never_runs(case: str, b
 async def test_with_a_run_live_an_ungoverned_tool_or_tool_binding_turn_is_refused() -> None:
     plugins = PluginManager()
     tool_req = LlmRequest(config=types.GenerateContentConfig(tools=[types.Tool(function_declarations=[])]))
+    # google-adk 2.14 sets callback metadata on the context it is given (a
+    # real Context always has `_callback_info`), so a turn that reaches ADK
+    # needs a context that carries the attribute.
+    def ctx() -> SimpleNamespace:
+        return SimpleNamespace(_callback_info=None)
+
     run_backstop._enter()
     try:
         assert run_backstop.live()
-        refused = await plugins.run_before_tool_callback(tool=object(), tool_args={}, tool_context=object())
+        refused = await plugins.run_before_tool_callback(tool=object(), tool_args={}, tool_context=ctx())
         assert refused == {"result": run_backstop.REFUSAL}
-        turn = await plugins.run_before_model_callback(callback_context=object(), llm_request=tool_req)
+        turn = await plugins.run_before_model_callback(callback_context=ctx(), llm_request=tool_req)
         assert isinstance(turn, LlmResponse)
         # A turn that offers no tool (a summary) is not refused.
-        plain = await plugins.run_before_model_callback(callback_context=object(), llm_request=LlmRequest())
+        plain = await plugins.run_before_model_callback(callback_context=ctx(), llm_request=LlmRequest())
         assert plain is None
     finally:
         run_backstop._leave()
