@@ -22,7 +22,7 @@ import os
 import uuid
 import warnings
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Union
 from uuid import UUID
 
 from watchlight_core import (
@@ -31,6 +31,7 @@ from watchlight_core import (
     application_id_from_env,
     resolve_application_id,
     BaseRunHandle,
+    DeclaredRootRefused,
     GovernanceBackend,
     GovernanceTelemetry,
     GovernanceUnavailable,
@@ -39,6 +40,7 @@ from watchlight_core import (
     require_manifest,
 )
 from watchlight_core.backend import EgressBinding, RunRef, egress_binding_for
+from watchlight_core.errors import DECLARED_ROOT_UNSUPPORTED
 from watchlight_core.scope import ResourceMatcher
 
 logger = get_logger("watchlight_pydantic_ai")
@@ -1124,8 +1126,17 @@ class WatchlightPydanticAIPlugin(GovernanceTelemetry):
         intent_objective: Optional[str] = None,
         intent_provenance: Optional[str] = None,
         application_id: Optional[str] = None,
+        declared_root: Optional[Sequence[str]] = None,
     ) -> RunHandle:
         """Open a governed run for the named Pydantic AI agent.
+
+        ``declared_root`` is set by
+        :func:`watchlight_pydantic_ai.root_run`, never by customer code: the
+        root execution ids of the governed runs live in this process. The
+        run opens only when the server confirms it decided the declared root
+        (``Action::"open_declared_root"``); a server that does not confirm
+        it gets its session ended and the run refused with
+        :class:`watchlight_core.DeclaredRootRefused`.
 
         ``application_id``: the AI application this run belongs to.
         wl-apdp checks the agent is a member of it and refuses
@@ -1177,6 +1188,7 @@ class WatchlightPydanticAIPlugin(GovernanceTelemetry):
             metadata={"framework": "pydantic-ai", "tenant_id": self.tenant_id},
             # Only when set, so an older watchlight-agent-sdk still works.
             **({"application_id": app_id} if app_id is not None else {}),
+            **({"declared_root": list(declared_root)} if declared_root is not None else {}),
         )
         if session is None:
             raise GovernanceUnavailable(
@@ -1185,6 +1197,17 @@ class WatchlightPydanticAIPlugin(GovernanceTelemetry):
             )
         session_id = session.session_id
         run = session.run
+        if declared_root is not None and not session.declared_root:
+            # An older server ignores the field and opens a plain root that
+            # no policy decided. That session is ended; the run is refused.
+            refusal = DeclaredRootRefused(
+                "WL-APDP opened the session without confirming the declared "
+                "root (it may not support declared roots), so the session was "
+                "ended and the agent was not started.",
+                code=DECLARED_ROOT_UNSUPPORTED,
+            )
+            await self._terminate_unstarted_session(session_id, refusal, run)
+            raise refusal
         # The run's wl-proxy egress binding, if APDP issued a proxy token
         # for this session (the token itself stays in the backend).
         egress = egress_binding_for(self.apdp, run)

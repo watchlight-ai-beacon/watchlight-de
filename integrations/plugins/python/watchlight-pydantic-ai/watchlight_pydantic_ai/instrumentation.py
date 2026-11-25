@@ -64,6 +64,7 @@ from watchlight_core import (
     RunHandleState,
     WatchlightError,
     get_logger,
+    root_admission,
 )
 
 if TYPE_CHECKING:
@@ -73,6 +74,7 @@ logger = get_logger("watchlight_pydantic_ai.instrumentation")
 
 __all__ = [
     "current_handle",
+    "root_run",
     "install_instrumentation",
     "uninstall_instrumentation",
     "is_instrumented",
@@ -890,6 +892,63 @@ def _nested_time_budget(plugin: Any, parent: Any) -> Optional[int]:
     return getattr(plugin, "nested_agent_time_budget_seconds", None)
 
 
+# ─── Root admission ─────────────────────────────────────────
+#
+# ``_current_handle`` names the run a call belongs to only while the call
+# stays in that run's context. Code that drops the context (an executor,
+# a thread, a fresh ``contextvars.Context``) reaches the entry points with
+# no parent. Opening a root there would run the nested agent with none of
+# its parent's attenuation and no link to its lineage. Every root goes
+# through ``watchlight_core.root_admission``, the process-wide admission
+# shared by every framework plugin, so a run live in any of them counts.
+
+_ESCAPE_HINT = (
+    "Call the agent from the run with await, iter or asyncio.to_thread so it "
+    "runs as a governed sub-agent, or wrap an independent run in "
+    "watchlight_pydantic_ai.root_run()."
+)
+
+
+class root_run(root_admission.RootRun):
+    """Declare an independent governed root run.
+
+    While a governed run is live in the process, an agent run with no
+    governed run in its context is refused
+    (:class:`watchlight_core.NestedRunEscapedError`). Runs that are meant
+    to be independent roots at the same time (``asyncio.gather`` of two
+    agents, one agent per worker thread) are declared::
+
+        async with root_run():
+            await agent.run("...")
+
+        @root_run()
+        def worker(prompt):
+            return agent.run_sync(prompt)
+
+    A context manager (sync or async) and a decorator (sync or async
+    functions). A run started in it with no governed run in its context
+    opens as a declared root: the server decides
+    ``Action::"open_declared_root"`` with the root execution ids of the
+    governed runs live in this process and records the
+    declaration. A refusal raises :class:`watchlight_core.DeclaredRootRefused`
+    and the agent does not run. Refused when entered inside a live
+    governed run (an agent called there is a governed sub-agent), and for
+    an agent whose sub-agent spawn was refused in a governed run that is
+    still live.
+    """
+
+    def _in_live_run(self) -> bool:
+        return _handle_is_live(_current_handle.get())
+
+    def _enter_context(self) -> None:
+        self._context_tokens = (_current_handle.set(None), _governing_agent.set(None))
+
+    def _exit_context(self) -> None:
+        handle, agent = self._context_tokens
+        _governing_agent.reset(agent)
+        _current_handle.reset(handle)
+
+
 async def _open_handle_for_call(
     plugin: "WatchlightPydanticAIPlugin",
     agent: Any,
@@ -943,26 +1002,42 @@ async def _open_handle_for_call(
     handle: Optional["RunHandle"] = None
     try:
         if parent is None:
-            handle = await plugin.start_run(
-                slug,
-                intent_objective=intent_objective,
-                intent_provenance=intent_provenance,
-            )
+            # Admitted before anything is sent: an implicit root
+            # while a governed run is live, or a declared root for a refused
+            # agent, raises here and the agent does not run.
+            declared = root_admission.declared_root_requested()
+            live_roots = root_admission.reserve_root(slug, declared=declared, hint=_ESCAPE_HINT)
+            try:
+                handle = await plugin.start_run(
+                    slug,
+                    intent_objective=intent_objective,
+                    intent_provenance=intent_provenance,
+                    **({"declared_root": live_roots} if declared else {}),
+                )
+            finally:
+                root_admission.release_root(handle)
         else:
             from watchlight_core import plugin_child_intent
 
-            handle = await parent.spawn_subagent(
-                slug,
-                child_intent=plugin_child_intent(
-                    intent_objective,
-                    category=getattr(plugin, "child_intent_category", None),
-                    parent=parent,
-                    fallback_objective=f"Nested agent run of {slug}",
-                ),
-                intent_objective=intent_objective,
-                intent_provenance=intent_provenance,
-                time_budget_seconds=_nested_time_budget(plugin, parent),
-            )
+            try:
+                handle = await parent.spawn_subagent(
+                    slug,
+                    child_intent=plugin_child_intent(
+                        intent_objective,
+                        category=getattr(plugin, "child_intent_category", None),
+                        parent=parent,
+                        fallback_objective=f"Nested agent run of {slug}",
+                    ),
+                    intent_objective=intent_objective,
+                    intent_provenance=intent_provenance,
+                    time_budget_seconds=_nested_time_budget(plugin, parent),
+                )
+            except BaseException:
+                # The refused child never runs, not even as a declared root
+                # while this tree is live.
+                root_admission.record_refused_spawn(slug, parent)
+                raise
+            root_admission.register_run(handle)
     except WatchlightError:
         # A typed refusal — a refused spawn (scope attenuation, delegation
         # depth, an invalidated parent), an unregistered agent, a session

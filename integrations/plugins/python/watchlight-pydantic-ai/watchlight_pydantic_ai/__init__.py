@@ -21,6 +21,9 @@ Public surface:
     runtime instrumentation).
   * :func:`current_handle` — read the active handle for diagnostics
     + customer code that wants to surface "what run am I in?".
+  * :class:`root_run` — declare an independent governed root while
+    other governed runs are live (``asyncio.gather``, worker threads);
+    an undeclared one is refused.
   * :func:`uninstall_instrumentation` — restore the original
     ``pydantic_ai.Agent`` entry points. Useful for tests + customer
     cleanup paths.
@@ -36,6 +39,7 @@ from .instrumentation import (
     inject_synthetic_tools,
     install_instrumentation,
     is_instrumented,
+    root_run,
     uninstall_instrumentation,
 )
 from .intent import extract_intent_from_pydantic_args
@@ -57,6 +61,7 @@ __all__ = [
     "inject_synthetic_tools",
     "install_instrumentation",
     "is_instrumented",
+    "root_run",
     "uninstall_instrumentation",
     "translate_pydantic_ai_event",
     "translate_pydantic_ai_events",
