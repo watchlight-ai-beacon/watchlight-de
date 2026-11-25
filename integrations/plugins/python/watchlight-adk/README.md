@@ -148,9 +148,9 @@ plugin.apdp = ApdpClient("https://apdp.your-org", credential=Credential.from_def
 
 ## Python version
 
-`watchlight-adk` installs on Python 3.10 and later, but **use Python 3.11 or later**. google-adk 2.14.0 and later, which accept the fixed `opentelemetry-api` 1.45.2, need Python 3.11. On Python 3.10 the newest google-adk is 2.11.0, which holds `opentelemetry-api` at 1.42.1 or earlier. That version has two denial-of-service flaws: unbounded parsing of an inbound `tracestate` header (CVE-2026-114603), and quadratic-time parsing of a `traceparent` value in `TraceContextTextMapPropagator.extract()` (CVE-2026-126360).
+`watchlight-adk` requires Python 3.11 or later. On Python 3.10, the newest google-adk is 2.11.0, which holds `opentelemetry-api` at 1.42.1 or earlier. That version has two denial-of-service flaws: unbounded parsing of an inbound `tracestate` header (CVE-2026-114603), and quadratic-time parsing of a `traceparent` value in `TraceContextTextMapPropagator.extract()` (CVE-2026-126360). google-adk 2.14.0 and later accept the fixed `opentelemetry-api` 1.45.2, and they need Python 3.11. Python 3.10 reached end of life in October 2026. On Python 3.10, pip keeps the previous `watchlight-adk` release, which carries the unfixed flaws.
 
-The plugin never parses inbound trace context. google-adk's own FastAPI server does in Gemini Enterprise mode: it passes the inbound `Google-Agent-Engine-Traceparent` header to `extract()`, so it reaches the `traceparent` flaw. It passes no `tracestate`, so it does not reach the other one. If you run that server, run it on Python 3.11 or later. Python 3.10 reached end of life in October 2026.
+The plugin never parses inbound trace context. google-adk's own FastAPI server does in Gemini Enterprise mode: it passes the inbound `Google-Agent-Engine-Traceparent` header to `extract()`, so on Python 3.10 it reaches the `traceparent` flaw. It passes no `tracestate`, so it does not reach the other one.
 
 ## Links
 
