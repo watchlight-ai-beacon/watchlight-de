@@ -22,7 +22,21 @@ This section says exactly what the plugin does and does not enforce.
 - **Model turns are not authorized one by one.** The plugin records each model turn and refuses it when there is no governed run or when the run is quarantined. It does not send a per-turn authorization request. Governance of the model's network calls comes from the wl-proxy egress path, when you configure it.
 - **Egress.** When a wl-proxy URL is configured (`connect_proxy_url` or `WATCHLIGHT_PROXY_URL`), the run is refused with `GovernanceUnavailable` if Watchlight issued no proxy token or the local sidecar fails to start. It never falls back to direct egress. **One governed run per process.** While a run owns the egress proxy, starting another run in the same process raises `SidecarRunActive` (a `GovernanceUnavailable`) and leaves the running one as it is. The owning run releases it when it ends, or when its session expires (`ttl_seconds`, 3600 by default) if it is never completed. Once the owner has ended, its sidecar is stopped and `HTTPS_PROXY` stays on the stopped port, so traffic fails rather than going direct. Run concurrent governed runs in separate processes.
 - **Async only.** DeepAgents runs on the async LangGraph runtime. The synchronous invocation path is refused.
-- **Agents built inside a tool are refused.** An agent that one of your tools builds and runs itself, such as a plain `create_deep_agent(...)` called inside a tool, has no Watchlight middleware. While a governed run is live in the process, the plugin refuses such an agent's work before it runs, whatever thread, config or callbacks it is given:
+- **A governed agent started inside a live run does not open a root of its own.**
+  - While a governed run is live in the process, another `create_governed_deep_agent(...)` agent that would start a root outside it is refused with `NestedRunEscapedError` (a `WatchlightError`) before its first model turn. This covers an agent built and invoked inside a tool (awaited directly, or from an executor, a thread pool, a `threading.Thread`, a fresh `contextvars.Context`, or a deferred start after the tool returned) and two undeclared roots started at once.
+  - Without this, it would run with none of its parent's attenuation and no link to its lineage. Run sub-agents through `task` instead.
+  - Independent roots that run at the same time are declared with `root_run()` (from `watchlight_deepagents`), a context manager (sync or async) and a decorator:
+
+    ```python
+    async with root_run():
+        await agent.ainvoke({"messages": [...]})
+    ```
+
+  - The server decides `Action::"open_declared_root"` with the root execution ids live in the process, and records the declaration. A refusal raises `DeclaredRootRefused`. A server that does not confirm the declaration (an older server) gets its session closed, and the run is refused (`declared_root_unsupported`).
+  - `root_run()` is refused inside a live run, including a tool body.
+  - An agent whose `task` spawn was refused cannot start through `root_run()` while that run tree is live (`SpawnRefusedRootRunError`).
+  - With no governed run live, a run opens as before. There is no setting that turns this off.
+- **Ungoverned agents built inside a tool are refused.** An agent that one of your tools builds and runs itself, such as a plain `create_deep_agent(...)` called inside a tool, has no Watchlight middleware. (A governed one is covered by the previous item.) While a governed run is live in the process, the plugin refuses such an agent's work before it runs, whatever thread, config or callbacks it is given:
   - Each tool call the plugin authorizes may start exactly one tool: the one with that call's id and name, once. Any other tool start is refused before the tool runs.
   - A model call made inside the body of a governed tool is refused. If a tool really needs to call a model directly, for example to summarize text, wrap that call in `with direct_model_use():` (from `watchlight_deepagents`). A model call that binds tools is refused even then, so the escape never covers an agent's turn.
   - A model call that binds tools, local or hosted by the provider, is refused unless it is a governed agent's own turn. Hosted tools run on the provider's side, where no tool start is visible, so this is where they are stopped.
