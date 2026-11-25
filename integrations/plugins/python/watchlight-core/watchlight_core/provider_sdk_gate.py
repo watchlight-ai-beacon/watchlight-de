@@ -19,6 +19,15 @@ of a supported SDK passes through:
 * the socket APIs whose tools are set over the socket (OpenAI Realtime,
   Google Live), which are refused in a governed context.
 
+The same wrap names the run on each request for the Watchlight connector.
+While this process has a run on the connector, a request that
+passes the decision below leaves with the marker of the run acting in its
+context (:func:`~watchlight_core.attribution.marker_headers`), so a shared
+client and its pooled connections stay attributed request by request. When
+no live run can be named, the request is refused with
+:class:`~watchlight_core.attribution.EgressRefused` and never sent. A process
+on the relay, or with no governed egress, is unchanged.
+
 Each request is classified by its endpoint (:data:`ENDPOINTS`):
 
 * a model call is **decided**: every provider-hosted tool it enables needs an
@@ -65,6 +74,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 from urllib.parse import urlsplit
 
+from . import attribution, egress_route
 from .errors import GovernanceUnavailable, WatchlightError
 from .hosted_tools import (
     DEFAULT_TIMEOUT_SECONDS,
@@ -601,6 +611,159 @@ def _decide_blocking(
             turn.seal()
 
 
+# ─── The run marker ─────────────────────────────────────────────────
+
+
+def _egress_marker() -> Dict[str, str]:
+    """The header naming the run acting here, read after the decision and
+    just before the send. Empty when this process has no run on the
+    connector. Raises :class:`~watchlight_core.attribution.EgressRefused`
+    when no live run can be named: the request is never sent."""
+    if not _on_connector():
+        return {}
+    try:
+        return attribution.marker_headers()
+    except attribution.EgressRefused as exc:
+        logger.warning("provider SDK request refused: egress_marker_%s", exc.reason)
+        marker = _RUN.get()
+        if marker is not None:
+            _count_denied(marker)
+        raise
+
+
+def _on_connector() -> bool:
+    # ``admit`` routes the process before any run is bound.
+    return egress_route.current() is not None or attribution.connector_in_use()
+
+
+def _route_checked(check: Callable[[], Any]) -> Any:
+    """Run a client route check. Whatever can't be read refuses, and so a
+    direct request never carries a marker."""
+    try:
+        return check()
+    except attribution.EgressRefused as exc:
+        reason = exc.reason
+    except Exception:  # noqa: BLE001 - an unreadable route refuses
+        reason = "client_route_unreadable"
+    _refuse_route(reason)
+
+
+def _refuse_route(reason: str) -> None:
+    logger.warning("provider SDK request refused: %s", reason)
+    marker = _RUN.get()
+    if marker is not None:
+        _count_denied(marker)
+    raise attribution.EgressRefused(reason)
+
+
+def _require_stainless_route(args: tuple, kwargs: dict) -> None:
+    if not _on_connector():
+        return
+
+    def check() -> None:
+        client = args[0]
+        options = args[2] if len(args) > 2 else kwargs["options"]
+        egress_route.require_httpx_route(client._client, client._prepare_url(options.url))
+
+    _route_checked(check)
+
+
+def _google_url(args: tuple, kwargs: dict) -> str:
+    options = args[4] if len(args) > 4 else kwargs.get("http_options")
+    if isinstance(options, Mapping):
+        base = options.get("base_url")
+    else:
+        base = getattr(options, "base_url", None)
+    base = base or args[0]._http_options.base_url
+    if not isinstance(base, str) or not base:
+        raise ValueError("no base URL")
+    return base
+
+
+def _google_auth_path(client: Any, name: str) -> bool:
+    # google-auth's own transport isn't proven to take the route. A version
+    # without this method has no such path.
+    uses = getattr(client, name, None)
+    return uses is not None and uses() is not False
+
+
+def _require_google_route(args: tuple, kwargs: dict) -> None:
+    if not _on_connector():
+        return
+
+    def check() -> None:
+        client = args[0]
+        if _google_auth_path(client, "_use_google_auth_sync"):
+            raise attribution.EgressRefused("client_route_not_connector")
+        egress_route.require_httpx_route(client._httpx_client, _google_url(args, kwargs))
+
+    _route_checked(check)
+
+
+async def _require_google_route_async(args: tuple, kwargs: dict) -> None:
+    if not _on_connector():
+        return
+    reason = None
+    try:
+        client = args[0]
+        url = _google_url(args, kwargs)
+        if _google_auth_path(client, "_use_google_auth_async"):
+            raise attribution.EgressRefused("client_route_not_connector")
+        if client._use_aiohttp():
+            # Lazy: on the first request of a loop this builds the session.
+            session = await client._get_aiohttp_session()
+            request_args = client._async_client_session_request_args
+            egress_route.require_aiohttp_route(session, url, request_args)
+        else:
+            egress_route.require_httpx_route(client._async_httpx_client, url)
+    except attribution.EgressRefused as exc:
+        reason = exc.reason
+    except Exception:  # noqa: BLE001 - an unreadable route refuses
+        reason = "client_route_unreadable"
+    if reason is not None:
+        _refuse_route(reason)
+
+
+def _replacing_marker(current: Any, headers: Dict[str, str]) -> Dict[str, Any]:
+    """``current`` with the marker on it. HTTP header names ignore case, so
+    a caller's own spelling of the marker header never travels beside it."""
+    names = {name.lower() for name in headers}
+    kept = current if isinstance(current, Mapping) else {}
+    return {
+        **{k: v for k, v in kept.items() if not (isinstance(k, str) and k.lower() in names)},
+        **headers,
+    }
+
+
+def _with_stainless_marker(args: tuple, kwargs: dict) -> Tuple[tuple, dict]:
+    # request(self, cast_to, options, ...). The caller's options are left
+    # alone: the SDK keeps them for its retries, and a caller may reuse them.
+    headers = _egress_marker()
+    if not headers:
+        return args, kwargs
+    options = args[2] if len(args) > 2 else kwargs["options"]
+    marked = options.model_copy(update={"headers": _replacing_marker(options.headers, headers)})
+    if len(args) > 2:
+        return (*args[:2], marked, *args[3:]), kwargs
+    return args, {**kwargs, "options": marked}
+
+
+def _with_google_marker(args: tuple, kwargs: dict) -> Tuple[tuple, dict]:
+    # request(self, http_method, path, request_dict, http_options=None)
+    headers = _egress_marker()
+    if not headers:
+        return args, kwargs
+    options = args[4] if len(args) > 4 else kwargs.get("http_options")
+    if options is None or isinstance(options, Mapping):
+        options = dict(options or {})
+        options["headers"] = _replacing_marker(options.get("headers"), headers)
+    else:
+        options = options.model_copy(update={"headers": _replacing_marker(options.headers, headers)})
+    if len(args) > 4:
+        return (*args[:4], options, *args[5:]), kwargs
+    return args, {**kwargs, "http_options": options}
+
+
 # ─── The wraps ──────────────────────────────────────────────────────
 
 
@@ -627,6 +790,8 @@ def _stainless_wrap(
             pending = _precheck(sdk, method, path, body, provider)
             if pending is not None:
                 await _decide(pending[0], pending[1], provider)
+            _require_stainless_route(args, kwargs)
+            args, kwargs = _with_stainless_marker(args, kwargs)
             return await original(*args, **kwargs)
 
     else:
@@ -637,6 +802,8 @@ def _stainless_wrap(
             pending = _precheck(sdk, method, path, body, provider)
             if pending is not None:
                 _decide_blocking(pending[0], pending[1], provider)
+            _require_stainless_route(args, kwargs)
+            args, kwargs = _with_stainless_marker(args, kwargs)
             return original(*args, **kwargs)
 
     setattr(request, _MARK, True)
@@ -662,6 +829,8 @@ def _google_wrap(original: Callable[..., Any]) -> Callable[..., Any]:
             pending = _precheck("google", method, path, body, "gemini")
             if pending is not None:
                 await _decide(pending[0], pending[1], "gemini")
+            await _require_google_route_async(args, kwargs)
+            args, kwargs = _with_google_marker(args, kwargs)
             async for item in original(*args, **kwargs):
                 yield item
 
@@ -674,6 +843,8 @@ def _google_wrap(original: Callable[..., Any]) -> Callable[..., Any]:
             pending = _precheck("google", method, path, body, "gemini")
             if pending is not None:
                 await _decide(pending[0], pending[1], "gemini")
+            await _require_google_route_async(args, kwargs)
+            args, kwargs = _with_google_marker(args, kwargs)
             return await original(*args, **kwargs)
 
         wrapped = wrapped_async
@@ -685,6 +856,8 @@ def _google_wrap(original: Callable[..., Any]) -> Callable[..., Any]:
             pending = _precheck("google", method, path, body, "gemini")
             if pending is not None:
                 _decide_blocking(pending[0], pending[1], "gemini")
+            _require_google_route(args, kwargs)
+            args, kwargs = _with_google_marker(args, kwargs)
             return original(*args, **kwargs)
 
         wrapped = wrapped_sync

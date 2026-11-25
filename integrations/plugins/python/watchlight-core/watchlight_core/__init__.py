@@ -38,7 +38,7 @@ from .backend import (
     Unsubscribe,
 )
 from .in_process_client import InProcessClient
-from .sidecar_backend import SidecarBackend, SidecarEgress, select_backend
+from .sidecar_backend import SidecarBackend, SidecarEgress, connector_configured, select_backend
 from .log import configure_logging, get_logger
 from .connect_proxy import (
     install_connect_proxy,
@@ -104,12 +104,15 @@ from .errors import (
     AgentNotRegistered,
     CredentialBindsNoAgent,
     CredentialProbeFailed,
+    DeclaredRootRefused,
     EngineVersionUnsupported,
     GovernanceRefused,
     GovernanceUnavailable,
+    NestedRunEscapedError,
     ParentRunUncredentialed,
     RunUncredentialed,
     SidecarRunActive,
+    SpawnRefusedRootRunError,
     InsecureChannelError,
     RunHandleInvalidated,
     ScopeAttenuationDenied,
@@ -289,6 +292,7 @@ __all__ = [
     "SidecarBackend",
     "SidecarEgress",
     "select_backend",
+    "connector_configured",
     "configure_logging",
     "get_logger",
     # CONNECT local sidecar proxy
@@ -316,12 +320,15 @@ __all__ = [
     "AgentNotRegistered",
     "CredentialBindsNoAgent",
     "CredentialProbeFailed",
+    "DeclaredRootRefused",
     "EngineVersionUnsupported",
     "GovernanceRefused",
     "GovernanceUnavailable",
+    "NestedRunEscapedError",
     "ParentRunUncredentialed",
     "RunUncredentialed",
     "SidecarRunActive",
+    "SpawnRefusedRootRunError",
     "InsecureChannelError",
     # Sub-agent scope attenuation typed errors
     "RunHandleInvalidated",

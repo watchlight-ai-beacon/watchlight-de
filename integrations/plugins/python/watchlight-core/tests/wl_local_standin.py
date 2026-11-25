@@ -72,6 +72,7 @@ class _Conn:
 
 class StandInConnector:
     def __init__(self, base: Path, transport: str = "unix") -> None:
+        self.proxy_url = "http://127.0.0.1:41001"
         self.base = base
         self.transport = transport
         self.dir = base / "wl"
@@ -381,7 +382,7 @@ class StandInConnector:
         if method == "egress_for":
             state = self._owned(conn, p["run"])
             state["marker"], state["child_key"] = _token(), _token()
-            return {"proxy_url": "http://127.0.0.1:41001", "marker_header": "Watchlight-Run-Marker",
+            return {"proxy_url": self.proxy_url, "marker_header": "Watchlight-Run-Marker",
                     "marker": state["marker"], "child_proxy_url": f"http://wl:{state['child_key']}@127.0.0.1:41001"}
         if method == "report_connection":
             self._owned(conn, p["run"])

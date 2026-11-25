@@ -41,6 +41,18 @@ def pytest_configure(config: pytest.Config) -> None:
         ) from exc
 
 
+@pytest.fixture(autouse=True)
+def _no_connector_endpoint_left_behind():
+    """A connector endpoint stays registered for the life of a process, and
+    the provider SDK gate then requires a run on every request. Each test
+    gets a process that never met a connector."""
+    from watchlight_core import attribution
+
+    attribution._endpoints.clear()
+    yield
+    attribution._endpoints.clear()
+
+
 def pytest_collection_modifyitems(config, items):
     for item in items:
         bound = getattr(getattr(item, "module", None), "ASYNC_TEST_TIMEOUT_S", None)
@@ -56,3 +68,24 @@ def pytest_collection_modifyitems(config, items):
             return bounded
 
         item.obj = wrap(fn, bound)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_root_admission():
+    """Each test starts with no governed run live in the process.
+
+    Many tests open a run and never close it; without this the next test's
+    root would be refused as an escaped nested run.
+    """
+    _forget_live_runs()
+    yield
+    _forget_live_runs()
+
+
+def _forget_live_runs() -> None:
+    from watchlight_core import root_admission
+
+    with root_admission._lock:
+        root_admission._runs.clear()
+        root_admission._refused_spawns.clear()
+        root_admission._pending_roots = 0

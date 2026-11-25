@@ -186,6 +186,61 @@ class CredentialBindsNoAgent(GovernanceRefused):
         )
 
 
+#: The refusal codes the server sends for a declared root: Cedar
+#: denied ``Action::"open_declared_root"``, or the declaration was malformed
+#: or named an id that is not a live root of the caller's tenant.
+DECLARED_ROOT_FORBIDDEN = "declared_root_forbidden"
+DECLARED_ROOT_INVALID = "declared_root_invalid"
+#: Local code: the backend cannot open a declared root, or the server did
+#: not confirm that it evaluated the declaration.
+DECLARED_ROOT_UNSUPPORTED = "declared_root_unsupported"
+
+
+class DeclaredRootRefused(GovernanceRefused):
+    """A declared root run was not opened.
+
+    ``code`` says why: ``declared_root_forbidden`` (policy denied
+    ``Action::"open_declared_root"``), ``declared_root_invalid`` (the
+    declaration was refused as given), or ``declared_root_unsupported``
+    (this backend cannot open one, or the server answered without
+    confirming it evaluated the declaration; any session it opened is
+    ended). The agent does not run. Not transient; do not retry.
+    """
+
+    def __init__(self, message: str, *, code: str, status_code: int = 403) -> None:
+        super().__init__(message, status_code=status_code, error=code)
+
+
+class NestedRunEscapedError(WatchlightError):
+    """An agent run was refused before its first model turn because it
+    would open a root outside the governed run it came from.
+
+    A run that resolves to no parent while a governed run is live in the
+    process was started from code that lost the run's context (an
+    executor, a thread, a fresh ``contextvars.Context``). It is never
+    promoted to an independent root. Call the agent from the run (``await``,
+    ``iter`` or ``asyncio.to_thread``) so it is spawned as a sub-agent, or
+    declare an independent root explicitly where the framework plugin
+    offers one.
+
+    ``reason`` is a short code: ``implicit_root_while_run_live``,
+    ``declared_root_inside_live_run`` or ``spawn_refused_in_live_tree``.
+    """
+
+    def __init__(self, message: str, *, reason: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+class SpawnRefusedRootRunError(NestedRunEscapedError):
+    """A declared root was refused for an agent whose sub-agent spawn was
+    refused in a governed run tree that is still live. A refused
+    child never runs, including as a root of its own."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, reason="spawn_refused_in_live_tree")
+
+
 class RunUncredentialed(GovernanceUnavailable):
     """A run without a run credential was refused locally.
 

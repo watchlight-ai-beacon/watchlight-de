@@ -57,6 +57,16 @@ def _client_returning(status: int, body: str) -> ApdpClient:
     return apdp
 
 
+LOGGER = "watchlight.core.apdp_client"
+
+
+def _own(caplog) -> list:
+    """The records of the client's own logger. Another component's
+    background thread (an OTLP exporter left by another test, say) can log
+    while a test runs, and its records must not answer for this logger."""
+    return [r for r in caplog.records if r.name == LOGGER]
+
+
 def _publish(apdp: ApdpClient) -> bool:
     events = [
         {"event_id": "evt_1", "event_type": "execution_started"},
@@ -67,14 +77,14 @@ def _publish(apdp: ApdpClient) -> bool:
 
 def test_schema_rejection_logs_at_error_and_names_the_dropped_events(caplog):
     apdp = _client_returning(422, _MALFORMED_BODY)
-    with caplog.at_level(logging.DEBUG, logger="watchlight.core.apdp_client"):
+    with caplog.at_level(logging.DEBUG, logger=LOGGER):
         ok = _publish(apdp)
 
     # Fail-open is preserved: no raise, and the caller just learns it
     # didn't land.
     assert ok is False
 
-    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    errors = [r for r in _own(caplog) if r.levelno >= logging.ERROR]
     assert errors, "a schema rejection must surface at ERROR, not WARNING"
     message = errors[-1].getMessage()
     assert "422" in message
@@ -90,9 +100,9 @@ def test_schema_rejection_logs_at_error_and_names_the_dropped_events(caplog):
 
 def test_bad_request_is_treated_as_a_schema_rejection_too(caplog):
     apdp = _client_returning(400, "bad request")
-    with caplog.at_level(logging.DEBUG, logger="watchlight.core.apdp_client"):
+    with caplog.at_level(logging.DEBUG, logger=LOGGER):
         assert _publish(apdp) is False
-    assert any(r.levelno >= logging.ERROR for r in caplog.records)
+    assert any(r.levelno >= logging.ERROR for r in _own(caplog))
 
 
 def test_transport_class_failures_stay_at_warning(caplog):
@@ -101,10 +111,10 @@ def test_transport_class_failures_stay_at_warning(caplog):
     with the event. It must NOT be promoted to ERROR,
     or the ERROR level stops meaning "fix your emitter"."""
     apdp = _client_returning(502, "bad gateway")
-    with caplog.at_level(logging.DEBUG, logger="watchlight.core.apdp_client"):
+    with caplog.at_level(logging.DEBUG, logger=LOGGER):
         assert _publish(apdp) is False
 
-    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
-    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert not [r for r in _own(caplog) if r.levelno >= logging.ERROR]
+    warnings = [r for r in _own(caplog) if r.levelno == logging.WARNING]
     assert warnings
     assert "502" in warnings[-1].getMessage()

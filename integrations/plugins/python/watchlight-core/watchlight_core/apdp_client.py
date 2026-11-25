@@ -52,7 +52,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 from urllib.parse import urlparse
 
 import httpx
@@ -81,8 +81,11 @@ from .backend import (
 from .credentials import Credential
 from .errors import (
     CREDENTIAL_BINDS_NO_AGENT,
+    DECLARED_ROOT_FORBIDDEN,
+    DECLARED_ROOT_INVALID,
     CredentialBindsNoAgent,
     CredentialProbeFailed,
+    DeclaredRootRefused,
     GovernanceRefused,
     GovernanceUnavailable,
     InsecureChannelError,
@@ -128,6 +131,32 @@ def typed_refusal(body: Any) -> Tuple[Optional[str], Optional[str]]:
     if isinstance(error, dict):
         return _code(error.get("code")), reason or _code(error.get("reason"))
     return _code(error), reason
+
+
+def _declared_root_refusal(resp: httpx.Response) -> Optional[DeclaredRootRefused]:
+    """The :class:`DeclaredRootRefused` for a declared root the server
+    refused (``declared_root_forbidden`` / ``declared_root_invalid``), or
+    ``None`` when the body names neither code (handled as any other
+    refused session create)."""
+    try:
+        body = resp.json() if resp.content else {}
+    except ValueError:
+        return None
+    error, reason = typed_refusal(body)
+    code = error if error in (DECLARED_ROOT_FORBIDDEN, DECLARED_ROOT_INVALID) else reason
+    if code not in (DECLARED_ROOT_FORBIDDEN, DECLARED_ROOT_INVALID):
+        return None
+    logger.warning(
+        "declared root refused (status=%s, code=%s); the run does not start",
+        resp.status_code,
+        code,
+    )
+    return DeclaredRootRefused(
+        "wl-apdp refused to open the declared root run "
+        f"({code}); the agent was not started.",
+        code=code,
+        status_code=resp.status_code,
+    )
 
 
 # Loopback hostnames that are exempt from the HTTPS-required rule.
@@ -875,6 +904,7 @@ class ApdpClient:
             execution_id=execution_id,
             root_run_handle_id=root if isinstance(root, str) and root else None,
             session=public,
+            declared_root=response.get("declared_root") is True,
         )
 
     def adopt_run_grant(self, grant: Any) -> SessionInfo:
@@ -1516,6 +1546,7 @@ class ApdpClient:
         metadata: Optional[Dict[str, Any]] = None,
         subject_token: Optional[str] = None,
         application_id: Optional[str] = None,
+        declared_root: Optional[Sequence[str]] = None,
     ) -> Optional[SessionInfo]:
         """Open a run (``POST /sessions``) and return its
         :class:`~watchlight_core.backend.SessionInfo`. The run's ``sst_``
@@ -1532,8 +1563,17 @@ class ApdpClient:
         ``SessionInfo.agent_id`` is that agent. A credential bound to no
         single agent raises
         :class:`~watchlight_core.errors.CredentialBindsNoAgent`. A named
-        agent is an optional override that wl-apdp confirms against an
-        agent-bound credential (a mismatch is refused, opaquely: ``None``)."""
+        agent is an optional override that the server confirms against an
+        agent-bound credential (a mismatch is refused, opaquely: ``None``).
+
+        ``declared_root`` declares an independent root: the root
+        execution ids of the governed runs live when it was declared, sent
+        exactly as the server issued them. The server evaluates
+        ``Action::"open_declared_root"`` and answers ``declared_root: true``.
+        A refusal raises :class:`~watchlight_core.DeclaredRootRefused`; an
+        answer without the confirmation is returned with
+        ``SessionInfo.declared_root`` false, and the caller ends that
+        session (an older server ignores the field)."""
         response = await self._post_session(
             agent_id=agent_id,
             goal_id=goal_id,
@@ -1542,6 +1582,7 @@ class ApdpClient:
             metadata=metadata,
             subject_token=subject_token,
             application_id=application_id,
+            declared_root=declared_root,
         )
         if response is None:
             return None
@@ -1627,6 +1668,7 @@ class ApdpClient:
         subject_token: Optional[str] = None,
         application_id: Optional[str] = None,
         workload_ref: Optional[Dict[str, Any]] = None,
+        declared_root: Optional[Sequence[str]] = None,
     ) -> Optional[Dict[str, Any]]:
         """``POST /sessions``; the raw response (it carries credentials and
         never leaves this client except as a RunGrant)."""
@@ -1662,9 +1704,17 @@ class ApdpClient:
             # refuses the session for any other caller. See
             # :mod:`watchlight_core.launcher`.
             body["workload_ref"] = dict(workload_ref)
+        if declared_root is not None:
+            # An independent root declared while other governed runs
+            # are live; the server decides ``Action::"open_declared_root"``.
+            body["declared_root"] = {"live_execution_ids": list(declared_root)}
         await self._ensure_probed()
         try:
             resp = await self.client.post("/sessions", json=body)
+            if declared_root is not None and resp.status_code in (403, 422):
+                refusal = _declared_root_refusal(resp)
+                if refusal is not None:
+                    raise refusal
             if resp.status_code in (401, 403):
                 refusal = self._trust_refused_session(agent_id, resp)
                 if refusal is not None:

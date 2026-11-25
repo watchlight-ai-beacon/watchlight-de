@@ -35,6 +35,7 @@ its run live.
 
 from __future__ import annotations
 
+import inspect
 import math
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -47,6 +48,7 @@ from typing import (
     NewType,
     Optional,
     Protocol,
+    Sequence,
     runtime_checkable,
 )
 
@@ -62,6 +64,7 @@ __all__ = [
     "GovernanceBackend",
     "KillSubscriptions",
     "egress_binding_for",
+    "fetch_egress_binding",
 ]
 
 #: An opaque reference to one run, issued by the backend that opened it.
@@ -150,6 +153,9 @@ class SessionInfo:
     execution_id: Optional[str] = None
     root_run_handle_id: Optional[str] = None
     session: Mapping[str, Any] = field(default_factory=dict)
+    #: ``True`` only when the server evaluated and recorded a declared
+    #: root for this session.
+    declared_root: bool = False
 
 
 @dataclass(frozen=True)
@@ -313,11 +319,19 @@ class GovernanceBackend(Protocol):
         metadata: Optional[Dict[str, Any]] = None,
         subject_token: Optional[str] = None,
         application_id: Optional[str] = None,
+        declared_root: Optional[Sequence[str]] = None,
     ) -> Optional[SessionInfo]:
         """Open a root run. ``agent_id=None`` (the default) opens it as the
         agent the caller's verified credential is bound to; the returned
         ``SessionInfo.agent_id`` names it. A credential bound to no single
-        agent raises :class:`~watchlight_core.CredentialBindsNoAgent`."""
+        agent raises :class:`~watchlight_core.CredentialBindsNoAgent`.
+
+        ``declared_root`` declares an independent root while other
+        governed runs are live: it lists their root execution ids, exactly
+        as the server issued them. The server evaluates
+        ``Action::"open_declared_root"`` and confirms it in the response
+        (``SessionInfo.declared_root``). A backend that cannot open a
+        declared root raises :class:`~watchlight_core.DeclaredRootRefused`."""
         ...
 
     async def get_manifest(
@@ -396,3 +410,34 @@ def egress_binding_for(backend: Any, run: Optional[RunRef]) -> Optional[EgressBi
         return None
     binding = egress_for(run)
     return binding if isinstance(binding, EgressBinding) else None
+
+
+async def fetch_egress_binding(backend: Any, run: Optional[RunRef]) -> Optional[EgressBinding]:
+    """:func:`egress_binding_for`, after asking a backend that issues egress
+    on request (the connector) for this run's endpoint. Raises
+    :class:`~watchlight_core.errors.GovernanceUnavailable` when it can't
+    answer, gives no endpoint, or the process can't be routed to it (see
+    :mod:`~watchlight_core.egress_route`)."""
+    if run is None:
+        return None
+    fetch = getattr(backend, "fetch_egress", None)
+    if not callable(fetch):
+        return egress_binding_for(backend, run)
+    result = fetch(run)
+    if inspect.isawaitable(result):
+        await result
+    binding = egress_binding_for(backend, run)
+    if binding is None:
+        from .errors import GovernanceUnavailable
+
+        raise GovernanceUnavailable(
+            "The Watchlight connector gave this run no egress endpoint. "
+            "Refusing it rather than letting its egress go direct."
+        )
+    from .sidecar_backend import SidecarEgress
+
+    if isinstance(binding, SidecarEgress):
+        from . import egress_route
+
+        await egress_route.admit(binding.proxy_url)
+    return binding

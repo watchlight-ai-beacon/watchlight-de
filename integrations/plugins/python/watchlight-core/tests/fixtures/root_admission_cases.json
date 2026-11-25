@@ -1,0 +1,287 @@
+{
+  "_comment": "Root admission, shared by the Python and TypeScript SDKs. `scenarios` are step lists run against a fresh registry: register a live run (with its root execution id), end it, record a refused spawn of an agent under a root, release a reservation, or reserve a root (declared or implicit) and expect it admitted (null for an implicit root, else the sorted live root ids) or refused with a reason code. `session_refusals` are POST /sessions answers to a declared root: the typed refusal code, or null when the answer is not a declared-root refusal. watchlight-core/tests/test_root_admission_parity.py (watchlight_core.root_admission) and watchlight-agent-sdk-ts/tests/root-admission-parity.test.ts (src/root-admission.ts) run every case. `session_confirmations` are the `declared_root` values a 200 answer may carry: only a literal true confirms the declaration.",
+  "max_declared_live_roots": 64,
+  "codes": {
+    "forbidden": "declared_root_forbidden",
+    "invalid": "declared_root_invalid",
+    "unsupported": "declared_root_unsupported"
+  },
+  "scenarios": [
+    {
+      "name": "an implicit root with nothing live is admitted",
+      "steps": [
+        {
+          "reserve": "a",
+          "declared": false,
+          "admitted": null
+        }
+      ]
+    },
+    {
+      "name": "a root whose open is in flight counts as live",
+      "steps": [
+        {
+          "reserve": "a",
+          "declared": false,
+          "admitted": null
+        },
+        {
+          "reserve": "b",
+          "declared": false,
+          "refused": "implicit_root_while_run_live"
+        },
+        {
+          "release": true
+        },
+        {
+          "reserve": "b",
+          "declared": false,
+          "admitted": null
+        }
+      ]
+    },
+    {
+      "name": "an implicit root while a run is live is refused",
+      "steps": [
+        {
+          "register": "r1",
+          "root": "exec_1"
+        },
+        {
+          "reserve": "nested",
+          "declared": false,
+          "refused": "implicit_root_while_run_live"
+        }
+      ]
+    },
+    {
+      "name": "an ended run is not live",
+      "steps": [
+        {
+          "register": "r1",
+          "root": "exec_1"
+        },
+        {
+          "end": "r1"
+        },
+        {
+          "reserve": "next",
+          "declared": false,
+          "admitted": null
+        }
+      ]
+    },
+    {
+      "name": "a declared root gets the sorted, distinct live root ids",
+      "steps": [
+        {
+          "register": "r1",
+          "root": "exec_b"
+        },
+        {
+          "register": "r2",
+          "root": "exec_a"
+        },
+        {
+          "register": "child",
+          "root": "exec_a"
+        },
+        {
+          "register": "gone",
+          "root": "exec_c"
+        },
+        {
+          "end": "gone"
+        },
+        {
+          "reserve": "independent",
+          "declared": true,
+          "admitted": [
+            "exec_a",
+            "exec_b"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "a refused spawn blocks that agent's declared root while its tree is live, then is forgotten",
+      "steps": [
+        {
+          "register": "parent",
+          "root": "exec_tree"
+        },
+        {
+          "refuse_spawn": "child-agent",
+          "root": "exec_tree"
+        },
+        {
+          "reserve": "child-agent",
+          "declared": true,
+          "refused": "spawn_refused_in_live_tree"
+        },
+        {
+          "reserve": "other-agent",
+          "declared": true,
+          "admitted": [
+            "exec_tree"
+          ]
+        },
+        {
+          "release": true
+        },
+        {
+          "end": "parent"
+        },
+        {
+          "reserve": "child-agent",
+          "declared": true,
+          "admitted": []
+        }
+      ]
+    },
+    {
+      "name": "a refused spawn under another root does not block a declared root after that root ends",
+      "steps": [
+        {
+          "register": "a",
+          "root": "exec_a"
+        },
+        {
+          "register": "b",
+          "root": "exec_b"
+        },
+        {
+          "refuse_spawn": "child-agent",
+          "root": "exec_a"
+        },
+        {
+          "end": "a"
+        },
+        {
+          "reserve": "child-agent",
+          "declared": true,
+          "admitted": [
+            "exec_b"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "more live roots than wl-apdp accepts refuses a declared root",
+      "steps": [
+        {
+          "register_many": 65
+        },
+        {
+          "reserve": "one-too-many",
+          "declared": true,
+          "refused": "declared_root_invalid"
+        }
+      ]
+    },
+    {
+      "name": "exactly the bound is admitted",
+      "steps": [
+        {
+          "register_many": 64
+        },
+        {
+          "reserve": "at-the-bound",
+          "declared": true,
+          "admitted_count": 64
+        }
+      ]
+    }
+  ],
+  "session_refusals": [
+    {
+      "status": 403,
+      "body": {
+        "error": "declared_root_forbidden"
+      },
+      "code": "declared_root_forbidden"
+    },
+    {
+      "status": 422,
+      "body": {
+        "error": "declared_root_invalid"
+      },
+      "code": "declared_root_invalid"
+    },
+    {
+      "status": 403,
+      "body": {
+        "error": {
+          "code": "declared_root_forbidden",
+          "message": "x"
+        }
+      },
+      "code": "declared_root_forbidden"
+    },
+    {
+      "status": 422,
+      "body": {
+        "error": "invalid_request",
+        "reason": "declared_root_invalid"
+      },
+      "code": "declared_root_invalid"
+    },
+    {
+      "status": 403,
+      "body": {
+        "error": "forbidden",
+        "reason": "declared_root_forbidden"
+      },
+      "code": "declared_root_forbidden"
+    },
+    {
+      "status": 403,
+      "body": {
+        "error": "forbidden"
+      },
+      "code": null
+    },
+    {
+      "status": 400,
+      "body": {
+        "error": "declared_root_invalid"
+      },
+      "code": null
+    },
+    {
+      "status": 500,
+      "body": {
+        "error": "declared_root_forbidden"
+      },
+      "code": null
+    }
+  ],
+  "session_confirmations": [
+    {
+      "echo": true,
+      "confirmed": true
+    },
+    {
+      "echo": "true",
+      "confirmed": false
+    },
+    {
+      "echo": 1,
+      "confirmed": false
+    },
+    {
+      "echo": {
+        "ok": true
+      },
+      "confirmed": false
+    },
+    {
+      "echo": null,
+      "confirmed": false
+    },
+    {
+      "absent": true,
+      "confirmed": false
+    }
+  ]
+}

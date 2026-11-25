@@ -505,6 +505,22 @@ wl-proxy then decides which hosts the process can reach. In CONNECT mode it
 does not read the request body, so it limits where a request can go rather
 than deciding the hosted tools in it.
 
+#### Naming the run on each request
+
+The same wrap names the run for the Watchlight connector. While a process has a run on the connector, every request of a supported provider SDK leaves with the marker of the run acting in its context. Each sub-agent sends its own marker and never its parent's, and runs that share one client stay separate request by request, even on a pooled connection. When a run starts, core routes the process to the connector. It sets every proxy variable to the connector's egress listener and replaces `NO_PROXY` with loopback only, keeping both for the life of the process. A value already set is overwritten, and there's no exclusion list. It then does a real TLS handshake through the listener under each installed provider SDK's own trust, once per process and endpoint, and refuses the run if none passes. If only some pass, it logs a warning naming the SDK and host, and that SDK's requests fail at TLS. Watch for that warning: the matching metric, `wl.egress.handshake_partial_failures`, exports only if your process sets a global OpenTelemetry meter provider. The handshake shows trust reaches a certificate through that endpoint; it doesn't prove the endpoint is the connector. A connector that restarts on a new port refuses runs until the process restarts. Core installs no trust: distribute your CA to the agents as you do any internal CA, and with name constraints make sure they cover your providers' hosts.
+
+A provider SDK client must be built with that route. Each request is refused unless the client's route for that URL is the connector, so a client built at import needs the proxy variables set in the deployment before the process starts. Google's google-auth transport (`Vertex` mTLS) is refused too. google-genai's file upload and download aren't checked and carry no marker: built after the route they reach the connector and are refused, and built before it they go direct.
+
+**Other traffic isn't covered by these checks.** Ordinary tool HTTP in the process, and calls to private non-loopback services, now go to the connector with no marker. They're attributed by the connection report on Linux and refused with a 407 elsewhere. Subprocesses inherit the variables. A client given its own transport, `trust_env=False`, or plain `aiohttp`, which ignores the proxy variables by default, may go direct: for those, your deployment's network policy is what stops direct egress.
+
+The connector removes the marker before it forwards the request. The marker is an opaque value that holds no session id or credential, and only the local listener can redeem it, so a remote host can do nothing with one. It doesn't confine the client: a client set up to bypass the connector sends the marker to wherever it connects. The provider SDK check above refuses that client when its route can be read; for anything else the control is your network policy, not the marker.
+
+If no live run can be named, the request is refused with `EgressRefused` and nothing is sent. That covers a run that has ended, a sub-agent with no egress of its own, and a thread that lost its context. A process on the relay, or with no governed egress, is unchanged.
+
+A deployment puts a plugin on the connector with `WATCHLIGHT_BACKEND=sidecar`, or with `WATCHLIGHT_SIDECAR_SOCKET` or `WATCHLIGHT_SIDECAR_ADDR`. The other Watchlight variables don't select it, so an install with no connector stays where it is. Nothing falls back from the connector to the relay. A sub-agent is refused at spawn if the connector gives it no egress endpoint, and its session is closed.
+
+Other traffic, such as a tool's own HTTP client or an unsupported SDK, has no marker. It falls to the connection report, which the connector honours only on Linux. On any other platform the connector refuses that request with a 407, so such a client stops working there rather than leaving unattributed.
+
 ## Custom agents (any framework)
 
 For an agent not built on a supported framework, the `@watchlight` decorator

@@ -39,7 +39,7 @@ from uuid import UUID
 from ._cedar_entities import shape_for_backend
 from ._lineage_retry import lineage_decision_path, lineage_direct_attempt
 from .apdp_client import ApdpClient
-from .backend import EgressBinding, RunRef, egress_binding_for
+from .backend import EgressBinding, RunRef, fetch_egress_binding
 from .decision import (
     AgentQuarantinedError,
     AgentRevokedError,
@@ -3989,6 +3989,16 @@ class BaseRunHandle:
                 "spawn_subagent: the governance backend did not name the agent the "
                 "child runs as; refusing to run the sub-agent."
             )
+        # The child session's OWN egress binding (``None`` when the
+        # deployment issues no proxy tokens). Never the parent's. On the
+        # connector a child with no endpoint has nothing to send on.
+        try:
+            child_egress = await fetch_egress_binding(
+                self._plugin.apdp, RunRef(response.child_run)
+            )
+        except Exception:
+            await self._discard_refused_child_run(response.child_run)
+            raise
         child = type(self)(
             plugin=self._plugin,
             agent_uuid=child_agent,
@@ -4029,9 +4039,7 @@ class BaseRunHandle:
             # child session and can never be attributed to the parent or
             # any other run. Emission is run-credential-only.
             run=RunRef(response.child_run),
-            # The child session's OWN egress binding (``None`` when
-            # the deployment issues no proxy tokens). Never the parent's.
-            egress=egress_binding_for(self._plugin.apdp, RunRef(response.child_run)),
+            egress=child_egress,
             # Propagate the escalation listener so sub-agent authorize
             # calls surface escalations through the same hook.
             on_escalation=self._on_escalation,
