@@ -263,14 +263,16 @@ def test_three_deep_flow_root_propagates_through_chain() -> None:
 
 
 def test_concurrent_runs_do_not_cross_pollinate_contextvar() -> None:
-    """Two independent ``asyncio.gather([a.run(), b.run()])``
-    invocations each get their own root execution_id. The
-    contextvar must NOT leak across them.
+    """Two independent roots run at once through
+    ``asyncio.gather``, each declared with ``root_run()``,
+    each get their own root execution_id. The contextvar must NOT
+    leak across them.
 
     Python's contextvars guarantee per-task isolation; this test
     locks in the behaviour against any future refactor that
     accidentally swaps the contextvar for a module-global.
     """
+    from watchlight_pydantic_ai import root_run
 
     async def _run():
         plugin, mock = _make_plugin(
@@ -280,11 +282,17 @@ def test_concurrent_runs_do_not_cross_pollinate_contextvar() -> None:
         agent_a = Agent(TestModel(), name="agent-a")
         agent_b = Agent(TestModel(), name="agent-b")
 
+        async def _declared(agent, prompt):
+            async with root_run():
+                return await agent.run(prompt)
+
         results = await asyncio.gather(
-            agent_a.run("a-prompt"),
-            agent_b.run("b-prompt"),
+            _declared(agent_a, "a-prompt"),
+            _declared(agent_b, "b-prompt"),
         )
         assert len(results) == 2
+        # Both opened as declared roots.
+        assert len(mock.declared_root_calls) == 2
         assert all(r.output is not None for r in results)
 
         # No spawn events should have fired — neither agent

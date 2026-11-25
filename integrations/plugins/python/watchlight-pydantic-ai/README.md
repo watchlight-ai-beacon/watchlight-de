@@ -68,6 +68,34 @@ Only tools you decorate are authorized; an undecorated tool runs without a Watch
 
 Governed entry points: `Agent.run`, `run_sync`, `run_stream`, `iter` and `run_stream_sync` are instrumented directly, and `run_stream_events` is governed through `run`, which pydantic-ai drives it with. Each call opens a governed run first: a root session for a top-level call, a sub-agent spawn for a call made inside another agent's tool. If that fails, the call raises before the model is called, and the agent's tools never run. A refusal from Watchlight (for example `ScopeAttenuationDenied` when the delegation depth is exceeded, or `AgentNotRegistered`) is raised as is. Any other failure, such as an unreachable backend, is raised as `GovernanceUnavailable`. A refused sub-agent never runs on its parent's run. A call made from a run that has ended (for example from a task a tool started that outlives the run) is refused with `GovernanceUnavailable`.
 
+**A nested run that loses its run's context does not start as a root.** A tool body that calls another agent through `await`, `iter` or `asyncio.to_thread` keeps the run's context, and the agent is spawned as a governed sub-agent. A call through `loop.run_in_executor`, a `ThreadPoolExecutor`, a `threading.Thread` or a fresh `contextvars.Context` drops that context. Such a call is refused with `NestedRunEscapedError` (a `WatchlightError`) before its first model turn while any governed run is live in the process, including a deferred start that runs after the tool returned and a re-run of the same agent. It is never opened as an independent root. With no governed run live, a top-level call opens a root as before.
+
+Runs that are meant to be independent roots at the same time, such as `asyncio.gather` of two agents or one agent per worker thread, are declared with `root_run()`, a context manager (sync or async) and a decorator:
+
+```python
+from watchlight_pydantic_ai import root_run
+
+async def both():
+    async def declared(agent, prompt):
+        async with root_run():
+            return await agent.run(prompt)
+
+    return await asyncio.gather(declared(agent_a, "a"), declared(agent_b, "b"))
+
+@root_run()
+def worker(prompt):
+    return agent.run_sync(prompt)
+```
+
+How a declared root is decided:
+- It is decided by the server (`Action::"open_declared_root"`), which receives the root execution ids of the governed runs live in the process and records the declaration.
+- A server refusal raises `DeclaredRootRefused` (`declared_root_forbidden`, `declared_root_invalid`), and the agent does not run.
+- If the server does not confirm that it decided the declaration (an older server), the session is ended and the run is refused (`declared_root_unsupported`).
+- The in-process Developer Edition engine refuses a declared root.
+- `root_run()` entered inside a live governed run raises `NestedRunEscapedError`: an agent called there is a governed sub-agent.
+- An agent whose sub-agent spawn was refused cannot start through `root_run()` while that run tree is live (`SpawnRefusedRootRunError`).
+- There is no setting that turns this off.
+
 A nested agent spawned this way names no time budget by default, so it inherits its parent's remaining time and never gets more. To give nested agents a tighter budget, pass `nested_agent_time_budget_seconds=<seconds>` to `WatchlightPydanticAIPlugin(...)`. The value is sent exactly as you set it and is never shortened. If the parent cannot give that much, because it is more than the parent was granted, more than the parent has left, or more than the tenant's `subagent_time_budget_threshold_seconds` (default 3600), the spawn is refused and the nested agent does not run. A parent's remaining time shrinks as it works, so a budget that fits at the first level may be refused one level down; leave the setting unset to have each nested agent inherit what its parent has left.
 
 If the plugin is configured to route egress through wl-proxy (`connect_proxy_url=` or `WATCHLIGHT_PROXY_URL`), a run is refused with `GovernanceUnavailable` when Watchlight issues no proxy token for it or the local CONNECT sidecar cannot be installed; it never falls back to direct egress. A run whose setup fails after its session was opened has that session terminated. **One governed run per process.** While a run owns the egress proxy, starting another run in the same process raises `SidecarRunActive` (a `GovernanceUnavailable`) and leaves the running one as it is. The owning run releases it when it ends, or when its session expires (`ttl_seconds`, 3600 by default) if it is never completed. Once the owner has ended, its proxy answers every new CONNECT with 403, so traffic fails rather than going direct. Run concurrent governed runs in separate processes.
