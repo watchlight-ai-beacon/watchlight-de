@@ -191,3 +191,24 @@ async def start_root(mw: Any) -> Dict[str, Any]:
         state.update(update)
     assert STATE_TOKEN_KEY in state
     return state
+
+
+@pytest.fixture(autouse=True)
+def _fresh_root_admission():
+    """Each test starts with no governed run live in the process.
+
+    Many tests open a run and never close it; without this the next test's
+    root would be refused as an escaped nested run.
+    """
+    _forget_live_runs()
+    yield
+    _forget_live_runs()
+
+
+def _forget_live_runs() -> None:
+    from watchlight_core import root_admission
+
+    with root_admission._lock:
+        root_admission._runs.clear()
+        root_admission._refused_spawns.clear()
+        root_admission._pending_roots = 0

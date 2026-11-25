@@ -27,7 +27,7 @@ import os
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Sequence, Union
 from uuid import UUID
 
 from watchlight_core import (
@@ -36,6 +36,7 @@ from watchlight_core import (
     application_id_from_env,
     resolve_application_id,
     BaseRunHandle,
+    DeclaredRootRefused,
     GovernanceBackend,
     GovernanceTelemetry,
     GovernanceUnavailable,
@@ -44,6 +45,7 @@ from watchlight_core import (
     resolve_intent_enforcement_mode,
 )
 from watchlight_core.backend import RunRef, egress_binding_for
+from watchlight_core.errors import DECLARED_ROOT_UNSUPPORTED
 from watchlight_core.scope import ResourceMatcher
 
 logger = get_logger("watchlight_deepagents")
@@ -498,8 +500,16 @@ class WatchlightDeepAgentsPlugin(GovernanceTelemetry):
         max_actions: Optional[int] = None,
         ttl_seconds: int = 3600,
         application_id: Optional[str] = None,
+        declared_root: Optional[Sequence[str]] = None,
     ) -> RunHandle:
         """Open a governed run for the named agent.
+
+        ``declared_root`` is set by the governance middleware inside
+        :func:`watchlight_deepagents.root_run`, never by customer code: the
+        root execution ids of the governed runs live in this process. The
+        run opens only when the server confirms it decided the declared root
+        (``Action::"open_declared_root"``); otherwise the session is closed
+        and the run refused with :class:`watchlight_core.DeclaredRootRefused`.
 
         Resolves the slug → UUID, opens an APDP session, fetches the
         pre-flight ConstraintManifest, and (when opted in) installs the
@@ -539,6 +549,7 @@ class WatchlightDeepAgentsPlugin(GovernanceTelemetry):
             metadata={"framework": "deepagents", "tenant_id": self.tenant_id},
             # Only when set, so an older watchlight-agent-sdk still works.
             **({"application_id": app_id} if app_id is not None else {}),
+            **({"declared_root": list(declared_root)} if declared_root is not None else {}),
         )
         if session is None:
             raise GovernanceUnavailable(
@@ -554,6 +565,15 @@ class WatchlightDeepAgentsPlugin(GovernanceTelemetry):
         # cancellation), the session it opened is closed and the
         # failure propagates. It never proceeds ungoverned.
         try:
+            if declared_root is not None and not session.declared_root:
+                # An older server ignores the field and opens a plain root
+                # no policy decided: the session is closed below.
+                raise DeclaredRootRefused(
+                    "WL-APDP opened the session without confirming the "
+                    "declared root (it may not support declared roots), so "
+                    "the session was closed and the agent was not started.",
+                    code=DECLARED_ROOT_UNSUPPORTED,
+                )
             # Fetch the pre-flight manifest FIRST — it carries the
             # ``governed_proxy_hosts`` allowlist the sidecar needs, and the
             # fetch goes direct to wl-apdp (NO_PROXY-bypassed) before the

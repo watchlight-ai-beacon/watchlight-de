@@ -54,6 +54,7 @@ from typing import Any, Dict, Optional
 from watchlight_core import GovernanceUnavailable, get_logger, summarize_arg_keys
 
 from watchlight_core import langchain_tool_backstop as backstop
+from watchlight_core import root_admission
 from .plugin import RunHandle, WatchlightDeepAgentsPlugin
 from .subagents import (
     TASK_TOOL_NAME,
@@ -117,6 +118,50 @@ class _SpawnGrant:
 _SPAWN_GRANT: contextvars.ContextVar[Optional[_SpawnGrant]] = contextvars.ContextVar(
     "watchlight_deepagents._spawn_grant", default=None
 )
+
+
+#: How a nested deep agent stays governed, for the escaped-root refusal.
+_ESCAPE_HINT = (
+    "Run sub-agents through the governed task tool "
+    "(create_governed_deep_agent(subagents=...)) so they run as attenuated "
+    "sub-agents, or wrap an independent run in watchlight_deepagents.root_run()."
+)
+
+
+class root_run(root_admission.RootRun):
+    """Declare an independent governed root deep agent run.
+
+    While a governed run is live in the process, a governed deep agent that
+    would open a root outside it (built and invoked inside a tool, from a
+    thread, an executor or a fresh ``contextvars.Context``) is refused with
+    :class:`watchlight_core.NestedRunEscapedError` before its first model
+    turn. Independent roots that run at the same time are declared::
+
+        async with root_run():
+            await agent.ainvoke({...})
+
+    Also a decorator (``@root_run()`` or ``@root_run``) on a sync or async
+    function. The server decides ``Action::"open_declared_root"`` with the root
+    execution ids live in the process. Refused inside a live governed run,
+    and for an agent whose sub-agent spawn was refused in a run tree that
+    is still live.
+    """
+
+    def _in_live_run(self) -> bool:
+        # A tool body does not see ``_ACTIVE_HANDLE`` (LangGraph runs the
+        # tools node in its own context); the backstop marks it instead.
+        return any(
+            root_admission.handle_is_live(handle)
+            for handle in (_ACTIVE_HANDLE.get(), backstop.tool_body_handle())
+        )
+
+    def _enter_context(self) -> None:
+        self._context_tokens = (_ACTIVE_HANDLE.set(None), _SPAWN_GRANT.set(None))
+
+    def _exit_context(self) -> None:
+        handle, grant = self._context_tokens
+        _SPAWN_GRANT.reset(grant)
+        _ACTIVE_HANDLE.reset(handle)
 
 
 def current_active_handle() -> Optional[RunHandle]:
@@ -451,7 +496,22 @@ def _make_middleware_class(base_cls: type) -> type:
             # model / tool call can fire (ungoverned-request gate). A
             # failure here (APDP down, unregistered agent) propagates —
             # the agent graph never enters the model loop.
-            handle = await self._plugin.start_run(self._agent_slug)
+            #
+            # Admitted first: while a governed run is live in the
+            # process, a root outside it is refused here (the agent graph
+            # never reaches its model), unless declared with root_run().
+            declared = root_admission.declared_root_requested()
+            live_roots = root_admission.reserve_root(
+                self._agent_slug, declared=declared, hint=_ESCAPE_HINT
+            )
+            handle: Optional[RunHandle] = None
+            try:
+                handle = await self._plugin.start_run(
+                    self._agent_slug,
+                    **({"declared_root": live_roots} if declared else {}),
+                )
+            finally:
+                root_admission.release_root(handle)
             await handle.__aenter__()
             return self._register(handle, is_root=True)
 
@@ -830,16 +890,23 @@ def _make_middleware_class(base_cls: type) -> type:
                 fallback_objective=f"deepagents task for {subagent_type}",
             )
             try:
-                child = await handle.spawn_subagent(
-                    child_slug,
-                    child_intent=child_intent,
-                    allowed_tools=scope.get("allowed_tools"),
-                    allowed_resources=scope.get("allowed_resources"),
-                    allowed_intents=scope.get("allowed_intents"),
-                    max_depth=scope.get("max_depth"),
-                    time_budget_seconds=scope.get("time_budget_seconds"),
-                    reason=f"deepagents task → {subagent_type}",
-                )
+                try:
+                    child = await handle.spawn_subagent(
+                        child_slug,
+                        child_intent=child_intent,
+                        allowed_tools=scope.get("allowed_tools"),
+                        allowed_resources=scope.get("allowed_resources"),
+                        allowed_intents=scope.get("allowed_intents"),
+                        max_depth=scope.get("max_depth"),
+                        time_budget_seconds=scope.get("time_budget_seconds"),
+                        reason=f"deepagents task → {subagent_type}",
+                    )
+                except BaseException:
+                    # The refused child never runs, not even as a declared
+                    # root while this tree is live.
+                    root_admission.record_refused_spawn(child_slug, handle)
+                    raise
+                root_admission.register_run(child)
             except ScopeAttenuationDenied as exc:
                 # wl-apdp's strict-subset validator rejected the spawn —
                 # the requested scope was not a strict subset. No child

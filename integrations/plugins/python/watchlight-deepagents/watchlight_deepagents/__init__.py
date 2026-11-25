@@ -56,6 +56,7 @@ from watchlight_deepagents.middleware import (
     STATE_TOKEN_KEY,
     build_governance_middleware,
     current_active_handle,
+    root_run,
 )
 from watchlight_deepagents.plugin import RunHandle, WatchlightDeepAgentsPlugin
 from watchlight_deepagents.state_adapter import state_from_deepagents_plugin
@@ -85,6 +86,7 @@ __all__ = [
     "UngovernedToolCall",
     "build_governance_middleware",
     "current_active_handle",
+    "root_run",
     "STATE_TOKEN_KEY",
     "state_from_deepagents_plugin",
     "TASK_TOOL_NAME",
